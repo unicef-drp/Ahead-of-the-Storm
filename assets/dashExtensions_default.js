@@ -21,6 +21,23 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         function1: function(feature, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
+                const fillOpacity = props._fillOpacity || 0.7;
+                const weight = props._weight || 1;
+                const opacity = props._opacity || 0.8;
+
+                return {
+                    color: color,
+                    weight: weight,
+                    opacity: opacity,
+                    fillColor: color,
+                    fillOpacity: fillOpacity
+                };
+            }
+
+            ,
+        function2: function(feature, context) {
+                const props = feature.properties || {};
+                const color = props._color || '#808080';
                 const radius = props._radius || 5;
                 const opacity = props._opacity || 0.8;
                 const weight = props._weight || 1;
@@ -37,7 +54,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function2: function(feature, latlng, context) {
+        function3: function(feature, latlng, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
                 const radius = props._radius || 5;
@@ -56,7 +73,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function3: function(feature, context) {
+        function4: function(feature, context) {
                 const wind_threshold = feature.properties?.wind_threshold;
                 if (wind_threshold === 34) {
                     return {
@@ -90,13 +107,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function4: function() {
+        function5: function() {
             return {
                 weight: 3,
                 color: '#e53935'
             };
         },
-        function5: function(feature, layer) {
+        function6: function(feature, layer) {
             const props = feature.properties || {};
             const rows = Object.keys(props).map(k =>
                 `<tr><th style="text-align:left;padding-right:6px;">${k}</th><td>${props[k]}</td></tr>`
