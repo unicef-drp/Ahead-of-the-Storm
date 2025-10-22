@@ -1,0 +1,33 @@
+#### gigaspatial ####
+export ADLS_CONNECTION_STRING=""
+export ADLS_CONTAINER_NAME="giga"
+export MAPBOX_ACCESS_TOKEN=""
+export BRONZE_DIR="bronze"
+export SILVER_DIR="silver"
+export GOLD_DIR="gold"
+export VIEWS_DIR="aos_views"
+export CACHE_DIR=""
+#export ADMIN_BOUNDARIES_DIR=""
+export ROOT_DATA_DIR="geodb"
+export GEOREPO_API_KEY=""
+export GEOREPO_USER_EMAIL=""
+export GIGA_SCHOOL_LOCATION_API_KEY= ""
+export HEALTHSITES_API_KEY=""
+
+#### SnowFlake ####
+export SNOWFLAKE_ACCOUNT=''
+export SNOWFLAKE_USER=''
+export SNOWFLAKE_PASSWORD=''
+export SNOWFLAKE_WAREHOUSE='H'
+export SNOWFLAKE_DATABASE=''
+export SNOWFLAKE_SCHEMA=''
+
+#### internal ####
+export TRACKS_DB='BLOB'
+export DATA_PIPELINE_DB='LOCAL'
+#export DATA_PIPELINE_DB='BLOB'
+#export DATA_PIPELINE_DB='RO_BLOB'
+export RESULTS_DIR = "project_results/climate/lacro_project"
+export BBOX_FILE = "bbox.parquet"
+export ACCOUNT_URL=""
+export SAS_TOKEN=""
