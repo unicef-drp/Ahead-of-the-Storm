@@ -105,6 +105,9 @@ def make_header(active_tab="tab-home"):
                                     ),
                                 ],
                                 justify="flex-end",
+                                style={
+                                    "backgroundColor": "transparent",
+                                }
                             ),
                         ],
                         id="tabs",
@@ -112,6 +115,23 @@ def make_header(active_tab="tab-home"):
                         color="#1cabe2",
                         orientation="horizontal",
                         variant="pills",
+                        styles={
+                            "tab": {
+                                "backgroundColor": "transparent",
+                                "color": "white",
+                                "&:hover": {
+                                    "backgroundColor": "#0058AB",  # Darker blue on hover
+                                    "color": "white",
+                                },
+                                "&[data-active]": {
+                                    "backgroundColor": "#0058AB",  # Active state blue
+                                    "color": "white",
+                                }
+                            },
+                            "list": {
+                                "backgroundColor": "transparent",
+                            }
+                        }
                     ),
                     dmc.Menu(
                         [

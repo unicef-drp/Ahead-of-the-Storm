@@ -349,7 +349,7 @@ def make_single_page_layout():
                             dmc.Paper(
                                 [
                                     dmc.Group([
-                                        dmc.Badge("1", size="sm", color="blue", variant="filled"),
+                                        dmc.Badge("1", size="sm", color="#1cabe2", variant="filled"),
                                         dmc.Text("COUNTRY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
                                     ], mb="xs", justify="flex-start"),
                                     dmc.Select(
@@ -373,7 +373,7 @@ def make_single_page_layout():
                             dmc.Paper(
                                 [
                                     dmc.Group([
-                                        dmc.Badge("2", size="sm", color="blue", variant="filled"),
+                                        dmc.Badge("2", size="sm", color="#1cabe2", variant="filled"),
                                         dmc.Text("HURRICANE", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
                                     ], justify="flex-start", gap="sm", mb="xs"),
                                     
@@ -428,7 +428,7 @@ def make_single_page_layout():
                             dmc.Paper(
                                 [
                                     dmc.Group([
-                                        dmc.Badge("3", size="sm", color="blue", variant="filled"),
+                                        dmc.Badge("3", size="sm", color="#1cabe2", variant="filled"),
                                         dmc.Text("LOAD LAYERS", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
                                     ], justify="flex-start", gap="sm", mb="sm"),
                                     
@@ -439,7 +439,7 @@ def make_single_page_layout():
                                         id="load-layers-btn",
                                         leftSection=DashIconify(icon="carbon:download", width=20),
                                         variant="filled",
-                                        color="blue",
+                                        color="#1cabe2",
                                         fullWidth=True,
                                         mb="md"
                                     ),
@@ -455,7 +455,7 @@ def make_single_page_layout():
                             dmc.Paper(
                                 [
                                     dmc.Group([
-                                        dmc.Badge("4", size="sm", color="green", variant="filled"),
+                                        dmc.Badge("4", size="sm", color="#1cabe2", variant="filled"),
                                         dmc.Text("LAYER CONTROLS", size="sm", fw=700, c="dark", ta="left", style={"letterSpacing": "0.5px"}),
                                     ], justify="flex-start", gap="sm", mb="sm"),
                                     
