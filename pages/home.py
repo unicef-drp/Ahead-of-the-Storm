@@ -734,50 +734,53 @@ def make_single_page_layout():
                 [
                     dmc.Paper(
                         [
-                            dmc.Text("Impact Summary", size="lg", fw=700, mb="md"),
+                            dmc.Text("IMPACT SUMMARY", size="lg", fw=700, mb="md"),
                             
-                            # Scenario Selection
-                            dmc.Stack([
-                                dmc.Text("Scenario", size="sm", fw=500),
-                                dmc.SegmentedControl(
-                                    id="scenario-select",
-                                    data=[
-                                        {"value": "low", "label": "Low"},
-                                        {"value": "probabilistic", "label": "Probabilistic"},
-                                        {"value": "high", "label": "High"}
-                                    ],
-                                    value="probabilistic",
-                                    mb="md"
-                                )
-                            ]),
-                            
-                            # Main Impact Number
-                            dmc.Center(
-                                dmc.Stack([
-                                    dmc.Text("Children Affected", size="sm", ta="center"),
-                                    dmc.Text("0", id="children-affected", size="xl", fw=700, ta="center", c="red")
-                                ]),
-                                mb="lg"
-                            ),
-                            
-                            # Critical Infrastructure
-                            dmc.Stack([
-                                dmc.Text("Critical Infrastructure", size="sm", fw=500, mb="sm"),
-                                dmc.Group([
-                                    dmc.Text("Schools:", size="sm"),
-                                    dmc.Text("0", id="schools-count", size="sm", fw=500)
-                                ], justify="space-between"),
-                                dmc.Group([
-                                    dmc.Text("Health Centers:", size="sm"),
-                                    dmc.Text("0", id="health-count", size="sm", fw=500)
-                                ], justify="space-between"),
-                                dmc.Group([
-                                    dmc.Text("Population at Risk:", size="sm"),
-                                    dmc.Text("0", id="population-count", size="sm", fw=500)
-                                ], justify="space-between"),
-                            ])
+                            # Impact Summary Table
+                            dmc.Table(
+                                [
+                                    dmc.TableThead([
+                                        dmc.TableTr([
+                                            dmc.TableTh("Metric", style={"fontWeight": 600}),
+                                            dmc.TableTh("Low", style={"fontWeight": 600, "textAlign": "center"}),
+                                            dmc.TableTh("Probabilistic", style={"fontWeight": 600, "textAlign": "center"}),
+                                            dmc.TableTh("High", style={"fontWeight": 600, "textAlign": "center"})
+                                        ])
+                                    ]),
+                                    dmc.TableTbody([
+                                        dmc.TableTr([
+                                            dmc.TableTd("Children Affected", style={"fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Population at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ])
+                                    ])
+                                ],
+                                striped=True,
+                                highlightOnHover=True,
+                                withTableBorder=True,
+                                withColumnBorders=True
+                            )
                         ],
-                        p="md",
+                        p="sm",
                         shadow="sm"
                     )
                 ],
@@ -791,26 +794,34 @@ def make_single_page_layout():
 
 # Callbacks for interactive functionality
 @callback(
-    [Output("children-affected", "children"),
-     Output("schools-count", "children"),
-     Output("health-count", "children"),
-     Output("population-count", "children")],
+    [Output("children-affected-low", "children"),
+     Output("children-affected-probabilistic", "children"),
+     Output("children-affected-high", "children"),
+     Output("schools-count-low", "children"),
+     Output("schools-count-probabilistic", "children"),
+     Output("schools-count-high", "children"),
+     Output("health-count-low", "children"),
+     Output("health-count-probabilistic", "children"),
+     Output("health-count-high", "children"),
+     Output("population-count-low", "children"),
+     Output("population-count-probabilistic", "children"),
+     Output("population-count-high", "children")],
     [Input("storm-select", "value"),
      Input("wind-threshold-select", "value"),
-     Input("scenario-select", "value"),
      Input("country-select", "value"),
      Input("forecast-date", "value"),
      Input("forecast-time", "value")],
     prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_date, forecast_time):
-    """Update impact metrics based on storm, wind threshold, scenario, and country selection"""
+def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecast_time):
+    """Update impact metrics for all three scenarios based on storm, wind threshold, and country selection"""
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        return "0", "0", "0", "0"
+        # Return all scenarios with default values
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     try:
-        # Construct the filename for the tiles impact view (like tiles layer callback)
+        # Construct the filename for the tiles impact view
         date_str = forecast_date.replace('-', '')  # Convert "2025-10-15" to "20251015"
         time_str = forecast_time.replace(':', '')  # Convert "00:00" to "0000"
         forecast_datetime = f"{date_str}{time_str}00"  # Add seconds: "20251015000000"
@@ -820,47 +831,89 @@ def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_dat
         
         print(f"Impact metrics: Looking for file {filename}")
         
+        # Initialize all scenario results
+        low_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        probabilistic_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        high_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        
         if os.path.exists(filepath):
             try:
                 gdf = read_dataset(giga_store, filepath)
                 
-                # Calculate scenario-based metrics from the tiles data
-                if scenario == "low":
-                    # Use lowest impact values (lowest wind threshold)
-                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-                elif scenario == "high":
-                    # Use highest impact values (highest wind threshold)
-                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-                else:  # probabilistic
-                    # Use current wind threshold values
-                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
+                # Calculate PROBABILISTIC scenario (from tiles data)
+                if 'school_age_population' in gdf.columns and not gdf['school_age_population'].isna().all():
+                    probabilistic_results["children"] = (gdf['probability'] * gdf['school_age_population']).sum()
+                else:
+                    probabilistic_results["children"] = "N/A"
+                
+                probabilistic_results["schools"] = (gdf['probability'] * gdf['num_schools']).sum() if 'num_schools' in gdf.columns else "N/A"
+                probabilistic_results["health"] = (gdf['probability'] * gdf['num_hcs']).sum() if 'num_hcs' in gdf.columns else "N/A"
+                probabilistic_results["population"] = (gdf['probability'] * gdf['population']).sum() if 'population' in gdf.columns else "N/A"
+                
+                # Calculate LOW and HIGH scenarios (from track data)
+                tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                
+                if os.path.exists(tracks_filepath):
+                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    
+                    if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                        # Find ensemble members with lowest and highest impact
+                        member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
+                        low_impact_member = member_totals.idxmin()
+                        high_impact_member = member_totals.idxmax()
+                        
+                        low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == low_impact_member]
+                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
+                        
+                        # Check if health center data is available for this time slot
+                        hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                        hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
+                        hc_data_available = os.path.exists(hc_filepath)
+                        
+                        # LOW scenario
+                        low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
+                        low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
+                        low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
+                        
+                        # HIGH scenario
+                        high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
+                        high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
+                        high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
                 
                 print(f"Impact metrics: Successfully loaded {len(gdf)} features")
-                return (
-                    f"{children_affected:,.0f}",
-                    f"{schools_count:,.0f}",
-                    f"{health_count:,.0f}",
-                    f"{population_count:,.0f}"
-                )
+                
             except Exception as e:
                 print(f"Impact metrics: Error reading file {filename}: {e}")
-                return "0", "0", "0", "0"
         else:
             print(f"Impact metrics: File not found {filename}")
-            return "0", "0", "0", "0"
+        
+        # Format results
+        def format_value(value):
+            return str(value) if isinstance(value, str) else f"{value:,.0f}"
+        
+        return (
+            # Children affected
+            format_value(low_results["children"]),
+            format_value(probabilistic_results["children"]),
+            format_value(high_results["children"]),
+            # Schools count
+            format_value(low_results["schools"]),
+            format_value(probabilistic_results["schools"]),
+            format_value(high_results["schools"]),
+            # Health count
+            format_value(low_results["health"]),
+            format_value(probabilistic_results["health"]),
+            format_value(high_results["health"]),
+            # Population count
+            format_value(low_results["population"]),
+            format_value(probabilistic_results["population"]),
+            format_value(high_results["population"])
+        )
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return "0", "0", "0", "0"
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 # Function to get envelope data from Snowflake (matching the working envelopes.py)
 # Callback to populate available forecast dates
