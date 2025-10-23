@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import dash
-from dash import Output, Input, State, callback, dcc, html
+from dash import Output, Input, State, callback, dcc, html, callback_context
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import dash_leaflet as dl
@@ -401,21 +401,21 @@ def make_single_page_layout():
                                         id="forecast-date",
                                         placeholder="Select forecast date...",
                                         data=[],  # Will be populated dynamically
-                                        value=None,
+                                        value="2025-10-22",  # Default to most recent date
                                         mb="xs"
                                     ),
                                     dmc.Select(
                                         id="forecast-time",
                                         placeholder="Select forecast time...",
                                         data=[],  # Will be populated based on selected date
-                                        value=None,
+                                        value="18:00",  # Default to most recent time
                                         mb="xs"
                                     ),
                                     dmc.Select(
                                         id="storm-select",
                                         placeholder="Select hurricane...",
                                         data=[],  # Will be populated based on date and time
-                                        value=None,
+                                        value="FENGSHEN",  # Default to most recent storm
                                         mb="xs"
                                     ),
                                     
@@ -460,7 +460,8 @@ def make_single_page_layout():
                                         variant="filled",
                                         color="#1cabe2",
                                         fullWidth=True,
-                                        mb="md"
+                                        mb="md",
+                                        loaderProps={"type": "dots"}
                                     ),
                                     
                                     dmc.Text("Status: Not loaded", id="load-status", size="xs", c="dimmed", mb="md")
@@ -1085,23 +1086,7 @@ def make_single_page_appshell():
 # Use the single-page appshell
 layout = make_single_page_appshell()
 
-# Show loader immediately when button is clicked
-@callback(
-    Output('load-status', 'children'),
-    [Input('load-layers-btn', 'n_clicks')],
-    prevent_initial_call=True
-)
-def show_loading_indicator(n_clicks):
-    """Show loading indicator immediately when Load Layers button is clicked"""
-    if n_clicks and n_clicks > 0:
-        return dmc.Loader(
-            color="blue",
-            size="md", 
-            type="dots"
-        )
-    return dmc.Text("Status: Not loaded", size="xs", c="dimmed", mb="md")
-
-# Load all layers callback
+# Load all layers callback with integrated loading indicator
 @callback(
     [Output('tracks-data-store', 'data'),
      Output('envelope-data-store', 'data'),
@@ -1113,7 +1098,7 @@ def show_loading_indicator(n_clicks):
      Output('settlement-tiles-data-store', 'data'),
      Output('rwi-tiles-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
-     Output('load-status', 'children', allow_duplicate=True),
+     Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
      Output('schools-layer', 'disabled'),
@@ -1129,13 +1114,24 @@ def show_loading_indicator(n_clicks):
     State('forecast-date', 'value'),
     State('forecast-time', 'value'),
     State('wind-threshold-select', 'value'),
-    prevent_initial_call=True
+    prevent_initial_call=True,
+    running=[(Output("load-layers-btn", "loading"), True, False)]
 )
 def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold):
     """Load all available layers when Load Layers button is clicked"""
+    print(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     print(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
+    print(f"Callback context: {callback_context.triggered}")
+    
+    # Show loading indicator immediately
+    loading_indicator = dmc.Loader(
+        color="blue",
+        size="md", 
+        type="dots"
+    )
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
+        print("=== MISSING SELECTIONS - RETURNING EARLY ===")
         return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
     
     try:
@@ -1326,6 +1322,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             empty_geojson = {"type": "FeatureCollection", "features": []}
             tiles_copy1 = tiles_copy2 = tiles_copy3 = tiles_copy4 = tiles_copy5 = empty_geojson
         
+        print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
                 True, status_alert, 
