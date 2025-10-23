@@ -383,6 +383,7 @@ def make_single_page_layout():
                                             {"value": "DOM", "label": "Dominican Republic"},
                                             {"value": "GRD", "label": "Grenada"},
                                             {"value": "MSR", "label": "Montserrat"},
+                                            {"value": "NIC", "label": "Nicaragua"},
                                             {"value": "KNA", "label": "Saint Kitts and Nevis"},
                                             {"value": "LCA", "label": "Saint Lucia"},
                                             {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
