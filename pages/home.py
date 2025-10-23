@@ -8,6 +8,8 @@ import dash_leaflet as dl
 import geopandas as gpd
 import os
 import warnings
+import json
+from shapely import wkt
 
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -732,19 +734,30 @@ def make_single_page_layout():
             # Right Panel - Impact Metrics
             dmc.GridCol(
                 [
+                    # Impact Summary Section
                     dmc.Paper(
                         [
-                            dmc.Text("IMPACT SUMMARY", size="lg", fw=700, mb="md"),
+                            dmc.Group([
+                                dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                            ], justify="flex-start", gap="sm", mb="sm"),
+                            
+                            dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
                             
                             # Impact Summary Table
                             dmc.Table(
                                 [
                                     dmc.TableThead([
                                         dmc.TableTr([
-                                            dmc.TableTh("Metric", style={"fontWeight": 600}),
-                                            dmc.TableTh("Low", style={"fontWeight": 600, "textAlign": "center"}),
-                                            dmc.TableTh("Probabilistic", style={"fontWeight": 600, "textAlign": "center"}),
-                                            dmc.TableTh("High", style={"fontWeight": 600, "textAlign": "center"})
+                                            dmc.TableTh("Metric", style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                            dmc.TableTh([
+                                                dmc.Text("Low", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
+                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
+                                            dmc.TableTh("Probabilistic", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
+                                            dmc.TableTh([
+                                                dmc.Text("High", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
+                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
                                         ])
                                     ]),
                                     dmc.TableTbody([
@@ -780,8 +793,53 @@ def make_single_page_layout():
                                 withColumnBorders=True
                             )
                         ],
-                        p="sm",
-                        shadow="sm"
+                        p="md",
+                        shadow="xs",
+                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+                    ),
+                    
+                    # Specific Track View Section
+                    dmc.Paper(
+                        [
+                            dmc.Group([
+                                dmc.Text("SPECIFIC TRACK VIEW", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                            ], justify="flex-start", gap="sm", mb="sm"),
+                            
+                            dmc.Text("Visualize individual hurricane track scenarios", size="xs", c="dimmed", mb="md"),
+                            
+                            # Specific Track Controls
+                            dmc.Stack([
+                                dmc.Button(
+                                    "Show Specific Track",
+                                    id="show-specific-track-btn",
+                                    variant="outline",
+                                    size="sm",
+                                    disabled=True,
+                                    mb="md",
+                                    leftSection=DashIconify(icon="mdi:map-marker-path", width=16)
+                                ),
+                                
+                                dmc.Select(
+                                    id="specific-track-select",
+                                    label="Select Track Scenario",
+                                    placeholder="Choose ensemble member...",
+                                    data=[],
+                                    mb="md",
+                                    disabled=True,
+                                    style={"display": "none"}
+                                ),
+                                
+                                dmc.Text(
+                                    "Load layers first, then select a specific track to see exact impact numbers",
+                                    size="xs",
+                                    c="dimmed",
+                                    id="specific-track-info"
+                                )
+                            ])
+                        ],
+                        p="md",
+                        shadow="xs",
+                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
                     )
                 ],
                 span=3,
@@ -805,7 +863,9 @@ def make_single_page_layout():
      Output("health-count-high", "children"),
      Output("population-count-low", "children"),
      Output("population-count-probabilistic", "children"),
-     Output("population-count-high", "children")],
+     Output("population-count-high", "children"),
+     Output("low-impact-badge", "children"),
+     Output("high-impact-badge", "children")],
     [Input("storm-select", "value"),
      Input("wind-threshold-select", "value"),
      Input("country-select", "value"),
@@ -818,7 +878,9 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         # Return all scenarios with default values
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+    
+    # Calculate probabilistic impact metrics
     
     try:
         # Construct the filename for the tiles impact view
@@ -835,6 +897,10 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         low_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
         probabilistic_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
         high_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        
+        # Initialize member badges
+        low_member_badge = "N/A"
+        high_member_badge = "N/A"
         
         if os.path.exists(filepath):
             try:
@@ -862,6 +928,10 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
                         low_impact_member = member_totals.idxmin()
                         high_impact_member = member_totals.idxmax()
+                        
+                        # Set member badge text
+                        low_member_badge = f"#{low_impact_member}"
+                        high_member_badge = f"#{high_impact_member}"
                         
                         low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == low_impact_member]
                         high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
@@ -908,12 +978,79 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             # Population count
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
-            format_value(high_results["population"])
+            format_value(high_results["population"]),
+            # Member badges
+            low_member_badge,
+            high_member_badge
         )
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+
+# Callback to populate specific track selector when layers are loaded
+@callback(
+    [Output("show-specific-track-btn", "disabled"),
+     Output("specific-track-select", "data"),
+     Output("specific-track-select", "style")],
+    [Input("layers-loaded-store", "data")],
+    [State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value"),
+     State("wind-threshold-select", "value")],
+    prevent_initial_call=True
+)
+def populate_specific_track_options(layers_loaded, country, storm, forecast_date, forecast_time, wind_threshold):
+    """Populate specific track selector with available ensemble members"""
+    
+    if not layers_loaded or not all([country, storm, forecast_date, forecast_time, wind_threshold]):
+        return True, [], {"display": "none"}
+    
+    try:
+        # Convert date and time to YYYYMMDDHHMMSS format
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+        
+        if os.path.exists(tracks_filepath):
+            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            
+            if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                # Get unique ensemble members
+                ensemble_members = sorted(gdf_tracks['zone_id'].unique())
+                
+                # Find low and high impact members
+                member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
+                low_impact_member = member_totals.idxmin()
+                high_impact_member = member_totals.idxmax()
+                
+                # Create options with member type labels and impact indicators
+                options = []
+                for member in ensemble_members:
+                    member_type = "Control" if member in [51, 52] else f"Ensemble {member}"
+                    
+                    # Add impact scenario indicators
+                    impact_indicator = ""
+                    if member == low_impact_member:
+                        impact_indicator = " (LOW IMPACT)"
+                    elif member == high_impact_member:
+                        impact_indicator = " (HIGH IMPACT)"
+                    
+                    options.append({
+                        "value": str(member),
+                        "label": f"{member_type} (ID: {member}){impact_indicator}"
+                    })
+                
+                return False, options, {"display": "block"}
+        
+        return True, [], {"display": "none"}
+        
+    except Exception as e:
+        print(f"Error loading specific track options: {e}")
+        return True, [], {"display": "none"}
 
 # Function to get envelope data from Snowflake (matching the working envelopes.py)
 # Callback to populate available forecast dates
@@ -1369,7 +1506,6 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         
         # Enable all toggles - each tile layer gets its own independent copy of the data
         import copy
-        import json
         
         # Create independent copies for each tile layer
         if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
@@ -1398,27 +1534,95 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 @callback(
     Output("hurricane-tracks-json", "data"),
     Output("hurricane-tracks-json", "zoomToBounds"),
-    [Input("hurricane-tracks-toggle", "checked")],
+    [Input("hurricane-tracks-toggle", "checked"),
+     Input("specific-track-select", "value")],
     State("tracks-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tracks_layer(checked, tracks_data):
-    """Toggle hurricane tracks layer visibility"""
-    if checked and tracks_data:
-        return tracks_data, True
-    return {"type": "FeatureCollection", "features": []}, False
+def toggle_tracks_layer(checked, selected_track, tracks_data):
+    """Toggle hurricane tracks layer visibility with optional specific track filtering"""
+    if not checked or not tracks_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # If specific track is selected, filter to show only that track
+    if selected_track and 'features' in tracks_data:
+        filtered_tracks = {"type": "FeatureCollection", "features": []}
+        for feature in tracks_data['features']:
+            if feature.get('properties', {}).get('ensemble_member') == int(selected_track):
+                filtered_tracks['features'].append(feature)
+        return filtered_tracks, True
+    
+    # Otherwise show all tracks
+    return tracks_data, True
 
 @callback(
     Output("envelopes-json-test", "data"),
     Output("envelopes-json-test", "zoomToBounds"),
-    [Input("hurricane-envelopes-toggle", "checked")],
-    State("envelope-data-store", "data"),
-    State("wind-threshold-select", "value"),
+    [Input("hurricane-envelopes-toggle", "checked"),
+     Input("specific-track-select", "value")],
+    [State("envelope-data-store", "data"),
+     State("wind-threshold-select", "value"),
+     State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value")],
     prevent_initial_call=False
 )
-def toggle_envelopes_layer(checked, envelope_data, wind_threshold):
-    """Toggle hurricane envelopes layer visibility"""
-    if not checked or not envelope_data or not envelope_data.get('data'):
+def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshold, country, storm, forecast_date, forecast_time):
+    """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
+    
+    if not checked:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # If specific track is selected, create specific track envelope
+    if selected_track:
+        try:
+            # Load specific track data
+            date_str = forecast_date.replace('-', '')
+            time_str = forecast_time.replace(':', '')
+            forecast_datetime_str = f"{date_str}{time_str}00"
+            tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+            
+            if os.path.exists(tracks_filepath):
+                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                
+                if not specific_track_data.empty:
+                    # Create specific track envelope
+                    specific_envelope = {"type": "FeatureCollection", "features": []}
+                    for _, row in specific_track_data.iterrows():
+                        # Convert geometry to proper GeoJSON format
+                        if isinstance(row['geometry'], str):
+                            if row['geometry'].startswith('{'):
+                                geometry = json.loads(row['geometry'])
+                            else:
+                                # WKT format - convert to GeoJSON
+                                geom_obj = wkt.loads(row['geometry'])
+                                geometry = geom_obj.__geo_interface__
+                        else:
+                            # Already a Shapely geometry object - convert to GeoJSON
+                            geometry = row['geometry'].__geo_interface__
+                        
+                        feature = {
+                            "type": "Feature",
+                            "geometry": geometry,
+                            "properties": {
+                                "zone_id": int(row['zone_id']),
+                                "wind_threshold": int(row['wind_threshold']),
+                                "severity_population": float(row['severity_population']),
+                                "severity_schools": int(row['severity_schools']),
+                                "severity_hcs": int(row['severity_hcs']),
+                                "severity_built_surface_m2": float(row['severity_built_surface_m2'])
+                            }
+                        }
+                        specific_envelope['features'].append(feature)
+                    return specific_envelope, True
+        except Exception as e:
+            print(f"Error creating specific track envelope: {e}")
+    
+    # Default probabilistic envelope behavior
+    if not envelope_data or not envelope_data.get('data'):
         return {"type": "FeatureCollection", "features": []}, False
     
     try:
@@ -1437,7 +1641,6 @@ def toggle_envelopes_layer(checked, envelope_data, wind_threshold):
         # Convert to GeoDataFrame
         if df['geometry'].iloc[0].startswith('{'):
             from shapely.geometry import shape
-            import json
             geometries = []
             for geom_str in df['geometry']:
                 geom_dict = json.loads(geom_str)
@@ -1898,7 +2101,68 @@ def toggle_rwi_tiles_layer(checked, tiles_data):
         print(f"Error styling RWI tiles: {e}")
         return tiles_data, True
 
+# Callback to update info text when specific track is selected
+@callback(
+    Output("specific-track-info", "children"),
+    [Input("specific-track-select", "value")],
+    [State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value"),
+     State("wind-threshold-select", "value")],
+    prevent_initial_call=True
+)
+def update_specific_track_info(selected_track, country, storm, forecast_date, forecast_time, wind_threshold):
+    """Update info text with specific track impact numbers"""
+    
+    if not selected_track:
+        return "Load layers first, then select a specific track to see exact impact numbers"
+    
+    try:
+        # Load specific track data
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+        
+        if not os.path.exists(tracks_filepath):
+            return "Track data not found"
+        
+        # Load track data
+        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        
+        # Filter for specific track
+        specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+        
+        if specific_track_data.empty:
+            return f"No data found for track {selected_track}"
+        
+        # Calculate impact numbers for info text
+        total_population = specific_track_data['severity_population'].sum()
+        total_schools = specific_track_data['severity_schools'].sum()
+        total_health = specific_track_data['severity_hcs'].sum()
+        
+        return f"Track {selected_track}: {total_population:,.0f} people, {total_schools:,.0f} schools, {total_health:,.0f} health centers affected"
+        
+    except Exception as e:
+        print(f"Error loading specific track info: {e}")
+        return f"Error: {str(e)}"
 
+# Callback to handle "Show Specific Track" button click
+@callback(
+    Output("specific-track-select", "disabled"),
+    [Input("show-specific-track-btn", "n_clicks")],
+    [State("specific-track-select", "disabled")],
+    prevent_initial_call=True
+)
+def toggle_specific_track_mode(n_clicks, currently_disabled):
+    """Enable/disable specific track selector when button is clicked"""
+    if n_clicks and n_clicks > 0:
+        return False  # Enable the dropdown
+    return currently_disabled
+
+# Callback to update forecast dates based on country selection
 
 
 
