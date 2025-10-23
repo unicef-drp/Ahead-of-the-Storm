@@ -53,7 +53,7 @@ style_schools_health = assign("""
 function(feature, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 5;
+    const radius = props._radius || 8;
     const opacity = props._opacity || 0.8;
     const weight = props._weight || 1;
     const fillOpacity = props._fillOpacity || 0.7;
@@ -74,7 +74,7 @@ point_to_layer_schools_health = assign("""
 function(feature, latlng, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 5;
+    const radius = props._radius || 8;
     const opacity = props._opacity || 0.8;
     const weight = props._weight || 1;
     const fillOpacity = props._fillOpacity || 0.7;
@@ -790,7 +790,8 @@ def make_single_page_layout():
      Input("scenario-select", "value"),
      Input("country-select", "value"),
      Input("forecast-date", "value"),
-     Input("forecast-time", "value")]
+     Input("forecast-time", "value")],
+    prevent_initial_call=True
 )
 def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_date, forecast_time):
     """Update impact metrics based on storm, wind threshold, scenario, and country selection"""
@@ -807,40 +808,48 @@ def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_dat
         filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_15.parquet"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
+        print(f"Impact metrics: Looking for file {filename}")
+        
         if os.path.exists(filepath):
-            gdf = read_dataset(giga_store, filepath)
-            
-            # Calculate scenario-based metrics from the tiles data
-            if scenario == "low":
-                # Use lowest impact values (lowest wind threshold)
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            elif scenario == "high":
-                # Use highest impact values (highest wind threshold)
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            else:  # probabilistic
-                # Use current wind threshold values
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            
-            return (
-                f"{children_affected:,.0f}",
-                f"{schools_count:,.0f}",
-                f"{health_count:,.0f}",
-                f"{population_count:,.0f}"
-            )
+            try:
+                gdf = read_dataset(giga_store, filepath)
+                
+                # Calculate scenario-based metrics from the tiles data
+                if scenario == "low":
+                    # Use lowest impact values (lowest wind threshold)
+                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
+                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
+                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
+                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
+                elif scenario == "high":
+                    # Use highest impact values (highest wind threshold)
+                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
+                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
+                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
+                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
+                else:  # probabilistic
+                    # Use current wind threshold values
+                    children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
+                    schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
+                    health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
+                    population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
+                
+                print(f"Impact metrics: Successfully loaded {len(gdf)} features")
+                return (
+                    f"{children_affected:,.0f}",
+                    f"{schools_count:,.0f}",
+                    f"{health_count:,.0f}",
+                    f"{population_count:,.0f}"
+                )
+            except Exception as e:
+                print(f"Impact metrics: Error reading file {filename}: {e}")
+                return "0", "0", "0", "0"
         else:
+            print(f"Impact metrics: File not found {filename}")
             return "0", "0", "0", "0"
             
     except Exception as e:
-        print(f"Error updating metrics: {e}")
+        print(f"Impact metrics: Error updating metrics: {e}")
         return "0", "0", "0", "0"
 
 # Function to get envelope data from Snowflake (matching the working envelopes.py)
@@ -966,9 +975,10 @@ def update_storm_options(country, forecast_date, forecast_time):
     [Input("storm-select", "value"),
      Input("forecast-date", "value"),
      Input("forecast-time", "value")],
+    [State("wind-threshold-select", "value")],  # Add current value as State
     prevent_initial_call='initial_duplicate'
 )
-def update_wind_threshold_options(storm, date, time):
+def update_wind_threshold_options(storm, date, time, current_threshold):
     """Update wind threshold dropdown based on selected storm, date, and time - set most recent available as default"""
     if not all([storm, date, time]):
         # Return all thresholds if no storm selected
@@ -1011,16 +1021,23 @@ def update_wind_threshold_options(storm, date, time):
                 "disabled": not is_available
             })
         
-        # Set default to most recent available threshold (highest available)
+        # Set default threshold - preserve user selection if still available, otherwise default to 50kt
         default_threshold = None
         if available_thresholds:
-            # Sort available thresholds numerically and take the highest
-            sorted_thresholds = sorted([int(t) for t in available_thresholds], reverse=True)
-            default_threshold = str(sorted_thresholds[0])
+            # If user's current selection is still available, keep it
+            if current_threshold and current_threshold in available_thresholds:
+                default_threshold = current_threshold
+            else:
+                # Otherwise, prefer 50kt if available, otherwise use the highest available
+                if "50" in available_thresholds:
+                    default_threshold = "50"
+                else:
+                    sorted_thresholds = sorted([int(t) for t in available_thresholds], reverse=True)
+                    default_threshold = str(sorted_thresholds[0])
         else:
             default_threshold = "50"  # Fallback default
         
-        print(f"Wind thresholds for {storm} at {forecast_datetime}: available={available_thresholds}, default (highest)={default_threshold}")
+        print(f"Wind thresholds for {storm} at {forecast_datetime}: available={available_thresholds}, current={current_threshold}, default={default_threshold}")
         return options, default_threshold
         
     except Exception as e:
@@ -1103,7 +1120,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     print(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, "Status: Missing selections", True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
     
     try:
         # Initialize empty data stores
@@ -1178,16 +1195,69 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             print(f"Error loading envelopes: {e}")
         
         # Load Impact Data (if files exist)
+        # Check if data files exist for the selected time
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        
+        print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
+        
+        # Check for data file availability
+        data_files_found = []
+        missing_files = []
+        
+        # Check schools file
+        schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+        if os.path.exists(schools_path):
+            data_files_found.append("schools")
+        else:
+            missing_files.append("schools")
+        
+        # Check health centers file
+        health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
+        if os.path.exists(health_path):
+            data_files_found.append("health centers")
+        else:
+            missing_files.append("health centers")
+        
+        # Check tiles file
+        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
+        tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
+        if os.path.exists(tiles_path):
+            data_files_found.append("infrastructure tiles")
+        else:
+            missing_files.append("infrastructure tiles")
+        
+        # Generate status alert based on data availability
+        if not data_files_found:
+            status_alert = dmc.Alert(
+                f"No data files found for {forecast_time}. Please select a different time or generate data for this forecast time.",
+                title="No Data Available",
+                color="orange",
+                variant="light"
+            )
+        elif missing_files:
+            status_alert = dmc.Alert(
+                f"Partial data loaded. Missing: {', '.join(missing_files)}. Available: {', '.join(data_files_found)}.",
+                title="Partial Data Loaded",
+                color="yellow",
+                variant="light"
+            )
+        else:
+            status_alert = dmc.Alert(
+                "All layers loaded successfully",
+                title="Success",
+                color="green",
+                variant="light"
+            )
+        
+        print(f"Data availability: Found={data_files_found}, Missing={missing_files}")
+        
         try:
-            date_str = forecast_date.replace('-', '')
-            time_str = forecast_time.replace(':', '')
-            forecast_datetime_str = f"{date_str}{time_str}00"
-            
-            print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
-            
+            # Load available data files
             # Schools
-            schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-            schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
             if os.path.exists(schools_path):
                 try:
                     gdf_schools = read_dataset(giga_store, schools_path)
@@ -1197,8 +1267,6 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     schools_data = {}
             
             # Health Centers
-            health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-            health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
             if os.path.exists(health_path):
                 try:
                     gdf_health = read_dataset(giga_store, health_path)
@@ -1208,8 +1276,6 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     health_data = {}
             
             # Tiles
-            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
-            tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
             if os.path.exists(tiles_path):
                 try:
                     gdf_tiles = read_dataset(giga_store, tiles_path)
@@ -1220,6 +1286,12 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 
         except Exception as e:
             print(f"Error loading impact data: {e}")
+            status_alert = dmc.Alert(
+                f"Error loading layers: {str(e)}",
+                title="Error",
+                color="red",
+                variant="light"
+            )
         
         # Enable all toggles - each tile layer gets its own independent copy of the data
         import copy
@@ -1240,12 +1312,12 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
-                True, "Status: All layers loaded successfully", 
+                True, status_alert, 
                 False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, f"Status: Error loading layers: {str(e)}", True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
 @callback(
@@ -1325,24 +1397,31 @@ def toggle_schools_layer(checked, schools_data):
                     prob = feature['properties']['probability']
                     
                     # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
+                    # Radius scale: larger radius for higher impact probability
                     if prob == 0 or prob is None:
                         color = '#808080'  # Grey for no impact
+                        radius = 10  # Larger radius for visibility
                     elif prob <= 0.15:
                         color = '#FFFF00'  # Yellow for very low impact
+                        radius = 25  # Slightly larger for low impact
                     elif prob <= 0.30:
                         color = '#FFD700'  # Gold for low impact
+                        radius = 30  # Medium radius for low-medium impact
                     elif prob <= 0.45:
                         color = '#FFA500'  # Orange for low-medium impact
+                        radius = 35  # Larger radius for medium impact
                     elif prob <= 0.60:
                         color = '#FF8C00'  # Dark orange for medium impact
+                        radius = 40  # Even larger for medium-high impact
                     elif prob <= 0.75:
                         color = '#FF4500'  # Orange-red for high impact
+                        radius = 45  # Large radius for high impact
                     elif prob <= 0.90:
                         color = '#DC143C'  # Crimson for very high impact
+                        radius = 50  # Very large radius for very high impact
                     else:
                         color = '#8B0000'  # Dark red for extreme impact
-                    
-                    radius = 5  # Fixed radius for all markers
+                        radius = 55  # Maximum radius for extreme impact
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -1377,24 +1456,31 @@ def toggle_health_layer(checked, health_data):
                     prob = feature['properties']['probability']
                     
                     # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
+                    # Radius scale: larger radius for higher impact probability
                     if prob == 0 or prob is None:
                         color = '#808080'  # Grey for no impact
+                        radius = 10  # Larger radius for visibility
                     elif prob <= 0.15:
                         color = '#FFFF00'  # Yellow for very low impact
+                        radius = 25  # Slightly larger for low impact
                     elif prob <= 0.30:
                         color = '#FFD700'  # Gold for low impact
+                        radius = 30  # Medium radius for low-medium impact
                     elif prob <= 0.45:
                         color = '#FFA500'  # Orange for low-medium impact
+                        radius = 35  # Larger radius for medium impact
                     elif prob <= 0.60:
                         color = '#FF8C00'  # Dark orange for medium impact
+                        radius = 40  # Even larger for medium-high impact
                     elif prob <= 0.75:
                         color = '#FF4500'  # Orange-red for high impact
+                        radius = 45  # Large radius for high impact
                     elif prob <= 0.90:
                         color = '#DC143C'  # Crimson for very high impact
+                        radius = 50  # Very large radius for very high impact
                     else:
                         color = '#8B0000'  # Dark red for extreme impact
-                    
-                    radius = 5  # Fixed radius for all markers
+                        radius = 55  # Maximum radius for extreme impact
                     
                     # Add styling properties
                     feature['properties']['_color'] = color

@@ -38,7 +38,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         function2: function(feature, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
-                const radius = props._radius || 5;
+                const radius = props._radius || 8;
                 const opacity = props._opacity || 0.8;
                 const weight = props._weight || 1;
                 const fillOpacity = props._fillOpacity || 0.7;
@@ -57,7 +57,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         function3: function(feature, latlng, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
-                const radius = props._radius || 5;
+                const radius = props._radius || 8;
                 const opacity = props._opacity || 0.8;
                 const weight = props._weight || 1;
                 const fillOpacity = props._fillOpacity || 0.7;
