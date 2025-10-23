@@ -375,18 +375,17 @@ def make_single_page_layout():
                                         id="country-select",
                                         placeholder="Select country...",
                                         data=[
-                                            {"value": "VNM", "label": "Vietnam"},
-                                            {"value": "DOM", "label": "Dominican Republic"},
-                                            {"value": "BLZ", "label": "Belize"},
+                                            {"value": "AIA", "label": "Anguilla"},
                                             {"value": "ATG", "label": "Antigua and Barbuda"},
+                                            {"value": "BLZ", "label": "Belize"},
+                                            {"value": "VGB", "label": "British Virgin Islands"},
                                             {"value": "DMA", "label": "Dominica"},
+                                            {"value": "DOM", "label": "Dominican Republic"},
                                             {"value": "GRD", "label": "Grenada"},
                                             {"value": "MSR", "label": "Montserrat"},
                                             {"value": "KNA", "label": "Saint Kitts and Nevis"},
                                             {"value": "LCA", "label": "Saint Lucia"},
-                                            {"value": "VCT", "label": "Saint Vincent and the Grenadines"},
-                                            {"value": "AIA", "label": "Anguilla"},
-                                            {"value": "VGB", "label": "British Virgin Islands"}
+                                            {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
                                         ],
                                         value="NIC",
                                         mb="xs"
