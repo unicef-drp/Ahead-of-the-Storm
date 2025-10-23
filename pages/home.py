@@ -902,7 +902,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         low_member_badge = "N/A"
         high_member_badge = "N/A"
         
-        if os.path.exists(filepath):
+        if giga_store.file_exists(filepath):
             try:
                 gdf = read_dataset(giga_store, filepath)
                 
@@ -920,7 +920,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                 tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
-                if os.path.exists(tracks_filepath):
+                if giga_store.file_exists(tracks_filepath):
                     gdf_tracks = read_dataset(giga_store, tracks_filepath)
                     
                     if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
@@ -939,7 +939,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         # Check if health center data is available for this time slot
                         hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                         hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
-                        hc_data_available = os.path.exists(hc_filepath)
+                        hc_data_available = giga_store.file_exists(hc_filepath)
                         
                         # LOW scenario
                         low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
@@ -1015,7 +1015,7 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if os.path.exists(tracks_filepath):
+        if giga_store.file_exists(tracks_filepath):
             gdf_tracks = read_dataset(giga_store, tracks_filepath)
             
             if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
@@ -1420,7 +1420,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Check schools file
         schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
-        if os.path.exists(schools_path):
+        if giga_store.file_exists(schools_path):
             data_files_found.append("schools")
         else:
             missing_files.append("schools")
@@ -1428,7 +1428,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Check health centers file
         health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
-        if os.path.exists(health_path):
+        if giga_store.file_exists(health_path):
             data_files_found.append("health centers")
         else:
             missing_files.append("health centers")
@@ -1436,7 +1436,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Check tiles file
         tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
         tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
-        if os.path.exists(tiles_path):
+        if giga_store.file_exists(tiles_path):
             data_files_found.append("infrastructure tiles")
         else:
             missing_files.append("infrastructure tiles")
@@ -1591,7 +1591,7 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshol
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
-            if os.path.exists(tracks_filepath):
+            if giga_store.file_exists(tracks_filepath):
                 gdf_tracks = read_dataset(giga_store, tracks_filepath)
                 specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
                 
@@ -2138,7 +2138,7 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if not os.path.exists(tracks_filepath):
+        if not giga_store.file_exists(tracks_filepath):
             return "Track data not found"
         
         # Load track data
