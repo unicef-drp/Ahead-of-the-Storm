@@ -1085,6 +1085,22 @@ def make_single_page_appshell():
 # Use the single-page appshell
 layout = make_single_page_appshell()
 
+# Show loader immediately when button is clicked
+@callback(
+    Output('load-status', 'children'),
+    [Input('load-layers-btn', 'n_clicks')],
+    prevent_initial_call=True
+)
+def show_loading_indicator(n_clicks):
+    """Show loading indicator immediately when Load Layers button is clicked"""
+    if n_clicks and n_clicks > 0:
+        return dmc.Loader(
+            color="blue",
+            size="md", 
+            type="dots"
+        )
+    return dmc.Text("Status: Not loaded", size="xs", c="dimmed", mb="md")
+
 # Load all layers callback
 @callback(
     [Output('tracks-data-store', 'data'),
@@ -1097,7 +1113,7 @@ layout = make_single_page_appshell()
      Output('settlement-tiles-data-store', 'data'),
      Output('rwi-tiles-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
-     Output('load-status', 'children'),
+     Output('load-status', 'children', allow_duplicate=True),
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
      Output('schools-layer', 'disabled'),
