@@ -123,7 +123,7 @@ def make_header(active_tab="tab-home"):
                                     "backgroundColor": "#0058AB",  # Darker blue on hover
                                     "color": "white",
                                 },
-                                "&[data-active]": {
+                                "&[dataActive]": {
                                     "backgroundColor": "#0058AB",  # Active state blue
                                     "color": "white",
                                 }

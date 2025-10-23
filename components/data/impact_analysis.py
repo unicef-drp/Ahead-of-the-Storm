@@ -30,6 +30,11 @@ from pyproj import CRS
 from shapely import union_all
 from shapely import wkt as shapely_wkt
 
+# Add the project root to Python path so we can import components
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # Import centralized configuration
 from .config import config
 
@@ -59,10 +64,10 @@ default_countries = ['NIC']
 #####################
 
 ##### Environment Variables #####
-RESULTS_DIR = config.RESULTS_DIR
-BBOX_FILE = config.BBOX_FILE
-VIEWS_DIR = config.VIEWS_DIR
-ROOT_DATA_DIR = config.ROOT_DATA_DIR
+RESULTS_DIR = app_config.RESULTS_DIR
+BBOX_FILE = app_config.BBOX_FILE
+VIEWS_DIR = app_config.VIEWS_DIR
+ROOT_DATA_DIR = app_config.ROOT_DATA_DIR
 #################################
 
 # Initialize data store using centralized utility

@@ -1,13 +1,15 @@
 import numpy as np
 import pandas as pd
 import dash
-from dash import Output, Input, State, callback, dcc, html
+from dash import Output, Input, State, callback, dcc, html, callback_context
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import dash_leaflet as dl
 import geopandas as gpd
 import os
 import warnings
+import json
+from shapely import wkt
 
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -29,12 +31,31 @@ function(feature, context) {
 }
 """)
 
+# JavaScript styling for tiles with value-based coloring
+style_tiles = assign("""
+function(feature, context) {
+    const props = feature.properties || {};
+    const color = props._color || '#808080';
+    const fillOpacity = props._fillOpacity || 0.7;
+    const weight = props._weight || 1;
+    const opacity = props._opacity || 0.8;
+    
+    return {
+        color: color,
+        weight: weight,
+        opacity: opacity,
+        fillColor: color,
+        fillOpacity: fillOpacity
+    };
+}
+""")
+
 # JavaScript styling for schools and health centers with probability-based coloring
 style_schools_health = assign("""
 function(feature, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 5;
+    const radius = props._radius || 8;
     const opacity = props._opacity || 0.8;
     const weight = props._weight || 1;
     const fillOpacity = props._fillOpacity || 0.7;
@@ -55,7 +76,7 @@ point_to_layer_schools_health = assign("""
 function(feature, latlng, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 5;
+    const radius = props._radius || 8;
     const opacity = props._opacity || 0.8;
     const weight = props._weight || 1;
     const fillOpacity = props._fillOpacity || 0.7;
@@ -356,9 +377,18 @@ def make_single_page_layout():
                                         id="country-select",
                                         placeholder="Select country...",
                                         data=[
-                                            {"value": "VNM", "label": "Vietnam"}, 
+                                            {"value": "AIA", "label": "Anguilla"},
+                                            {"value": "ATG", "label": "Antigua and Barbuda"},
+                                            {"value": "BLZ", "label": "Belize"},
+                                            {"value": "VGB", "label": "British Virgin Islands"},
+                                            {"value": "DMA", "label": "Dominica"},
                                             {"value": "DOM", "label": "Dominican Republic"},
-                                            {"value": "NIC", "label": "Nicaragua"}
+                                            {"value": "GRD", "label": "Grenada"},
+                                            {"value": "MSR", "label": "Montserrat"},
+                                            {"value": "NIC", "label": "Nicaragua"},
+                                            {"value": "KNA", "label": "Saint Kitts and Nevis"},
+                                            {"value": "LCA", "label": "Saint Lucia"},
+                                            {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
                                         ],
                                         value="NIC",
                                         mb="xs"
@@ -382,21 +412,21 @@ def make_single_page_layout():
                                         id="forecast-date",
                                         placeholder="Select forecast date...",
                                         data=[],  # Will be populated dynamically
-                                        value=None,
+                                        value="2025-10-22",  # Default to most recent date
                                         mb="xs"
                                     ),
                                     dmc.Select(
                                         id="forecast-time",
                                         placeholder="Select forecast time...",
                                         data=[],  # Will be populated based on selected date
-                                        value=None,
+                                        value="18:00",  # Default to most recent time
                                         mb="xs"
                                     ),
                                     dmc.Select(
                                         id="storm-select",
                                         placeholder="Select hurricane...",
                                         data=[],  # Will be populated based on date and time
-                                        value=None,
+                                        value="FENGSHEN",  # Default to most recent storm
                                         mb="xs"
                                     ),
                                     
@@ -441,7 +471,8 @@ def make_single_page_layout():
                                         variant="filled",
                                         color="#1cabe2",
                                         fullWidth=True,
-                                        mb="md"
+                                        mb="md",
+                                        loaderProps={"type": "dots"}
                                     ),
                                     
                                     dmc.Text("Status: Not loaded", id="load-status", size="xs", c="dimmed", mb="md")
@@ -467,10 +498,117 @@ def make_single_page_layout():
                                         dmc.Checkbox(id="hurricane-tracks-toggle", label="Hurricane Tracks", checked=False, mb="xs", disabled=True),
                                         dmc.Checkbox(id="hurricane-envelopes-toggle", label="Hurricane Envelopes", checked=False, mb="xs", disabled=True),
                                         
-                                        dmc.Text("Impact Data", size="sm", fw=600, mb="xs", mt="md"),
+                                        dmc.Text("Infrastructure Impact", size="sm", fw=600, mb="xs", mt="md"),
                                         dmc.Checkbox(id="schools-layer", label="Schools Impact", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                                        ], id="schools-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
                                         dmc.Checkbox(id="health-layer", label="Health Centers Impact", checked=False, mb="xs", disabled=True),
-                                        dmc.Checkbox(id="tiles-layer", label="Population Tiles", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                                        ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
+                                        dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
+                                        dmc.Checkbox(id="population-tiles-layer", label="Population Density", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #87ceeb, #4682b4, #1e90ff, #0000cd, #000080, #191970)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
+                                        ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
+                                        dmc.Checkbox(id="school-age-tiles-layer", label="School-Age Population", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #90ee90, #32cd32, #228b22, #006400, #2e8b57, #1c4a1c)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("750+", size="xs", c="dimmed")]),
+                                        ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
+                                        dmc.Checkbox(id="built-surface-tiles-layer", label="Built Surface Area", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #d3d3d3, #a9a9a9, #808080, #8b4513, #654321, #2f1b14)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("50k+", size="xs", c="dimmed")]),
+                                        ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
+                                        dmc.Checkbox(id="settlement-tiles-layer", label="Settlement Classification", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=3, children=[
+                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                                                dmc.Text("No Data", size="xs", c="dimmed", ta="center")
+                                            ]),
+                                            dmc.GridCol(span=3, children=[
+                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#dda0dd", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                                                dmc.Text("Rural", size="xs", c="dimmed", ta="center")
+                                            ]),
+                                            dmc.GridCol(span=3, children=[
+                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#9370db", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                                                dmc.Text("Urban Clusters", size="xs", c="dimmed", ta="center")
+                                            ]),
+                                            dmc.GridCol(span=3, children=[
+                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#4b0082", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                                                dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
+                                            ]),
+                                        ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        
+                                        dmc.Checkbox(id="rwi-tiles-layer", label="Relative Wealth Index", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("-1", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #dc143c, #ff4500, #ffd700, #32cd32, #00ff00)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("+1", size="xs", c="dimmed")]),
+                                        ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Text("Note: Load layers first to enable toggles", size="xs", c="dimmed", mb="md")
                                     ])
@@ -496,7 +634,11 @@ def make_single_page_layout():
                     dcc.Store(id="envelope-data-store", data={}),
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
-                    dcc.Store(id="tiles-data-store", data={}),
+                    dcc.Store(id="population-tiles-data-store", data={}),
+                    dcc.Store(id="school-age-tiles-data-store", data={}),
+                    dcc.Store(id="built-surface-tiles-data-store", data={}),
+                    dcc.Store(id="settlement-tiles-data-store", data={}),
+                    dcc.Store(id="rwi-tiles-data-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
@@ -535,11 +677,40 @@ def make_single_page_layout():
                                 style=style_schools_health,
                                 pointToLayer=point_to_layer_schools_health
                             ),
-                            # Population Tiles Layer
+                            # Population Density Tiles Layer
                             dl.GeoJSON(
-                                id="tiles-json-test",
+                                id="population-tiles-json",
                                 data={},
-                                zoomToBounds=True
+                                zoomToBounds=True,
+                                style=style_tiles
+                            ),
+                            # School-Age Population Tiles Layer
+                            dl.GeoJSON(
+                                id="school-age-tiles-json",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_tiles
+                            ),
+                            # Built Surface Area Tiles Layer
+                            dl.GeoJSON(
+                                id="built-surface-tiles-json",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_tiles
+                            ),
+                            # Settlement Classification Tiles Layer
+                            dl.GeoJSON(
+                                id="settlement-tiles-json",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_tiles
+                            ),
+                            # Relative Wealth Index Tiles Layer
+                            dl.GeoJSON(
+                                id="rwi-tiles-json",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_tiles
                             ),
                             dl.FullScreenControl(),
                             dl.LocateControl(locateOptions={"enableHighAccuracy": True}),
@@ -563,53 +734,112 @@ def make_single_page_layout():
             # Right Panel - Impact Metrics
             dmc.GridCol(
                 [
+                    # Impact Summary Section
                     dmc.Paper(
                         [
-                            dmc.Text("Impact Summary", size="lg", fw=700, mb="md"),
+                            dmc.Group([
+                                dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                            ], justify="flex-start", gap="sm", mb="sm"),
                             
-                            # Scenario Selection
+                            dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
+                            
+                            # Impact Summary Table
+                            dmc.Table(
+                                [
+                                    dmc.TableThead([
+                                        dmc.TableTr([
+                                            dmc.TableTh("Metric", style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                            dmc.TableTh([
+                                                dmc.Text("Low", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
+                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
+                                            dmc.TableTh("Probabilistic", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
+                                            dmc.TableTh([
+                                                dmc.Text("High", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
+                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
+                                        ])
+                                    ]),
+                                    dmc.TableTbody([
+                                        dmc.TableTr([
+                                            dmc.TableTd("Children Affected", style={"fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Population at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ])
+                                    ])
+                                ],
+                                striped=True,
+                                highlightOnHover=True,
+                                withTableBorder=True,
+                                withColumnBorders=True
+                            )
+                        ],
+                        p="md",
+                        shadow="xs",
+                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+                    ),
+                    
+                    # Specific Track View Section
+                    dmc.Paper(
+                        [
+                            dmc.Group([
+                                dmc.Text("SPECIFIC TRACK VIEW", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                            ], justify="flex-start", gap="sm", mb="sm"),
+                            
+                            dmc.Text("Visualize individual hurricane track scenarios", size="xs", c="dimmed", mb="md"),
+                            
+                            # Specific Track Controls
                             dmc.Stack([
-                                dmc.Text("Scenario", size="sm", fw=500),
-                                dmc.SegmentedControl(
-                                    id="scenario-select",
-                                    data=[
-                                        {"value": "low", "label": "Low"},
-                                        {"value": "probabilistic", "label": "Probabilistic"},
-                                        {"value": "high", "label": "High"}
-                                    ],
-                                    value="probabilistic",
-                                    mb="md"
+                                dmc.Button(
+                                    "Show Specific Track",
+                                    id="show-specific-track-btn",
+                                    variant="outline",
+                                    size="sm",
+                                    disabled=True,
+                                    mb="md",
+                                    leftSection=DashIconify(icon="mdi:map-marker-path", width=16)
+                                ),
+                                
+                                dmc.Select(
+                                    id="specific-track-select",
+                                    label="Select Track Scenario",
+                                    placeholder="Choose ensemble member...",
+                                    data=[],
+                                    mb="md",
+                                    disabled=True,
+                                    style={"display": "none"}
+                                ),
+                                
+                                dmc.Text(
+                                    "Load layers first, then select a specific track to see exact impact numbers",
+                                    size="xs",
+                                    c="dimmed",
+                                    id="specific-track-info"
                                 )
-                            ]),
-                            
-                            # Main Impact Number
-                            dmc.Center(
-                                dmc.Stack([
-                                    dmc.Text("Children Affected", size="sm", ta="center"),
-                                    dmc.Text("0", id="children-affected", size="xl", fw=700, ta="center", c="red")
-                                ]),
-                                mb="lg"
-                            ),
-                            
-                            # Critical Infrastructure
-                            dmc.Stack([
-                                dmc.Text("Critical Infrastructure", size="sm", fw=500, mb="sm"),
-                                dmc.Group([
-                                    dmc.Text("Schools:", size="sm"),
-                                    dmc.Text("0", id="schools-count", size="sm", fw=500)
-                                ], justify="space-between"),
-                                dmc.Group([
-                                    dmc.Text("Health Centers:", size="sm"),
-                                    dmc.Text("0", id="health-count", size="sm", fw=500)
-                                ], justify="space-between"),
-                                dmc.Group([
-                                    dmc.Text("Population at Risk:", size="sm"),
-                                    dmc.Text("0", id="population-count", size="sm", fw=500)
-                                ], justify="space-between"),
                             ])
                         ],
                         p="md",
-                        shadow="sm"
+                        shadow="xs",
+                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
                     )
                 ],
                 span=3,
@@ -622,25 +852,38 @@ def make_single_page_layout():
 
 # Callbacks for interactive functionality
 @callback(
-    [Output("children-affected", "children"),
-     Output("schools-count", "children"),
-     Output("health-count", "children"),
-     Output("population-count", "children")],
+    [Output("children-affected-low", "children"),
+     Output("children-affected-probabilistic", "children"),
+     Output("children-affected-high", "children"),
+     Output("schools-count-low", "children"),
+     Output("schools-count-probabilistic", "children"),
+     Output("schools-count-high", "children"),
+     Output("health-count-low", "children"),
+     Output("health-count-probabilistic", "children"),
+     Output("health-count-high", "children"),
+     Output("population-count-low", "children"),
+     Output("population-count-probabilistic", "children"),
+     Output("population-count-high", "children"),
+     Output("low-impact-badge", "children"),
+     Output("high-impact-badge", "children")],
     [Input("storm-select", "value"),
      Input("wind-threshold-select", "value"),
-     Input("scenario-select", "value"),
      Input("country-select", "value"),
      Input("forecast-date", "value"),
-     Input("forecast-time", "value")]
+     Input("forecast-time", "value")],
+    prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_date, forecast_time):
-    """Update impact metrics based on storm, wind threshold, scenario, and country selection"""
+def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecast_time):
+    """Update impact metrics for all three scenarios based on storm, wind threshold, and country selection"""
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        return "0", "0", "0", "0"
+        # Return all scenarios with default values
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+    
+    # Calculate probabilistic impact metrics
     
     try:
-        # Construct the filename for the tiles impact view (like tiles layer callback)
+        # Construct the filename for the tiles impact view
         date_str = forecast_date.replace('-', '')  # Convert "2025-10-15" to "20251015"
         time_str = forecast_time.replace(':', '')  # Convert "00:00" to "0000"
         forecast_datetime = f"{date_str}{time_str}00"  # Add seconds: "20251015000000"
@@ -648,41 +891,166 @@ def update_impact_metrics(storm, wind_threshold, scenario, country, forecast_dat
         filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_15.parquet"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
+        print(f"Impact metrics: Looking for file {filename}")
+        
+        # Initialize all scenario results
+        low_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        probabilistic_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        high_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        
+        # Initialize member badges
+        low_member_badge = "N/A"
+        high_member_badge = "N/A"
+        
         if os.path.exists(filepath):
-            gdf = read_dataset(giga_store, filepath)
-            
-            # Calculate scenario-based metrics from the tiles data
-            if scenario == "low":
-                # Use lowest impact values (lowest wind threshold)
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            elif scenario == "high":
-                # Use highest impact values (highest wind threshold)
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            else:  # probabilistic
-                # Use current wind threshold values
-                children_affected = gdf['school_age_population'].sum() if 'school_age_population' in gdf.columns else 0
-                schools_count = gdf['num_schools'].sum() if 'num_schools' in gdf.columns else 0
-                health_count = gdf['num_hcs'].sum() if 'num_hcs' in gdf.columns else 0
-                population_count = gdf['population'].sum() if 'population' in gdf.columns else 0
-            
-            return (
-                f"{children_affected:,.0f}",
-                f"{schools_count:,.0f}",
-                f"{health_count:,.0f}",
-                f"{population_count:,.0f}"
-            )
+            try:
+                gdf = read_dataset(giga_store, filepath)
+                
+                # Calculate PROBABILISTIC scenario (from tiles data)
+                if 'school_age_population' in gdf.columns and not gdf['school_age_population'].isna().all():
+                    probabilistic_results["children"] = (gdf['probability'] * gdf['school_age_population']).sum()
+                else:
+                    probabilistic_results["children"] = "N/A"
+                
+                probabilistic_results["schools"] = (gdf['probability'] * gdf['num_schools']).sum() if 'num_schools' in gdf.columns else "N/A"
+                probabilistic_results["health"] = (gdf['probability'] * gdf['num_hcs']).sum() if 'num_hcs' in gdf.columns else "N/A"
+                probabilistic_results["population"] = (gdf['probability'] * gdf['population']).sum() if 'population' in gdf.columns else "N/A"
+                
+                # Calculate LOW and HIGH scenarios (from track data)
+                tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                
+                if os.path.exists(tracks_filepath):
+                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    
+                    if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                        # Find ensemble members with lowest and highest impact
+                        member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
+                        low_impact_member = member_totals.idxmin()
+                        high_impact_member = member_totals.idxmax()
+                        
+                        # Set member badge text
+                        low_member_badge = f"#{low_impact_member}"
+                        high_member_badge = f"#{high_impact_member}"
+                        
+                        low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == low_impact_member]
+                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
+                        
+                        # Check if health center data is available for this time slot
+                        hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                        hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
+                        hc_data_available = os.path.exists(hc_filepath)
+                        
+                        # LOW scenario
+                        low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
+                        low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
+                        low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
+                        
+                        # HIGH scenario
+                        high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
+                        high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
+                        high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
+                
+                print(f"Impact metrics: Successfully loaded {len(gdf)} features")
+                
+            except Exception as e:
+                print(f"Impact metrics: Error reading file {filename}: {e}")
         else:
-            return "0", "0", "0", "0"
+            print(f"Impact metrics: File not found {filename}")
+        
+        # Format results
+        def format_value(value):
+            return str(value) if isinstance(value, str) else f"{value:,.0f}"
+        
+        return (
+            # Children affected
+            format_value(low_results["children"]),
+            format_value(probabilistic_results["children"]),
+            format_value(high_results["children"]),
+            # Schools count
+            format_value(low_results["schools"]),
+            format_value(probabilistic_results["schools"]),
+            format_value(high_results["schools"]),
+            # Health count
+            format_value(low_results["health"]),
+            format_value(probabilistic_results["health"]),
+            format_value(high_results["health"]),
+            # Population count
+            format_value(low_results["population"]),
+            format_value(probabilistic_results["population"]),
+            format_value(high_results["population"]),
+            # Member badges
+            low_member_badge,
+            high_member_badge
+        )
             
     except Exception as e:
-        print(f"Error updating metrics: {e}")
-        return "0", "0", "0", "0"
+        print(f"Impact metrics: Error updating metrics: {e}")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+
+# Callback to populate specific track selector when layers are loaded
+@callback(
+    [Output("show-specific-track-btn", "disabled"),
+     Output("specific-track-select", "data"),
+     Output("specific-track-select", "style")],
+    [Input("layers-loaded-store", "data")],
+    [State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value"),
+     State("wind-threshold-select", "value")],
+    prevent_initial_call=True
+)
+def populate_specific_track_options(layers_loaded, country, storm, forecast_date, forecast_time, wind_threshold):
+    """Populate specific track selector with available ensemble members"""
+    
+    if not layers_loaded or not all([country, storm, forecast_date, forecast_time, wind_threshold]):
+        return True, [], {"display": "none"}
+    
+    try:
+        # Convert date and time to YYYYMMDDHHMMSS format
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+        
+        if os.path.exists(tracks_filepath):
+            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            
+            if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                # Get unique ensemble members
+                ensemble_members = sorted(gdf_tracks['zone_id'].unique())
+                
+                # Find low and high impact members
+                member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
+                low_impact_member = member_totals.idxmin()
+                high_impact_member = member_totals.idxmax()
+                
+                # Create options with member type labels and impact indicators
+                options = []
+                for member in ensemble_members:
+                    member_type = "Control" if member in [51, 52] else f"Ensemble {member}"
+                    
+                    # Add impact scenario indicators
+                    impact_indicator = ""
+                    if member == low_impact_member:
+                        impact_indicator = " (LOW IMPACT)"
+                    elif member == high_impact_member:
+                        impact_indicator = " (HIGH IMPACT)"
+                    
+                    options.append({
+                        "value": str(member),
+                        "label": f"{member_type} (ID: {member}){impact_indicator}"
+                    })
+                
+                return False, options, {"display": "block"}
+        
+        return True, [], {"display": "none"}
+        
+    except Exception as e:
+        print(f"Error loading specific track options: {e}")
+        return True, [], {"display": "none"}
 
 # Function to get envelope data from Snowflake (matching the working envelopes.py)
 # Callback to populate available forecast dates
@@ -807,9 +1175,10 @@ def update_storm_options(country, forecast_date, forecast_time):
     [Input("storm-select", "value"),
      Input("forecast-date", "value"),
      Input("forecast-time", "value")],
+    [State("wind-threshold-select", "value")],  # Add current value as State
     prevent_initial_call='initial_duplicate'
 )
-def update_wind_threshold_options(storm, date, time):
+def update_wind_threshold_options(storm, date, time, current_threshold):
     """Update wind threshold dropdown based on selected storm, date, and time - set most recent available as default"""
     if not all([storm, date, time]):
         # Return all thresholds if no storm selected
@@ -852,16 +1221,23 @@ def update_wind_threshold_options(storm, date, time):
                 "disabled": not is_available
             })
         
-        # Set default to most recent available threshold (highest available)
+        # Set default threshold - preserve user selection if still available, otherwise default to 50kt
         default_threshold = None
         if available_thresholds:
-            # Sort available thresholds numerically and take the highest
-            sorted_thresholds = sorted([int(t) for t in available_thresholds], reverse=True)
-            default_threshold = str(sorted_thresholds[0])
+            # If user's current selection is still available, keep it
+            if current_threshold and current_threshold in available_thresholds:
+                default_threshold = current_threshold
+            else:
+                # Otherwise, prefer 50kt if available, otherwise use the highest available
+                if "50" in available_thresholds:
+                    default_threshold = "50"
+                else:
+                    sorted_thresholds = sorted([int(t) for t in available_thresholds], reverse=True)
+                    default_threshold = str(sorted_thresholds[0])
         else:
             default_threshold = "50"  # Fallback default
         
-        print(f"Wind thresholds for {storm} at {forecast_datetime}: available={available_thresholds}, default (highest)={default_threshold}")
+        print(f"Wind thresholds for {storm} at {forecast_datetime}: available={available_thresholds}, current={current_threshold}, default={default_threshold}")
         return options, default_threshold
         
     except Exception as e:
@@ -909,34 +1285,53 @@ def make_single_page_appshell():
 # Use the single-page appshell
 layout = make_single_page_appshell()
 
-# Load all layers callback
+# Load all layers callback with integrated loading indicator
 @callback(
     [Output('tracks-data-store', 'data'),
      Output('envelope-data-store', 'data'),
      Output('schools-data-store', 'data'),
      Output('health-data-store', 'data'),
-     Output('tiles-data-store', 'data'),
+     Output('population-tiles-data-store', 'data'),
+     Output('school-age-tiles-data-store', 'data'),
+     Output('built-surface-tiles-data-store', 'data'),
+     Output('settlement-tiles-data-store', 'data'),
+     Output('rwi-tiles-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
      Output('schools-layer', 'disabled'),
      Output('health-layer', 'disabled'),
-     Output('tiles-layer', 'disabled')],
+     Output('population-tiles-layer', 'disabled'),
+     Output('school-age-tiles-layer', 'disabled'),
+     Output('built-surface-tiles-layer', 'disabled'),
+     Output('settlement-tiles-layer', 'disabled'),
+     Output('rwi-tiles-layer', 'disabled')],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
     State('forecast-date', 'value'),
     State('forecast-time', 'value'),
     State('wind-threshold-select', 'value'),
-    prevent_initial_call=True
+    prevent_initial_call=True,
+    running=[(Output("load-layers-btn", "loading"), True, False)]
 )
 def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold):
     """Load all available layers when Load Layers button is clicked"""
+    print(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     print(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
+    print(f"Callback context: {callback_context.triggered}")
+    
+    # Show loading indicator immediately
+    loading_indicator = dmc.Loader(
+        color="blue",
+        size="md", 
+        type="dots"
+    )
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
-        return {}, {}, {}, {}, {}, False, "Status: Missing selections", True, True, True, True, True
+        print("=== MISSING SELECTIONS - RETURNING EARLY ===")
+        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
     
     try:
         # Initialize empty data stores
@@ -1011,13 +1406,68 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             print(f"Error loading envelopes: {e}")
         
         # Load Impact Data (if files exist)
+        # Check if data files exist for the selected time
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        
+        print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
+        
+        # Check for data file availability
+        data_files_found = []
+        missing_files = []
+        
+        # Check schools file
+        schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+        if os.path.exists(schools_path):
+            data_files_found.append("schools")
+        else:
+            missing_files.append("schools")
+        
+        # Check health centers file
+        health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
+        if os.path.exists(health_path):
+            data_files_found.append("health centers")
+        else:
+            missing_files.append("health centers")
+        
+        # Check tiles file
+        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
+        tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
+        if os.path.exists(tiles_path):
+            data_files_found.append("infrastructure tiles")
+        else:
+            missing_files.append("infrastructure tiles")
+        
+        # Generate status alert based on data availability
+        if not data_files_found:
+            status_alert = dmc.Alert(
+                f"No data files found for {forecast_time}. Please select a different time or generate data for this forecast time.",
+                title="No Data Available",
+                color="orange",
+                variant="light"
+            )
+        elif missing_files:
+            status_alert = dmc.Alert(
+                f"Partial data loaded. Missing: {', '.join(missing_files)}. Available: {', '.join(data_files_found)}.",
+                title="Partial Data Loaded",
+                color="yellow",
+                variant="light"
+            )
+        else:
+            status_alert = dmc.Alert(
+                "All layers loaded successfully",
+                title="Success",
+                color="green",
+                variant="light"
+            )
+        
+        print(f"Data availability: Found={data_files_found}, Missing={missing_files}")
+        
         try:
-            date_str = forecast_date.replace('-', '')
-            time_str = forecast_time.replace(':', '')
-            forecast_datetime_str = f"{date_str}{time_str}00"
-            
-            print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
-            
+            # Load available data files
             # Schools
             schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
@@ -1054,41 +1504,132 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 
         except Exception as e:
             print(f"Error loading impact data: {e}")
+            status_alert = dmc.Alert(
+                f"Error loading layers: {str(e)}",
+                title="Error",
+                color="red",
+                variant="light"
+            )
         
-        # Enable all toggles
-        return (tracks_data, envelope_data, schools_data, health_data, tiles_data, 
-                True, "Status: All layers loaded successfully", 
-                False, False, False, False, False)
+        # Enable all toggles - each tile layer gets its own independent copy of the data
+        import copy
+        
+        # Create independent copies for each tile layer
+        if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
+            # Use JSON serialization/deserialization for complete independence
+            tiles_json = json.dumps(tiles_data)
+            tiles_copy1 = json.loads(tiles_json)
+            tiles_copy2 = json.loads(tiles_json)
+            tiles_copy3 = json.loads(tiles_json)
+            tiles_copy4 = json.loads(tiles_json)
+            tiles_copy5 = json.loads(tiles_json)
+        else:
+            empty_geojson = {"type": "FeatureCollection", "features": []}
+            tiles_copy1 = tiles_copy2 = tiles_copy3 = tiles_copy4 = tiles_copy5 = empty_geojson
+        
+        print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
+        return (tracks_data, envelope_data, schools_data, health_data, 
+                tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
+                True, status_alert, 
+                False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, f"Status: Error loading layers: {str(e)}", True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
 @callback(
     Output("hurricane-tracks-json", "data"),
     Output("hurricane-tracks-json", "zoomToBounds"),
-    [Input("hurricane-tracks-toggle", "checked")],
+    [Input("hurricane-tracks-toggle", "checked"),
+     Input("specific-track-select", "value")],
     State("tracks-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tracks_layer(checked, tracks_data):
-    """Toggle hurricane tracks layer visibility"""
-    if checked and tracks_data:
-        return tracks_data, True
-    return {"type": "FeatureCollection", "features": []}, False
+def toggle_tracks_layer(checked, selected_track, tracks_data):
+    """Toggle hurricane tracks layer visibility with optional specific track filtering"""
+    if not checked or not tracks_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # If specific track is selected, filter to show only that track
+    if selected_track and 'features' in tracks_data:
+        filtered_tracks = {"type": "FeatureCollection", "features": []}
+        for feature in tracks_data['features']:
+            if feature.get('properties', {}).get('ensemble_member') == int(selected_track):
+                filtered_tracks['features'].append(feature)
+        return filtered_tracks, True
+    
+    # Otherwise show all tracks
+    return tracks_data, True
 
 @callback(
     Output("envelopes-json-test", "data"),
     Output("envelopes-json-test", "zoomToBounds"),
-    [Input("hurricane-envelopes-toggle", "checked")],
-    State("envelope-data-store", "data"),
-    State("wind-threshold-select", "value"),
+    [Input("hurricane-envelopes-toggle", "checked"),
+     Input("specific-track-select", "value")],
+    [State("envelope-data-store", "data"),
+     State("wind-threshold-select", "value"),
+     State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value")],
     prevent_initial_call=False
 )
-def toggle_envelopes_layer(checked, envelope_data, wind_threshold):
-    """Toggle hurricane envelopes layer visibility"""
-    if not checked or not envelope_data or not envelope_data.get('data'):
+def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshold, country, storm, forecast_date, forecast_time):
+    """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
+    
+    if not checked:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # If specific track is selected, create specific track envelope
+    if selected_track:
+        try:
+            # Load specific track data
+            date_str = forecast_date.replace('-', '')
+            time_str = forecast_time.replace(':', '')
+            forecast_datetime_str = f"{date_str}{time_str}00"
+            tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+            
+            if os.path.exists(tracks_filepath):
+                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                
+                if not specific_track_data.empty:
+                    # Create specific track envelope
+                    specific_envelope = {"type": "FeatureCollection", "features": []}
+                    for _, row in specific_track_data.iterrows():
+                        # Convert geometry to proper GeoJSON format
+                        if isinstance(row['geometry'], str):
+                            if row['geometry'].startswith('{'):
+                                geometry = json.loads(row['geometry'])
+                            else:
+                                # WKT format - convert to GeoJSON
+                                geom_obj = wkt.loads(row['geometry'])
+                                geometry = geom_obj.__geo_interface__
+                        else:
+                            # Already a Shapely geometry object - convert to GeoJSON
+                            geometry = row['geometry'].__geo_interface__
+                        
+                        feature = {
+                            "type": "Feature",
+                            "geometry": geometry,
+                            "properties": {
+                                "zone_id": int(row['zone_id']),
+                                "wind_threshold": int(row['wind_threshold']),
+                                "severity_population": float(row['severity_population']),
+                                "severity_schools": int(row['severity_schools']),
+                                "severity_hcs": int(row['severity_hcs']),
+                                "severity_built_surface_m2": float(row['severity_built_surface_m2'])
+                            }
+                        }
+                        specific_envelope['features'].append(feature)
+                    return specific_envelope, True
+        except Exception as e:
+            print(f"Error creating specific track envelope: {e}")
+    
+    # Default probabilistic envelope behavior
+    if not envelope_data or not envelope_data.get('data'):
         return {"type": "FeatureCollection", "features": []}, False
     
     try:
@@ -1107,7 +1648,6 @@ def toggle_envelopes_layer(checked, envelope_data, wind_threshold):
         # Convert to GeoDataFrame
         if df['geometry'].iloc[0].startswith('{'):
             from shapely.geometry import shape
-            import json
             geometries = []
             for geom_str in df['geometry']:
                 geom_dict = json.loads(geom_str)
@@ -1142,24 +1682,31 @@ def toggle_schools_layer(checked, schools_data):
                     prob = feature['properties']['probability']
                     
                     # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
+                    # Radius scale: larger radius for higher impact probability
                     if prob == 0 or prob is None:
                         color = '#808080'  # Grey for no impact
+                        radius = 10  # Larger radius for visibility
                     elif prob <= 0.15:
                         color = '#FFFF00'  # Yellow for very low impact
+                        radius = 25  # Slightly larger for low impact
                     elif prob <= 0.30:
                         color = '#FFD700'  # Gold for low impact
+                        radius = 30  # Medium radius for low-medium impact
                     elif prob <= 0.45:
                         color = '#FFA500'  # Orange for low-medium impact
+                        radius = 35  # Larger radius for medium impact
                     elif prob <= 0.60:
                         color = '#FF8C00'  # Dark orange for medium impact
+                        radius = 40  # Even larger for medium-high impact
                     elif prob <= 0.75:
                         color = '#FF4500'  # Orange-red for high impact
+                        radius = 45  # Large radius for high impact
                     elif prob <= 0.90:
                         color = '#DC143C'  # Crimson for very high impact
+                        radius = 50  # Very large radius for very high impact
                     else:
                         color = '#8B0000'  # Dark red for extreme impact
-                    
-                    radius = 5  # Fixed radius for all markers
+                        radius = 55  # Maximum radius for extreme impact
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -1199,24 +1746,31 @@ def toggle_health_layer(checked, health_data):
                     prob = feature['properties']['probability']
                     
                     # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
+                    # Radius scale: larger radius for higher impact probability
                     if prob == 0 or prob is None:
                         color = '#808080'  # Grey for no impact
+                        radius = 10  # Larger radius for visibility
                     elif prob <= 0.15:
                         color = '#FFFF00'  # Yellow for very low impact
+                        radius = 25  # Slightly larger for low impact
                     elif prob <= 0.30:
                         color = '#FFD700'  # Gold for low impact
+                        radius = 30  # Medium radius for low-medium impact
                     elif prob <= 0.45:
                         color = '#FFA500'  # Orange for low-medium impact
+                        radius = 35  # Larger radius for medium impact
                     elif prob <= 0.60:
                         color = '#FF8C00'  # Dark orange for medium impact
+                        radius = 40  # Even larger for medium-high impact
                     elif prob <= 0.75:
                         color = '#FF4500'  # Orange-red for high impact
+                        radius = 45  # Large radius for high impact
                     elif prob <= 0.90:
                         color = '#DC143C'  # Crimson for very high impact
+                        radius = 50  # Very large radius for very high impact
                     else:
                         color = '#8B0000'  # Dark red for extreme impact
-                    
-                    radius = 5  # Fixed radius for all markers
+                        radius = 55  # Maximum radius for extreme impact
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -1232,21 +1786,461 @@ def toggle_health_layer(checked, health_data):
         return health_data, True
 
 @callback(
-    Output("tiles-json-test", "data"),
-    Output("tiles-json-test", "zoomToBounds"),
-    [Input("tiles-layer", "checked")],
-    State("tiles-data-store", "data"),
+    Output("population-tiles-json", "data"),
+    Output("population-tiles-json", "zoomToBounds"),
+    [Input("population-tiles-layer", "checked")],
+    State("population-tiles-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tiles_layer(checked, tiles_data):
-    """Toggle tiles layer visibility"""
-    if checked and tiles_data:
+def toggle_population_tiles_layer(checked, tiles_data):
+    """Toggle population density tiles layer visibility with blue color scheme"""
+    if not checked or not tiles_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    try:
+        # Debug: Collect population values to understand the data
+        population_values = []
+        zero_count = 0
+        nan_count = 0
+        
+        # Add population-based styling to each feature
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' in feature and 'population' in feature['properties']:
+                    pop = feature['properties']['population']
+                    population_values.append(pop)
+                    
+                    if pop == 0:
+                        zero_count += 1
+                    elif pd.isna(pop):
+                        nan_count += 1
+                    
+                    # Blue color scale for population density
+                    if pop == 0 or pop is None or pd.isna(pop):
+                        color = 'transparent'  # Transparent for no population
+                        fillOpacity = 0.0
+                    elif pop <= 100:
+                        color = '#87ceeb'  # Sky blue for low population
+                        fillOpacity = 0.7
+                    elif pop <= 500:
+                        color = '#4682b4'  # Steel blue for medium-low population
+                        fillOpacity = 0.7
+                    elif pop <= 1000:
+                        color = '#1e90ff'  # Dodger blue for medium population
+                        fillOpacity = 0.7
+                    elif pop <= 2500:
+                        color = '#0000cd'  # Medium blue for medium-high population
+                        fillOpacity = 0.7
+                    elif pop <= 5000:
+                        color = '#000080'  # Navy blue for high population
+                        fillOpacity = 0.7
+                    else:
+                        color = '#191970'  # Midnight blue for very high population
+                        fillOpacity = 0.7
+                    
+                    # Add styling properties
+                    feature['properties']['_color'] = color
+                    feature['properties']['_fillOpacity'] = fillOpacity
+                    feature['properties']['_weight'] = 1
+                    feature['properties']['_opacity'] = 0.8
+        
+        # Debug output
+        if population_values:
+            print(f"Population tiles debug - Total tiles: {len(population_values)}")
+            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
+            print(f"Min population: {min(population_values)}, Max population: {max(population_values)}")
+            print(f"Sample values: {sorted(set(population_values))[:10]}")
+        
+        # Debug: Check data structure
+        if tiles_data:
+            print(f"Tiles data type: {type(tiles_data)}")
+            if isinstance(tiles_data, dict):
+                print(f"Tiles data keys: {list(tiles_data.keys())}")
+                if 'features' in tiles_data:
+                    print(f"Features count: {len(tiles_data['features'])}")
+                else:
+                    print("ERROR: No 'features' key in tiles_data!")
+            else:
+                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
+        
         return tiles_data, True
-    return {"type": "FeatureCollection", "features": []}, False
+    except Exception as e:
+        print(f"Error styling population tiles: {e}")
+        return tiles_data, True
+
+@callback(
+    Output("school-age-tiles-json", "data"),
+    Output("school-age-tiles-json", "zoomToBounds"),
+    [Input("school-age-tiles-layer", "checked")],
+    State("school-age-tiles-data-store", "data"),
+    prevent_initial_call=False
+)
+def toggle_school_age_tiles_layer(checked, tiles_data):
+    """Toggle school-age population tiles layer visibility with green color scheme"""
+    print(f"School-age tiles layer toggled: checked={checked}")
+    if not checked or not tiles_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    print(f"School-age tiles data structure OK: {len(tiles_data.get('features', []))} features")
+    
+    try:
+        # Add school-age population-based styling to each feature
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' in feature and 'school_age_population' in feature['properties']:
+                    pop = feature['properties']['school_age_population']
+                    
+                    # Green color scale for school-age population
+                    if pop == 0 or pop is None or pd.isna(pop):
+                        color = 'transparent'  # Transparent for no school-age population
+                        fillOpacity = 0.0
+                    elif pop <= 50:
+                        color = '#90ee90'  # Light green for low school-age population
+                        fillOpacity = 0.7
+                    elif pop <= 150:
+                        color = '#32cd32'  # Lime green for medium-low school-age population
+                        fillOpacity = 0.7
+                    elif pop <= 300:
+                        color = '#228b22'  # Forest green for medium school-age population
+                        fillOpacity = 0.7
+                    elif pop <= 500:
+                        color = '#006400'  # Dark green for medium-high school-age population
+                        fillOpacity = 0.7
+                    elif pop <= 750:
+                        color = '#2e8b57'  # Sea green for high school-age population
+                        fillOpacity = 0.7
+                    else:
+                        color = '#1c4a1c'  # Very dark green for very high school-age population
+                        fillOpacity = 0.7
+                    
+                    # Add styling properties
+                    feature['properties']['_color'] = color
+                    feature['properties']['_fillOpacity'] = fillOpacity
+                    feature['properties']['_weight'] = 1
+                    feature['properties']['_opacity'] = 0.8
+        
+        return tiles_data, True
+    except Exception as e:
+        print(f"Error styling school-age tiles: {e}")
+        return tiles_data, True
+
+@callback(
+    Output("built-surface-tiles-json", "data"),
+    Output("built-surface-tiles-json", "zoomToBounds"),
+    [Input("built-surface-tiles-layer", "checked")],
+    State("built-surface-tiles-data-store", "data"),
+    prevent_initial_call=False
+)
+def toggle_built_surface_tiles_layer(checked, tiles_data):
+    """Toggle built surface area tiles layer visibility with brown/gray color scheme"""
+    print(f"Built surface tiles layer toggled: checked={checked}")
+    if not checked or not tiles_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    print(f"Built surface tiles data structure OK: {len(tiles_data.get('features', []))} features")
+    
+    try:
+        # Add built surface-based styling to each feature
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' in feature and 'built_surface_m2' in feature['properties']:
+                    surface = feature['properties']['built_surface_m2']
+                    
+                    # Brown/Gray color scale for built surface
+                    if surface == 0 or surface is None or pd.isna(surface):
+                        color = 'transparent'  # Transparent for no built surface
+                        fillOpacity = 0.0
+                    elif surface <= 1000:
+                        color = '#d3d3d3'  # Light gray for low built surface
+                        fillOpacity = 0.7
+                    elif surface <= 5000:
+                        color = '#a9a9a9'  # Dark gray for medium-low built surface
+                        fillOpacity = 0.7
+                    elif surface <= 10000:
+                        color = '#808080'  # Gray for medium built surface
+                        fillOpacity = 0.7
+                    elif surface <= 25000:
+                        color = '#8b4513'  # Saddle brown for medium-high built surface
+                        fillOpacity = 0.7
+                    elif surface <= 50000:
+                        color = '#654321'  # Dark brown for high built surface
+                        fillOpacity = 0.7
+                    else:
+                        color = '#2f1b14'  # Very dark brown for very high built surface
+                        fillOpacity = 0.7
+                    
+                    # Add styling properties
+                    feature['properties']['_color'] = color
+                    feature['properties']['_fillOpacity'] = fillOpacity
+                    feature['properties']['_weight'] = 1
+                    feature['properties']['_opacity'] = 0.8
+        
+        return tiles_data, True
+    except Exception as e:
+        print(f"Error styling built surface tiles: {e}")
+        return tiles_data, True
+
+@callback(
+    Output("settlement-tiles-json", "data"),
+    Output("settlement-tiles-json", "zoomToBounds"),
+    [Input("settlement-tiles-layer", "checked")],
+    State("settlement-tiles-data-store", "data"),
+    prevent_initial_call=False
+)
+def toggle_settlement_tiles_layer(checked, tiles_data):
+    """Toggle settlement classification tiles layer visibility with purple color scheme"""
+    if not checked or not tiles_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    try:
+        # Add settlement-based styling to each feature
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' in feature and 'smod' in feature['properties']:
+                    smod = feature['properties']['smod']
+                    
+                    # Purple color scale for settlement classification
+                    # SMOD values: 0=no data, 1=rural, 2=urban clusters, 3=urban centers
+                    if smod == 0 or smod is None or pd.isna(smod):
+                        color = 'transparent'  # Transparent for no data
+                        fillOpacity = 0.0
+                    elif smod == 1:
+                        color = '#dda0dd'  # Plum for rural areas
+                        fillOpacity = 0.7
+                    elif smod == 2:
+                        color = '#9370db'  # Medium purple for urban clusters
+                        fillOpacity = 0.7
+                    elif smod == 3:
+                        color = '#4b0082'  # Indigo for urban centers
+                        fillOpacity = 0.7
+                    else:
+                        color = '#2e0854'  # Very dark purple for unknown
+                        fillOpacity = 0.7
+                    
+                    # Add styling properties
+                    feature['properties']['_color'] = color
+                    feature['properties']['_fillOpacity'] = fillOpacity
+                    feature['properties']['_weight'] = 1
+                    feature['properties']['_opacity'] = 0.8
+        
+        return tiles_data, True
+    except Exception as e:
+        print(f"Error styling settlement tiles: {e}")
+        return tiles_data, True
+
+@callback(
+    Output("rwi-tiles-json", "data"),
+    Output("rwi-tiles-json", "zoomToBounds"),
+    [Input("rwi-tiles-layer", "checked")],
+    State("rwi-tiles-data-store", "data"),
+    prevent_initial_call=False
+)
+def toggle_rwi_tiles_layer(checked, tiles_data):
+    """Toggle relative wealth index tiles layer visibility with orange/yellow color scheme"""
+    if not checked or not tiles_data:
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False
+    
+    try:
+        # Add RWI-based styling to each feature
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' in feature and 'rwi' in feature['properties']:
+                    rwi = feature['properties']['rwi']
+                    
+                    # Orange/Yellow color scale for Relative Wealth Index
+                    # RWI typically ranges from -2 to +2, with higher values = wealthier
+                    if rwi is None or rwi == 0 or pd.isna(rwi):
+                        color = 'transparent'  # Transparent for no data
+                        fillOpacity = 0.0
+                    elif rwi <= -1.5:
+                        color = '#8b0000'  # Dark red for very low wealth
+                        fillOpacity = 0.7
+                    elif rwi <= -1.0:
+                        color = '#dc143c'  # Crimson for low wealth
+                        fillOpacity = 0.7
+                    elif rwi <= -0.5:
+                        color = '#ff6347'  # Tomato for below average wealth
+                        fillOpacity = 0.7
+                    elif rwi <= 0:
+                        color = '#ffa500'  # Orange for average wealth
+                        fillOpacity = 0.7
+                    elif rwi <= 0.5:
+                        color = '#ffd700'  # Gold for above average wealth
+                        fillOpacity = 0.7
+                    elif rwi <= 1.0:
+                        color = '#ffff00'  # Yellow for high wealth
+                        fillOpacity = 0.7
+                    elif rwi <= 1.5:
+                        color = '#adff2f'  # Green yellow for very high wealth
+                        fillOpacity = 0.7
+                    else:
+                        color = '#32cd32'  # Lime green for extremely high wealth
+                        fillOpacity = 0.7
+                    
+                    # Add styling properties
+                    feature['properties']['_color'] = color
+                    feature['properties']['_fillOpacity'] = fillOpacity
+                    feature['properties']['_weight'] = 1
+                    feature['properties']['_opacity'] = 0.8
+        
+        return tiles_data, True
+    except Exception as e:
+        print(f"Error styling RWI tiles: {e}")
+        return tiles_data, True
+
+# Callback to update info text when specific track is selected
+@callback(
+    Output("specific-track-info", "children"),
+    [Input("specific-track-select", "value")],
+    [State("country-select", "value"),
+     State("storm-select", "value"),
+     State("forecast-date", "value"),
+     State("forecast-time", "value"),
+     State("wind-threshold-select", "value")],
+    prevent_initial_call=True
+)
+def update_specific_track_info(selected_track, country, storm, forecast_date, forecast_time, wind_threshold):
+    """Update info text with specific track impact numbers"""
+    
+    if not selected_track:
+        return "Load layers first, then select a specific track to see exact impact numbers"
+    
+    try:
+        # Load specific track data
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+        
+        if not os.path.exists(tracks_filepath):
+            return "Track data not found"
+        
+        # Load track data
+        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        
+        # Filter for specific track
+        specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+        
+        if specific_track_data.empty:
+            return f"No data found for track {selected_track}"
+        
+        # Calculate impact numbers for info text
+        total_population = specific_track_data['severity_population'].sum()
+        total_schools = specific_track_data['severity_schools'].sum()
+        total_health = specific_track_data['severity_hcs'].sum()
+        
+        return f"Track {selected_track}: {total_population:,.0f} people, {total_schools:,.0f} schools, {total_health:,.0f} health centers affected"
+        
+    except Exception as e:
+        print(f"Error loading specific track info: {e}")
+        return f"Error: {str(e)}"
+
+# Callback to handle "Show Specific Track" button click
+@callback(
+    Output("specific-track-select", "disabled"),
+    [Input("show-specific-track-btn", "n_clicks")],
+    [State("specific-track-select", "disabled")],
+    prevent_initial_call=True
+)
+def toggle_specific_track_mode(n_clicks, currently_disabled):
+    """Enable/disable specific track selector when button is clicked"""
+    if n_clicks and n_clicks > 0:
+        return False  # Enable the dropdown
+    return currently_disabled
+
+# Callback to update forecast dates based on country selection
 
 
 
+# Legend visibility callbacks
+@callback(
+    Output("schools-legend", "style"),
+    [Input("schools-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_schools_legend(checked):
+    """Show/hide schools legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
 
+@callback(
+    Output("health-legend", "style"),
+    [Input("health-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_health_legend(checked):
+    """Show/hide health centers legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("population-legend", "style"),
+    [Input("population-tiles-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_population_legend(checked):
+    """Show/hide population density legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("school-age-legend", "style"),
+    [Input("school-age-tiles-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_school_age_legend(checked):
+    """Show/hide school-age population legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("built-surface-legend", "style"),
+    [Input("built-surface-tiles-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_built_surface_legend(checked):
+    """Show/hide built surface area legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("settlement-legend", "style"),
+    [Input("settlement-tiles-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_settlement_legend(checked):
+    """Show/hide settlement classification legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("rwi-legend", "style"),
+    [Input("rwi-tiles-layer", "checked")],
+    prevent_initial_call=False
+)
+def toggle_rwi_legend(checked):
+    """Show/hide relative wealth index legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
