@@ -24,7 +24,7 @@ from gigaspatial.core.io.local_data_store import LocalDataStore
 from gigaspatial.config import config
 
 # Import centralized configuration
-from components.config import config as app_config
+from .config import config as app_config
 
 class ADLSDataStoreRO(ADLSDataStore):
     """

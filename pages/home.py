@@ -1469,16 +1469,21 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         try:
             # Load available data files
             # Schools
-            if os.path.exists(schools_path):
+            schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+            if giga_store.file_exists(schools_path):
                 try:
                     gdf_schools = read_dataset(giga_store, schools_path)
-                    schools_data = gdf_schools.__geo_interface__
+                    df_schools = gdf_schools.drop(columns=['geometry'])
+                    schools_data = df_schools.to_dict("records")#__geo_interface__
                 except Exception as e:
                     print(f"Error reading schools file: {e}")
                     schools_data = {}
             
             # Health Centers
-            if os.path.exists(health_path):
+            health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
+            if giga_store.file_exists(health_path):
                 try:
                     gdf_health = read_dataset(giga_store, health_path)
                     health_data = gdf_health.__geo_interface__
@@ -1487,7 +1492,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     health_data = {}
             
             # Tiles
-            if os.path.exists(tiles_path):
+            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
+            tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
+            if giga_store.file_exists(tiles_path):
                 try:
                     gdf_tiles = read_dataset(giga_store, tiles_path)
                     tiles_data = gdf_tiles.__geo_interface__
@@ -1707,7 +1714,12 @@ def toggle_schools_layer(checked, schools_data):
                     feature['properties']['_opacity'] = 0.8
                     feature['properties']['_weight'] = 1
                     feature['properties']['_fillOpacity'] = 0.7
+
+
+        df_schools = pd.DataFrame(schools_data)
+        gdf_schools = convert_to_geodataframe(df_schools)
         
+        return gdf_schools.__geo_interface__, True
         return schools_data, True
         
     except Exception as e:
