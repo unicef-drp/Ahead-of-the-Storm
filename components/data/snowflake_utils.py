@@ -28,7 +28,7 @@ import warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
 
 # Import centralized configuration
-from components.config import config
+from .config import config
 
 def get_snowflake_connection():
     """Create Snowflake connection from centralized configuration."""

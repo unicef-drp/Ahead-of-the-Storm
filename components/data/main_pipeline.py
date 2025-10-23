@@ -24,7 +24,7 @@ import logging
 from datetime import datetime
 
 # Import centralized configuration
-from components.config import config
+from .config import config
 
 # Import our custom modules
 from impact_analysis import (
@@ -224,14 +224,19 @@ def main():
     parser = argparse.ArgumentParser(description="Run complete impact analysis pipeline")
     
     # Required arguments
-    parser.add_argument("--hazard", required=True, choices=["hurricane"], 
+    # parser.add_argument("--hazard", required=True, choices=["hurricane"], 
+    #                    help="Hazard type (currently supports: hurricane)")
+    # parser.add_argument("--storm", required=True, help="Storm name (e.g., JERRY)")
+    # parser.add_argument("--date", required=True, help="Forecast time (e.g., '2025-10-10 00:00:00')")
+    
+    parser.add_argument("--hazard", default="hurricane", 
                        help="Hazard type (currently supports: hurricane)")
-    parser.add_argument("--storm", required=True, help="Storm name (e.g., JERRY)")
-    parser.add_argument("--date", required=True, help="Forecast time (e.g., '2025-10-10 00:00:00')")
+    parser.add_argument("--storm", default="MELISSA", help="Storm name (e.g., JERRY)")
+    parser.add_argument("--date", default="20251022120000", help="Forecast time (e.g., '2025-10-10 00:00:00')")
     
     # Optional arguments
-    parser.add_argument("--countries", nargs="+", default=["DOM"],
-                       help="Country codes (e.g., DOM)")
+    parser.add_argument("--countries", nargs="+", default=["NIC"],
+                        help="Country codes (e.g., DOM)")
     parser.add_argument("--skip-analysis", action="store_true", 
                        help="Skip analysis step (for testing)")
     parser.add_argument("--log-level", default="INFO", 

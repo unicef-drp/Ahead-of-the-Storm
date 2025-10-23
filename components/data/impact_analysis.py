@@ -31,7 +31,7 @@ from shapely import union_all
 from shapely import wkt as shapely_wkt
 
 # Import centralized configuration
-from components.config import config
+from .config import config
 
 # Import GigaSpatial components
 from gigaspatial.core.io import DataStore
@@ -42,7 +42,6 @@ from gigaspatial.generators import GeometryBasedZonalViewGenerator, MercatorView
 from gigaspatial.handlers.healthsites import HealthSitesFetcher
 from gigaspatial.core.io.readers import read_dataset
 from gigaspatial.core.io.writers import write_dataset
-from gigaspatial.config import config
 
 # Import centralized data store utility
 from data_store_utils import get_data_store
@@ -157,8 +156,8 @@ def read_bounding_box():
     Read bounding box file and return bbox geometry
     """
     # Use absolute path from project root
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    bbox_path = os.path.join(project_root, RESULTS_DIR, BBOX_FILE)
+    #project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    bbox_path = os.path.join(RESULTS_DIR, BBOX_FILE)
     gbbox = read_dataset(data_store, bbox_path)
     return gbbox.geometry.iat[0]
 
@@ -373,6 +372,20 @@ def save_hc_view(gdf, country, storm, date, wind_th):
     file_name = f"{country}_{storm}_{date}_{wind_th}.parquet"
     write_dataset(gdf, data_store, os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', file_name))
 
+def save_hc_locations(gdf, country):
+    """
+    Saves health center locations
+    """
+    file_name = f"{country}_health_centers.parquet"
+    write_dataset(gdf, data_store, os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', file_name))
+
+def load_hc_locations(country):
+    """
+    Loads health center locations
+    """
+    file_name = f"{country}_health_centers.parquet"
+    return read_dataset(data_store, os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', file_name))
+
 def save_tiles_view(gdf, country, storm, date, wind_th, zoom_level=15):
     """
     Saves tiles views
@@ -402,7 +415,7 @@ def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes):
     
     # Schools
     print(f"    Processing schools...")
-    gdf_schools = GigaSchoolLocationFetcher(country, api_key=os.getenv("GIGA_SCHOOL_LOCATION_KEY")).fetch_locations(process_geospatial=True)
+    gdf_schools = GigaSchoolLocationFetcher(country).fetch_locations(process_geospatial=True)
     if 'giga_id_school' in gdf_schools.columns:
         gdf_schools = gdf_schools.rename(columns={'giga_id_school': 'school_id_giga'})
     
@@ -414,14 +427,20 @@ def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes):
     # Health centers
     print(f"    Processing health centers...")
     try:
-        gdf_hcs = HealthSitesFetcher(country=country, api_key=os.getenv("HEALTHSITES_API_KEY")).fetch_facilities(output_format='geojson')
+        gdf_hcs = HealthSitesFetcher(country=country).fetch_facilities(output_format='geojson')
         if gdf_hcs.empty or 'geometry' not in gdf_hcs.columns:
-            print(f"    No health center data available for {country}, skipping...")
-            wind_hc_views = {}
-            # Create empty GeoDataFrame with proper geometry column for tracks processing
-            gdf_hcs = gpd.GeoDataFrame(columns=['geometry'], crs='EPSG:4326')
+            print("     API issues, trying saved locations")
+            try:
+                gdf_hcs = load_hc_locations(country)
+            except:
+                print(f"    No health center data available for {country}, skipping...")
+                wind_hc_views = {}
+                # Create empty GeoDataFrame with proper geometry column for tracks processing
+                gdf_hcs = gpd.GeoDataFrame(columns=['geometry'], crs='EPSG:4326')
         else:
             gdf_hcs = gdf_hcs.set_crs(4326)
+            # let's save this because API is flaky
+            save_hc_locations(gdf_hcs, country)
             wind_hc_views = create_health_center_view_from_envelopes(gdf_hcs, gdf_envelopes)
             for wind_th in wind_hc_views:
                 save_hc_view(wind_hc_views[wind_th], country, storm, date, wind_th)
