@@ -810,13 +810,15 @@ def make_single_page_layout():
                             # Specific Track Controls
                             dmc.Stack([
                                 dmc.Button(
-                                    "Show Specific Track",
+                                    dmc.Group([
+                                        DashIconify(icon="mdi:map-marker-path", width=16),
+                                        dmc.Text("Show Specific Track", ml="xs")
+                                    ]),
                                     id="show-specific-track-btn",
                                     variant="outline",
                                     size="sm",
                                     disabled=True,
-                                    mb="md",
-                                    leftSection=DashIconify(icon="mdi:map-marker-path", width=16)
+                                    mb="md"
                                 ),
                                 
                                 dmc.Select(
@@ -988,10 +990,19 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         print(f"Impact metrics: Error updating metrics: {e}")
         return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
+# Callback to enable/disable specific track button when layers are loaded
+@callback(
+    Output("show-specific-track-btn", "disabled"),
+    [Input("layers-loaded-store", "data")],
+    prevent_initial_call=True
+)
+def enable_specific_track_button(layers_loaded):
+    """Enable specific track button when layers are loaded"""
+    return not layers_loaded
+
 # Callback to populate specific track selector when layers are loaded
 @callback(
-    [Output("show-specific-track-btn", "disabled"),
-     Output("specific-track-select", "data"),
+    [Output("specific-track-select", "data"),
      Output("specific-track-select", "style")],
     [Input("layers-loaded-store", "data")],
     [State("country-select", "value"),
@@ -1005,7 +1016,7 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
     """Populate specific track selector with available ensemble members"""
     
     if not layers_loaded or not all([country, storm, forecast_date, forecast_time, wind_threshold]):
-        return True, [], {"display": "none"}
+        return [], {"display": "none"}
     
     try:
         # Convert date and time to YYYYMMDDHHMMSS format
@@ -1044,13 +1055,13 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
                         "label": f"{member_type} (ID: {member}){impact_indicator}"
                     })
                 
-                return False, options, {"display": "block"}
+                return options, {"display": "block"}
         
-        return True, [], {"display": "none"}
+        return [], {"display": "none"}
         
     except Exception as e:
         print(f"Error loading specific track options: {e}")
-        return True, [], {"display": "none"}
+        return [], {"display": "none"}
 
 # Function to get envelope data from Snowflake (matching the working envelopes.py)
 # Callback to populate available forecast dates
@@ -1474,8 +1485,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             if giga_store.file_exists(schools_path):
                 try:
                     gdf_schools = read_dataset(giga_store, schools_path)
-                    df_schools = gdf_schools.drop(columns=['geometry'])
-                    schools_data = df_schools.to_dict("records")#__geo_interface__
+                    schools_data = gdf_schools.__geo_interface__
                 except Exception as e:
                     print(f"Error reading schools file: {e}")
                     schools_data = {}
@@ -1714,12 +1724,7 @@ def toggle_schools_layer(checked, schools_data):
                     feature['properties']['_opacity'] = 0.8
                     feature['properties']['_weight'] = 1
                     feature['properties']['_fillOpacity'] = 0.7
-
-
-        df_schools = pd.DataFrame(schools_data)
-        gdf_schools = convert_to_geodataframe(df_schools)
         
-        return gdf_schools.__geo_interface__, True
         return schools_data, True
         
     except Exception as e:
@@ -2163,7 +2168,8 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
 
 # Callback to handle "Show Specific Track" button click
 @callback(
-    Output("specific-track-select", "disabled"),
+    [Output("specific-track-select", "disabled"),
+     Output("show-specific-track-btn", "children")],
     [Input("show-specific-track-btn", "n_clicks")],
     [State("specific-track-select", "disabled")],
     prevent_initial_call=True
@@ -2171,8 +2177,34 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
 def toggle_specific_track_mode(n_clicks, currently_disabled):
     """Enable/disable specific track selector when button is clicked"""
     if n_clicks and n_clicks > 0:
-        return False  # Enable the dropdown
-    return currently_disabled
+        if currently_disabled:
+            # Currently disabled, so enable it
+            return False, dmc.Group([
+                DashIconify(icon="mdi:map-marker-path", width=16),
+                dmc.Text("Hide Specific Track", ml="xs")
+            ])
+        else:
+            # Currently enabled, so disable it
+            return True, dmc.Group([
+                DashIconify(icon="mdi:map-marker-path", width=16),
+                dmc.Text("Show Specific Track", ml="xs")
+            ])
+    return currently_disabled, dmc.Group([
+        DashIconify(icon="mdi:map-marker-path", width=16),
+        dmc.Text("Show Specific Track", ml="xs")
+    ])
+
+# Callback to clear specific track selection when mode is disabled
+@callback(
+    Output("specific-track-select", "value"),
+    [Input("specific-track-select", "disabled")],
+    prevent_initial_call=True
+)
+def clear_specific_track_when_disabled(is_disabled):
+    """Clear specific track selection when dropdown is disabled"""
+    if is_disabled:
+        return None
+    return dash.no_update
 
 # Callback to update forecast dates based on country selection
 
