@@ -770,13 +770,13 @@ def make_single_page_layout():
                                             dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
+                                            dmc.TableTd("Schools at Risk", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
+                                            dmc.TableTd("Health Centers at Risk", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
@@ -786,6 +786,12 @@ def make_single_page_layout():
                                             dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd("Built Surface m2 at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ])
                                     ])
                                 ],
@@ -866,8 +872,11 @@ def make_single_page_layout():
      Output("population-count-low", "children"),
      Output("population-count-probabilistic", "children"),
      Output("population-count-high", "children"),
+     Output("bsm2-count-low", "children"),
+     Output("bsm2-count-probabilistic", "children"),
+     Output("bsm2-count-high", "children"),
      Output("low-impact-badge", "children"),
-     Output("high-impact-badge", "children")],
+     Output("high-impact-badge", "children"),],
     [Input("storm-select", "value"),
      Input("wind-threshold-select", "value"),
      Input("country-select", "value"),
@@ -880,7 +889,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         # Return all scenarios with default values
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     # Calculate probabilistic impact metrics
     
@@ -890,15 +899,15 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         time_str = forecast_time.replace(':', '')  # Convert "00:00" to "0000"
         forecast_datetime = f"{date_str}{time_str}00"  # Add seconds: "20251015000000"
         
-        filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
+        filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
         print(f"Impact metrics: Looking for file {filename}")
         
         # Initialize all scenario results
-        low_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
-        probabilistic_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
-        high_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A"}
+        low_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
+        probabilistic_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
+        high_results = {"children": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         
         # Initialize member badges
         low_member_badge = "N/A"
@@ -906,17 +915,18 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         
         if giga_store.file_exists(filepath):
             try:
-                gdf = read_dataset(giga_store, filepath)
+                df = read_dataset(giga_store, filepath)
                 
                 # Calculate PROBABILISTIC scenario (from tiles data)
-                if 'school_age_population' in gdf.columns and not gdf['school_age_population'].isna().all():
-                    probabilistic_results["children"] = (gdf['probability'] * gdf['school_age_population']).sum()
+                if 'E_school_age_population' in df.columns and not df['E_school_age_population'].isna().all():
+                    probabilistic_results["children"] = df['E_school_age_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
                 else:
                     probabilistic_results["children"] = "N/A"
                 
-                probabilistic_results["schools"] = (gdf['probability'] * gdf['num_schools']).sum() if 'num_schools' in gdf.columns else "N/A"
-                probabilistic_results["health"] = (gdf['probability'] * gdf['num_hcs']).sum() if 'num_hcs' in gdf.columns else "N/A"
-                probabilistic_results["population"] = (gdf['probability'] * gdf['population']).sum() if 'population' in gdf.columns else "N/A"
+                probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
+                probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
+                probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
                 
                 # Calculate LOW and HIGH scenarios (from track data)
                 tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
@@ -947,13 +957,15 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
                         low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
                         low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                        
+                        low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+
                         # HIGH scenario
                         high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
                         high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
                         high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
+                        high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
                 
-                print(f"Impact metrics: Successfully loaded {len(gdf)} features")
+                print(f"Impact metrics: Successfully loaded {len(df)} features")
                 
             except Exception as e:
                 print(f"Impact metrics: Error reading file {filename}: {e}")
@@ -981,6 +993,10 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
             format_value(high_results["population"]),
+            # Built Surface m2
+            format_value(low_results["built_surface_m2"]),
+            format_value(probabilistic_results["built_surface_m2"]),
+            format_value(high_results["built_surface_m2"]),
             # Member badges
             low_member_badge,
             high_member_badge
@@ -988,7 +1004,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 # Callback to populate specific track selector when layers are loaded
 @callback(
@@ -1436,7 +1452,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             missing_files.append("health centers")
         
         # Check tiles file
-        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
+        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
         if giga_store.file_exists(tiles_path):
             data_files_found.append("infrastructure tiles")
@@ -1493,15 +1509,21 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     health_data = {}
             
             # Tiles
-            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
+            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
             tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
             if giga_store.file_exists(tiles_path):
-                try:
-                    gdf_tiles = read_dataset(giga_store, tiles_path)
-                    tiles_data = gdf_tiles.__geo_interface__
-                except Exception as e:
-                    print(f"Error reading tiles file: {e}")
-                    tiles_data = {}
+                base_tiles_file = f"{country}_{ZOOM_LEVEL}.parquet"
+                base_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', base_tiles_file)
+                if giga_store.file_exists(base_tiles_path):
+                    try:
+                        df_tiles = read_dataset(giga_store, tiles_path)
+                        gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
+                        tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
+                        gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
+                        tiles_data = gdf_tiles.__geo_interface__
+                    except Exception as e:
+                        print(f"Error reading tiles file: {e}")
+                        tiles_data = {}
                 
         except Exception as e:
             print(f"Error loading impact data: {e}")
