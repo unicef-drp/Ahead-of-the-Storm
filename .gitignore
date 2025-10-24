@@ -36,3 +36,5 @@ project_results/
 components/data/geodb/
 AotS-mockup/
 backup/
+TESTING/
+pages/alt_home.py

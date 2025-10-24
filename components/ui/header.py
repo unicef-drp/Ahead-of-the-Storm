@@ -21,14 +21,17 @@ def make_header(active_tab="tab-home"):
         [
             dmc.Burger(id="burger-button", opened=False, hiddenFrom="md"),
             dmc.Group(
-                # Left side - Logo
+                # Left side - Text Title
                 dmc.Anchor(
-                    dmc.Image(
-                        src="assets/img/aots-logo.png",
-                        w=240,
-                        style={"flex": 1},  # Ensures logo takes up space on the left
+                    dmc.Text(
+                        "AHEAD OF THE STORM - IMPACT-BASED FORECASTING",
+                        size="lg",
+                        fw=700,
+                        c="white",
+                        style={"textDecoration": "none"}
                     ),
                     href="/",
+                    style={"textDecoration": "none"},
                 ),
                 style={"alignItems": "center"},
             ),
