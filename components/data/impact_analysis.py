@@ -36,7 +36,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Import centralized configuration
-from .config import config
+from components.config import config
 
 # Import GigaSpatial components
 from gigaspatial.core.io import DataStore
@@ -60,14 +60,16 @@ from snowflake_utils import (
 ##### Constants #####
 # oecs_countries = ['ATG','DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']
 # countries = ['NIC','DOM','BLZ'] + oecs_countries
-default_countries = ['NIC']
+#default_countries = ['NIC']
+data_cols = ['population', 'built_surface_m2', 'num_schools','school_age_population','num_hcs','rwi','smod_class']
 #####################
 
 ##### Environment Variables #####
-RESULTS_DIR = app_config.RESULTS_DIR
-BBOX_FILE = app_config.BBOX_FILE
-VIEWS_DIR = app_config.VIEWS_DIR
-ROOT_DATA_DIR = app_config.ROOT_DATA_DIR
+RESULTS_DIR = config.RESULTS_DIR
+BBOX_FILE = config.BBOX_FILE
+STORMS_FILE = config.STORMS_FILE
+VIEWS_DIR = config.VIEWS_DIR
+ROOT_DATA_DIR = config.ROOT_DATA_DIR
 #################################
 
 # Initialize data store using centralized utility
@@ -148,13 +150,15 @@ def is_envelope_in_zone(bbox, df_envelopes, geometry_column='geometry'):
     mask = gdf_envelopes.intersects(bbox)
     return bool(mask.any())
 
-def save_bounding_box():
+def save_bounding_box(countries):
     """
     Save bounding box file so not to recalculate every time
     """
-    bbox = get_padded_bounding_box_for_countries(default_countries)
-    gbbox = gpd.GeoDataFrame(geometry=[bbox], crs='EPSG:4326')
-    write_dataset(gbbox, data_store, os.path.join(RESULTS_DIR, BBOX_FILE))
+    filename = os.path.join(RESULTS_DIR, BBOX_FILE)
+    if not data_store.file_exists(filename):
+        bbox = get_padded_bounding_box_for_countries(countries)
+        gbbox = gpd.GeoDataFrame(geometry=[bbox], crs='EPSG:4326')
+        write_dataset(gbbox, data_store, filename)
 
 def read_bounding_box():
     """
@@ -173,7 +177,7 @@ def create_mercator_country_layer(country, zoom_level=15):
     returns a geodataframe with the mercator view
     """
     #### schools ####
-    gdf_schools = GigaSchoolLocationFetcher(country, api_key=os.getenv("GIGA_SCHOOL_LOCATION_KEY")).fetch_locations(process_geospatial=True)
+    gdf_schools = GigaSchoolLocationFetcher(country).fetch_locations(process_geospatial=True)
     # seems API is returning old column name...
     if 'giga_id_school' in gdf_schools.columns:
         gdf_schools = gdf_schools.rename(columns={'giga_id_school': 'school_id_giga'})
@@ -181,12 +185,19 @@ def create_mercator_country_layer(country, zoom_level=15):
         
     #### health centers ####
     try:
-        gdf_hcs = HealthSitesFetcher(country=country, api_key=os.getenv("HEALTHSITES_API_KEY")).fetch_facilities(output_format='geojson')
+        gdf_hcs = HealthSitesFetcher(country=country).fetch_facilities(output_format='geojson')
         if gdf_hcs.empty or 'geometry' not in gdf_hcs.columns:
-            print(f"No health center data available for {country} in mercator layer")
-            gdf_hcs = gpd.GeoDataFrame(columns=['geometry'], crs='EPSG:4326')
+            print("     API issues, trying saved locations")
+            try:
+                gdf_hcs = load_hc_locations(country)
+            except:
+                print(f"    No health center data available for {country}, skipping...")
+                # Create empty GeoDataFrame with proper geometry column for tracks processing
+                gdf_hcs = gpd.GeoDataFrame(columns=['geometry'], crs='EPSG:4326')
         else:
             gdf_hcs = gdf_hcs.set_crs(4326)
+            # let's save this because API is flaky
+            save_hc_locations(gdf_hcs, country)
     except Exception as e:
         print(f"Error fetching health centers for {country}: {str(e)}")
         gdf_hcs = gpd.GeoDataFrame(columns=['geometry'], crs='EPSG:4326')
@@ -230,22 +241,48 @@ def create_mercator_country_layer(country, zoom_level=15):
     
     return gdf_tiles
 
-def create_mercator_layers(countries,zoom_level=15):
-    """
-    countries: list of iso3 codes of countries
-    zoom_level: int - zoom level for mercator tiles
-    returns a dictionary of countr - geodataframe
-    """
-    country_mercators = {}
-    for country in countries:
-        country_mercators[country] = create_mercator_country_layer(country, zoom_level)
+# def create_mercator_layers(countries,zoom_level):
+#     """
+#     countries: list of iso3 codes of countries
+#     zoom_level: int - zoom level for mercator tiles
+#     returns a dictionary of countr - geodataframe
+#     """
+#     country_mercators = {}
+#     for country in countries:
+#         country_mercators[country] = create_mercator_country_layer(country, zoom_level)
 
-    return country_mercators
+#     return country_mercators
 
-def save_mercator_view(gdf, country, zoom_level=15):
+def save_mercator_view(gdf, country, zoom_level):
     """Save base mercator infrastructure view for country"""
     file_name = f"{country}_{zoom_level}.parquet"
     write_dataset(gdf, data_store, os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', file_name))
+
+def save_mercator_views(countries,zoom_level):
+    """
+    Generates and saves all country mercator views
+    """
+
+    for country in countries:
+        view = create_mercator_country_layer(country, zoom_level)
+        save_mercator_view(view, country, zoom_level)
+
+def save_json_storms(d):
+    """
+    Save json file with processed storm,dates
+    """
+    filename = os.path.join(RESULTS_DIR, STORMS_FILE)
+    write_dataset(d, data_store, filename)
+
+def load_json_storms():
+    """
+    Read json file with saved storm,dates
+    """
+    filename = os.path.join(RESULTS_DIR, STORMS_FILE)
+    if data_store.file_exists(filename):
+        return read_dataset(data_store, filename)
+    return {'storms':[]}
+
 
 def load_mercator_view(country, zoom_level=15):
     """Load mercator view for country"""
@@ -272,7 +309,7 @@ def create_school_view_from_envelopes(gdf_schools, gdf_envelopes):
                 new_col = schools_viewer.map_polygons(gdf_envelopes_wth)
                 probs = {k: v / float(num_ensembles) for k, v in new_col.items()}
             except:
-                probs = {k: 0.0 for k in schools_viewer.view.index.unique()}
+                probs = {k: 0.0 for k in schools_viewer.view.zone_id.unique()}
             schools_viewer.add_variable_to_view(probs, 'probability')
 
             gdf_view = schools_viewer.to_geodataframe()
@@ -300,7 +337,7 @@ def create_health_center_view_from_envelopes(gdf_hcs, gdf_envelopes):
                 new_col = hcs_viewer.map_polygons(gdf_envelopes_wth)
                 probs = {k: v / float(num_ensembles) for k, v in new_col.items()}
             except:
-                probs = {k: 0.0 for k in hcs_viewer.view.index.unique()}
+                probs = {k: 0.0 for k in hcs_viewer.view.zone_id.unique()}
             hcs_viewer.add_variable_to_view(probs, 'probability')
 
             gdf_view = hcs_viewer.to_geodataframe()
@@ -322,11 +359,17 @@ def create_mercator_view_from_envelopes(gdf_tiles, gdf_envelopes):
                 new_col = tiles_viewer.map_polygons(gdf_envelopes_wth)
                 probs = {k: v / float(num_ensembles) for k, v in new_col.items()}
             except:
-                probs = {k: 0.0 for k in tiles_viewer.view.index.unique()}
+                probs = {k: 0.0 for k in tiles_viewer.view.zone_id.unique()}
             tiles_viewer.add_variable_to_view(probs, 'probability')
 
-            gdf_view = tiles_viewer.to_geodataframe()
-            wind_views[wind_th] = gdf_view
+            df_view = tiles_viewer.to_dataframe()
+            for col in data_cols:
+                df_view[f"E_{col}"] = df_view[col]*df_view['probability']
+
+            df_view = df_view.drop(columns=data_cols)
+
+            wind_views[wind_th] = df_view
+
 
     return wind_views
 
@@ -395,7 +438,7 @@ def save_tiles_view(gdf, country, storm, date, wind_th, zoom_level=15):
     """
     Saves tiles views
     """
-    file_name = f"{country}_{storm}_{date}_{wind_th}_{zoom_level}.parquet"
+    file_name = f"{country}_{storm}_{date}_{wind_th}_{zoom_level}.csv"
     write_dataset(gdf, data_store, os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', file_name))
 
 def save_tracks_view(gdf, country, storm, date, wind_th):
@@ -408,7 +451,7 @@ def save_tracks_view(gdf, country, storm, date, wind_th):
 
 # =============================================================================
 
-def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes):
+def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes, zoom):
     """
     country: ios3 code of country
     storm: storm name
@@ -437,6 +480,9 @@ def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes):
             print("     API issues, trying saved locations")
             try:
                 gdf_hcs = load_hc_locations(country)
+                wind_hc_views = create_health_center_view_from_envelopes(gdf_hcs, gdf_envelopes)
+                for wind_th in wind_hc_views:
+                    save_hc_view(wind_hc_views[wind_th], country, storm, date, wind_th)
             except:
                 print(f"    No health center data available for {country}, skipping...")
                 wind_hc_views = {}
@@ -460,17 +506,17 @@ def create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes):
     # Tiles
     print(f"    Processing tiles...")
     try:
-        gdf_tiles = load_mercator_view(country)
+        gdf_tiles = load_mercator_view(country, zoom)
         print(f"    Loaded existing mercator tiles: {len(gdf_tiles)} tiles")
     except:
         print(f"    Creating base mercator tiles for {country}...")
         gdf_tiles = create_mercator_country_layer(country)
-        save_mercator_view(gdf_tiles, country)
+        save_mercator_view(gdf_tiles, country, zoom)
         print(f"    Created and saved base mercator tiles: {len(gdf_tiles)} tiles")
     
     wind_tiles_views = create_mercator_view_from_envelopes(gdf_tiles, gdf_envelopes)
     for wind_th in wind_tiles_views:
-        save_tiles_view(wind_tiles_views[wind_th], country, storm, date, wind_th)
+        save_tiles_view(wind_tiles_views[wind_th], country, storm, date, wind_th, zoom)
     print(f"    Created {len(wind_tiles_views)} tile views")
 
     # Tracks

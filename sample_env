@@ -29,5 +29,6 @@ export DATA_PIPELINE_DB='LOCAL'
 #export DATA_PIPELINE_DB='RO_BLOB'
 export RESULTS_DIR = "project_results/climate/lacro_project"
 export BBOX_FILE = "bbox.parquet"
+export STORMS_FILE = "storms.json"
 export ACCOUNT_URL=""
 export SAS_TOKEN=""
