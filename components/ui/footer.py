@@ -29,6 +29,15 @@ footer = dmc.Group(
                     ),
                     href="https://giga.global",
                     target="_blank",
+                    style={"marginRight": "30px"},
+                ),
+                dmc.Anchor(
+                    dmc.Image(
+                        src="assets/img/OoI_logo.png",
+                        w=120,
+                    ),
+                    href="https://www.unicef.org/innovation/",
+                    target="_blank",
                 ),
             ],
             align="center",
