@@ -24,7 +24,7 @@ def make_header(active_tab="tab-home"):
                 # Left side - Text Title
                 dmc.Anchor(
                     dmc.Text(
-                        "AHEAD OF THE STORM - IMPACT FORECAST",
+                        "AHEAD OF THE STORM - IMPACT-BASED FORECASTING",
                         size="lg",
                         fw=700,
                         c="white",
