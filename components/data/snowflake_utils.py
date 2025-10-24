@@ -28,7 +28,7 @@ import warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
 
 # Import centralized configuration
-from .config import config
+from components.config import config
 
 def get_snowflake_connection():
     """Create Snowflake connection from centralized configuration."""
@@ -269,3 +269,29 @@ def get_envelope_data_snowflake(track_id, forecast_time):
     except Exception as e:
         print(f"Error getting envelope data from Snowflake: {str(e)}")
         return pd.DataFrame()
+    
+
+def get_snowflake_data():
+    """Get hurricane metadata directly from Snowflake"""
+    try:
+        conn = get_snowflake_connection()
+        
+        # Get unique storm/forecast combinations from TC_TRACKS
+        query = '''
+        SELECT DISTINCT 
+            TRACK_ID,
+            FORECAST_TIME,
+            COUNT(DISTINCT ENSEMBLE_MEMBER) as ENSEMBLE_COUNT
+        FROM TC_TRACKS
+        GROUP BY TRACK_ID, FORECAST_TIME
+        ORDER BY FORECAST_TIME DESC, TRACK_ID
+        '''
+        
+        df = pd.read_sql(query, conn)
+        conn.close()
+        
+        return df
+        
+    except Exception as e:
+        print(f"Error getting Snowflake data: {str(e)}")
+        return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})

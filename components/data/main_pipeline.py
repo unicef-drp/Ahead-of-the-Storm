@@ -22,22 +22,36 @@ import sys
 import argparse
 import logging
 from datetime import datetime
+import pandas as pd
 
 # Add the project root to Python path so we can import components
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+    
+
+from dotenv import load_dotenv
+
+# Load environment variables from the project root
+# This assumes the .env file is in the project root directory
+load_dotenv()
 
 # Import centralized configuration
-from .config import config
+from components.config import config
 
 # Import our custom modules
 from impact_analysis import (
     load_envelopes_from_snowflake,
     read_bounding_box,
     is_envelope_in_zone,
-    create_views_from_envelopes_in_country
+    create_views_from_envelopes_in_country,
+    save_mercator_views,
+    save_bounding_box,
+    save_json_storms,
+    load_json_storms
 )
+
+from snowflake_utils import get_snowflake_data
 
 # Configure logging
 def setup_logging(log_level="INFO"):
@@ -52,7 +66,7 @@ def setup_logging(log_level="INFO"):
     )
     return logging.getLogger(__name__)
 
-def run_complete_impact_analysis(storm, date, countries, logger):
+def run_complete_impact_analysis(storm, date, countries, logger, zoom):
     """
     Complete impact analysis orchestration
     
@@ -95,7 +109,7 @@ def run_complete_impact_analysis(storm, date, countries, logger):
         logger.info("Creating impact views...")
         total_views = 0
         for country in countries:
-            create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes)
+            create_views_from_envelopes_in_country(country, storm, date, gdf_envelopes, zoom)
             total_views += 4  # schools, health centers, tiles, tracks
         
         logger.info("Impact analysis completed successfully")
@@ -140,7 +154,7 @@ class ImpactPipelineStats:
         
         logger.info("=" * 70)
 
-def run_hurricane_pipeline(storm, forecast_time, countries=None, skip_analysis=False, log_level="INFO"):
+def run_hurricane_pipeline(storm, forecast_time, countries=None, skip_analysis=False, log_level="INFO", zoom = 14):
     """
     Run the complete hurricane impact analysis pipeline
     
@@ -182,7 +196,7 @@ def run_hurricane_pipeline(storm, forecast_time, countries=None, skip_analysis=F
                 analysis_date = forecast_time
             
             # Run complete impact analysis orchestration
-            analysis_result = run_complete_impact_analysis(storm, analysis_date, countries, logger)
+            analysis_result = run_complete_impact_analysis(storm, analysis_date, countries, logger, zoom)
             
             if analysis_result["success"]:
                 stats.analysis_success = True
@@ -219,7 +233,61 @@ def run_hurricane_pipeline(storm, forecast_time, countries=None, skip_analysis=F
         logger.error(f"Pipeline execution failed: {str(e)}", exc_info=True)
         stats.log_summary(logger)
         return stats
+    
+############ INIT ###############
 
+def initialize_pipeline(countries,zoom):
+    """
+    Initializes the data pipeline
+    """
+    stats = ImpactPipelineStats()
+    save_mercator_views(countries,zoom)
+    save_bounding_box(countries)
+    stats.analysis_success = True
+
+    return stats
+
+#################################
+
+def update_storms(countries, skip_analysis, log_level, zoom):
+
+
+    d = load_json_storms()
+
+    storms_df = get_snowflake_data()
+    storms_df['DATE'] = pd.to_datetime(storms_df['FORECAST_TIME']).dt.date
+    storms_df['TIME'] = pd.to_datetime(storms_df['FORECAST_TIME']).dt.strftime('%H:%M')
+
+    for _,row in storms_df.iterrows():
+        storm = row['TRACK_ID']
+        forecast_date = str(row['DATE'])
+        forecast_time = row['TIME']
+
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime_str = f"{date_str}{time_str}00"
+
+        if storm not in d['storms'] or forecast_datetime_str not in d['storms'][storm]:
+            stats = run_hurricane_pipeline(
+                storm=storm,
+                forecast_time=forecast_datetime_str,
+                countries=countries,
+                skip_analysis=skip_analysis,
+                log_level=log_level,
+                zoom=zoom
+            )
+            if stats.analysis_success:
+                print(f"\nPipeline completed successfully for storm {storm} in {forecast_datetime_str}")
+                if storm not in d['storms']:
+                    d['storms'][storm] = []
+                d['storms'][storm].append(forecast_datetime_str)
+            else:
+                print(f"\nPipeline with errors for storm {storm} in {forecast_datetime_str}")
+
+    # this does not work yet
+    #save_json_storms(d)
+
+    return stats
 
 
 # python components/data/main_pipeline.py --hazard hurricane --storm FENGSHEN --date "2025-10-20 00:00:00" --countries VNM
@@ -229,18 +297,17 @@ def main():
     parser = argparse.ArgumentParser(description="Run complete impact analysis pipeline")
     
     # Required arguments
-    # parser.add_argument("--hazard", required=True, choices=["hurricane"], 
-    #                    help="Hazard type (currently supports: hurricane)")
-    # parser.add_argument("--storm", required=True, help="Storm name (e.g., JERRY)")
-    # parser.add_argument("--date", required=True, help="Forecast time (e.g., '2025-10-10 00:00:00')")
-    
+    parser.add_argument("--type", default="update", help='initialize or update') 
     parser.add_argument("--hazard", default="hurricane", 
-                       help="Hazard type (currently supports: hurricane)")
-    parser.add_argument("--storm", default="MELISSA", help="Storm name (e.g., JERRY)")
-    parser.add_argument("--date", default="20251022120000", help="Forecast time (e.g., '2025-10-10 00:00:00')")
+                        help="Hazard type (currently supports: hurricane)")
+    # parser.add_argument("--storm", default="MELISSA", help="Storm name (e.g., JERRY)")
+    # parser.add_argument("--date", default="20251022120000", help="Forecast time (e.g., '2025-10-10 00:00:00')")
+
+    parser.add_argument("--zoom", type=int, default=14, help="zoom level for tiles")
     
     # Optional arguments
-    parser.add_argument("--countries", nargs="+", default=["NIC"],
+    #["ATG","BLZ","NIC","DOM",'DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']
+    parser.add_argument("--countries", nargs="+", default=["ATG","BLZ","NIC","DOM",'DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB'],
                         help="Country codes (e.g., DOM)")
     parser.add_argument("--skip-analysis", action="store_true", 
                        help="Skip analysis step (for testing)")
@@ -249,16 +316,25 @@ def main():
                        help="Logging level")
     
     args = parser.parse_args()
+
+
     
     # Run pipeline based on hazard type
     if args.hazard == "hurricane":
-        stats = run_hurricane_pipeline(
-            storm=args.storm,
-            forecast_time=args.date,
-            countries=args.countries,
-            skip_analysis=args.skip_analysis,
-            log_level=args.log_level
-        )
+
+        if args.type=="initialize":
+            stats = initialize_pipeline(args.countries, args.zoom)
+        elif args.type=="update":
+
+            stats = update_storms(
+                countries=args.countries,
+                skip_analysis=args.skip_analysis,
+                log_level=args.log_level,
+                zoom=args.zoom
+            )
+        else:
+            print(f"Error:Type '{args.type}' not yet implemented")
+            sys.exit(1)
     else:
         print(f"Error: Hazard type '{args.hazard}' not yet implemented")
         sys.exit(1)

@@ -42,6 +42,7 @@ class Config:
     # Application Configuration
     RESULTS_DIR = os.getenv('RESULTS_DIR')
     BBOX_FILE = os.getenv('BBOX_FILE')
+    STORMS_FILE = os.getenv('STORMS_FILE')
     VIEWS_DIR = os.getenv('VIEWS_DIR')
     ROOT_DATA_DIR = os.getenv('ROOT_DATA_DIR')
     

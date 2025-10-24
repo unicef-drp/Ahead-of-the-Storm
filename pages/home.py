@@ -19,6 +19,8 @@ from components.config import config
 
 from dash_extensions.javascript import assign
 
+ZOOM_LEVEL = 14
+
 # JavaScript styling for hurricane tracks
 style_tracks = assign("""
 function(feature, context) {
@@ -888,7 +890,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         time_str = forecast_time.replace(':', '')  # Convert "00:00" to "0000"
         forecast_datetime = f"{date_str}{time_str}00"  # Add seconds: "20251015000000"
         
-        filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_15.parquet"
+        filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
         print(f"Impact metrics: Looking for file {filename}")
@@ -1434,7 +1436,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             missing_files.append("health centers")
         
         # Check tiles file
-        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
+        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
         tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
         if giga_store.file_exists(tiles_path):
             data_files_found.append("infrastructure tiles")
@@ -1474,8 +1476,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             if giga_store.file_exists(schools_path):
                 try:
                     gdf_schools = read_dataset(giga_store, schools_path)
-                    df_schools = gdf_schools.drop(columns=['geometry'])
-                    schools_data = df_schools.to_dict("records")#__geo_interface__
+                    schools_data = gdf_schools.__geo_interface__
                 except Exception as e:
                     print(f"Error reading schools file: {e}")
                     schools_data = {}
@@ -1492,7 +1493,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     health_data = {}
             
             # Tiles
-            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_15.parquet"
+            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.parquet"
             tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
             if giga_store.file_exists(tiles_path):
                 try:
@@ -1715,11 +1716,6 @@ def toggle_schools_layer(checked, schools_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_fillOpacity'] = 0.7
 
-
-        df_schools = pd.DataFrame(schools_data)
-        gdf_schools = convert_to_geodataframe(df_schools)
-        
-        return gdf_schools.__geo_interface__, True
         return schools_data, True
         
     except Exception as e:
