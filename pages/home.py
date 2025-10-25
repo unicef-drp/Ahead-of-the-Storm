@@ -1528,7 +1528,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 if giga_store.file_exists(base_tiles_path):
                     try:
                         df_tiles = read_dataset(giga_store, tiles_path)
+                        df_tiles = df_tiles.rename(columns={'zone_id':'tile_id'})
                         gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
+                        gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
                         tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
                         gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
                         tiles_data = gdf_tiles.__geo_interface__
