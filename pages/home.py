@@ -10,6 +10,8 @@ import os
 import warnings
 import json
 from shapely import wkt
+import copy
+import hashlib
 
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -637,10 +639,10 @@ def make_single_page_layout():
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
                     dcc.Store(id="population-tiles-data-store", data={}),
-                    dcc.Store(id="school-age-tiles-data-store", data={}),
-                    dcc.Store(id="built-surface-tiles-data-store", data={}),
-                    dcc.Store(id="settlement-tiles-data-store", data={}),
-                    dcc.Store(id="rwi-tiles-data-store", data={}),
+                    # dcc.Store(id="school-age-tiles-data-store", data={}),
+                    # dcc.Store(id="built-surface-tiles-data-store", data={}),
+                    # dcc.Store(id="settlement-tiles-data-store", data={}),
+                    # dcc.Store(id="rwi-tiles-data-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
@@ -686,34 +688,34 @@ def make_single_page_layout():
                                 zoomToBounds=True,
                                 style=style_tiles
                             ),
-                            # School-Age Population Tiles Layer
-                            dl.GeoJSON(
-                                id="school-age-tiles-json",
-                                data={},
-                                zoomToBounds=True,
-                                style=style_tiles
-                            ),
-                            # Built Surface Area Tiles Layer
-                            dl.GeoJSON(
-                                id="built-surface-tiles-json",
-                                data={},
-                                zoomToBounds=True,
-                                style=style_tiles
-                            ),
-                            # Settlement Classification Tiles Layer
-                            dl.GeoJSON(
-                                id="settlement-tiles-json",
-                                data={},
-                                zoomToBounds=True,
-                                style=style_tiles
-                            ),
-                            # Relative Wealth Index Tiles Layer
-                            dl.GeoJSON(
-                                id="rwi-tiles-json",
-                                data={},
-                                zoomToBounds=True,
-                                style=style_tiles
-                            ),
+                            # # School-Age Population Tiles Layer
+                            # dl.GeoJSON(
+                            #     id="school-age-tiles-json",
+                            #     data={},
+                            #     zoomToBounds=True,
+                            #     style=style_tiles
+                            # ),
+                            # # Built Surface Area Tiles Layer
+                            # dl.GeoJSON(
+                            #     id="built-surface-tiles-json",
+                            #     data={},
+                            #     zoomToBounds=True,
+                            #     style=style_tiles
+                            # ),
+                            # # Settlement Classification Tiles Layer
+                            # dl.GeoJSON(
+                            #     id="settlement-tiles-json",
+                            #     data={},
+                            #     zoomToBounds=True,
+                            #     style=style_tiles
+                            # ),
+                            # # Relative Wealth Index Tiles Layer
+                            # dl.GeoJSON(
+                            #     id="rwi-tiles-json",
+                            #     data={},
+                            #     zoomToBounds=True,
+                            #     style=style_tiles
+                            # ),
                             dl.FullScreenControl(),
                             dl.LocateControl(locateOptions={"enableHighAccuracy": True}),
                         ],
@@ -1321,10 +1323,10 @@ layout = make_single_page_appshell()
      Output('schools-data-store', 'data'),
      Output('health-data-store', 'data'),
      Output('population-tiles-data-store', 'data'),
-     Output('school-age-tiles-data-store', 'data'),
-     Output('built-surface-tiles-data-store', 'data'),
-     Output('settlement-tiles-data-store', 'data'),
-     Output('rwi-tiles-data-store', 'data'),
+    #  Output('school-age-tiles-data-store', 'data'),
+    #  Output('built-surface-tiles-data-store', 'data'),
+    #  Output('settlement-tiles-data-store', 'data'),
+    #  Output('rwi-tiles-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
@@ -1360,8 +1362,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
-    
+        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
+        #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1555,37 +1557,46 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             # Use JSON serialization/deserialization for complete independence
             tiles_json = json.dumps(tiles_data)
             tiles_copy1 = json.loads(tiles_json)
-            tiles_copy2 = json.loads(tiles_json)
-            tiles_copy3 = json.loads(tiles_json)
-            tiles_copy4 = json.loads(tiles_json)
-            tiles_copy5 = json.loads(tiles_json)
+            # tiles_copy2 = json.loads(tiles_json)
+            # tiles_copy3 = json.loads(tiles_json)
+            # tiles_copy4 = json.loads(tiles_json)
+            # tiles_copy5 = json.loads(tiles_json)
         else:
             empty_geojson = {"type": "FeatureCollection", "features": []}
-            tiles_copy1 = tiles_copy2 = tiles_copy3 = tiles_copy4 = tiles_copy5 = empty_geojson
+            tiles_copy1 = empty_geojson #tiles_copy2 = tiles_copy3 = tiles_copy4 = tiles_copy5 = empty_geojson
         
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
         return (tracks_data, envelope_data, schools_data, health_data, 
-                tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
+                tiles_data,
                 True, status_alert, 
                 False, False, False, False, False, False, False, False, False)
+        # return (tracks_data, envelope_data, schools_data, health_data, 
+        #         tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
+        #         True, status_alert, 
+        #         False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
+        #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
 @callback(
     Output("hurricane-tracks-json", "data"),
     Output("hurricane-tracks-json", "zoomToBounds"),
+    Output("hurricane-tracks-json","key"),
     [Input("hurricane-tracks-toggle", "checked"),
      Input("specific-track-select", "value")],
     State("tracks-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tracks_layer(checked, selected_track, tracks_data):
+def toggle_tracks_layer(checked, selected_track, tracks_data_in):
     """Toggle hurricane tracks layer visibility with optional specific track filtering"""
-    if not checked or not tracks_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not tracks_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    tracks_data = copy.deepcopy(tracks_data_in)
+    key = hashlib.md5(json.dumps(tracks_data, sort_keys=True).encode()).hexdigest()
     
     # If specific track is selected, filter to show only that track
     if selected_track and 'features' in tracks_data:
@@ -1593,14 +1604,15 @@ def toggle_tracks_layer(checked, selected_track, tracks_data):
         for feature in tracks_data['features']:
             if feature.get('properties', {}).get('ensemble_member') == int(selected_track):
                 filtered_tracks['features'].append(feature)
-        return filtered_tracks, True
+        return filtered_tracks, True, key
     
     # Otherwise show all tracks
-    return tracks_data, True
+    return tracks_data, True, key
 
 @callback(
     Output("envelopes-json-test", "data"),
     Output("envelopes-json-test", "zoomToBounds"),
+    Output("envelopes-json-test","key"),
     [Input("hurricane-envelopes-toggle", "checked"),
      Input("specific-track-select", "value")],
     [State("envelope-data-store", "data"),
@@ -1611,11 +1623,14 @@ def toggle_tracks_layer(checked, selected_track, tracks_data):
      State("forecast-time", "value")],
     prevent_initial_call=False
 )
-def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshold, country, storm, forecast_date, forecast_time):
+def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_threshold, country, storm, forecast_date, forecast_time):
     """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
     
     if not checked:
-        return {"type": "FeatureCollection", "features": []}, False
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    envelope_data = copy.deepcopy(envelope_data_in)
+    key = hashlib.md5(json.dumps(envelope_data, sort_keys=True).encode()).hexdigest()
     
     # If specific track is selected, create specific track envelope
     if selected_track:
@@ -1660,18 +1675,18 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshol
                             }
                         }
                         specific_envelope['features'].append(feature)
-                    return specific_envelope, True
+                    return specific_envelope, True, key
         except Exception as e:
             print(f"Error creating specific track envelope: {e}")
     
     # Default probabilistic envelope behavior
     if not envelope_data or not envelope_data.get('data'):
-        return {"type": "FeatureCollection", "features": []}, False
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     try:
         df = pd.DataFrame(envelope_data['data'])
         if df.empty:
-            return {"type": "FeatureCollection", "features": []}, False
+            return {"type": "FeatureCollection", "features": []}, False, dash.no_update
         
         # Filter by wind threshold
         if wind_threshold:
@@ -1679,7 +1694,7 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshol
             df = df[df['wind_threshold'] == wth_int]
         
         if df.empty:
-            return {"type": "FeatureCollection", "features": []}, False
+            return {"type": "FeatureCollection", "features": []}, False, dash.no_update
         
         # Convert to GeoDataFrame
         if df['geometry'].iloc[0].startswith('{'):
@@ -1692,24 +1707,27 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data, wind_threshol
         else:
             gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry']))
         
-        return gdf.__geo_interface__, True
+        return gdf.__geo_interface__, True, key
         
     except Exception as e:
         print(f"Error toggling envelopes: {e}")
-        return {"type": "FeatureCollection", "features": []}, False
+        return {"type": "FeatureCollection", "features": []}, False, key
 
 @callback(
     Output("schools-json-test", "data"),
     Output("schools-json-test", "zoomToBounds"),
+    Output("schools-json-test","key"),
     [Input("schools-layer", "checked")],
     State("schools-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_schools_layer(checked, schools_data):
+def toggle_schools_layer(checked, schools_data_in):
     """Toggle schools layer visibility with probability-based coloring"""
-    if not checked or not schools_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not schools_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
+    schools_data = copy.deepcopy(schools_data_in)
+    key = hashlib.md5(json.dumps(schools_data, sort_keys=True).encode()).hexdigest()
     try:
         # Add probability-based styling to each feature
         if 'features' in schools_data:
@@ -1751,23 +1769,26 @@ def toggle_schools_layer(checked, schools_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_fillOpacity'] = 0.7
         
-        return schools_data, True
-        
+        return schools_data, True, key
     except Exception as e:
         print(f"Error styling schools layer: {e}")
-        return schools_data, True
+        return schools_data, True, key
 
 @callback(
     Output("health-json-test", "data"),
     Output("health-json-test", "zoomToBounds"),
+    Output("health-json-test","key"),
     [Input("health-layer", "checked")],
     State("health-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_health_layer(checked, health_data):
+def toggle_health_layer(checked, health_data_in):
     """Toggle health centers layer visibility with probability-based coloring"""
-    if not checked or not health_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not health_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    health_data = copy.deepcopy(health_data_in)
+    key = hashlib.md5(json.dumps(health_data, sort_keys=True).encode()).hexdigest()
     
     try:
         # Add probability-based styling to each feature
@@ -1810,29 +1831,33 @@ def toggle_health_layer(checked, health_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_fillOpacity'] = 0.7
         
-        return health_data, True
+        return health_data, True, key
         
     except Exception as e:
         print(f"Error styling health layer: {e}")
-        return health_data, True
+        return health_data, True, key
 
 @callback(
-    Output("population-tiles-json", "data"),
-    Output("population-tiles-json", "zoomToBounds"),
+    Output("population-tiles-json", "data", allow_duplicate=True),
+    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("population-tiles-layer", "checked")],
     State("population-tiles-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
-def toggle_population_tiles_layer(checked, tiles_data):
+def toggle_population_tiles_layer(checked, tiles_data_in):
     """Toggle population density tiles layer visibility with blue color scheme"""
-    if not checked or not tiles_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
         print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+
     try:
         # Debug: Collect population values to understand the data
         population_values = []
@@ -1899,28 +1924,34 @@ def toggle_population_tiles_layer(checked, tiles_data):
             else:
                 print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
         
-        return tiles_data, True
+        #gdf = gpd.GeoDataFrame.from_features(tiles_data, crs="EPSG:4326")
+        #return gdf.__geo_interface__, True
+        return copy.deepcopy(tiles_data), True, key
     except Exception as e:
         print(f"Error styling population tiles: {e}")
-        return tiles_data, True
+        return tiles_data, True, key
 
 @callback(
-    Output("school-age-tiles-json", "data"),
-    Output("school-age-tiles-json", "zoomToBounds"),
+    Output("population-tiles-json", "data", allow_duplicate=True),
+    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("school-age-tiles-layer", "checked")],
-    State("school-age-tiles-data-store", "data"),
-    prevent_initial_call=False
+    State("population-tiles-data-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_school_age_tiles_layer(checked, tiles_data):
+def toggle_school_age_tiles_layer(checked, tiles_data_in):
     """Toggle school-age population tiles layer visibility with green color scheme"""
     print(f"School-age tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
     
     print(f"School-age tiles data structure OK: {len(tiles_data.get('features', []))} features")
     
@@ -1960,29 +1991,33 @@ def toggle_school_age_tiles_layer(checked, tiles_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_opacity'] = 0.8
         
-        return tiles_data, True
+        return tiles_data, True, key
     except Exception as e:
         print(f"Error styling school-age tiles: {e}")
-        return tiles_data, True
+        return tiles_data, True, key
 
 @callback(
-    Output("built-surface-tiles-json", "data"),
-    Output("built-surface-tiles-json", "zoomToBounds"),
+    Output("population-tiles-json", "data", allow_duplicate=True),
+    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("built-surface-tiles-layer", "checked")],
-    State("built-surface-tiles-data-store", "data"),
-    prevent_initial_call=False
+    State("population-tiles-data-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_built_surface_tiles_layer(checked, tiles_data):
+def toggle_built_surface_tiles_layer(checked, tiles_data_in):
     """Toggle built surface area tiles layer visibility with brown/gray color scheme"""
     print(f"Built surface tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+
     print(f"Built surface tiles data structure OK: {len(tiles_data.get('features', []))} features")
     
     try:
@@ -2021,27 +2056,31 @@ def toggle_built_surface_tiles_layer(checked, tiles_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_opacity'] = 0.8
         
-        return tiles_data, True
+        return tiles_data, True, key
     except Exception as e:
         print(f"Error styling built surface tiles: {e}")
-        return tiles_data, True
+        return tiles_data, True, key
 
 @callback(
-    Output("settlement-tiles-json", "data"),
-    Output("settlement-tiles-json", "zoomToBounds"),
+    Output("population-tiles-json", "data", allow_duplicate=True),
+    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("settlement-tiles-layer", "checked")],
-    State("settlement-tiles-data-store", "data"),
-    prevent_initial_call=False
+    State("population-tiles-data-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_settlement_tiles_layer(checked, tiles_data):
+def toggle_settlement_tiles_layer(checked, tiles_data_in):
     """Toggle settlement classification tiles layer visibility with purple color scheme"""
-    if not checked or not tiles_data:
-        return {"type": "FeatureCollection", "features": []}, False
+    if not checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
     
     try:
         # Add settlement-based styling to each feature
@@ -2074,27 +2113,31 @@ def toggle_settlement_tiles_layer(checked, tiles_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_opacity'] = 0.8
         
-        return tiles_data, True
+        return tiles_data, True, key
     except Exception as e:
         print(f"Error styling settlement tiles: {e}")
-        return tiles_data, True
+        return tiles_data, True, key
 
 @callback(
-    Output("rwi-tiles-json", "data"),
-    Output("rwi-tiles-json", "zoomToBounds"),
+    Output("population-tiles-json", "data", allow_duplicate=True),
+    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("rwi-tiles-layer", "checked")],
-    State("rwi-tiles-data-store", "data"),
-    prevent_initial_call=False
+    State("population-data-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_rwi_tiles_layer(checked, tiles_data):
+def toggle_rwi_tiles_layer(checked, tiles_data_in):
     """Toggle relative wealth index tiles layer visibility with orange/yellow color scheme"""
-    if not checked or not tiles_data:
+    if not checked or not tiles_data_in:
         return {"type": "FeatureCollection", "features": []}, False
     
     # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data, dict) or 'features' not in tiles_data:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
         return {"type": "FeatureCollection", "features": []}, False
+    
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
     
     try:
         # Add RWI-based styling to each feature
@@ -2139,10 +2182,10 @@ def toggle_rwi_tiles_layer(checked, tiles_data):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_opacity'] = 0.8
         
-        return tiles_data, True
+        return tiles_data, True, key
     except Exception as e:
         print(f"Error styling RWI tiles: {e}")
-        return tiles_data, True
+        return tiles_data, True, key
 
 # Callback to update info text when specific track is selected
 @callback(
