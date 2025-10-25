@@ -2086,9 +2086,9 @@ def toggle_settlement_tiles_layer(checked, tiles_data_in):
         # Add settlement-based styling to each feature
         if 'features' in tiles_data:
             for feature in tiles_data['features']:
-                if 'properties' in feature and 'smod' in feature['properties']:
-                    smod = feature['properties']['smod']
-                    
+                if 'properties' in feature and 'smod_class' in feature['properties']:
+                    smod = feature['properties']['smod_class']
+                    smod = int(smod/10)
                     # Purple color scale for settlement classification
                     # SMOD values: 0=no data, 1=rural, 2=urban clusters, 3=urban centers
                     if smod == 0 or smod is None or pd.isna(smod):
