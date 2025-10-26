@@ -2123,7 +2123,7 @@ def toggle_settlement_tiles_layer(checked, tiles_data_in):
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
     [Input("rwi-tiles-layer", "checked")],
-    State("population-data-store", "data"),
+    State("population-tiles-data-store", "data"),
     prevent_initial_call=True
 )
 def toggle_rwi_tiles_layer(checked, tiles_data_in):
