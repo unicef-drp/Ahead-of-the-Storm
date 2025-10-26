@@ -6,9 +6,11 @@ import os
 from components.ui.header import make_header
 from components.ui.footer import footer
 
-from gigaspatial.core.io import ADLSDataStore
+# from gigaspatial.core.io import ADLSDataStore
+from components.data.data_store_utils import get_data_store
 
-giga_store = ADLSDataStore()
+# giga_store = ADLSDataStore()
+giga_store = get_data_store()
 
 RESULTS_DIR = os.getenv('RESULTS_DIR')
 REPORT_FILE = os.getenv('REPORT_FILE')
@@ -83,7 +85,19 @@ def make_custom_header():
     return make_header(active_tab="report")
 
 def make_single_page_layout():
-    with giga_store.open(os.path.join(RESULTS_DIR,REPORT_FILE),'r') as f:
+    report_path = os.path.join(RESULTS_DIR, REPORT_FILE)
+    
+    # Check if file exists before trying to open it
+    if not giga_store.file_exists(report_path):
+        # Return a placeholder message if report doesn't exist yet
+        return dmc.Alert(
+            "Impact report not yet generated. Please run the data pipeline to generate reports.",
+            title="Report Not Available",
+            color="blue",
+            variant="light"
+        )
+    
+    with giga_store.open(report_path, 'r') as f:
         html_str = f.read()
 
     return html.Iframe(

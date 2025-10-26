@@ -98,16 +98,119 @@ function(feature, latlng, context) {
 
 style_envelopes = assign("""
 function(feature, context) {
-    const wind_threshold = feature.properties?.wind_threshold;
-    if (wind_threshold === 34) {
-        return {color: '#ffff00', weight: 2, fillColor: '#ffff00', fillOpacity: 0.3};
-    } else if (wind_threshold === 40) {
-        return {color: '#ff8800', weight: 2, fillColor: '#ff8800', fillOpacity: 0.3};
-    } else if (wind_threshold === 50) {
-        return {color: '#ff0000', weight: 2, fillColor: '#ff0000', fillOpacity: 0.3};
-    } else {
-        return {color: '#888888', weight: 2, fillColor: '#888888', fillOpacity: 0.3};
+    const props = feature.properties || {};
+    const severity_population = props.severity_population || 0;
+    const max_population = props.max_population || 1;
+    
+    // Gray for no data or zero impact
+    if (!severity_population || severity_population === 0) {
+        return {color: '#808080', weight: 2, fillColor: '#808080', fillOpacity: 0.3};
     }
+    
+    // Calculate relative severity (0 to 1)
+    const relativeSeverity = Math.min(severity_population / max_population, 1);
+    
+    // Smooth gradient from yellow to red using color interpolation
+    // Using cubic easing for smoother transitions
+    const easedSeverity = relativeSeverity * relativeSeverity * relativeSeverity;
+    
+    // Color interpolation helper
+    const interpolateColor = (startColor, endColor, fraction) => {
+        const start = parseInt(startColor.slice(1), 16);
+        const end = parseInt(endColor.slice(1), 16);
+        const r = Math.round(((start >> 16) & 0xff) * (1 - fraction) + ((end >> 16) & 0xff) * fraction);
+        const g = Math.round(((start >> 8) & 0xff) * (1 - fraction) + ((end >> 8) & 0xff) * fraction);
+        const b = Math.round((start & 0xff) * (1 - fraction) + (end & 0xff) * fraction);
+        return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    };
+    
+    // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
+    const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
+    
+    // Opacity also increases with severity
+    const fillOpacity = 0.3 + (easedSeverity * 0.6);
+    
+    return {color: color, weight: 2, fillColor: color, fillOpacity: fillOpacity};
+}
+""")
+
+# Tooltip functions for displaying data on hover
+tooltip_tracks = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const member = props.ensemble_member || 'N/A';
+    const type = props.member_type || 'N/A';
+    
+    const label = type === 'control' ? 'Control Track' : 'Ensemble Track';
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #1cabe2; margin-bottom: 5px;">
+            ${label}
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Ensemble Member:</strong> #${member}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_envelopes = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
+    const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
+    const severity_population = props.severity_population || 0;
+    const severity_schools = props.severity_schools || 0;
+    const severity_hcs = props.severity_hcs || 0;
+    const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
+    const severity_children = props.severity_children || 0;
+    
+    const formatNumber = (num) => {
+        if (typeof num === 'number') {
+            return new Intl.NumberFormat('en-US').format(Math.round(num));
+        }
+        return num;
+    };
+    
+    // Always show same structure, use N/A when data not available
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
+            Hurricane Envelope
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Wind Threshold:</strong> ${wind_threshold}
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Ensemble Member:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : 'N/A'}
+        </div>
+    `;
+    
+    // Always show impact section
+    content += `
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
+        <div style="font-size: 11px; color: #777; margin-top: 5px;">
+            <strong>Impact:</strong>
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Children: ${severity_children > 0 ? formatNumber(severity_children) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
 }
 """)
 
@@ -656,14 +759,16 @@ def make_single_page_layout():
                                 id="hurricane-tracks-json",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_tracks
+                                style=style_tracks,
+                                onEachFeature=tooltip_tracks
                             ),
                             # Hurricane Envelopes Layer
         dl.GeoJSON(
             id="envelopes-json-test",
             data={},
             zoomToBounds=True,
-            style=style_envelopes
+            style=style_envelopes,
+            onEachFeature=tooltip_envelopes
         ),
                             # Schools Impact Layer
                             dl.GeoJSON(
@@ -1632,13 +1737,15 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
     envelope_data = copy.deepcopy(envelope_data_in)
     key = hashlib.md5(json.dumps(envelope_data, sort_keys=True).encode()).hexdigest()
     
+    # Construct datetime string for file paths
+    date_str = forecast_date.replace('-', '') if forecast_date else ''
+    time_str = forecast_time.replace(':', '') if forecast_time else ''
+    forecast_datetime_str = f"{date_str}{time_str}00"
+    
     # If specific track is selected, create specific track envelope
     if selected_track:
         try:
             # Load specific track data
-            date_str = forecast_date.replace('-', '')
-            time_str = forecast_time.replace(':', '')
-            forecast_datetime_str = f"{date_str}{time_str}00"
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
@@ -1667,11 +1774,13 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
                             "geometry": geometry,
                             "properties": {
                                 "zone_id": int(row['zone_id']),
+                                "ensemble_member": int(row['zone_id']),  # Use zone_id as ensemble_member for specific tracks
                                 "wind_threshold": int(row['wind_threshold']),
                                 "severity_population": float(row['severity_population']),
                                 "severity_schools": int(row['severity_schools']),
                                 "severity_hcs": int(row['severity_hcs']),
-                                "severity_built_surface_m2": float(row['severity_built_surface_m2'])
+                                "severity_built_surface_m2": float(row['severity_built_surface_m2']),
+                                "severity_children": float(row['severity_children']) if 'severity_children' in row else 0
                             }
                         }
                         specific_envelope['features'].append(feature)
@@ -1679,7 +1788,7 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
         except Exception as e:
             print(f"Error creating specific track envelope: {e}")
     
-    # Default probabilistic envelope behavior
+    # Default probabilistic envelope behavior - now with impact data!
     if not envelope_data or not envelope_data.get('data'):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
@@ -1706,6 +1815,82 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
             gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries)
         else:
             gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry']))
+        
+        # Try to add impact data from track_views if available
+        try:
+            # Only try to load impact data if we have all required parameters
+            if country and storm and forecast_datetime_str and wind_threshold:
+                tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+                tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                
+                if giga_store.file_exists(tracks_filepath):
+                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    
+                    # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
+                    if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
+                        # Filter by wind threshold
+                        tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == wth_int]
+                        
+                        if not tracks_thresh.empty:
+                            # Aggregate impact data by ensemble member
+                            agg_dict = {
+                                'severity_population': 'sum',
+                                'severity_schools': 'sum',
+                                'severity_hcs': 'sum',
+                                'severity_built_surface_m2': 'sum'
+                            }
+                            
+                            # Add children column if it exists
+                            if 'severity_children' in tracks_thresh.columns:
+                                agg_dict['severity_children'] = 'sum'
+                            
+                            impact_summary = tracks_thresh.groupby('zone_id').agg(agg_dict).reset_index()
+                            
+                            # Build column names list dynamically
+                            col_names = ['ensemble_member', 'severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                            if 'severity_children' in agg_dict:
+                                col_names.insert(1, 'severity_children')
+                            impact_summary.columns = col_names
+                            
+                            # Merge with envelope data
+                            # Get ensemble_member from envelope data - could be in ENSEMBLE_MEMBER column
+                            if 'ENSEMBLE_MEMBER' in gdf.columns:
+                                gdf['ensemble_member'] = gdf['ENSEMBLE_MEMBER']
+                            
+                            # Merge impact data
+                            gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
+                            
+                            # Fill NaN values with 0
+                            impact_cols = ['severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                            if 'severity_children' in impact_summary.columns:
+                                impact_cols.insert(0, 'severity_children')
+                            for col in impact_cols:
+                                if col in gdf.columns:
+                                    gdf[col] = gdf[col].fillna(0)
+                            
+                            # Calculate max population for relative scaling
+                            if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                                max_pop = gdf['severity_population'].max()
+                                # Add max_population to each feature properties for relative scaling
+                                geo_dict = gdf.__geo_interface__
+                                for feature in geo_dict.get('features', []):
+                                    if 'properties' in feature:
+                                        feature['properties']['max_population'] = max_pop
+        except Exception as e:
+            print(f"Could not add impact data to envelopes: {e}")
+        
+        # Convert to geo_interface if not already
+        if isinstance(gdf, gpd.GeoDataFrame):
+            geo_dict = gdf.__geo_interface__
+            # If we didn't add max_population yet, calculate it
+            if any('max_population' in f.get('properties', {}) for f in geo_dict.get('features', [])):
+                pass  # Already added
+            elif 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                max_pop = gdf['severity_population'].max()
+                for feature in geo_dict.get('features', []):
+                    if 'properties' in feature:
+                        feature['properties']['max_population'] = max_pop
+            return geo_dict, True, key
         
         return gdf.__geo_interface__, True, key
         
