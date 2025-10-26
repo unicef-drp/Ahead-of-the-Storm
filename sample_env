@@ -24,11 +24,13 @@ export SNOWFLAKE_SCHEMA=''
 
 #### internal ####
 export TRACKS_DB='BLOB'
-export DATA_PIPELINE_DB='LOCAL'
+#export DATA_PIPELINE_DB='LOCAL'
 #export DATA_PIPELINE_DB='BLOB'
-#export DATA_PIPELINE_DB='RO_BLOB'
+export DATA_PIPELINE_DB='RO_BLOB'
 export RESULTS_DIR = "project_results/climate/lacro_project"
 export BBOX_FILE = "bbox.parquet"
 export STORMS_FILE = "storms.json"
+export REPORT_FILE = "impact-report-current.html"
+export REPORT_TEMPLATE_FILE = "impact-report.html"
 export ACCOUNT_URL=""
 export SAS_TOKEN=""
