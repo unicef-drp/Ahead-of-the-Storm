@@ -780,6 +780,15 @@ def make_single_page_layout():
                                         ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
+                                        dmc.Switch(
+                                            id="tiles-vis-mode",
+                                            label="Show Expected Impact",
+                                            description="Display probability-weighted expected impact instead of base values",
+                                            checked=False,
+                                            size="sm",
+                                            mb="xs",
+                                            disabled=True
+                                        ),
                                         dmc.Checkbox(id="population-tiles-layer", label="Population Density", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
@@ -885,6 +894,7 @@ def make_single_page_layout():
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
                     dcc.Store(id="population-tiles-data-store", data={}),
+                    dcc.Store(id="tiles-layer-order-store", data={"order": [], "active": None}),
                     # dcc.Store(id="school-age-tiles-data-store", data={}),
                     # dcc.Store(id="built-surface-tiles-data-store", data={}),
                     # dcc.Store(id="settlement-tiles-data-store", data={}),
@@ -1585,8 +1595,7 @@ layout = make_single_page_appshell()
      Output('population-tiles-layer', 'disabled'),
      Output('school-age-tiles-layer', 'disabled'),
      Output('built-surface-tiles-layer', 'disabled'),
-     Output('settlement-tiles-layer', 'disabled'),
-     Output('rwi-tiles-layer', 'disabled')],
+     Output('tiles-vis-mode', 'disabled')],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
@@ -1611,8 +1620,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
-        #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1818,7 +1826,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False)
         # return (tracks_data, envelope_data, schools_data, health_data, 
         #         tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
         #         True, status_alert, 
@@ -1826,7 +1834,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True
         #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
@@ -2216,13 +2224,340 @@ def toggle_health_layer(checked, health_data_in):
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("population-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
+    Output("tiles-layer-order-store", "data", allow_duplicate=True),
+    [Input("population-tiles-layer", "checked"),
+     Input("school-age-tiles-layer", "checked"),
+     Input("built-surface-tiles-layer", "checked"),
+     Input("settlement-tiles-layer", "checked"),
+     Input("rwi-tiles-layer", "checked"),
+     Input("tiles-vis-mode", "checked")],
+    [State("population-tiles-data-store", "data"),
+     State("tiles-layer-order-store", "data")],
     prevent_initial_call=True
 )
-def toggle_population_tiles_layer(checked, tiles_data_in):
-    """Toggle population density tiles layer visibility with blue color scheme"""
-    if not checked or not tiles_data_in:
+def unified_tiles_layer_handler(pop_checked, school_checked, built_checked, settlement_checked, rwi_checked, show_expected, tiles_data_in, order_store):
+    """Unified handler for all tile layers - tracks turn-on order and shows most recent"""
+    print(f"=== TILES CALLBACK - pop={pop_checked}, school={school_checked}, built={built_checked}, settlement={settlement_checked}, rwi={rwi_checked}, expected={show_expected} ===")
+    
+    if not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, dash.no_update
+    
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, dash.no_update
+    
+    # Initialize order store
+    if not order_store:
+        order_store = {"order": [], "active": None}
+    order = order_store.get("order", [])
+    
+    # Detect which layer was just changed
+    ctx = callback_context
+    triggered_prop = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    
+    layer_names = {
+        'population-tiles-layer': 'population',
+        'school-age-tiles-layer': 'school_age',
+        'built-surface-tiles-layer': 'built_surface',
+        'settlement-tiles-layer': 'settlement',
+        'rwi-tiles-layer': 'rwi'
+    }
+    
+    current_states = {
+        'population': pop_checked,
+        'school_age': school_checked,
+        'built_surface': built_checked,
+        'settlement': settlement_checked,
+        'rwi': rwi_checked
+    }
+    
+    # Update order based on what was triggered
+    if triggered_prop and triggered_prop in layer_names:
+        layer_name = layer_names[triggered_prop]
+        is_checked = current_states[layer_name]
+        
+        # If turned on, add to end of order
+        if is_checked and layer_name not in order:
+            order.append(layer_name)
+            print(f"Added {layer_name} to order: {order}")
+        # If turned off, remove from order
+        elif not is_checked and layer_name in order:
+            order.remove(layer_name)
+            print(f"Removed {layer_name} from order: {order}")
+    
+    # Filter order to only include currently checked layers
+    checked_order = [layer for layer in order if current_states.get(layer, False)]
+    
+    use_expected = show_expected if show_expected is not None else False
+    
+    # Determine which layer to show - last one in the checked order
+    layer_type = None
+    prop_key = None
+    
+    if checked_order:
+        layer_type = checked_order[-1]  # Last turned-on that's still checked
+    elif ctx.triggered and triggered_prop and triggered_prop in layer_names:
+        # If nothing in order but a layer was just checked, show it
+        layer_type = layer_names[triggered_prop]
+        if current_states[layer_type]:
+            checked_order = [layer_type]
+            order = [layer_type]
+    
+    # Update order store
+    new_order_store = {"order": order, "active": layer_type}
+    
+    # If still no layer, return empty
+    if layer_type is None:
+        print("No layers checked, returning empty")
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, new_order_store
+    
+    print(f"Displaying layer: {layer_type} (order: {checked_order})")
+    
+    # Map layer type to property keys
+    layer_props = {
+        'population': 'population',
+        'school_age': 'school_age_population',
+        'built_surface': 'built_surface_m2',
+        'settlement': 'smod_class',
+        'rwi': 'rwi'
+    }
+    
+    prop_key = layer_props.get(layer_type)
+    
+    tiles_data = copy.deepcopy(tiles_data_in)
+    
+    # Generate key
+    mode_key = "expected" if use_expected else "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key + layer_type).encode()).hexdigest()
+    
+    try:
+        # Process each feature based on the selected layer type
+        if 'features' in tiles_data:
+            for feature in tiles_data['features']:
+                if 'properties' not in feature:
+                    continue
+                
+                props = feature['properties']
+                
+                # Apply coloring based on layer type
+                if layer_type == 'population':
+                    if prop_key not in props:
+                        continue
+                    if use_expected:
+                        value = props.get('E_population', 0) or 0
+                        color, fillOpacity = _get_expected_color(value, 'population')
+                    else:
+                        pop = props.get('population', 0)
+                        color, fillOpacity = _get_base_population_color(pop)
+                elif layer_type == 'school_age':
+                    if prop_key not in props:
+                        continue
+                    if use_expected:
+                        value = props.get('E_school_age_population', 0) or 0
+                        color, fillOpacity = _get_expected_color(value, 'school_age')
+                    else:
+                        pop = props.get('school_age_population', 0)
+                        color, fillOpacity = _get_base_school_age_color(pop)
+                elif layer_type == 'built_surface':
+                    if prop_key not in props:
+                        continue
+                    if use_expected:
+                        value = props.get('E_built_surface_m2', 0) or 0
+                        color, fillOpacity = _get_expected_color(value, 'built_surface')
+                    else:
+                        surface = props.get('built_surface_m2', 0)
+                        color, fillOpacity = _get_base_built_surface_color(surface)
+                elif layer_type == 'settlement':
+                    if prop_key not in props:
+                        continue
+                    smod = int(props['smod_class'] / 10) if props['smod_class'] else 0
+                    color, fillOpacity = _get_settlement_color(smod)
+                elif layer_type == 'rwi':
+                    if prop_key not in props:
+                        continue
+                    rwi = props.get('rwi', 0)
+                    color, fillOpacity = _get_rwi_color(rwi)
+                else:
+                    color, fillOpacity = 'transparent', 0.0
+                
+                # Add styling properties
+                feature['properties']['_color'] = color
+                feature['properties']['_fillOpacity'] = fillOpacity
+                feature['properties']['_weight'] = 1
+                feature['properties']['_opacity'] = 0.8
+        
+        return copy.deepcopy(tiles_data), True, key, new_order_store
+    except Exception as e:
+        print(f"Error in unified tiles handler: {e}")
+        return tiles_data, True, key, new_order_store
+
+def _get_expected_color(value, layer_type):
+    """Get color for expected impact visualization (yellow to red gradient)"""
+    if not value or value == 0 or pd.isna(value):
+        return 'transparent', 0.0
+    
+    # Adjust thresholds based on layer type
+    if layer_type == 'population':
+        if value <= 50:
+            return '#FFFF00', 0.5
+        elif value <= 150:
+            return '#FFD700', 0.55
+        elif value <= 300:
+            return '#FFA500', 0.6
+        elif value <= 500:
+            return '#FF8C00', 0.65
+        elif value <= 750:
+            return '#FF6A00', 0.7
+        elif value <= 1000:
+            return '#FF4500', 0.75
+        elif value <= 1500:
+            return '#DC143C', 0.8
+        elif value <= 2500:
+            return '#B22222', 0.85
+        elif value <= 4000:
+            return '#A52A2A', 0.9
+        else:
+            return '#8B0000', 0.95
+    elif layer_type == 'school_age':
+        if value <= 20:
+            return '#FFFF00', 0.5
+        elif value <= 50:
+            return '#FFD700', 0.55
+        elif value <= 100:
+            return '#FFA500', 0.6
+        elif value <= 200:
+            return '#FF8C00', 0.65
+        elif value <= 350:
+            return '#FF6A00', 0.7
+        elif value <= 500:
+            return '#FF4500', 0.75
+        elif value <= 750:
+            return '#DC143C', 0.8
+        elif value <= 1000:
+            return '#B22222', 0.85
+        elif value <= 1500:
+            return '#A52A2A', 0.9
+        else:
+            return '#8B0000', 0.95
+    else:  # built_surface
+        if value <= 5000:
+            return '#FFFF00', 0.5
+        elif value <= 15000:
+            return '#FFD700', 0.55
+        elif value <= 30000:
+            return '#FFA500', 0.6
+        elif value <= 50000:
+            return '#FF8C00', 0.65
+        elif value <= 75000:
+            return '#FF6A00', 0.7
+        elif value <= 100000:
+            return '#FF4500', 0.75
+        elif value <= 150000:
+            return '#DC143C', 0.8
+        elif value <= 200000:
+            return '#B22222', 0.85
+        elif value <= 300000:
+            return '#A52A2A', 0.9
+        else:
+            return '#8B0000', 0.95
+
+def _get_base_population_color(pop):
+    """Get color for base population visualization"""
+    if pop == 0 or pop is None or pd.isna(pop):
+        return 'transparent', 0.0
+    elif pop <= 100:
+        return '#87ceeb', 0.7
+    elif pop <= 500:
+        return '#4682b4', 0.7
+    elif pop <= 1000:
+        return '#1e90ff', 0.7
+    elif pop <= 2500:
+        return '#0000cd', 0.7
+    elif pop <= 5000:
+        return '#000080', 0.7
+    else:
+        return '#191970', 0.7
+
+def _get_base_school_age_color(pop):
+    """Get color for base school-age population visualization"""
+    if pop == 0 or pop is None or pd.isna(pop):
+        return 'transparent', 0.0
+    elif pop <= 50:
+        return '#90ee90', 0.7
+    elif pop <= 150:
+        return '#32cd32', 0.7
+    elif pop <= 300:
+        return '#228b22', 0.7
+    elif pop <= 500:
+        return '#006400', 0.7
+    elif pop <= 750:
+        return '#2e8b57', 0.7
+    else:
+        return '#1c4a1c', 0.7
+
+def _get_base_built_surface_color(surface):
+    """Get color for base built surface visualization"""
+    if surface == 0 or surface is None or pd.isna(surface):
+        return 'transparent', 0.0
+    elif surface <= 1000:
+        return '#d3d3d3', 0.7
+    elif surface <= 5000:
+        return '#a9a9a9', 0.7
+    elif surface <= 10000:
+        return '#808080', 0.7
+    elif surface <= 25000:
+        return '#8b4513', 0.7
+    elif surface <= 50000:
+        return '#654321', 0.7
+    else:
+        return '#2f1b14', 0.7
+
+def _get_settlement_color(smod):
+    """Get color for settlement classification"""
+    if smod == 0 or smod is None or pd.isna(smod):
+        return 'transparent', 0.0
+    elif smod == 1:
+        return '#dda0dd', 0.7
+    elif smod == 2:
+        return '#9370db', 0.7
+    elif smod == 3:
+        return '#4b0082', 0.7
+    else:
+        return '#2e0854', 0.7
+
+def _get_rwi_color(rwi):
+    """Get color for relative wealth index"""
+    if rwi is None or rwi == 0 or pd.isna(rwi):
+        return 'transparent', 0.0
+    elif rwi <= -1.5:
+        return '#8b0000', 0.7
+    elif rwi <= -1.0:
+        return '#dc143c', 0.7
+    elif rwi <= -0.5:
+        return '#ff6347', 0.7
+    elif rwi <= 0:
+        return '#ffa500', 0.7
+    elif rwi <= 0.5:
+        return '#ffd700', 0.7
+    elif rwi <= 1.0:
+        return '#ffff00', 0.7
+    elif rwi <= 1.5:
+        return '#adff2f', 0.7
+    else:
+        return '#32cd32', 0.7
+
+def toggle_population_tiles_layer_OLD(checked, show_expected, tiles_data_in):
+    """OLD - Toggle population density tiles layer visibility with blue color scheme"""
+    print(f"=== POPULATION CALLBACK: checked={checked}, show_expected={show_expected} ===")
+    
+    # If this checkbox is not checked, return no_update to let other callbacks handle the display
+    if not checked:
+        print(f"Population tiles checkbox unchecked, returning no_update")
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    print(f"Processing population tiles: checked={checked}, show_expected={show_expected}")
+    
+    if not tiles_data_in:
+        print(f"No tiles data available")
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
@@ -2231,48 +2566,87 @@ def toggle_population_tiles_layer(checked, tiles_data_in):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+    
+    # Determine which value to use for visualization (use_expected if switch is checked)
+    use_expected = show_expected if show_expected is not None else False
+    
+    # Generate key based on mode to trigger re-render
+    mode_key = "expected" if use_expected else "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key).encode()).hexdigest()
 
     try:
-        # Debug: Collect population values to understand the data
-        population_values = []
-        zero_count = 0
-        nan_count = 0
-        
         # Add population-based styling to each feature
         if 'features' in tiles_data:
             for feature in tiles_data['features']:
                 if 'properties' in feature and 'population' in feature['properties']:
-                    pop = feature['properties']['population']
-                    population_values.append(pop)
+                    props = feature['properties']
                     
-                    if pop == 0:
-                        zero_count += 1
-                    elif pd.isna(pop):
-                        nan_count += 1
-                    
-                    # Blue color scale for population density
-                    if pop == 0 or pop is None or pd.isna(pop):
-                        color = 'transparent'  # Transparent for no population
-                        fillOpacity = 0.0
-                    elif pop <= 100:
-                        color = '#87ceeb'  # Sky blue for low population
-                        fillOpacity = 0.7
-                    elif pop <= 500:
-                        color = '#4682b4'  # Steel blue for medium-low population
-                        fillOpacity = 0.7
-                    elif pop <= 1000:
-                        color = '#1e90ff'  # Dodger blue for medium population
-                        fillOpacity = 0.7
-                    elif pop <= 2500:
-                        color = '#0000cd'  # Medium blue for medium-high population
-                        fillOpacity = 0.7
-                    elif pop <= 5000:
-                        color = '#000080'  # Navy blue for high population
-                        fillOpacity = 0.7
+                    if use_expected:
+                        # Use E_population value for coloring with absolute thresholds
+                        E_pop = props.get('E_population', 0) or 0
+                        
+                        # Transparent for no data or zero
+                        if not E_pop or E_pop == 0 or pd.isna(E_pop):
+                            color = 'transparent'
+                            fillOpacity = 0.0
+                        else:
+                            # Yellow to red gradient based on E_population value
+                            if E_pop <= 50:
+                                color = '#FFFF00'
+                                fillOpacity = 0.5
+                            elif E_pop <= 150:
+                                color = '#FFD700'
+                                fillOpacity = 0.55
+                            elif E_pop <= 300:
+                                color = '#FFA500'
+                                fillOpacity = 0.6
+                            elif E_pop <= 500:
+                                color = '#FF8C00'
+                                fillOpacity = 0.65
+                            elif E_pop <= 750:
+                                color = '#FF6A00'
+                                fillOpacity = 0.7
+                            elif E_pop <= 1000:
+                                color = '#FF4500'
+                                fillOpacity = 0.75
+                            elif E_pop <= 1500:
+                                color = '#DC143C'
+                                fillOpacity = 0.8
+                            elif E_pop <= 2500:
+                                color = '#B22222'
+                                fillOpacity = 0.85
+                            elif E_pop <= 4000:
+                                color = '#A52A2A'
+                                fillOpacity = 0.9
+                            else:
+                                color = '#8B0000'
+                                fillOpacity = 0.95
                     else:
-                        color = '#191970'  # Midnight blue for very high population
-                        fillOpacity = 0.7
+                        # Use base population value
+                        pop = props.get('population', 0)
+                        
+                        # Blue color scale for base population density
+                        if pop == 0 or pop is None or pd.isna(pop):
+                            color = 'transparent'  # Transparent for no population
+                            fillOpacity = 0.0
+                        elif pop <= 100:
+                            color = '#87ceeb'  # Sky blue for low population
+                            fillOpacity = 0.7
+                        elif pop <= 500:
+                            color = '#4682b4'  # Steel blue for medium-low population
+                            fillOpacity = 0.7
+                        elif pop <= 1000:
+                            color = '#1e90ff'  # Dodger blue for medium population
+                            fillOpacity = 0.7
+                        elif pop <= 2500:
+                            color = '#0000cd'  # Medium blue for medium-high population
+                            fillOpacity = 0.7
+                        elif pop <= 5000:
+                            color = '#000080'  # Navy blue for high population
+                            fillOpacity = 0.7
+                        else:
+                            color = '#191970'  # Midnight blue for very high population
+                            fillOpacity = 0.7
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -2280,27 +2654,6 @@ def toggle_population_tiles_layer(checked, tiles_data_in):
                     feature['properties']['_weight'] = 1
                     feature['properties']['_opacity'] = 0.8
         
-        # Debug output
-        if population_values:
-            print(f"Population tiles debug - Total tiles: {len(population_values)}")
-            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
-            print(f"Min population: {min(population_values)}, Max population: {max(population_values)}")
-            print(f"Sample values: {sorted(set(population_values))[:10]}")
-        
-        # Debug: Check data structure
-        if tiles_data:
-            print(f"Tiles data type: {type(tiles_data)}")
-            if isinstance(tiles_data, dict):
-                print(f"Tiles data keys: {list(tiles_data.keys())}")
-                if 'features' in tiles_data:
-                    print(f"Features count: {len(tiles_data['features'])}")
-                else:
-                    print("ERROR: No 'features' key in tiles_data!")
-            else:
-                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
-        
-        #gdf = gpd.GeoDataFrame.from_features(tiles_data, crs="EPSG:4326")
-        #return gdf.__geo_interface__, True
         return copy.deepcopy(tiles_data), True, key
     except Exception as e:
         print(f"Error styling population tiles: {e}")
@@ -2310,14 +2663,21 @@ def toggle_population_tiles_layer(checked, tiles_data_in):
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("school-age-tiles-layer", "checked")],
+    [Input("school-age-tiles-layer", "checked"),
+     Input("tiles-vis-mode", "checked")],
     State("population-tiles-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_school_age_tiles_layer(checked, tiles_data_in):
+def toggle_school_age_tiles_layer(checked, show_expected, tiles_data_in):
     """Toggle school-age population tiles layer visibility with green color scheme"""
-    print(f"School-age tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data_in:
+    print(f"=== SCHOOL AGE CALLBACK: checked={checked}, show_expected={show_expected} ===")
+    
+    # If this checkbox is not checked, return no_update to let other callbacks handle the display
+    if not checked:
+        print(f"School age tiles checkbox unchecked, returning no_update")
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    if not tiles_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
@@ -2326,39 +2686,86 @@ def toggle_school_age_tiles_layer(checked, tiles_data_in):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
     
-    print(f"School-age tiles data structure OK: {len(tiles_data.get('features', []))} features")
+    # Determine which value to use for visualization (use_expected if switch is checked)
+    use_expected = show_expected if show_expected is not None else False
+    
+    # Generate key based on mode to trigger re-render
+    mode_key = "expected" if use_expected else "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key).encode()).hexdigest()
+    
     
     try:
         # Add school-age population-based styling to each feature
         if 'features' in tiles_data:
             for feature in tiles_data['features']:
                 if 'properties' in feature and 'school_age_population' in feature['properties']:
-                    pop = feature['properties']['school_age_population']
+                    props = feature['properties']
                     
-                    # Green color scale for school-age population
-                    if pop == 0 or pop is None or pd.isna(pop):
-                        color = 'transparent'  # Transparent for no school-age population
-                        fillOpacity = 0.0
-                    elif pop <= 50:
-                        color = '#90ee90'  # Light green for low school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 150:
-                        color = '#32cd32'  # Lime green for medium-low school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 300:
-                        color = '#228b22'  # Forest green for medium school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 500:
-                        color = '#006400'  # Dark green for medium-high school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 750:
-                        color = '#2e8b57'  # Sea green for high school-age population
-                        fillOpacity = 0.7
+                    if use_expected:
+                        # Use E_school_age_population value for coloring with absolute thresholds
+                        E_school_age = props.get('E_school_age_population', 0) or 0
+                        
+                        # Transparent for no data or zero
+                        if not E_school_age or E_school_age == 0 or pd.isna(E_school_age):
+                            color = 'transparent'
+                            fillOpacity = 0.0
+                        else:
+                            # Yellow to red gradient based on E_school_age_population value
+                            if E_school_age <= 20:
+                                color = '#FFFF00'
+                                fillOpacity = 0.5
+                            elif E_school_age <= 50:
+                                color = '#FFD700'
+                                fillOpacity = 0.55
+                            elif E_school_age <= 100:
+                                color = '#FFA500'
+                                fillOpacity = 0.6
+                            elif E_school_age <= 200:
+                                color = '#FF8C00'
+                                fillOpacity = 0.65
+                            elif E_school_age <= 350:
+                                color = '#FF6A00'
+                                fillOpacity = 0.7
+                            elif E_school_age <= 500:
+                                color = '#FF4500'
+                                fillOpacity = 0.75
+                            elif E_school_age <= 750:
+                                color = '#DC143C'
+                                fillOpacity = 0.8
+                            elif E_school_age <= 1000:
+                                color = '#B22222'
+                                fillOpacity = 0.85
+                            elif E_school_age <= 1500:
+                                color = '#A52A2A'
+                                fillOpacity = 0.9
+                            else:
+                                color = '#8B0000'
+                                fillOpacity = 0.95
                     else:
-                        color = '#1c4a1c'  # Very dark green for very high school-age population
-                        fillOpacity = 0.7
+                        # Green color scale for base school-age population
+                        pop = props.get('school_age_population', 0)
+                        if pop == 0 or pop is None or pd.isna(pop):
+                            color = 'transparent'
+                            fillOpacity = 0.0
+                        elif pop <= 50:
+                            color = '#90ee90'
+                            fillOpacity = 0.7
+                        elif pop <= 150:
+                            color = '#32cd32'
+                            fillOpacity = 0.7
+                        elif pop <= 300:
+                            color = '#228b22'
+                            fillOpacity = 0.7
+                        elif pop <= 500:
+                            color = '#006400'
+                            fillOpacity = 0.7
+                        elif pop <= 750:
+                            color = '#2e8b57'
+                            fillOpacity = 0.7
+                        else:
+                            color = '#1c4a1c'
+                            fillOpacity = 0.7
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -2375,14 +2782,18 @@ def toggle_school_age_tiles_layer(checked, tiles_data_in):
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("built-surface-tiles-layer", "checked")],
+    [Input("built-surface-tiles-layer", "checked"),
+     Input("tiles-vis-mode", "checked")],
     State("population-tiles-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_built_surface_tiles_layer(checked, tiles_data_in):
+def toggle_built_surface_tiles_layer(checked, show_expected, tiles_data_in):
     """Toggle built surface area tiles layer visibility with brown/gray color scheme"""
-    print(f"Built surface tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data_in:
+    # If this checkbox is not checked, return empty data to clear the display
+    if not checked:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    if not tiles_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
@@ -2391,39 +2802,86 @@ def toggle_built_surface_tiles_layer(checked, tiles_data_in):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+    
+    # Determine which value to use for visualization (use_expected if switch is checked)
+    use_expected = show_expected if show_expected is not None else False
+    
+    # Generate key based on mode to trigger re-render
+    mode_key = "expected" if use_expected else "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key).encode()).hexdigest()
 
-    print(f"Built surface tiles data structure OK: {len(tiles_data.get('features', []))} features")
     
     try:
         # Add built surface-based styling to each feature
         if 'features' in tiles_data:
             for feature in tiles_data['features']:
                 if 'properties' in feature and 'built_surface_m2' in feature['properties']:
-                    surface = feature['properties']['built_surface_m2']
+                    props = feature['properties']
                     
-                    # Brown/Gray color scale for built surface
-                    if surface == 0 or surface is None or pd.isna(surface):
-                        color = 'transparent'  # Transparent for no built surface
-                        fillOpacity = 0.0
-                    elif surface <= 1000:
-                        color = '#d3d3d3'  # Light gray for low built surface
-                        fillOpacity = 0.7
-                    elif surface <= 5000:
-                        color = '#a9a9a9'  # Dark gray for medium-low built surface
-                        fillOpacity = 0.7
-                    elif surface <= 10000:
-                        color = '#808080'  # Gray for medium built surface
-                        fillOpacity = 0.7
-                    elif surface <= 25000:
-                        color = '#8b4513'  # Saddle brown for medium-high built surface
-                        fillOpacity = 0.7
-                    elif surface <= 50000:
-                        color = '#654321'  # Dark brown for high built surface
-                        fillOpacity = 0.7
+                    if use_expected:
+                        # Use E_built_surface_m2 value for coloring with absolute thresholds
+                        E_surface = props.get('E_built_surface_m2', 0) or 0
+                        
+                        # Transparent for no data or zero
+                        if not E_surface or E_surface == 0 or pd.isna(E_surface):
+                            color = 'transparent'
+                            fillOpacity = 0.0
+                        else:
+                            # Yellow to red gradient based on E_built_surface_m2 value
+                            if E_surface <= 5000:
+                                color = '#FFFF00'
+                                fillOpacity = 0.5
+                            elif E_surface <= 15000:
+                                color = '#FFD700'
+                                fillOpacity = 0.55
+                            elif E_surface <= 30000:
+                                color = '#FFA500'
+                                fillOpacity = 0.6
+                            elif E_surface <= 50000:
+                                color = '#FF8C00'
+                                fillOpacity = 0.65
+                            elif E_surface <= 75000:
+                                color = '#FF6A00'
+                                fillOpacity = 0.7
+                            elif E_surface <= 100000:
+                                color = '#FF4500'
+                                fillOpacity = 0.75
+                            elif E_surface <= 150000:
+                                color = '#DC143C'
+                                fillOpacity = 0.8
+                            elif E_surface <= 200000:
+                                color = '#B22222'
+                                fillOpacity = 0.85
+                            elif E_surface <= 300000:
+                                color = '#A52A2A'
+                                fillOpacity = 0.9
+                            else:
+                                color = '#8B0000'
+                                fillOpacity = 0.95
                     else:
-                        color = '#2f1b14'  # Very dark brown for very high built surface
-                        fillOpacity = 0.7
+                        # Brown/Gray color scale for base built surface
+                        surface = props.get('built_surface_m2', 0)
+                        if surface == 0 or surface is None or pd.isna(surface):
+                            color = 'transparent'
+                            fillOpacity = 0.0
+                        elif surface <= 1000:
+                            color = '#d3d3d3'
+                            fillOpacity = 0.7
+                        elif surface <= 5000:
+                            color = '#a9a9a9'
+                            fillOpacity = 0.7
+                        elif surface <= 10000:
+                            color = '#808080'
+                            fillOpacity = 0.7
+                        elif surface <= 25000:
+                            color = '#8b4513'
+                            fillOpacity = 0.7
+                        elif surface <= 50000:
+                            color = '#654321'
+                            fillOpacity = 0.7
+                        else:
+                            color = '#2f1b14'
+                            fillOpacity = 0.7
                     
                     # Add styling properties
                     feature['properties']['_color'] = color
@@ -2440,13 +2898,23 @@ def toggle_built_surface_tiles_layer(checked, tiles_data_in):
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("settlement-tiles-layer", "checked")],
+    [Input("settlement-tiles-layer", "checked"),
+     Input("tiles-vis-mode", "checked")],
     State("population-tiles-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_settlement_tiles_layer(checked, tiles_data_in):
+def toggle_settlement_tiles_layer(checked, show_expected, tiles_data_in):
     """Toggle settlement classification tiles layer visibility with purple color scheme"""
-    if not checked or not tiles_data_in:
+    # If this checkbox is not checked, return empty data to clear the display
+    if not checked:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    # Hide settlement in expected impact mode (no impact values for this layer)
+    use_expected = show_expected if show_expected is not None else False
+    if use_expected:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    if not tiles_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
@@ -2455,7 +2923,9 @@ def toggle_settlement_tiles_layer(checked, tiles_data_in):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+    
+    mode_key = "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key).encode()).hexdigest()
     
     try:
         # Add settlement-based styling to each feature
@@ -2497,22 +2967,34 @@ def toggle_settlement_tiles_layer(checked, tiles_data_in):
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("rwi-tiles-layer", "checked")],
+    [Input("rwi-tiles-layer", "checked"),
+     Input("tiles-vis-mode", "checked")],
     State("population-tiles-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_rwi_tiles_layer(checked, tiles_data_in):
+def toggle_rwi_tiles_layer(checked, show_expected, tiles_data_in):
     """Toggle relative wealth index tiles layer visibility with orange/yellow color scheme"""
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False
+    # If this checkbox is not checked, return empty data to clear the display
+    if not checked:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    # Hide RWI in expected impact mode (no impact values for this layer)
+    use_expected = show_expected if show_expected is not None else False
+    if use_expected:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    if not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     # Ensure tiles_data has proper GeoJSON structure
     if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
         print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
-        return {"type": "FeatureCollection", "features": []}, False
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+    
+    mode_key = "base"
+    key = hashlib.md5((json.dumps(tiles_data, sort_keys=True) + mode_key).encode()).hexdigest()
     
     try:
         # Add RWI-based styling to each feature
@@ -2717,6 +3199,27 @@ def toggle_settlement_legend(checked):
 def toggle_rwi_legend(checked):
     """Show/hide relative wealth index legend based on checkbox state"""
     return {"display": "block" if checked else "none"}
+
+@callback(
+    [Output("settlement-tiles-layer", "disabled"),
+     Output("rwi-tiles-layer", "disabled")],
+    [Input("tiles-vis-mode", "checked"),
+     Input("layers-loaded-store", "data")],
+    prevent_initial_call=False
+)
+def disable_layers_without_expected_impact(show_expected, layers_loaded):
+    """Disable settlement and RWI layers when expected impact mode is on"""
+    # Only control disabled state if layers are loaded
+    if not layers_loaded:
+        return dash.no_update, dash.no_update
+    
+    # show_expected can be None (initial state), False (switch off), or True (switch on)
+    # Only disable when explicitly True
+    if show_expected is None:
+        disabled = False  # Default to enabled on initial load
+    else:
+        disabled = show_expected
+    return disabled, disabled
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
