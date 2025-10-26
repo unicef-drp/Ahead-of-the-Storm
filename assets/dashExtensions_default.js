@@ -242,13 +242,120 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function8: function() {
+        function8: function(feature, layer) {
+                const props = feature.properties || {};
+
+                const formatNumber = (num) => {
+                    if (typeof num === 'number') {
+                        return new Intl.NumberFormat('en-US').format(Math.round(num));
+                    }
+                    return num;
+                };
+
+                let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
+            Tile Statistics
+        </div>
+    `;
+
+                // Expected impact values (from hurricane envelopes)
+                const E_population = props.E_population || props.expected_population || 0;
+                const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
+                const E_num_schools = props.E_num_schools || 0;
+                const E_school_age_population = props.E_school_age_population || 0;
+                const E_num_hcs = props.E_num_hcs || 0;
+                const E_rwi = props.E_rwi || 0;
+                const probability = props.probability || 0;
+
+                // Base infrastructure values
+                const population = props.population || 0;
+                const built_surface = props.built_surface_m2 || 0;
+                const num_schools = props.num_schools || 0;
+                const school_age_pop = props.school_age_population || 0;
+                const num_hcs = props.num_hcs || 0;
+                const rwi = props.rwi || 0;
+                const smod_class = props.smod_class || 'N/A';
+
+                // Settlement classification mapping
+                const getSettlementLabel = (classNum) => {
+                    if (classNum === 0 || classNum === null) return 'Rural';
+                    if (classNum === 1) return 'Urban Clusters';
+                    if (classNum === 2 || classNum === 3) return 'Urban Centers';
+                    return 'N/A';
+                };
+
+                // Formatting helper functions
+                const formatValue = (val) => {
+                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return 'N/A';
+                    if (typeof val === 'number') return formatNumber(val);
+                    return val === '' ? 'N/A' : val;
+                };
+
+                const formatSettlement = (val) => {
+                    if (val === null || val === undefined || val === '' || (typeof val === 'number' && isNaN(val))) return 'N/A';
+                    if (typeof val === 'number') return getSettlementLabel(val);
+                    return 'N/A';
+                };
+
+                const formatDecimal = (val) => {
+                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+                    return val.toFixed(2);
+                };
+
+                // Show expected impact if available
+                if (probability > 0) {
+                    content += `
+        <div style="font-size: 11px; color: #dc143c; margin-top: 5px; font-weight: 600;">
+            Expected Impact:
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Hurricane Impact Probability: ${(probability * 100).toFixed(1)}%
+        </div>
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
+        `;
+                }
+
+                // Show tile data - always show all fields
+                content += `
+    <div style="font-size: 11px; color: #777; margin-top: 5px;">
+        <strong>Tile Base Data:</strong>
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Total Population: ${formatValue(population)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        School-Age Population: ${formatValue(school_age_pop)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Schools: ${formatValue(num_schools)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Health Centers: ${formatValue(num_hcs)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Settlement: ${formatSettlement(smod_class)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Relative Wealth Index: ${formatDecimal(rwi)}
+    </div>
+    `;
+
+                layer.bindTooltip(content, {
+                    sticky: true
+                });
+            }
+
+            ,
+        function9: function() {
             return {
                 weight: 3,
                 color: '#e53935'
             };
         },
-        function9: function(feature, layer) {
+        function10: function(feature, layer) {
             const props = feature.properties || {};
             const rows = Object.keys(props).map(k =>
                 `<tr><th style="text-align:left;padding-right:6px;">${k}</th><td>${props[k]}</td></tr>`
