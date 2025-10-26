@@ -35,31 +35,12 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function2: function(feature, context) {
+        function2: function(feature, latlng, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
-                const radius = props._radius || 8;
+                const radius = props._radius || 12;
                 const opacity = props._opacity || 0.8;
-                const weight = props._weight || 1;
-                const fillOpacity = props._fillOpacity || 0.7;
-
-                return {
-                    color: color,
-                    weight: weight,
-                    opacity: opacity,
-                    fillColor: color,
-                    fillOpacity: fillOpacity,
-                    radius: radius
-                };
-            }
-
-            ,
-        function3: function(feature, latlng, context) {
-                const props = feature.properties || {};
-                const color = props._color || '#808080';
-                const radius = props._radius || 8;
-                const opacity = props._opacity || 0.8;
-                const weight = props._weight || 1;
+                const weight = props._weight || 2;
                 const fillOpacity = props._fillOpacity || 0.7;
 
                 return L.circleMarker(latlng, {
@@ -73,7 +54,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function4: function(feature, context) {
+        function3: function(feature, context) {
                 const props = feature.properties || {};
                 const severity_population = props.severity_population || 0;
                 const max_population = props.max_population || 1;
@@ -120,7 +101,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function5: function(feature, layer) {
+        function4: function(feature, layer) {
                 const props = feature.properties || {};
                 const member = props.ensemble_member || 'N/A';
                 const type = props.member_type || 'N/A';
@@ -142,7 +123,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function6: function(feature, layer) {
+        function5: function(feature, layer) {
                 const props = feature.properties || {};
                 const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
@@ -201,13 +182,73 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function7: function() {
+        function6: function(feature, layer) {
+                const props = feature.properties || {};
+                const probability = props.probability || 0;
+                const school_id = props.school_id_giga || props.school_id || 'N/A';
+                const school_name = props.school_name || props.name || props.school || 'N/A';
+
+                const formatPercent = (prob) => {
+                    if (typeof prob === 'number') {
+                        return (prob * 100).toFixed(1) + '%';
+                    }
+                    return 'N/A';
+                };
+
+                const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
+            School
+        </div>
+        ${school_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${school_name}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
+        </div>
+    `;
+
+                layer.bindTooltip(content, {
+                    sticky: true
+                });
+            }
+
+            ,
+        function7: function(feature, layer) {
+                const props = feature.properties || {};
+                const probability = props.probability || 0;
+                const osm_id = props.osm_id || 'N/A';
+                const facility_name = props.facility_name || props.name || props.amenity_name || 'N/A';
+                const facility_type = props.facility_type || props.amenity_type || props.type || 'N/A';
+
+                const formatPercent = (prob) => {
+                    if (typeof prob === 'number') {
+                        return (prob * 100).toFixed(1) + '%';
+                    }
+                    return 'N/A';
+                };
+
+                const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #228B22; margin-bottom: 5px;">
+            Health Facility
+        </div>
+        ${facility_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${facility_name}</div>` : ''}
+        ${facility_type !== 'N/A' ? `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${facility_type}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
+        </div>
+    `;
+
+                layer.bindTooltip(content, {
+                    sticky: true
+                });
+            }
+
+            ,
+        function8: function() {
             return {
                 weight: 3,
                 color: '#e53935'
             };
         },
-        function8: function(feature, layer) {
+        function9: function(feature, layer) {
             const props = feature.properties || {};
             const rows = Object.keys(props).map(k =>
                 `<tr><th style="text-align:left;padding-right:6px;">${k}</th><td>${props[k]}</td></tr>`

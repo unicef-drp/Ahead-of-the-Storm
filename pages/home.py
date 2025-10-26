@@ -54,35 +54,14 @@ function(feature, context) {
 }
 """)
 
-# JavaScript styling for schools and health centers with probability-based coloring
-style_schools_health = assign("""
-function(feature, context) {
-    const props = feature.properties || {};
-    const color = props._color || '#808080';
-    const radius = props._radius || 8;
-    const opacity = props._opacity || 0.8;
-    const weight = props._weight || 1;
-    const fillOpacity = props._fillOpacity || 0.7;
-    
-    return {
-        color: color,
-        weight: weight,
-        opacity: opacity,
-        fillColor: color,
-        fillOpacity: fillOpacity,
-        radius: radius
-    };
-}
-""")
-
 # JavaScript point-to-layer function for schools and health centers
 point_to_layer_schools_health = assign("""
 function(feature, latlng, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 8;
+    const radius = props._radius || 12;
     const opacity = props._opacity || 0.8;
-    const weight = props._weight || 1;
+    const weight = props._weight || 2;
     const fillOpacity = props._fillOpacity || 0.7;
     
     return L.circleMarker(latlng, {
@@ -207,6 +186,64 @@ function(feature, layer) {
         </div>
         <div style="font-size: 11px; color: #555;">
             Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_schools = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const probability = props.probability || 0;
+    const school_id = props.school_id_giga || props.school_id || 'N/A';
+    const school_name = props.school_name || props.name || props.school || 'N/A';
+    
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') {
+            return (prob * 100).toFixed(1) + '%';
+        }
+        return 'N/A';
+    };
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
+            School
+        </div>
+        ${school_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${school_name}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_health = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const probability = props.probability || 0;
+    const osm_id = props.osm_id || 'N/A';
+    const facility_name = props.facility_name || props.name || props.amenity_name || 'N/A';
+    const facility_type = props.facility_type || props.amenity_type || props.type || 'N/A';
+    
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') {
+            return (prob * 100).toFixed(1) + '%';
+        }
+        return 'N/A';
+    };
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #228B22; margin-bottom: 5px;">
+            Health Facility
+        </div>
+        ${facility_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${facility_name}</div>` : ''}
+        ${facility_type !== 'N/A' ? `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${facility_type}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
         </div>
     `;
     
@@ -775,16 +812,16 @@ def make_single_page_layout():
                                 id="schools-json-test",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_schools_health,
-                                pointToLayer=point_to_layer_schools_health
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_schools
                             ),
                             # Health Centers Impact Layer
                             dl.GeoJSON(
                                 id="health-json-test",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_schools_health,
-                                pointToLayer=point_to_layer_schools_health
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_health
                             ),
                             # Population Density Tiles Layer
                             dl.GeoJSON(
@@ -1907,52 +1944,75 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
     prevent_initial_call=False
 )
 def toggle_schools_layer(checked, schools_data_in):
-    """Toggle schools layer visibility with probability-based coloring"""
+    """Toggle schools layer visibility with probability-based coloring and variable radius"""
     if not checked or not schools_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     schools_data = copy.deepcopy(schools_data_in)
     key = hashlib.md5(json.dumps(schools_data, sort_keys=True).encode()).hexdigest()
     try:
-        # Add probability-based styling to each feature
+        # Convert polygons to point markers
         if 'features' in schools_data:
+            from shapely.geometry import shape
+            point_features = []
+            
             for feature in schools_data['features']:
-                if 'properties' in feature and 'probability' in feature['properties']:
-                    prob = feature['properties']['probability']
+                if 'properties' in feature and 'geometry' in feature:
+                    prob = feature['properties'].get('probability', 0)
                     
-                    # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
-                    # Radius scale: larger radius for higher impact probability
+                    # Calculate color and radius based on probability
                     if prob == 0 or prob is None:
-                        color = '#808080'  # Grey for no impact
-                        radius = 10  # Larger radius for visibility
+                        color = '#ADD8E6'  # Light blue for schools when not impacted
+                        radius = 4  # Smaller for no impact
                     elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow for very low impact
-                        radius = 25  # Slightly larger for low impact
+                        color = '#FFFF00'  # Yellow
+                        radius = 10
                     elif prob <= 0.30:
-                        color = '#FFD700'  # Gold for low impact
-                        radius = 30  # Medium radius for low-medium impact
+                        color = '#FFD700'  # Gold
+                        radius = 12
                     elif prob <= 0.45:
-                        color = '#FFA500'  # Orange for low-medium impact
-                        radius = 35  # Larger radius for medium impact
+                        color = '#FFA500'  # Orange
+                        radius = 15
                     elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange for medium impact
-                        radius = 40  # Even larger for medium-high impact
+                        color = '#FF8C00'  # Dark orange
+                        radius = 18
                     elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red for high impact
-                        radius = 45  # Large radius for high impact
+                        color = '#FF4500'  # Orange-red
+                        radius = 20
                     elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson for very high impact
-                        radius = 50  # Very large radius for very high impact
+                        color = '#DC143C'  # Crimson
+                        radius = 22
                     else:
-                        color = '#8B0000'  # Dark red for extreme impact
-                        radius = 55  # Maximum radius for extreme impact
+                        color = '#8B0000'  # Dark red
+                        radius = 25
                     
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_radius'] = radius
-                    feature['properties']['_opacity'] = 0.8
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_fillOpacity'] = 0.7
+                    # Convert polygon to point (centroid)
+                    try:
+                        geom_shape = shape(feature['geometry'])
+                        centroid = geom_shape.centroid
+                        
+                        # Create point feature with probability-based styling
+                        point_feature = {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [centroid.x, centroid.y]
+                            },
+                            "properties": {
+                                **feature['properties'],
+                                "_color": color,
+                                "_radius": radius,
+                                "_opacity": 0.8,
+                                "_weight": 2,
+                                "_fillOpacity": 0.7
+                            }
+                        }
+                        point_features.append(point_feature)
+                    except Exception as e:
+                        print(f"Error converting to point: {e}")
+                        continue
+            
+            schools_data['features'] = point_features
         
         return schools_data, True, key
     except Exception as e:
@@ -1968,7 +2028,7 @@ def toggle_schools_layer(checked, schools_data_in):
     prevent_initial_call=False
 )
 def toggle_health_layer(checked, health_data_in):
-    """Toggle health centers layer visibility with probability-based coloring"""
+    """Toggle health centers layer visibility with probability-based coloring and variable radius"""
     if not checked or not health_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
@@ -1976,45 +2036,68 @@ def toggle_health_layer(checked, health_data_in):
     key = hashlib.md5(json.dumps(health_data, sort_keys=True).encode()).hexdigest()
     
     try:
-        # Add probability-based styling to each feature
+        # Convert polygons to point markers
         if 'features' in health_data:
+            from shapely.geometry import shape
+            point_features = []
+            
             for feature in health_data['features']:
-                if 'properties' in feature and 'probability' in feature['properties']:
-                    prob = feature['properties']['probability']
+                if 'properties' in feature and 'geometry' in feature:
+                    prob = feature['properties'].get('probability', 0)
                     
-                    # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
-                    # Radius scale: larger radius for higher impact probability
+                    # Calculate color and radius based on probability
                     if prob == 0 or prob is None:
-                        color = '#808080'  # Grey for no impact
-                        radius = 10  # Larger radius for visibility
+                        color = '#90EE90'  # Light green for health centers when not impacted
+                        radius = 4  # Smaller for no impact
                     elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow for very low impact
-                        radius = 25  # Slightly larger for low impact
+                        color = '#FFFF00'  # Yellow
+                        radius = 10
                     elif prob <= 0.30:
-                        color = '#FFD700'  # Gold for low impact
-                        radius = 30  # Medium radius for low-medium impact
+                        color = '#FFD700'  # Gold
+                        radius = 12
                     elif prob <= 0.45:
-                        color = '#FFA500'  # Orange for low-medium impact
-                        radius = 35  # Larger radius for medium impact
+                        color = '#FFA500'  # Orange
+                        radius = 15
                     elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange for medium impact
-                        radius = 40  # Even larger for medium-high impact
+                        color = '#FF8C00'  # Dark orange
+                        radius = 18
                     elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red for high impact
-                        radius = 45  # Large radius for high impact
+                        color = '#FF4500'  # Orange-red
+                        radius = 20
                     elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson for very high impact
-                        radius = 50  # Very large radius for very high impact
+                        color = '#DC143C'  # Crimson
+                        radius = 22
                     else:
-                        color = '#8B0000'  # Dark red for extreme impact
-                        radius = 55  # Maximum radius for extreme impact
+                        color = '#8B0000'  # Dark red
+                        radius = 25
                     
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_radius'] = radius
-                    feature['properties']['_opacity'] = 0.8
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_fillOpacity'] = 0.7
+                    # Convert polygon to point (centroid)
+                    try:
+                        geom_shape = shape(feature['geometry'])
+                        centroid = geom_shape.centroid
+                        
+                        # Create point feature with probability-based styling
+                        point_feature = {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [centroid.x, centroid.y]
+                            },
+                            "properties": {
+                                **feature['properties'],
+                                "_color": color,
+                                "_radius": radius,
+                                "_opacity": 0.8,
+                                "_weight": 2,
+                                "_fillOpacity": 0.7
+                            }
+                        }
+                        point_features.append(point_feature)
+                    except Exception as e:
+                        print(f"Error converting to point: {e}")
+                        continue
+            
+            health_data['features'] = point_features
         
         return health_data, True, key
         
