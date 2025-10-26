@@ -1011,7 +1011,10 @@ def make_single_page_layout():
                                 [
                                     dmc.TableThead([
                                         dmc.TableTr([
-                                            dmc.TableTh("Metric", style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                            dmc.TableTh([
+                                                dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
+                                            ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                             dmc.TableTh([
                                                 dmc.Text("Low", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                                 dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
@@ -1025,31 +1028,34 @@ def make_single_page_layout():
                                     ]),
                                     dmc.TableTbody([
                                         dmc.TableTr([
-                                            dmc.TableTd("Children Affected", style={"fontWeight": 500}),
+                                            dmc.TableTd("Children", style={"fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Schools at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Health Centers at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Population at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Population", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Built Surface m2 at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd([
+                                                html.Span("Built Surface m"),
+                                                html.Sup("2"),
+                                            ], style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
