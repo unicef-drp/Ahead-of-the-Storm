@@ -1,6 +1,4 @@
-# AOS Setup Guide
-
-This guide will walk you through setting up and running the Ahead of the Storm (AOS) pipeline.
+# Ahead of the Storm – Setup Guide
 
 ## Prerequisites
 
