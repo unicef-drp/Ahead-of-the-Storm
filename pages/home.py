@@ -31,20 +31,26 @@ ZOOM_LEVEL = 14
 all_colors = {
     # probability colors: starts at light yellow and increases to dark red
     'probability': ['transparent',
-                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
-                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
-    'population': ['transparent','#87ceeb', '#4682b4', '#1e90ff', '#0000cd', '#000080', '#191970'],
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'population': ['transparent',
+                    '#add8e6', '#8cc5d3', '#6bb2c0', '#4a9bad', '#33849a',
+                    '#216d87', '#165674', '#0d3f51', '#06283d', '#011129'],
     'E_population': ['transparent',
-                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
-                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
-    'school_age_population':['transparent','#90ee90','#32cd32','#228b22','#006400','#2e8b57','#1c4a1c'],
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'school_age_population': ['transparent',
+                    '#a8e6cf', '#7ed3b8', '#5ec0a1', '#40ad8a', '#2d9a73',
+                    '#228759', '#177440', '#0f5127', '#083310', '#001107'],
     'E_school_age_population':['transparent',
-                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
-                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
-    'built_surface_m2':['transparent','#d3d3d3','#a9a9a9','#808080','#8b4513','#654321','#2f1b14'],
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'built_surface_m2': ['transparent',
+                    '#f6e6d1', '#e8d4b8', '#dac29f', '#ccb086', '#be9e6d',
+                    '#b08854', '#a2723b', '#945c22', '#864609', '#783000'],
     'E_built_surface_m2':['transparent',
-                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
-                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
     'smod_class': ['transparent','#dda0dd','#9370db', '#4b0082'],
     # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
     # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
@@ -162,14 +168,34 @@ def update_tile_features(tiles_data_in,property):
                     else:
                         color_prop.append(colors[0])  # transparent for unknown values
             else:
-                # Use actual color buckets (excluding transparent); transparent for 0 or NaN
-                step = max_val / actual_buckets if actual_buckets > 0 else 1.0
-                for val in values:
-                    if pd.isna(val) or val == 0:
-                        color_prop.append(colors[0])  # Use transparent for NaN or 0
+                # Use log scale for population, school_age_population, and built_surface_m2; linear for others
+                if property in ['population', 'school_age_population', 'built_surface_m2']:
+                    # Log scale: transform values using log10
+                    import math
+                    clean_positive_values = [v for v in clean_values if v > 0]
+                    if clean_positive_values:
+                        log_min = math.log10(min(clean_positive_values))
+                        log_max = math.log10(max_val) if max_val > 0 else log_min
+                        log_step = (log_max - log_min) / actual_buckets if log_max != log_min else 1.0
+                        
+                        for val in values:
+                            if pd.isna(val) or val == 0:
+                                color_prop.append(colors[0])  # Use transparent for NaN or 0
+                            else:
+                                log_val = math.log10(val)
+                                index = min(int((log_val - log_min) / log_step) if log_step > 0 else 0, actual_buckets - 1)
+                                color_prop.append(actual_colors[index])
                     else:
-                        index = min(int(val / step), actual_buckets - 1)
-                        color_prop.append(actual_colors[index])  # Use actual color bucket
+                        color_prop = [colors[0]] * len(values)
+                else:
+                    # Use actual color buckets (excluding transparent); transparent for 0 or NaN
+                    step = max_val / actual_buckets if actual_buckets > 0 else 1.0
+                    for val in values:
+                        if pd.isna(val) or val == 0:
+                            color_prop.append(colors[0])  # Use transparent for NaN or 0
+                        else:
+                            index = min(int(val / step), actual_buckets - 1)
+                            color_prop.append(actual_colors[index])  # Use actual color bucket
         
         for feature, color in zip(tiles_data["features"], color_prop):
             feature['properties']['_color'] = color
@@ -869,30 +895,30 @@ def make_single_page_layout():
 
                                         # Legend grids for each layer
                                         dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-min", children="0", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=9, children=html.Div(
                                                 create_legend_divs('population'),
                                                 style={"display": "flex", "width": "100%"}
                                             )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-max", children="Max", size="xs", c="dimmed")]),
                                         ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-min", children="0", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=9, children=html.Div(
                                                 create_legend_divs('school_age_population'),
                                                 style={"display": "flex", "width": "100%"}
                                             )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("750+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-max", children="Max", size="xs", c="dimmed")]),
                                         ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-min", children="Min", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=9, children=html.Div(
                                                 create_legend_divs('built_surface_m2'),
                                                 style={"display": "flex", "width": "100%"}
                                             )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("50k+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-max", children="Max", size="xs", c="dimmed")]),
                                         ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
@@ -2455,24 +2481,82 @@ def toggle_health_legend(checked):
      Output("school-age-legend", "style"),
      Output("built-surface-legend", "style"),
      Output("settlement-legend", "style"),
-     Output("rwi-legend", "style")],
+     Output("rwi-legend", "style"),
+     Output("population-legend-min", "children"),
+     Output("population-legend-max", "children"),
+     Output("school-age-legend-min", "children"),
+     Output("school-age-legend-max", "children"),
+     Output("built-surface-legend-min", "children"),
+     Output("built-surface-legend-max", "children")],
     [Input("tiles-layer-group", "value")],
+    State("population-tiles-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tiles_legend(selected_value):
-    """Show/hide tile legends based on radio button selection"""
+def toggle_tiles_legend(selected_value, tiles_data):
+    """Show/hide tile legends based on radio button selection and update legend labels"""
+    import math
+    
+    # Helper function to format numbers with k, M and commas
+    def format_number(val):
+        if val >= 1000000:
+            return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+        elif val >= 1000:
+            return f"{val / 1000:.1f}k".replace('.0k', 'k')
+        else:
+            return f"{val:,.0f}"
+    
+    # Default legend labels
+    pop_min = "Min"
+    pop_max = "Max"
+    school_min = "Min"
+    school_max = "Max"
+    built_min = "Min"
+    built_max = "Max"
+    
+    # Calculate log-scale legend labels if data is available
+    if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
+        try:
+            # Population values
+            pop_values = [f["properties"].get('population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_pop = [v for v in pop_values if not pd.isna(v) and v > 0]
+            if clean_pop:
+                pop_min_val = min(clean_pop)
+                pop_max_val = max(clean_pop)
+                pop_min = f"{pop_min_val:,.0f}"
+                pop_max = format_number(pop_max_val)
+            
+            # School-age population values
+            school_values = [f["properties"].get('school_age_population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_school = [v for v in school_values if not pd.isna(v) and v > 0]
+            if clean_school:
+                school_min_val = min(clean_school)
+                school_max_val = max(clean_school)
+                school_min = f"{school_min_val:,.0f}"
+                school_max = format_number(school_max_val)
+            
+            # Built surface values
+            built_values = [f["properties"].get('built_surface_m2', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_built = [v for v in built_values if not pd.isna(v) and v > 0]
+            if clean_built:
+                built_min_val = min(clean_built)
+                built_max_val = max(clean_built)
+                built_min = f"{built_min_val:,.0f}"
+                built_max = format_number(built_max_val)
+        except Exception as e:
+            print(f"Error calculating legend labels: {e}")
+    
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, built_min, built_max
     elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, built_min, built_max
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, built_min, built_max
     elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, built_min, built_max
     elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, built_min, built_max
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, built_min, built_max
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
