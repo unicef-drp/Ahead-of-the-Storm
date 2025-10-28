@@ -18,581 +18,25 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 
 # Import centralized configuration
 from components.config import config
+from components.ui.styling import all_colors, create_legend_divs, update_tile_features
+from components.map.javascript import (
+    style_tracks, style_tiles, point_to_layer_schools_health, 
+    style_envelopes, tooltip_tracks, tooltip_envelopes, 
+    tooltip_schools, tooltip_health, tooltip_tiles
+)
 
 from dash_extensions.javascript import assign
 
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
 
-##############################################
 
-###### Colors for the tiles - move to a different file
 
-all_colors = {
-    # probability colors: starts at light yellow and increases to dark red
-    'probability': ['transparent',
-                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'population': ['transparent',
-                    '#add8e6', '#8cc5d3', '#6bb2c0', '#4a9bad', '#33849a',
-                    '#216d87', '#165674', '#0d3f51', '#06283d', '#011129'],
-    'E_population': ['transparent',
-                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'school_age_population': ['transparent',
-                    '#a8e6cf', '#7ed3b8', '#5ec0a1', '#40ad8a', '#2d9a73',
-                    '#228759', '#177440', '#0f5127', '#083310', '#001107'],
-    'E_school_age_population':['transparent',
-                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'infant_population': ['transparent',
-                    '#d6e8ff', '#b3d9ff', '#8ac8ff', '#66b7ff', '#42a6ff',
-                    '#1e95ff', '#1685e6', '#0f75cc', '#0765b3', '#005599'],
-    'E_infant_population': ['transparent',
-                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'built_surface_m2': ['transparent',
-                    '#f6e6d1', '#e8d4b8', '#dac29f', '#ccb086', '#be9e6d',
-                    '#b08854', '#a2723b', '#945c22', '#864609', '#783000'],
-    'E_built_surface_m2':['transparent',
-                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'smod_class': ['transparent','#dda0dd','#9370db', '#4b0082'],
-    # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
-    # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
-    'rwi':['transparent','#d73027','#f46d43','#fdae61','#fee08b','#808080','#d9ef8b','#a6d96a','#66bd63','#1a9850'],
-}
 
-def create_legend_divs(color_key, skip_transparent=True):
-    """Generate legend HTML divs from all_colors dictionary
-    
-    Args:
-        color_key: Key in all_colors dict (e.g., 'population', 'probability')
-        skip_transparent: Whether to skip the first color (usually 'transparent')
-    
-    Returns:
-        List of HTML div elements for legend
-    """
-    if color_key not in all_colors:
-        return []
-    
-    colors = all_colors[color_key]
-    
-    if skip_transparent and colors and colors[0] == 'transparent':
-        actual_colors = colors[1:]
-    else:
-        actual_colors = colors
-    
-    if not actual_colors:
-        return []
-    
-    # Calculate width percentage for each color block
-    width_pct = 100 / len(actual_colors)
-    
-    legend_divs = []
-    for i, color in enumerate(actual_colors):
-        # Last item doesn't need right margin
-        margin_right = "1px" if i < len(actual_colors) - 1 else ""
-        legend_divs.append(
-            html.Div(style={
-                "width": f"{width_pct}%",
-                "height": "12px",
-                "backgroundColor": color,
-                "border": "1px solid #ccc",
-                "display": "inline-block",
-                "marginRight": margin_right
-            })
-        )
-    
-    return legend_divs
-
-##############
-def update_tile_features(tiles_data_in,property):
-    if not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-
-    try:
-        colors = all_colors[property]
-        buckets = len(colors)
-        if property=='smod_class':
-            # Settlement classification: discrete categories (0=no data, 10=rural, 20=urban cluster, 30=urban center)
-            # Divide by 10 to get category (10->1, 20->2, 30->3)
-            values = [int(f["properties"][property]/10) if not pd.isna(f["properties"][property]) else 0 for f in tiles_data["features"]]
-        else:
-            values = [f["properties"][property] for f in tiles_data["features"]]
-        
-        clean_values = [v for v in values if not pd.isna(v)]
-        nan_count = len(values)-len(clean_values)
-        zero_count = len([v for v in clean_values if v==0])
-        
-        # For probability, use a fixed scale (0-1 or 0-100) regardless of actual max value
-        if property == 'probability':
-            max_val = 1.0  # Probability is always 0-1
-        else:
-            max_val = max(clean_values) if clean_values else 0
-        
-        # Separate colors into actual color buckets (excluding transparent)
-        actual_colors = colors[1:]  # Skip transparent
-        actual_buckets = len(actual_colors)
-        
-        if not clean_values:
-            color_prop = [colors[0]] * len(values)  # All values are NaN - use transparent
-        elif max_val == 0 and property != 'rwi':
-            color_prop = [colors[0]] * len(values)  # All values are 0 - use transparent (not for rwi)
-        else:
-            color_prop = []
-            if property == 'rwi':
-                # Fixed symmetric scale for RWI from -1 to 1; 0 should be mid color (not transparent)
-                min_val = -1.0
-                max_val_fixed = 1.0
-                denom = (max_val_fixed - min_val) if (max_val_fixed - min_val) != 0 else 1.0
-                for val in values:
-                    if pd.isna(val):
-                        color_prop.append(colors[0])  # transparent for NaN only
-                    else:
-                        norm = (float(val) - min_val) / denom  # 0..1
-                        idx = int(min(max(round(norm * (actual_buckets - 1)), 0), actual_buckets - 1))
-                        color_prop.append(actual_colors[idx])
-            elif property == 'smod_class':
-                # Settlement classification: categorical mapping (0=transparent, 1=first color, 2=second, 3=third)
-                for val in values:
-                    if pd.isna(val):
-                        color_prop.append(colors[0])  # transparent for NaN
-                    elif val == 0:
-                        color_prop.append(colors[0])  # transparent for 0 (no data)
-                    elif val in [1, 2, 3]:
-                        index = int(val) - 1  # Map 1->0, 2->1, 3->2
-                        color_prop.append(actual_colors[index])  # Use actual color for category
-                    else:
-                        color_prop.append(colors[0])  # transparent for unknown values
-            else:
-                # Use log scale for population, school_age_population, infant_population, built_surface_m2, and their E_ equivalents; linear for others
-                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2',
-                                'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2']:
-                    # Log scale: transform values using log10
-                    import math
-                    clean_positive_values = [v for v in clean_values if v > 0]
-                    if clean_positive_values:
-                        log_min = math.log10(min(clean_positive_values))
-                        log_max = math.log10(max_val) if max_val > 0 else log_min
-                        log_step = (log_max - log_min) / actual_buckets if log_max != log_min else 1.0
-                        
-                        for val in values:
-                            if pd.isna(val) or val == 0:
-                                color_prop.append(colors[0])  # Use transparent for NaN or 0
-                            else:
-                                log_val = math.log10(val)
-                                index = min(int((log_val - log_min) / log_step) if log_step > 0 else 0, actual_buckets - 1)
-                                color_prop.append(actual_colors[index])
-                    else:
-                        color_prop = [colors[0]] * len(values)
-                else:
-                    # Use actual color buckets (excluding transparent); transparent for 0 or NaN
-                    step = max_val / actual_buckets if actual_buckets > 0 else 1.0
-                    for val in values:
-                        if pd.isna(val) or val == 0:
-                            color_prop.append(colors[0])  # Use transparent for NaN or 0
-                        else:
-                            index = min(int(val / step), actual_buckets - 1)
-                            color_prop.append(actual_colors[index])  # Use actual color bucket
-        
-        for feature, color in zip(tiles_data["features"], color_prop):
-            feature['properties']['_color'] = color
-            if color==colors[0]:
-                feature['properties']['_fillOpacity'] = 0.0
-            else:
-                feature['properties']['_fillOpacity'] = 0.7
-            feature['properties']['_weight'] = 1
-            feature['properties']['_opacity'] = 0.8
-        
-        # Debug output
-        if values:
-            print(f"{property} tiles debug - Total tiles: {len(values)}")
-            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
-            print(f"Min {property}: {min(values)}, Max {property}: {max(values)}")
-            print(f"Sample values: {sorted(set(values))[:10]}")
-        
-        # Debug: Check data structure
-        if tiles_data:
-            print(f"Tiles data type: {type(tiles_data)}")
-            if isinstance(tiles_data, dict):
-                print(f"Tiles data keys: {list(tiles_data.keys())}")
-                if 'features' in tiles_data:
-                    print(f"Features count: {len(tiles_data['features'])}")
-                else:
-                    print("ERROR: No 'features' key in tiles_data!")
-            else:
-                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
-        
-        return tiles_data, True, key
-    except Exception as e:
-        print(f"Error styling {property} tiles: {e}")
-        return tiles_data, True, key
-##############
-
-###############################################
-
-###### Javascript functions - move to a different file
-
-# JavaScript styling for hurricane tracks
-style_tracks = assign("""
-function(feature, context) {
-    const member_type = feature.properties?.member_type;
-    if (member_type === 'control') {
-        return {color: '#ff0000', weight: 4, opacity: 1.0};
-    } else {
-        return {color: '#1cabe2', weight: 2, opacity: 0.8};
-    }
-}
-""")
-
-# JavaScript styling for tiles with value-based coloring
-style_tiles = assign("""
-function(feature, context) {
-    const props = feature.properties || {};
-    const color = props._color || '#808080';
-    const fillOpacity = props._fillOpacity || 0.7;
-    const weight = props._weight || 1;
-    const opacity = props._opacity || 0.8;
-    
-    return {
-        color: color,
-        weight: weight,
-        opacity: opacity,
-        fillColor: color,
-        fillOpacity: fillOpacity
-    };
-}
-""")
-
-# JavaScript point-to-layer function for schools and health centers
-point_to_layer_schools_health = assign("""
-function(feature, latlng, context) {
-    const props = feature.properties || {};
-    const color = props._color || '#808080';
-    const radius = props._radius || 12;
-    const opacity = props._opacity || 0.8;
-    const weight = props._weight || 2;
-    const fillOpacity = props._fillOpacity || 0.7;
-    
-    return L.circleMarker(latlng, {
-        radius: radius,
-        fillColor: color,
-        color: color,
-        weight: weight,
-        opacity: opacity,
-        fillOpacity: fillOpacity
-    });
-}
-""")
-
-style_envelopes = assign("""
-function(feature, context) {
-    const props = feature.properties || {};
-    const severity_population = props.severity_population || 0;
-    const max_population = props.max_population || 1;
-    
-    // Gray for no data or zero impact
-    if (!severity_population || severity_population === 0) {
-        return {color: '#808080', weight: 2, fillColor: '#808080', fillOpacity: 0.3};
-    }
-    
-    // Calculate relative severity (0 to 1)
-    const relativeSeverity = Math.min(severity_population / max_population, 1);
-    
-    // Smooth gradient from yellow to red using color interpolation
-    // Using cubic easing for smoother transitions
-    const easedSeverity = relativeSeverity * relativeSeverity * relativeSeverity;
-    
-    // Color interpolation helper
-    const interpolateColor = (startColor, endColor, fraction) => {
-        const start = parseInt(startColor.slice(1), 16);
-        const end = parseInt(endColor.slice(1), 16);
-        const r = Math.round(((start >> 16) & 0xff) * (1 - fraction) + ((end >> 16) & 0xff) * fraction);
-        const g = Math.round(((start >> 8) & 0xff) * (1 - fraction) + ((end >> 8) & 0xff) * fraction);
-        const b = Math.round((start & 0xff) * (1 - fraction) + (end & 0xff) * fraction);
-        return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-    };
-    
-    // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
-    const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
-    
-    // Opacity also increases with severity
-    const fillOpacity = 0.3 + (easedSeverity * 0.6);
-    
-    return {color: color, weight: 2, fillColor: color, fillOpacity: fillOpacity};
-}
-""")
-
-# Tooltip functions for displaying data on hover
-tooltip_tracks = assign("""
-function(feature, layer) {
-    const props = feature.properties || {};
-    const member = props.ensemble_member || 'N/A';
-    const type = props.member_type || 'N/A';
-    
-    const label = type === 'control' ? 'Control Track' : 'Ensemble Track';
-    
-    const content = `
-        <div style="font-size: 13px; font-weight: 600; color: #1cabe2; margin-bottom: 5px;">
-            ${label}
-        </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>Ensemble Member:</strong> #${member}
-        </div>
-    `;
-    
-    layer.bindTooltip(content, {sticky: true});
-}
-""")
-
-tooltip_envelopes = assign("""
-function(feature, layer) {
-    const props = feature.properties || {};
-    const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
-    const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
-    const severity_school_age_population = props.severity_school_age_population || 0;
-    const severity_infant_population = props.severity_infant_population  || 0;
-    const severity_population = props.severity_population || 0;
-    const severity_schools = props.severity_schools || 0;
-    const severity_hcs = props.severity_hcs || 0;
-    const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
-    
-    
-    const formatNumber = (num) => {
-        if (typeof num === 'number') {
-            return new Intl.NumberFormat('en-US').format(Math.round(num));
-        }
-        return num;
-    };
-    
-    // Always show same structure, use N/A when data not available
-    let content = `
-        <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
-            Hurricane Envelope
-        </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>Wind Threshold:</strong> ${wind_threshold}
-        </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>Ensemble Member:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : 'N/A'}
-        </div>
-    `;
-    
-    // Always show impact section
-    content += `
-        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
-        <div style="font-size: 11px; color: #777; margin-top: 5px;">
-            <strong>Impact:</strong>
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Children: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Infants: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
-        </div>
-    `;
-    
-    layer.bindTooltip(content, {sticky: true});
-}
-""")
-
-tooltip_schools = assign("""
-function(feature, layer) {
-    const props = feature.properties || {};
-    const probability = props.probability || 0;
-    const school_id = props.school_id_giga || props.school_id || 'N/A';
-    const school_name = props.school_name || props.name || props.school || 'N/A';
-    
-    const formatPercent = (prob) => {
-        if (typeof prob === 'number') {
-            return (prob * 100).toFixed(1) + '%';
-        }
-        return 'N/A';
-    };
-    
-    const content = `
-        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
-            School
-        </div>
-        ${school_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${school_name}</div>` : ''}
-        <div style="font-size: 12px; color: #555;">
-            <strong>Impact Probability:</strong> ${formatPercent(probability)}
-        </div>
-    `;
-    
-    layer.bindTooltip(content, {sticky: true});
-}
-""")
-
-tooltip_health = assign("""
-function(feature, layer) {
-    const props = feature.properties || {};
-    const probability = props.probability || 0;
-    const osm_id = props.osm_id || 'N/A';
-    const facility_name = props.facility_name || props.name || props.amenity_name || 'N/A';
-    const facility_type = props.facility_type || props.amenity_type || props.type || 'N/A';
-    
-    const formatPercent = (prob) => {
-        if (typeof prob === 'number') {
-            return (prob * 100).toFixed(1) + '%';
-        }
-        return 'N/A';
-    };
-    
-    const content = `
-        <div style="font-size: 13px; font-weight: 600; color: #228B22; margin-bottom: 5px;">
-            Health Facility
-        </div>
-        ${facility_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${facility_name}</div>` : ''}
-        ${facility_type !== 'N/A' ? `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${facility_type}</div>` : ''}
-        <div style="font-size: 12px; color: #555;">
-            <strong>Impact Probability:</strong> ${formatPercent(probability)}
-        </div>
-    `;
-    
-    layer.bindTooltip(content, {sticky: true});
-}
-""")
-
-tooltip_tiles = assign("""
-function(feature, layer) {
-    const props = feature.properties || {};
-    
-    const formatNumber = (num) => {
-        if (typeof num === 'number') {
-            return new Intl.NumberFormat('en-US').format(Math.round(num));
-        }
-        return num;
-    };
-    
-    let content = `
-        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
-            Tile Statistics
-        </div>
-    `;
-    
-    // Expected impact values (from hurricane envelopes)
-    const E_population = props.E_population || props.expected_population || 0;
-    const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
-    const E_num_schools = props.E_num_schools || 0;
-    const E_school_age_population = props.E_school_age_population || 0;
-    const E_infant_population = props.E_infant_population || 0;
-    const E_num_hcs = props.E_num_hcs || 0;
-    const E_rwi = props.E_rwi || 0;
-    const probability = props.probability || 0;
-    
-    // Base infrastructure values
-    const population = props.population || 0;
-    const built_surface = props.built_surface_m2 || 0;
-    const num_schools = props.num_schools || 0;
-    const school_age_pop = props.school_age_population || 0;
-    const infant_pop = props.infant_population || 0;
-    const num_hcs = props.num_hcs || 0;
-    const rwi = props.rwi || 0;
-    const smod_class = props.smod_class || 'N/A';
-    
-    // Settlement classification mapping (values are 0, 10, 20, 30)
-    const getSettlementLabel = (classNum) => {
-        if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
-        // Convert to number and normalize to 0-3 range (divide by 10 if needed)
-        const num = Number(classNum);
-        const normalized = parseInt(num >= 10 ? num / 10 : num);
-        if (normalized === 1) return 'Rural';
-        if (normalized === 2) return 'Urban Clusters';
-        if (normalized === 3) return 'Urban Centers';
-        return 'N/A';
-    };
-    
-    // Formatting helper functions
-    const formatValue = (val) => {
-        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return 'N/A';
-        if (typeof val === 'number') return formatNumber(val);
-        return val === '' ? 'N/A' : val;
-    };
-    
-    const formatSettlement = (val) => {
-        if (val === null || val === undefined || val === '' || (typeof val === 'number' && isNaN(val))) return 'N/A';
-        if (typeof val === 'number') return getSettlementLabel(val);
-        return 'N/A';
-    };
-    
-    const formatDecimal = (val) => {
-        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
-        return val.toFixed(2);
-    };
-    
-    // Show expected impact if available
-    if (probability > 0) {
-        content += `
-        <div style="font-size: 11px; color: #dc143c; margin-top: 5px; font-weight: 600;">
-            Expected Impact:
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Hurricane Impact Probability: ${(probability * 100).toFixed(1)}%
-        </div>
-        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
-        `;
-    }
-    
-    // Show tile data - always show all fields
-    content += `
-    <div style="font-size: 11px; color: #777; margin-top: 5px;">
-        <strong>Tile Base Data:</strong>
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Population: ${formatValue(population)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Children: ${formatValue(school_age_pop)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Infants: ${formatValue(infant_pop)}
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Schools: ${formatValue(num_schools)}
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Health Centers: ${formatValue(num_hcs)}
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Settlement: ${formatSettlement(smod_class)}
-    </div>
-    <div style="font-size: 11px; color: #555;">
-        Relative Wealth Index: ${formatDecimal(rwi)}
-    </div>
-    `;
-    
-    layer.bindTooltip(content, {sticky: true});
-}
-""")
-
-##############################################
-
-# Load hurricane metadata at startup (like hurricanes page)
+# =============================================================================
+# SECTION 1: DATA LOADING AND METADATA
+# =============================================================================
+# Initialize data store and load hurricane metadata
 
 from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
@@ -708,9 +152,14 @@ gdf_latest = convert_to_geodataframe(latest_clean)
 
 user_name = "UNICEF-User"
 
-###### DASH components #########
 
-# Single-page dashboard layout
+
+
+# =============================================================================
+# SECTION 2: LAYOUT CREATION
+# =============================================================================
+# Create the three-panel dashboard layout (left controls, center map, right metrics)
+
 def make_single_page_layout():
     """Create the three-panel single-page dashboard layout"""
     return dmc.Grid(
@@ -1225,8 +674,6 @@ def make_single_page_layout():
         style={"height": "100%", "margin": 0}
     )
 
-
-
 # Use the standard header with Last Updated timestamp (now included in main header)
 def make_custom_header():
     """Use the standard header which now includes Last Updated timestamp"""
@@ -1258,9 +705,18 @@ def make_single_page_appshell():
 layout = make_single_page_appshell()
 
 
-########################### Callbacks ####################################
 
-# Callbacks for interactive functionality
+
+# =============================================================================
+# SECTION 3: CALLBACKS
+# =============================================================================
+# All Dash callbacks that handle user interactions and data updates
+
+# -----------------------------------------------------------------------------
+# 3.1: CALLBACKS - IMPACT METRICS
+# -----------------------------------------------------------------------------
+# Calculate and display impact metrics for low/probabilistic/high scenarios
+
 @callback(
     [Output("population-count-low", "children"),
      Output("population-count-probabilistic", "children"),
@@ -1428,7 +884,12 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         print(f"Impact metrics: Error updating metrics: {e}")
         return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
-# Callback to enable/disable specific track button when layers are loaded
+
+
+# -----------------------------------------------------------------------------
+# 3.2: CALLBACKS - SPECIFIC TRACK CONTROLS
+# -----------------------------------------------------------------------------
+
 @callback(
     Output("show-specific-track-btn", "disabled"),
     [Input("layers-loaded-store", "data")],
@@ -1501,8 +962,13 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
         print(f"Error loading specific track options: {e}")
         return [], {"display": "none"}
 
-# Function to get envelope data from Snowflake (matching the working envelopes.py)
-# Callback to populate available forecast dates
+
+
+# -----------------------------------------------------------------------------
+# 3.3: CALLBACKS - SELECTORS (Date, Time, Storm, Wind Threshold)
+# -----------------------------------------------------------------------------
+# Update dropdown options based on available data
+
 @callback(
     Output("forecast-date", "data"),
     Output("forecast-date", "value"),
@@ -1618,7 +1084,6 @@ def update_storm_options(country, forecast_date, forecast_time):
     return storm_options, default_storm
 
 
-
 # Callback to update wind threshold options based on storm, date, and time selection
 @callback(
     Output("wind-threshold-select", "data"),
@@ -1706,7 +1171,13 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
         ]
         return all_thresholds, "50"
 
-# Load all layers callback with integrated loading indicator
+
+
+# -----------------------------------------------------------------------------
+# 3.4: CALLBACKS - DATA LOADING
+# -----------------------------------------------------------------------------
+# Load all data layers when user clicks "Load Layers" button
+
 @callback(
     [Output('tracks-data-store', 'data'),
      Output('envelope-data-store', 'data'),
@@ -1950,7 +1421,13 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         print(f"Error in load_all_layers: {e}")
         return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True
 
-# Simple toggle callbacks - just show/hide pre-loaded data
+
+
+# -----------------------------------------------------------------------------
+# 3.5: CALLBACKS - LAYER TOGGLES
+# -----------------------------------------------------------------------------
+# Toggle visibility of different map layers (tracks, envelopes, schools, etc.)
+
 @callback(
     Output("hurricane-tracks-json", "data"),
     Output("hurricane-tracks-json", "zoomToBounds"),
@@ -2331,7 +1808,12 @@ def toggle_health_layer(checked, health_data_in):
         return health_data, True, key
 
 
-# Callbacks for toggle tiles - now using radio group
+
+# -----------------------------------------------------------------------------
+# 3.6: CALLBACKS - TILE LAYER STYLING
+# -----------------------------------------------------------------------------
+# Handle tile layer display and styling based on selected property
+
 @callback(
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
@@ -2432,7 +1914,13 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
     tiles, zoom, key = update_tile_features(tiles_data_in, 'probability')
     return tiles, zoom, key, legend_style
 
-# Callback to update info text when specific track is selected
+
+
+# -----------------------------------------------------------------------------
+# 3.7: CALLBACKS - SPECIFIC TRACK SELECTION
+# -----------------------------------------------------------------------------
+# Handle selection and display of individual hurricane track scenarios
+
 @callback(
     Output("specific-track-info", "children"),
     [Input("specific-track-select", "value")],
@@ -2520,11 +2008,13 @@ def clear_specific_track_when_disabled(is_disabled):
         return None
     return dash.no_update
 
-# Callback to update forecast dates based on country selection
 
 
+# -----------------------------------------------------------------------------
+# 3.8: CALLBACKS - LEGEND VISIBILITY
+# -----------------------------------------------------------------------------
+# Show/hide legends based on which layers are visible
 
-# Legend visibility callbacks
 @callback(
     Output("schools-legend", "style"),
     [Input("schools-layer", "checked")],
@@ -2641,6 +2131,12 @@ def toggle_tiles_legend(selected_value, tiles_data):
     else:
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
 
-# Register the page as the home page
+
+
+
+# =============================================================================
+# SECTION 4: PAGE REGISTRATION
+# =============================================================================
+
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
 
