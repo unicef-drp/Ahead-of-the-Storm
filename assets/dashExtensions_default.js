@@ -276,11 +276,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const rwi = props.rwi || 0;
                 const smod_class = props.smod_class || 'N/A';
 
-                // Settlement classification mapping
+                // Settlement classification mapping (values are 0, 10, 20, 30)
                 const getSettlementLabel = (classNum) => {
-                    if (classNum === 0 || classNum === null) return 'Rural';
-                    if (classNum === 1) return 'Urban Clusters';
-                    if (classNum === 2 || classNum === 3) return 'Urban Centers';
+                    if (classNum === null || classNum === undefined || classNum === '' || classNum === 0) return 'No Data';
+                    // Handle both original (10, 20, 30) and processed (1, 2, 3) values
+                    if (classNum === 1 || classNum === 10) return 'Rural';
+                    if (classNum === 2 || classNum === 20) return 'Urban Clusters';
+                    if (classNum === 3 || classNum === 30) return 'Urban Centers';
                     return 'N/A';
                 };
 

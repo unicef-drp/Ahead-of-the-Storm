@@ -29,16 +29,70 @@ ZOOM_LEVEL = 14
 ###### Colors for the tiles - move to a different file
 
 all_colors = {
-    'probability': ['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    # probability colors: starts at light yellow and increases to dark red
+    'probability': ['transparent',
+                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
+                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
     'population': ['transparent','#87ceeb', '#4682b4', '#1e90ff', '#0000cd', '#000080', '#191970'],
-    'E_population': ['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'E_population': ['transparent',
+                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
+                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
     'school_age_population':['transparent','#90ee90','#32cd32','#228b22','#006400','#2e8b57','#1c4a1c'],
-    'E_school_age_population':['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'E_school_age_population':['transparent',
+                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
+                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
     'built_surface_m2':['transparent','#d3d3d3','#a9a9a9','#808080','#8b4513','#654321','#2f1b14'],
-    'E_built_surface_m2':['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'E_built_surface_m2':['transparent',
+                    '#ffffcc','#fff3b0','#ffe680','#ffd34d','#ffc300',
+                    '#ffb000','#ff8c00','#ff6a00','#ff4500','#e31a1c','#b10026'],
     'smod_class': ['transparent','#dda0dd','#9370db', '#4b0082'],
-    'rwi':['transparent','#8b0000','#dc143c','#ff6347','#ffa500','#ffd700','#ffff00','#adff2f','#32cd32'],
+    # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
+    # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
+    'rwi':['transparent','#d73027','#f46d43','#fdae61','#fee08b','#808080','#d9ef8b','#a6d96a','#66bd63','#1a9850'],
 }
+
+def create_legend_divs(color_key, skip_transparent=True):
+    """Generate legend HTML divs from all_colors dictionary
+    
+    Args:
+        color_key: Key in all_colors dict (e.g., 'population', 'probability')
+        skip_transparent: Whether to skip the first color (usually 'transparent')
+    
+    Returns:
+        List of HTML div elements for legend
+    """
+    if color_key not in all_colors:
+        return []
+    
+    colors = all_colors[color_key]
+    
+    if skip_transparent and colors and colors[0] == 'transparent':
+        actual_colors = colors[1:]
+    else:
+        actual_colors = colors
+    
+    if not actual_colors:
+        return []
+    
+    # Calculate width percentage for each color block
+    width_pct = 100 / len(actual_colors)
+    
+    legend_divs = []
+    for i, color in enumerate(actual_colors):
+        # Last item doesn't need right margin
+        margin_right = "1px" if i < len(actual_colors) - 1 else ""
+        legend_divs.append(
+            html.Div(style={
+                "width": f"{width_pct}%",
+                "height": "12px",
+                "backgroundColor": color,
+                "border": "1px solid #ccc",
+                "display": "inline-block",
+                "marginRight": margin_right
+            })
+        )
+    
+    return legend_divs
 
 ##############
 def update_tile_features(tiles_data_in,property):
@@ -57,29 +111,65 @@ def update_tile_features(tiles_data_in,property):
         colors = all_colors[property]
         buckets = len(colors)
         if property=='smod_class':
-            values = [int(f["properties"][property]/10) for f in tiles_data["features"]]
+            # Settlement classification: discrete categories (0=no data, 10=rural, 20=urban cluster, 30=urban center)
+            # Divide by 10 to get category (10->1, 20->2, 30->3)
+            values = [int(f["properties"][property]/10) if not pd.isna(f["properties"][property]) else 0 for f in tiles_data["features"]]
         else:
             values = [f["properties"][property] for f in tiles_data["features"]]
         
         clean_values = [v for v in values if not pd.isna(v)]
         nan_count = len(values)-len(clean_values)
         zero_count = len([v for v in clean_values if v==0])
-        if not clean_values:
-            color_prop = colors[0] * len(values)  # All values are NaN
+        
+        # For probability, use a fixed scale (0-1 or 0-100) regardless of actual max value
+        if property == 'probability':
+            max_val = 1.0  # Probability is always 0-1
         else:
-            max_val = max(clean_values)
-            if max_val == 0:
-                color_prop = colors[0] * len(values)  # All values are 0 or NaN
-            else:
-                step = max_val / buckets
-
-                color_prop = []
+            max_val = max(clean_values) if clean_values else 0
+        
+        # Separate colors into actual color buckets (excluding transparent)
+        actual_colors = colors[1:]  # Skip transparent
+        actual_buckets = len(actual_colors)
+        
+        if not clean_values:
+            color_prop = [colors[0]] * len(values)  # All values are NaN - use transparent
+        elif max_val == 0 and property != 'rwi':
+            color_prop = [colors[0]] * len(values)  # All values are 0 - use transparent (not for rwi)
+        else:
+            color_prop = []
+            if property == 'rwi':
+                # Fixed symmetric scale for RWI from -1 to 1; 0 should be mid color (not transparent)
+                min_val = -1.0
+                max_val_fixed = 1.0
+                denom = (max_val_fixed - min_val) if (max_val_fixed - min_val) != 0 else 1.0
                 for val in values:
                     if pd.isna(val):
-                        color_prop.append(colors[0])  # Assign NaNs to the first bucket
+                        color_prop.append(colors[0])  # transparent for NaN only
                     else:
-                        index = min(int(val / step), buckets-1)
-                        color_prop.append(colors[index])
+                        norm = (float(val) - min_val) / denom  # 0..1
+                        idx = int(min(max(round(norm * (actual_buckets - 1)), 0), actual_buckets - 1))
+                        color_prop.append(actual_colors[idx])
+            elif property == 'smod_class':
+                # Settlement classification: categorical mapping (0=transparent, 1=first color, 2=second, 3=third)
+                for val in values:
+                    if pd.isna(val):
+                        color_prop.append(colors[0])  # transparent for NaN
+                    elif val == 0:
+                        color_prop.append(colors[0])  # transparent for 0 (no data)
+                    elif val in [1, 2, 3]:
+                        index = int(val) - 1  # Map 1->0, 2->1, 3->2
+                        color_prop.append(actual_colors[index])  # Use actual color for category
+                    else:
+                        color_prop.append(colors[0])  # transparent for unknown values
+            else:
+                # Use actual color buckets (excluding transparent); transparent for 0 or NaN
+                step = max_val / actual_buckets if actual_buckets > 0 else 1.0
+                for val in values:
+                    if pd.isna(val) or val == 0:
+                        color_prop.append(colors[0])  # Use transparent for NaN or 0
+                    else:
+                        index = min(int(val / step), actual_buckets - 1)
+                        color_prop.append(actual_colors[index])  # Use actual color bucket
         
         for feature, color in zip(tiles_data["features"], color_prop):
             feature['properties']['_color'] = color
@@ -382,11 +472,13 @@ function(feature, layer) {
     const rwi = props.rwi || 0;
     const smod_class = props.smod_class || 'N/A';
     
-    // Settlement classification mapping
+    // Settlement classification mapping (values are 0, 10, 20, 30)
     const getSettlementLabel = (classNum) => {
-        if (classNum === 0 || classNum === null) return 'Rural';
-        if (classNum === 1) return 'Urban Clusters';
-        if (classNum === 2 || classNum === 3) return 'Urban Centers';
+        if (classNum === null || classNum === undefined || classNum === '' || classNum === 0) return 'No Data';
+        // Handle both original (10, 20, 30) and processed (1, 2, 3) values
+        if (classNum === 1 || classNum === 10) return 'Rural';
+        if (classNum === 2 || classNum === 20) return 'Urban Clusters';
+        if (classNum === 3 || classNum === 30) return 'Urban Centers';
         return 'N/A';
     };
     
@@ -749,71 +841,58 @@ def make_single_page_layout():
                                         dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
 
                                         dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
-                                        dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #87ceeb, #4682b4, #1e90ff, #0000cd, #000080, #191970)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
-                                        ], id="probability-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                                        # Discrete probability legend with buckets
+                                        html.Div(id="probability-legend", children=[
+                                            dmc.Grid([
+                                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                                dmc.GridCol(span=9, children=html.Div(
+                                                    create_legend_divs('probability'),
+                                                    style={"display": "flex", "width": "100%"}
+                                                )),
+                                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                                            ], gutter="xs", mb="xs")
+                                        ], style={"display": "none"}),
 
                                         dmc.Divider(),
 
                                         dmc.RadioGroup([
+                                            dmc.Radio(id="none-tiles-layer", label="None", value="none", mb="xs"),
+                                            dmc.Divider(mb="xs", mt="xs"),
                                             dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
                                             dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
                                             dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                                            dmc.Divider(mb="xs", mt="xs"),
+                                            dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                                             dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
                                             dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
-                                        ], id="tiles-layer-group", value=None),
+                                        ], id="tiles-layer-group", value="none"),
 
                                         # Legend grids for each layer
                                         dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #87ceeb, #4682b4, #1e90ff, #0000cd, #000080, #191970)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=9, children=html.Div(
+                                                create_legend_divs('population'),
+                                                style={"display": "flex", "width": "100%"}
+                                            )),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
                                         ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #90ee90, #32cd32, #228b22, #006400, #2e8b57, #1c4a1c)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("750+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=9, children=html.Div(
+                                                create_legend_divs('school_age_population'),
+                                                style={"display": "flex", "width": "100%"}
+                                            )),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("750+", size="xs", c="dimmed")]),
                                         ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #d3d3d3, #a9a9a9, #808080, #8b4513, #654321, #2f1b14)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("50k+", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=9, children=html.Div(
+                                                create_legend_divs('built_surface_m2'),
+                                                style={"display": "flex", "width": "100%"}
+                                            )),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("50k+", size="xs", c="dimmed")]),
                                         ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
@@ -836,17 +915,12 @@ def make_single_page_layout():
                                         ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("-1", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #dc143c, #ff4500, #ffd700, #32cd32, #00ff00)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("+1", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=9, children=html.Div(
+                                                create_legend_divs('rwi'),
+                                                style={"display": "flex", "width": "100%"}
+                                            )),
+                                            dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                                         ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Text("Note: Select one tile layer to view on the map", size="xs", c="dimmed", mb="md")
@@ -919,6 +993,15 @@ def make_single_page_layout():
                                 id="population-tiles-json",
                                 data={},
                                 zoomToBounds=True,
+                                style=style_tiles,
+                                onEachFeature=tooltip_tiles
+                            ),
+                            
+                            # Impact Probability Tiles Layer
+                            dl.GeoJSON(
+                                id="probability-tiles-json",
+                                data={},
+                                zoomToBounds=False,
                                 style=style_tiles,
                                 onEachFeature=tooltip_tiles
                             ),
@@ -2181,45 +2264,80 @@ def toggle_health_layer(checked, health_data_in):
 )
 def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, prob_checked_val, tiles_data_in):
     """Handle tile layer display based on radio selection"""
-    # Radio buttons should always be enabled (not greyed out)
-    radios_enabled = (False, False, False, False, False)
+    # Determine which layer is selected
+    active_layer = selected_layer
     
-    # If no layer is selected, return empty data
-    if not selected_layer:
+    # Context data layers should be disabled when Impact Probability is on
+    # and regular layers should be enabled at all times
+    if prob_checked_val:
+        # When Impact Probability is on, disable context data radios
+        population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, True, True
+    else:
+        # When Impact Probability is off, all radios are enabled
+        population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False
+    
+    radios_enabled = (population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled)
+    
+    # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
+    if not active_layer or active_layer == "none":
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
     
-    # Determine what data to show based on selected layer
-    if selected_layer == "population":
+    # Determine what data to show based on active layer
+    if active_layer == "population":
         if prob_checked_val:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'E_population')
         else:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
         return tiles, zoom, key, *radios_enabled
     
-    elif selected_layer == "school-age":
+    elif active_layer == "school-age":
         if prob_checked_val:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'E_school_age_population')
         else:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
         return tiles, zoom, key, *radios_enabled
     
-    elif selected_layer == "built-surface":
+    elif active_layer == "built-surface":
         if prob_checked_val:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'E_built_surface_m2')
         else:
             tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
         return tiles, zoom, key, *radios_enabled
     
-    elif selected_layer == "settlement":
+    elif active_layer == "settlement":
         tiles, zoom, key = update_tile_features(tiles_data_in, 'smod_class')
         return tiles, zoom, key, *radios_enabled
     
-    elif selected_layer == "rwi":
+    elif active_layer == "rwi":
         tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
     return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+
+# Callback for Impact Probability layer
+@callback(
+    Output("probability-tiles-json", "data", allow_duplicate=True),
+    Output("probability-tiles-json", "zoomToBounds", allow_duplicate=True),
+    Output("probability-tiles-json", "key", allow_duplicate=True),
+    Output("probability-legend", "style", allow_duplicate=True),
+    Input('probability-tiles-layer','checked'),
+    Input('tiles-layer-group','value'),
+    State('population-tiles-data-store','data'),
+    prevent_initial_call = True,
+)
+def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
+    """Handle Impact Probability layer display - only show when checkbox is on and radio is 'none'"""
+    # Show probability legend whenever checkbox is on; show probability layer only when radio is 'none'
+    legend_style = {"display": "block"} if prob_checked else {"display": "none"}
+    should_show = prob_checked and (selected_layer is None or selected_layer == "none") and tiles_data_in
+    
+    if not should_show or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style
+    
+    # Show probability data
+    tiles, zoom, key = update_tile_features(tiles_data_in, 'probability')
+    return tiles, zoom, key, legend_style
 
 # Callback to update info text when specific track is selected
 @callback(
