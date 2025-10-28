@@ -127,11 +127,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const props = feature.properties || {};
                 const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
+                const severity_school_age_population = props.severity_school_age_population || 0;
+                const severity_infant_population = props.severity_infant_population || 0;
                 const severity_population = props.severity_population || 0;
                 const severity_schools = props.severity_schools || 0;
                 const severity_hcs = props.severity_hcs || 0;
                 const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
-                const severity_children = props.severity_children || 0;
+
 
                 const formatNumber = (num) => {
                     if (typeof num === 'number') {
@@ -160,7 +162,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             <strong>Impact:</strong>
         </div>
         <div style="font-size: 11px; color: #555;">
-            Children: ${severity_children > 0 ? formatNumber(severity_children) : 'N/A'}
+            Children: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Infants: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
@@ -327,6 +332,9 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
     </div>
     <div style="font-size: 11px; color: #555;">
         School-Age Population: ${formatValue(school_age_pop)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Infant Population: ${formatValue(infant_pop)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}
