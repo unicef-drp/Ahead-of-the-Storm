@@ -82,7 +82,7 @@ dash.register_page(
 def make_custom_header():
     """Use the standard header which now includes Last Updated timestamp"""
     from components.ui.header import make_header
-    return make_header(active_tab="report")
+    return make_header(active_tab="tab-report")
 
 def make_single_page_layout():
     report_path = os.path.join(RESULTS_DIR, REPORT_FILE)

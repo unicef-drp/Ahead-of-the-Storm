@@ -59,6 +59,20 @@ def make_header(active_tab="tab-home"):
                                     ),
                                     dmc.Anchor(
                                         dmc.TabsTab(
+                                            "Deterministic Forecast",
+                                            value="tab-deterministic",
+                                            leftSection=DashIconify(
+                                                icon="carbon:weather-station", height=16
+                                            ),
+                                        ),
+                                        href="/deterministic",
+                                        style={
+                                            "textDecoration": "none",
+                                            "color": "inherit", 
+                                        },
+                                    ),
+                                    dmc.Anchor(
+                                        dmc.TabsTab(
                                             "Report",
                                             value="tab-report",
                                             leftSection=DashIconify(
@@ -72,39 +86,6 @@ def make_header(active_tab="tab-home"):
                                             "textDecoration": "none",
                                             "color": "inherit", 
                                         },
-                                    ),
-                                    dmc.Menu(
-                                        [
-                                            # dmc.MenuTarget(dmc.TabsTab("Account", value="tab-account", leftSection=DashIconify(icon="carbon:user", height=16)),),
-                                            dmc.MenuTarget(
-                                            dmc.Button(
-                                                "Account",
-                                                variant="subtle",
-                                                c="white",
-                                                leftSection=DashIconify(
-                                                    icon="carbon:user", height=16
-                                                ),
-                                            ),
-                                            ),
-                                            dmc.MenuDropdown(
-                                                [
-                                                    dmc.MenuItem(
-                                                        "Admin Panel",
-                                                        href="https://www.github.com/",
-                                                        target="_blank",
-                                                        leftSection=DashIconify(
-                                                            icon="radix-icons:external-link"
-                                                        ),
-                                                    ),
-                                                    dmc.MenuItem(
-                                                        "Logout",
-                                                        id="logout-button",
-                                                        n_clicks=0,
-                                                    ),
-                                                ]
-                                            ),
-                                        ],
-                                        trigger="hover",
                                     ),
                                 ],
                                 justify="flex-end",
