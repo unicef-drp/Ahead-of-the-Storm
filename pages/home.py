@@ -891,7 +891,8 @@ def make_single_page_layout():
                                 id="envelopes-json-test",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_envelopes
+                                style=style_envelopes,
+                                onEachFeature=tooltip_envelopes
                             ),
                             # Schools Impact Layer
                             dl.GeoJSON(
@@ -2435,27 +2436,6 @@ def toggle_settlement_legend(checked):
 def toggle_rwi_legend(checked):
     """Show/hide relative wealth index legend based on checkbox state"""
     return {"display": "block" if checked else "none"}
-
-@callback(
-    [Output("settlement-tiles-layer", "disabled"),
-     Output("rwi-tiles-layer", "disabled")],
-    [Input("tiles-vis-mode", "checked"),
-     Input("layers-loaded-store", "data")],
-    prevent_initial_call=False
-)
-def disable_layers_without_expected_impact(show_expected, layers_loaded):
-    """Disable settlement and RWI layers when expected impact mode is on"""
-    # Only control disabled state if layers are loaded
-    if not layers_loaded:
-        return dash.no_update, dash.no_update
-    
-    # show_expected can be None (initial state), False (switch off), or True (switch on)
-    # Only disable when explicitly True
-    if show_expected is None:
-        disabled = False  # Default to enabled on initial load
-    else:
-        disabled = show_expected
-    return disabled, disabled
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
