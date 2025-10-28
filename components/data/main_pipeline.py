@@ -285,7 +285,7 @@ def update_storms(countries, skip_analysis, log_level, zoom):
                 print(f"\nPipeline with errors for storm {storm} in {forecast_datetime_str}")
 
     # this does not work yet
-    #save_json_storms(d)
+    save_json_storms(d)
 
     return stats
 
@@ -297,7 +297,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run complete impact analysis pipeline")
     
     # Required arguments
-    parser.add_argument("--type", default="update", help='initialize or update') 
+    parser.add_argument("--type", default="initialize", help='initialize or update') 
     parser.add_argument("--hazard", default="hurricane", 
                         help="Hazard type (currently supports: hurricane)")
     # parser.add_argument("--storm", default="MELISSA", help="Storm name (e.g., JERRY)")

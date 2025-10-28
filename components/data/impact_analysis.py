@@ -209,6 +209,10 @@ def create_mercator_country_layer(country, zoom_level=15):
     except:
         # this should be ready in the next release
         print("No school age available")
+        try:
+            tiles_viewer.map_wp_pop(country=country, resolution=1000, output_column="school_age_population", school_age=False, project="age_structures", un_adjusted=False, sex='F_M',min_age=5, max_age=15)
+        except:
+            print("No age ranges either")
         school_age = {k: np.nan for k in tiles_viewer.view.index.unique()}
         tiles_viewer.add_variable_to_view(school_age, 'school_age_population')
 
@@ -280,7 +284,9 @@ def load_json_storms():
     """
     filename = os.path.join(RESULTS_DIR, STORMS_FILE)
     if data_store.file_exists(filename):
-        return read_dataset(data_store, filename)
+        df = read_dataset(data_store, filename)
+        column_name = df.columns[0]
+        return {column_name: df[column_name].to_dict()}
     return {'storms':[]}
 
 

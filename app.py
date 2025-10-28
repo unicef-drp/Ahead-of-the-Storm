@@ -26,12 +26,6 @@ server = app.server
 
 app.layout = dmc.MantineProvider(
     [
-        dcc.Store(id="current_country", data=""),
-        dcc.Store(id='school-data',data={}),
-        dcc.Store(id='forecast-data-store'),
-        dcc.Store(id='envelope-data-store'),
-        dcc.Store(id='sidebar-open', data=False),
-        dcc.Store(id='metadata-store', data={}),#data=metadata_df.to_dict('records')),
         dash.page_container,
     ],
     id="mantine-provider",
