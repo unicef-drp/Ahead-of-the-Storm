@@ -394,13 +394,13 @@ function(feature, layer) {
             <strong>Impact:</strong>
         </div>
         <div style="font-size: 11px; color: #555;">
+            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
             Children: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
         </div>
-        <div style="font-size: 11px; color: #555;">
+        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
             Infants: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555;">
-            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
@@ -514,11 +514,13 @@ function(feature, layer) {
     
     // Settlement classification mapping (values are 0, 10, 20, 30)
     const getSettlementLabel = (classNum) => {
-        if (classNum === null || classNum === undefined || classNum === '' || classNum === 0) return 'No Data';
-        // Handle both original (10, 20, 30) and processed (1, 2, 3) values
-        if (classNum === 1 || classNum === 10) return 'Rural';
-        if (classNum === 2 || classNum === 20) return 'Urban Clusters';
-        if (classNum === 3 || classNum === 30) return 'Urban Centers';
+        if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
+        // Convert to number and normalize to 0-3 range (divide by 10 if needed)
+        const num = Number(classNum);
+        const normalized = parseInt(num >= 10 ? num / 10 : num);
+        if (normalized === 1) return 'Rural';
+        if (normalized === 2) return 'Urban Clusters';
+        if (normalized === 3) return 'Urban Centers';
         return 'N/A';
     };
     
@@ -559,13 +561,13 @@ function(feature, layer) {
         <strong>Tile Base Data:</strong>
     </div>
     <div style="font-size: 11px; color: #555;">
-        Total Population: ${formatValue(population)}
+        Population: ${formatValue(population)}
     </div>
-    <div style="font-size: 11px; color: #555;">
-        School-Age Population: ${formatValue(school_age_pop)}
+    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Children: ${formatValue(school_age_pop)}
     </div>
-    <div style="font-size: 11px; color: #555;">
-        Infant Population: ${formatValue(infant_pop)}
+    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Infants: ${formatValue(infant_pop)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}
@@ -1115,13 +1117,19 @@ def make_single_page_layout():
                                     ]),
                                     dmc.TableTbody([
                                         dmc.TableTr([
-                                            dmc.TableTd("Children", style={"fontWeight": 500}),
+                                            dmc.TableTd("Population", style={"fontWeight": 500}),
+                                            dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                            dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                        ]),
+                                        dmc.TableTr([
+                                            dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Children", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
                                             dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Infants", style={"fontWeight": 500}),
+                                            dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Infants", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
                                             dmc.TableTd("N/A", id="infant-affected-low",
                                                         style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="infant-affected-probabilistic",
@@ -1140,12 +1148,6 @@ def make_single_page_layout():
                                             dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd("Population", style={"fontWeight": 500}),
-                                            dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
                                             dmc.TableTd([
@@ -1260,7 +1262,10 @@ layout = make_single_page_appshell()
 
 # Callbacks for interactive functionality
 @callback(
-    [Output("children-affected-low", "children"),
+    [Output("population-count-low", "children"),
+     Output("population-count-probabilistic", "children"),
+     Output("population-count-high", "children"),
+     Output("children-affected-low", "children"),
      Output("children-affected-probabilistic", "children"),
      Output("children-affected-high", "children"),
      Output("infant-affected-low", "children"),
@@ -1272,9 +1277,6 @@ layout = make_single_page_appshell()
      Output("health-count-low", "children"),
      Output("health-count-probabilistic", "children"),
      Output("health-count-high", "children"),
-     Output("population-count-low", "children"),
-     Output("population-count-probabilistic", "children"),
-     Output("population-count-high", "children"),
      Output("bsm2-count-low", "children"),
      Output("bsm2-count-probabilistic", "children"),
      Output("bsm2-count-high", "children"),
@@ -1291,7 +1293,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     """Update impact metrics for all three scenarios based on storm, wind threshold, and country selection"""
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        # Return all scenarios with default values
+        # Return all scenarios with default values (population, children, infants, schools, health, built surface, badges)
         return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     # Calculate probabilistic impact metrics
@@ -1393,11 +1395,15 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             return str(value) if isinstance(value, str) else f"{value:,.0f}"
         
         return (
-            # Children affected
+            # Population count
+            format_value(low_results["population"]),
+            format_value(probabilistic_results["population"]),
+            format_value(high_results["population"]),
+            # Children affected (part of population)
             format_value(low_results["children"]),
             format_value(probabilistic_results["children"]),
             format_value(high_results["children"]),
-            # Infants affected
+            # Infants affected (part of population)
             format_value(low_results["infant"]),
             format_value(probabilistic_results["infant"]),
             format_value(high_results["infant"]),
@@ -1409,10 +1415,6 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["health"]),
             format_value(probabilistic_results["health"]),
             format_value(high_results["health"]),
-            # Population count
-            format_value(low_results["population"]),
-            format_value(probabilistic_results["population"]),
-            format_value(high_results["population"]),
             # Built Surface m2
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
@@ -1424,7 +1426,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 # Callback to enable/disable specific track button when layers are loaded
 @callback(
