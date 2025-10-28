@@ -150,35 +150,14 @@ function(feature, context) {
 }
 """)
 
-# JavaScript styling for schools and health centers with probability-based coloring
-style_schools_health = assign("""
-function(feature, context) {
-    const props = feature.properties || {};
-    const color = props._color || '#808080';
-    const radius = props._radius || 8;
-    const opacity = props._opacity || 0.8;
-    const weight = props._weight || 1;
-    const fillOpacity = props._fillOpacity || 0.7;
-    
-    return {
-        color: color,
-        weight: weight,
-        opacity: opacity,
-        fillColor: color,
-        fillOpacity: fillOpacity,
-        radius: radius
-    };
-}
-""")
-
 # JavaScript point-to-layer function for schools and health centers
 point_to_layer_schools_health = assign("""
 function(feature, latlng, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
-    const radius = props._radius || 8;
+    const radius = props._radius || 12;
     const opacity = props._opacity || 0.8;
-    const weight = props._weight || 1;
+    const weight = props._weight || 2;
     const fillOpacity = props._fillOpacity || 0.7;
     
     return L.circleMarker(latlng, {
@@ -194,16 +173,283 @@ function(feature, latlng, context) {
 
 style_envelopes = assign("""
 function(feature, context) {
-    const wind_threshold = feature.properties?.wind_threshold;
-    if (wind_threshold === 34) {
-        return {color: '#ffff00', weight: 2, fillColor: '#ffff00', fillOpacity: 0.3};
-    } else if (wind_threshold === 40) {
-        return {color: '#ff8800', weight: 2, fillColor: '#ff8800', fillOpacity: 0.3};
-    } else if (wind_threshold === 50) {
-        return {color: '#ff0000', weight: 2, fillColor: '#ff0000', fillOpacity: 0.3};
-    } else {
-        return {color: '#888888', weight: 2, fillColor: '#888888', fillOpacity: 0.3};
+    const props = feature.properties || {};
+    const severity_population = props.severity_population || 0;
+    const max_population = props.max_population || 1;
+    
+    // Gray for no data or zero impact
+    if (!severity_population || severity_population === 0) {
+        return {color: '#808080', weight: 2, fillColor: '#808080', fillOpacity: 0.3};
     }
+    
+    // Calculate relative severity (0 to 1)
+    const relativeSeverity = Math.min(severity_population / max_population, 1);
+    
+    // Smooth gradient from yellow to red using color interpolation
+    // Using cubic easing for smoother transitions
+    const easedSeverity = relativeSeverity * relativeSeverity * relativeSeverity;
+    
+    // Color interpolation helper
+    const interpolateColor = (startColor, endColor, fraction) => {
+        const start = parseInt(startColor.slice(1), 16);
+        const end = parseInt(endColor.slice(1), 16);
+        const r = Math.round(((start >> 16) & 0xff) * (1 - fraction) + ((end >> 16) & 0xff) * fraction);
+        const g = Math.round(((start >> 8) & 0xff) * (1 - fraction) + ((end >> 8) & 0xff) * fraction);
+        const b = Math.round((start & 0xff) * (1 - fraction) + (end & 0xff) * fraction);
+        return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    };
+    
+    // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
+    const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
+    
+    // Opacity also increases with severity
+    const fillOpacity = 0.3 + (easedSeverity * 0.6);
+    
+    return {color: color, weight: 2, fillColor: color, fillOpacity: fillOpacity};
+}
+""")
+
+# Tooltip functions for displaying data on hover
+tooltip_tracks = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const member = props.ensemble_member || 'N/A';
+    const type = props.member_type || 'N/A';
+    
+    const label = type === 'control' ? 'Control Track' : 'Ensemble Track';
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #1cabe2; margin-bottom: 5px;">
+            ${label}
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Ensemble Member:</strong> #${member}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_envelopes = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
+    const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
+    const severity_population = props.severity_population || 0;
+    const severity_schools = props.severity_schools || 0;
+    const severity_hcs = props.severity_hcs || 0;
+    const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
+    const severity_children = props.severity_children || 0;
+    
+    const formatNumber = (num) => {
+        if (typeof num === 'number') {
+            return new Intl.NumberFormat('en-US').format(Math.round(num));
+        }
+        return num;
+    };
+    
+    // Always show same structure, use N/A when data not available
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
+            Hurricane Envelope
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Wind Threshold:</strong> ${wind_threshold}
+        </div>
+        <div style="font-size: 12px; color: #555;">
+            <strong>Ensemble Member:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : 'N/A'}
+        </div>
+    `;
+    
+    // Always show impact section
+    content += `
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
+        <div style="font-size: 11px; color: #777; margin-top: 5px;">
+            <strong>Impact:</strong>
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Children: ${severity_children > 0 ? formatNumber(severity_children) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_schools = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const probability = props.probability || 0;
+    const school_id = props.school_id_giga || props.school_id || 'N/A';
+    const school_name = props.school_name || props.name || props.school || 'N/A';
+    
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') {
+            return (prob * 100).toFixed(1) + '%';
+        }
+        return 'N/A';
+    };
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
+            School
+        </div>
+        ${school_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${school_name}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_health = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const probability = props.probability || 0;
+    const osm_id = props.osm_id || 'N/A';
+    const facility_name = props.facility_name || props.name || props.amenity_name || 'N/A';
+    const facility_type = props.facility_type || props.amenity_type || props.type || 'N/A';
+    
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') {
+            return (prob * 100).toFixed(1) + '%';
+        }
+        return 'N/A';
+    };
+    
+    const content = `
+        <div style="font-size: 13px; font-weight: 600; color: #228B22; margin-bottom: 5px;">
+            Health Facility
+        </div>
+        ${facility_name !== 'N/A' ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${facility_name}</div>` : ''}
+        ${facility_type !== 'N/A' ? `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${facility_type}</div>` : ''}
+        <div style="font-size: 12px; color: #555;">
+            <strong>Impact Probability:</strong> ${formatPercent(probability)}
+        </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_tiles = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    
+    const formatNumber = (num) => {
+        if (typeof num === 'number') {
+            return new Intl.NumberFormat('en-US').format(Math.round(num));
+        }
+        return num;
+    };
+    
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
+            Tile Statistics
+        </div>
+    `;
+    
+    // Expected impact values (from hurricane envelopes)
+    const E_population = props.E_population || props.expected_population || 0;
+    const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
+    const E_num_schools = props.E_num_schools || 0;
+    const E_school_age_population = props.E_school_age_population || 0;
+    const E_num_hcs = props.E_num_hcs || 0;
+    const E_rwi = props.E_rwi || 0;
+    const probability = props.probability || 0;
+    
+    // Base infrastructure values
+    const population = props.population || 0;
+    const built_surface = props.built_surface_m2 || 0;
+    const num_schools = props.num_schools || 0;
+    const school_age_pop = props.school_age_population || 0;
+    const num_hcs = props.num_hcs || 0;
+    const rwi = props.rwi || 0;
+    const smod_class = props.smod_class || 'N/A';
+    
+    // Settlement classification mapping
+    const getSettlementLabel = (classNum) => {
+        if (classNum === 0 || classNum === null) return 'Rural';
+        if (classNum === 1) return 'Urban Clusters';
+        if (classNum === 2 || classNum === 3) return 'Urban Centers';
+        return 'N/A';
+    };
+    
+    // Formatting helper functions
+    const formatValue = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return 'N/A';
+        if (typeof val === 'number') return formatNumber(val);
+        return val === '' ? 'N/A' : val;
+    };
+    
+    const formatSettlement = (val) => {
+        if (val === null || val === undefined || val === '' || (typeof val === 'number' && isNaN(val))) return 'N/A';
+        if (typeof val === 'number') return getSettlementLabel(val);
+        return 'N/A';
+    };
+    
+    const formatDecimal = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+        return val.toFixed(2);
+    };
+    
+    // Show expected impact if available
+    if (probability > 0) {
+        content += `
+        <div style="font-size: 11px; color: #dc143c; margin-top: 5px; font-weight: 600;">
+            Expected Impact:
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Hurricane Impact Probability: ${(probability * 100).toFixed(1)}%
+        </div>
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
+        `;
+    }
+    
+    // Show tile data - always show all fields
+    content += `
+    <div style="font-size: 11px; color: #777; margin-top: 5px;">
+        <strong>Tile Base Data:</strong>
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Total Population: ${formatValue(population)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        School-Age Population: ${formatValue(school_age_pop)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Schools: ${formatValue(num_schools)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Health Centers: ${formatValue(num_hcs)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Settlement: ${formatSettlement(smod_class)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Relative Wealth Index: ${formatDecimal(rwi)}
+    </div>
+    `;
+    
+    layer.bindTooltip(content, {sticky: true});
 }
 """)
 
@@ -637,7 +883,8 @@ def make_single_page_layout():
                                 id="hurricane-tracks-json",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_tracks
+                                style=style_tracks,
+                                onEachFeature=tooltip_tracks
                             ),
                             # Hurricane Envelopes Layer
                             dl.GeoJSON(
@@ -651,23 +898,24 @@ def make_single_page_layout():
                                 id="schools-json-test",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_schools_health,
-                                pointToLayer=point_to_layer_schools_health
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_schools
                             ),
                             # Health Centers Impact Layer
                             dl.GeoJSON(
                                 id="health-json-test",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_schools_health,
-                                pointToLayer=point_to_layer_schools_health
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_health
                             ),
                             # Population Density Tiles Layer
                             dl.GeoJSON(
                                 id="population-tiles-json",
                                 data={},
                                 zoomToBounds=True,
-                                style=style_tiles
+                                style=style_tiles,
+                                onEachFeature=tooltip_tiles
                             ),
                             
                             dl.FullScreenControl(),
@@ -706,7 +954,10 @@ def make_single_page_layout():
                                 [
                                     dmc.TableThead([
                                         dmc.TableTr([
-                                            dmc.TableTh("Metric", style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                            dmc.TableTh([
+                                                dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                                dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
+                                            ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                             dmc.TableTh([
                                                 dmc.Text("Low", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                                 dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
@@ -720,31 +971,34 @@ def make_single_page_layout():
                                     ]),
                                     dmc.TableTbody([
                                         dmc.TableTr([
-                                            dmc.TableTd("Children Affected", style={"fontWeight": 500}),
+                                            dmc.TableTd("Children", style={"fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Schools at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Health Centers at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Population at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd("Population", style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
                                         ]),
                                         dmc.TableTr([
-                                            dmc.TableTd("Built Surface m2 at Risk", style={"fontWeight": 500}),
+                                            dmc.TableTd([
+                                                html.Span("Built Surface m"),
+                                                html.Sup("2"),
+                                            ], style={"fontWeight": 500}),
                                             dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
                                             dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
@@ -1572,13 +1826,15 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
     envelope_data = copy.deepcopy(envelope_data_in)
     key = hashlib.md5(json.dumps(envelope_data, sort_keys=True).encode()).hexdigest()
     
+    # Construct datetime string for file paths
+    date_str = forecast_date.replace('-', '') if forecast_date else ''
+    time_str = forecast_time.replace(':', '') if forecast_time else ''
+    forecast_datetime_str = f"{date_str}{time_str}00"
+    
     # If specific track is selected, create specific track envelope
     if selected_track:
         try:
             # Load specific track data
-            date_str = forecast_date.replace('-', '')
-            time_str = forecast_time.replace(':', '')
-            forecast_datetime_str = f"{date_str}{time_str}00"
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
@@ -1607,11 +1863,13 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
                             "geometry": geometry,
                             "properties": {
                                 "zone_id": int(row['zone_id']),
+                                "ensemble_member": int(row['zone_id']),  # Use zone_id as ensemble_member for specific tracks
                                 "wind_threshold": int(row['wind_threshold']),
                                 "severity_population": float(row['severity_population']),
                                 "severity_schools": int(row['severity_schools']),
                                 "severity_hcs": int(row['severity_hcs']),
-                                "severity_built_surface_m2": float(row['severity_built_surface_m2'])
+                                "severity_built_surface_m2": float(row['severity_built_surface_m2']),
+                                "severity_children": float(row['severity_children']) if 'severity_children' in row else 0
                             }
                         }
                         specific_envelope['features'].append(feature)
@@ -1619,7 +1877,7 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
         except Exception as e:
             print(f"Error creating specific track envelope: {e}")
     
-    # Default probabilistic envelope behavior
+    # Default probabilistic envelope behavior - now with impact data!
     if not envelope_data or not envelope_data.get('data'):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
@@ -1647,6 +1905,82 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
         else:
             gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry']))
         
+        # Try to add impact data from track_views if available
+        try:
+            # Only try to load impact data if we have all required parameters
+            if country and storm and forecast_datetime_str and wind_threshold:
+                tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+                tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                
+                if giga_store.file_exists(tracks_filepath):
+                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    
+                    # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
+                    if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
+                        # Filter by wind threshold
+                        tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == wth_int]
+                        
+                        if not tracks_thresh.empty:
+                            # Aggregate impact data by ensemble member
+                            agg_dict = {
+                                'severity_population': 'sum',
+                                'severity_schools': 'sum',
+                                'severity_hcs': 'sum',
+                                'severity_built_surface_m2': 'sum'
+                            }
+                            
+                            # Add children column if it exists
+                            if 'severity_children' in tracks_thresh.columns:
+                                agg_dict['severity_children'] = 'sum'
+                            
+                            impact_summary = tracks_thresh.groupby('zone_id').agg(agg_dict).reset_index()
+                            
+                            # Build column names list dynamically
+                            col_names = ['ensemble_member', 'severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                            if 'severity_children' in agg_dict:
+                                col_names.insert(1, 'severity_children')
+                            impact_summary.columns = col_names
+                            
+                            # Merge with envelope data
+                            # Get ensemble_member from envelope data - could be in ENSEMBLE_MEMBER column
+                            if 'ENSEMBLE_MEMBER' in gdf.columns:
+                                gdf['ensemble_member'] = gdf['ENSEMBLE_MEMBER']
+                            
+                            # Merge impact data
+                            gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
+                            
+                            # Fill NaN values with 0
+                            impact_cols = ['severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                            if 'severity_children' in impact_summary.columns:
+                                impact_cols.insert(0, 'severity_children')
+                            for col in impact_cols:
+                                if col in gdf.columns:
+                                    gdf[col] = gdf[col].fillna(0)
+                            
+                            # Calculate max population for relative scaling
+                            if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                                max_pop = gdf['severity_population'].max()
+                                # Add max_population to each feature properties for relative scaling
+                                geo_dict = gdf.__geo_interface__
+                                for feature in geo_dict.get('features', []):
+                                    if 'properties' in feature:
+                                        feature['properties']['max_population'] = max_pop
+        except Exception as e:
+            print(f"Could not add impact data to envelopes: {e}")
+        
+        # Convert to geo_interface if not already
+        if isinstance(gdf, gpd.GeoDataFrame):
+            geo_dict = gdf.__geo_interface__
+            # If we didn't add max_population yet, calculate it
+            if any('max_population' in f.get('properties', {}) for f in geo_dict.get('features', [])):
+                pass  # Already added
+            elif 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                max_pop = gdf['severity_population'].max()
+                for feature in geo_dict.get('features', []):
+                    if 'properties' in feature:
+                        feature['properties']['max_population'] = max_pop
+            return geo_dict, True, key
+        
         return gdf.__geo_interface__, True, key
         
     except Exception as e:
@@ -1662,52 +1996,75 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
     prevent_initial_call=False
 )
 def toggle_schools_layer(checked, schools_data_in):
-    """Toggle schools layer visibility with probability-based coloring"""
+    """Toggle schools layer visibility with probability-based coloring and variable radius"""
     if not checked or not schools_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     schools_data = copy.deepcopy(schools_data_in)
     key = hashlib.md5(json.dumps(schools_data, sort_keys=True).encode()).hexdigest()
     try:
-        # Add probability-based styling to each feature
+        # Convert polygons to point markers
         if 'features' in schools_data:
+            from shapely.geometry import shape
+            point_features = []
+            
             for feature in schools_data['features']:
-                if 'properties' in feature and 'probability' in feature['properties']:
-                    prob = feature['properties']['probability']
+                if 'properties' in feature and 'geometry' in feature:
+                    prob = feature['properties'].get('probability', 0)
                     
-                    # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
-                    # Radius scale: larger radius for higher impact probability
+                    # Calculate color and radius based on probability
                     if prob == 0 or prob is None:
-                        color = '#808080'  # Grey for no impact
-                        radius = 10  # Larger radius for visibility
+                        color = '#ADD8E6'  # Light blue for schools when not impacted
+                        radius = 4  # Smaller for no impact
                     elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow for very low impact
-                        radius = 25  # Slightly larger for low impact
+                        color = '#FFFF00'  # Yellow
+                        radius = 10
                     elif prob <= 0.30:
-                        color = '#FFD700'  # Gold for low impact
-                        radius = 30  # Medium radius for low-medium impact
+                        color = '#FFD700'  # Gold
+                        radius = 12
                     elif prob <= 0.45:
-                        color = '#FFA500'  # Orange for low-medium impact
-                        radius = 35  # Larger radius for medium impact
+                        color = '#FFA500'  # Orange
+                        radius = 15
                     elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange for medium impact
-                        radius = 40  # Even larger for medium-high impact
+                        color = '#FF8C00'  # Dark orange
+                        radius = 18
                     elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red for high impact
-                        radius = 45  # Large radius for high impact
+                        color = '#FF4500'  # Orange-red
+                        radius = 20
                     elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson for very high impact
-                        radius = 50  # Very large radius for very high impact
+                        color = '#DC143C'  # Crimson
+                        radius = 22
                     else:
-                        color = '#8B0000'  # Dark red for extreme impact
-                        radius = 55  # Maximum radius for extreme impact
+                        color = '#8B0000'  # Dark red
+                        radius = 25
                     
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_radius'] = radius
-                    feature['properties']['_opacity'] = 0.8
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_fillOpacity'] = 0.7
+                    # Convert polygon to point (centroid)
+                    try:
+                        geom_shape = shape(feature['geometry'])
+                        centroid = geom_shape.centroid
+                        
+                        # Create point feature with probability-based styling
+                        point_feature = {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [centroid.x, centroid.y]
+                            },
+                            "properties": {
+                                **feature['properties'],
+                                "_color": color,
+                                "_radius": radius,
+                                "_opacity": 0.8,
+                                "_weight": 2,
+                                "_fillOpacity": 0.7
+                            }
+                        }
+                        point_features.append(point_feature)
+                    except Exception as e:
+                        print(f"Error converting to point: {e}")
+                        continue
+            
+            schools_data['features'] = point_features
         
         return schools_data, True, key
     except Exception as e:
@@ -1723,7 +2080,7 @@ def toggle_schools_layer(checked, schools_data_in):
     prevent_initial_call=False
 )
 def toggle_health_layer(checked, health_data_in):
-    """Toggle health centers layer visibility with probability-based coloring"""
+    """Toggle health centers layer visibility with probability-based coloring and variable radius"""
     if not checked or not health_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
@@ -1731,45 +2088,68 @@ def toggle_health_layer(checked, health_data_in):
     key = hashlib.md5(json.dumps(health_data, sort_keys=True).encode()).hexdigest()
     
     try:
-        # Add probability-based styling to each feature
+        # Convert polygons to point markers
         if 'features' in health_data:
+            from shapely.geometry import shape
+            point_features = []
+            
             for feature in health_data['features']:
-                if 'properties' in feature and 'probability' in feature['properties']:
-                    prob = feature['properties']['probability']
+                if 'properties' in feature and 'geometry' in feature:
+                    prob = feature['properties'].get('probability', 0)
                     
-                    # Color scale: grey (0%) -> yellow -> orange -> red with 7 granular classes
-                    # Radius scale: larger radius for higher impact probability
+                    # Calculate color and radius based on probability
                     if prob == 0 or prob is None:
-                        color = '#808080'  # Grey for no impact
-                        radius = 10  # Larger radius for visibility
+                        color = '#90EE90'  # Light green for health centers when not impacted
+                        radius = 4  # Smaller for no impact
                     elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow for very low impact
-                        radius = 25  # Slightly larger for low impact
+                        color = '#FFFF00'  # Yellow
+                        radius = 10
                     elif prob <= 0.30:
-                        color = '#FFD700'  # Gold for low impact
-                        radius = 30  # Medium radius for low-medium impact
+                        color = '#FFD700'  # Gold
+                        radius = 12
                     elif prob <= 0.45:
-                        color = '#FFA500'  # Orange for low-medium impact
-                        radius = 35  # Larger radius for medium impact
+                        color = '#FFA500'  # Orange
+                        radius = 15
                     elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange for medium impact
-                        radius = 40  # Even larger for medium-high impact
+                        color = '#FF8C00'  # Dark orange
+                        radius = 18
                     elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red for high impact
-                        radius = 45  # Large radius for high impact
+                        color = '#FF4500'  # Orange-red
+                        radius = 20
                     elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson for very high impact
-                        radius = 50  # Very large radius for very high impact
+                        color = '#DC143C'  # Crimson
+                        radius = 22
                     else:
-                        color = '#8B0000'  # Dark red for extreme impact
-                        radius = 55  # Maximum radius for extreme impact
+                        color = '#8B0000'  # Dark red
+                        radius = 25
                     
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_radius'] = radius
-                    feature['properties']['_opacity'] = 0.8
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_fillOpacity'] = 0.7
+                    # Convert polygon to point (centroid)
+                    try:
+                        geom_shape = shape(feature['geometry'])
+                        centroid = geom_shape.centroid
+                        
+                        # Create point feature with probability-based styling
+                        point_feature = {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [centroid.x, centroid.y]
+                            },
+                            "properties": {
+                                **feature['properties'],
+                                "_color": color,
+                                "_radius": radius,
+                                "_opacity": 0.8,
+                                "_weight": 2,
+                                "_fillOpacity": 0.7
+                            }
+                        }
+                        point_features.append(point_feature)
+                    except Exception as e:
+                        print(f"Error converting to point: {e}")
+                        continue
+            
+            health_data['features'] = point_features
         
         return health_data, True, key
         
@@ -2055,6 +2435,27 @@ def toggle_settlement_legend(checked):
 def toggle_rwi_legend(checked):
     """Show/hide relative wealth index legend based on checkbox state"""
     return {"display": "block" if checked else "none"}
+
+@callback(
+    [Output("settlement-tiles-layer", "disabled"),
+     Output("rwi-tiles-layer", "disabled")],
+    [Input("tiles-vis-mode", "checked"),
+     Input("layers-loaded-store", "data")],
+    prevent_initial_call=False
+)
+def disable_layers_without_expected_impact(show_expected, layers_loaded):
+    """Disable settlement and RWI layers when expected impact mode is on"""
+    # Only control disabled state if layers are loaded
+    if not layers_loaded:
+        return dash.no_update, dash.no_update
+    
+    # show_expected can be None (initial state), False (switch off), or True (switch on)
+    # Only disable when explicitly True
+    if show_expected is None:
+        disabled = False  # Default to enabled on initial load
+    else:
+        disabled = show_expected
+    return disabled, disabled
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
