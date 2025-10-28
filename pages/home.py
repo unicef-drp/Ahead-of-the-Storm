@@ -879,11 +879,8 @@ def make_single_page_layout():
                                             ], gutter="xs", mb="xs")
                                         ], style={"display": "none"}),
 
-                                        dmc.Divider(),
-
                                         dmc.RadioGroup([
-                                            dmc.Radio(id="none-tiles-layer", label="None", value="none", mb="xs"),
-                                            dmc.Divider(mb="xs", mt="xs"),
+                                            dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
                                             dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
                                             dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
                                             dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
@@ -891,6 +888,7 @@ def make_single_page_layout():
                                             dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                                             dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
                                             dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                                            dmc.Divider(mb="xs", mt="xs"),
                                         ], id="tiles-layer-group", value="none"),
 
                                         # Legend grids for each layer
@@ -949,7 +947,7 @@ def make_single_page_layout():
                                             dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                                         ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Text("Note: Select one tile layer to view on the map", size="xs", c="dimmed", mb="md")
+                                        dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
                                     ])
                                 ],
                                 p="md",
