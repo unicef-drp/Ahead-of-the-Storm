@@ -297,7 +297,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run complete impact analysis pipeline")
     
     # Required arguments
-    parser.add_argument("--type", default="initialize", help='initialize or update') 
+    parser.add_argument("--type", default="update", help='initialize or update') 
     parser.add_argument("--hazard", default="hurricane", 
                         help="Hazard type (currently supports: hurricane)")
     # parser.add_argument("--storm", default="MELISSA", help="Storm name (e.g., JERRY)")
@@ -307,7 +307,7 @@ def main():
     
     # Optional arguments
     #["ATG","BLZ","NIC","DOM",'DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']
-    parser.add_argument("--countries", nargs="+", default=["ATG","BLZ","NIC","DOM",'DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB'],
+    parser.add_argument("--countries", nargs="+", default=["ATG","JAM","BLZ","NIC","DOM",'DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB'],
                         help="Country codes (e.g., DOM)")
     parser.add_argument("--skip-analysis", action="store_true", 
                        help="Skip analysis step (for testing)")

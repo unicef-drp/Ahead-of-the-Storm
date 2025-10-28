@@ -61,7 +61,7 @@ from snowflake_utils import (
 # oecs_countries = ['ATG','DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']
 # countries = ['NIC','DOM','BLZ'] + oecs_countries
 #default_countries = ['NIC']
-data_cols = ['population', 'built_surface_m2', 'num_schools','school_age_population','num_hcs','rwi','smod_class']
+data_cols = ['population', 'built_surface_m2', 'num_schools','school_age_population', 'infant_population','num_hcs','rwi','smod_class']
 #####################
 
 ##### Environment Variables #####
@@ -210,11 +210,18 @@ def create_mercator_country_layer(country, zoom_level=15):
         # this should be ready in the next release
         print("No school age available")
         try:
-            tiles_viewer.map_wp_pop(country=country, resolution=1000, output_column="school_age_population", school_age=False, project="age_structures", un_adjusted=False, sex='F_M',min_age=5, max_age=15)
+            tiles_viewer.map_wp_pop(country=country, resolution=1000, output_column="school_age_population", predicate='centroid_within', school_age=False, project="age_structures", un_adjusted=False,min_age=5, max_age=15)
         except:
             print("No age ranges either")
+            school_age = {k: np.nan for k in tiles_viewer.view.index.unique()}
+            tiles_viewer.add_variable_to_view(school_age, 'school_age_population')
+
+    try:
+        tiles_viewer.map_wp_pop(country=country, resolution=1000, output_column="infant_population", predicate='centroid_within', school_age=False, project="age_structures", un_adjusted=False,min_age=0, max_age=4)
+    except:
+        print("No infant age ranges")
         school_age = {k: np.nan for k in tiles_viewer.view.index.unique()}
-        tiles_viewer.add_variable_to_view(school_age, 'school_age_population')
+        tiles_viewer.add_variable_to_view(school_age, 'infant_population')
 
     tiles_viewer.map_wp_pop(country=country, resolution=100)
     tiles_viewer.map_built_s()
@@ -245,17 +252,6 @@ def create_mercator_country_layer(country, zoom_level=15):
     
     return gdf_tiles
 
-# def create_mercator_layers(countries,zoom_level):
-#     """
-#     countries: list of iso3 codes of countries
-#     zoom_level: int - zoom level for mercator tiles
-#     returns a dictionary of countr - geodataframe
-#     """
-#     country_mercators = {}
-#     for country in countries:
-#         country_mercators[country] = create_mercator_country_layer(country, zoom_level)
-
-#     return country_mercators
 
 def save_mercator_view(gdf, country, zoom_level):
     """Save base mercator infrastructure view for country"""
@@ -287,7 +283,7 @@ def load_json_storms():
         df = read_dataset(data_store, filename)
         column_name = df.columns[0]
         return {column_name: df[column_name].to_dict()}
-    return {'storms':[]}
+    return {'storms':{}}
 
 
 def load_mercator_view(country, zoom_level=15):
@@ -400,12 +396,34 @@ def create_tracks_view_from_envelopes(gdf_schools, gdf_hcs, gdf_tiles, gdf_envel
         try:
             population = tracks_viewer.map_polygons(polygons=gdf_tiles, value_columns="population", aggregation="sum")
             tracks_viewer.add_variable_to_view(population, "severity_population")
+            
+        except:
+            zeros = {k: 0 for k in gdf_envelopes_wth[index_column].unique()}
+            tracks_viewer.add_variable_to_view(zeros, "severity_population")
+
+        try:
+            population = tracks_viewer.map_polygons(polygons=gdf_tiles, value_columns="school_age_population", aggregation="sum")
+            tracks_viewer.add_variable_to_view(population, "severity_school_age_population")
+            
+        except:
+            zeros = {k: 0 for k in gdf_envelopes_wth[index_column].unique()}
+            tracks_viewer.add_variable_to_view(zeros, "severity_school_age_population")
+
+        try:
+            population = tracks_viewer.map_polygons(polygons=gdf_tiles, value_columns="infant_population", aggregation="sum")
+            tracks_viewer.add_variable_to_view(population, "severity_infant_population")
+            
+        except:
+            zeros = {k: 0 for k in gdf_envelopes_wth[index_column].unique()}
+            tracks_viewer.add_variable_to_view(zeros, "severity_infant_population")
+
+        try:
             surface = tracks_viewer.map_polygons(polygons=gdf_tiles, value_columns='built_surface_m2', aggregation="sum")
             tracks_viewer.add_variable_to_view(surface, "severity_built_surface_m2")
         except:
             zeros = {k: 0 for k in gdf_envelopes_wth[index_column].unique()}
-            tracks_viewer.add_variable_to_view(zeros, "severity_population")
             tracks_viewer.add_variable_to_view(zeros, "severity_built_surface_m2")
+        
 
         gdf_view = tracks_viewer.to_geodataframe()
         wind_views[wind_th] = gdf_view
