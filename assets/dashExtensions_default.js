@@ -127,11 +127,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const props = feature.properties || {};
                 const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
+                const severity_school_age_population = props.severity_school_age_population || 0;
+                const severity_infant_population = props.severity_infant_population || 0;
                 const severity_population = props.severity_population || 0;
                 const severity_schools = props.severity_schools || 0;
                 const severity_hcs = props.severity_hcs || 0;
                 const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
-                const severity_children = props.severity_children || 0;
+
 
                 const formatNumber = (num) => {
                     if (typeof num === 'number') {
@@ -160,10 +162,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             <strong>Impact:</strong>
         </div>
         <div style="font-size: 11px; color: #555;">
-            Children: ${severity_children > 0 ? formatNumber(severity_children) : 'N/A'}
-        </div>
-        <div style="font-size: 11px; color: #555;">
             Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+            Children: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+            Infants: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
@@ -263,6 +268,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
                 const E_num_schools = props.E_num_schools || 0;
                 const E_school_age_population = props.E_school_age_population || 0;
+                const E_infant_population = props.E_infant_population || 0;
                 const E_num_hcs = props.E_num_hcs || 0;
                 const E_rwi = props.E_rwi || 0;
                 const probability = props.probability || 0;
@@ -272,17 +278,20 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const built_surface = props.built_surface_m2 || 0;
                 const num_schools = props.num_schools || 0;
                 const school_age_pop = props.school_age_population || 0;
+                const infant_pop = props.infant_population || 0;
                 const num_hcs = props.num_hcs || 0;
                 const rwi = props.rwi || 0;
                 const smod_class = props.smod_class || 'N/A';
 
                 // Settlement classification mapping (values are 0, 10, 20, 30)
                 const getSettlementLabel = (classNum) => {
-                    if (classNum === null || classNum === undefined || classNum === '' || classNum === 0) return 'No Data';
-                    // Handle both original (10, 20, 30) and processed (1, 2, 3) values
-                    if (classNum === 1 || classNum === 10) return 'Rural';
-                    if (classNum === 2 || classNum === 20) return 'Urban Clusters';
-                    if (classNum === 3 || classNum === 30) return 'Urban Centers';
+                    if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
+                    // Convert to number and normalize to 0-3 range (divide by 10 if needed)
+                    const num = Number(classNum);
+                    const normalized = parseInt(num >= 10 ? num / 10 : num);
+                    if (normalized === 1) return 'Rural';
+                    if (normalized === 2) return 'Urban Clusters';
+                    if (normalized === 3) return 'Urban Centers';
                     return 'N/A';
                 };
 
@@ -323,10 +332,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         <strong>Tile Base Data:</strong>
     </div>
     <div style="font-size: 11px; color: #555;">
-        Total Population: ${formatValue(population)}
+        Population: ${formatValue(population)}
     </div>
-    <div style="font-size: 11px; color: #555;">
-        School-Age Population: ${formatValue(school_age_pop)}
+    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Children: ${formatValue(school_age_pop)}
+    </div>
+    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Infants: ${formatValue(infant_pop)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}

@@ -56,11 +56,8 @@ def get_data_store():
     """
     data_pipeline_db = app_config.DATA_PIPELINE_DB
     
-    if data_pipeline_db == 'BLOB':
+    if data_pipeline_db == 'BLOB' or data_pipeline_db == "RO_BLOB":
         return ADLSDataStore()
-    elif data_pipeline_db == "RO_BLOB":
-        app_config.validate_azure_config()
-        return ADLSDataStoreRO(app_config.ACCOUNT_URL, app_config.SAS_TOKEN)
     elif data_pipeline_db == 'LOCAL':
         return LocalDataStore()
     else:
