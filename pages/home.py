@@ -765,7 +765,15 @@ def make_single_page_layout():
 
                                         dmc.Divider(),
 
-                                        dmc.Checkbox(id="population-tiles-layer", label="Population Density", checked=False, mb="xs", disabled=True),
+                                        dmc.RadioGroup([
+                                            dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
+                                            dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
+                                            dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                                            dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
+                                            dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                                        ], id="tiles-layer-group", value=None),
+
+                                        # Legend grids for each layer
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=8, children=[
@@ -780,7 +788,6 @@ def make_single_page_layout():
                                             dmc.GridCol(span=2, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
                                         ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Checkbox(id="school-age-tiles-layer", label="School-Age Population", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=8, children=[
@@ -795,7 +802,6 @@ def make_single_page_layout():
                                             dmc.GridCol(span=2, children=[dmc.Text("750+", size="xs", c="dimmed")]),
                                         ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Checkbox(id="built-surface-tiles-layer", label="Built Surface Area", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=8, children=[
@@ -810,7 +816,6 @@ def make_single_page_layout():
                                             dmc.GridCol(span=2, children=[dmc.Text("50k+", size="xs", c="dimmed")]),
                                         ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Checkbox(id="settlement-tiles-layer", label="Settlement Classification", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=3, children=[
                                                 html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
@@ -830,7 +835,6 @@ def make_single_page_layout():
                                             ]),
                                         ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Checkbox(id="rwi-tiles-layer", label="Relative Wealth Index", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("-1", size="xs", c="dimmed")]),
                                             dmc.GridCol(span=8, children=[
@@ -845,7 +849,7 @@ def make_single_page_layout():
                                             dmc.GridCol(span=2, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                                         ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
-                                        dmc.Text("Note: Load layers first to enable toggles", size="xs", c="dimmed", mb="md")
+                                        dmc.Text("Note: Select one tile layer to view on the map", size="xs", c="dimmed", mb="md")
                                     ])
                                 ],
                                 p="md",
@@ -2159,7 +2163,7 @@ def toggle_health_layer(checked, health_data_in):
         return health_data, True, key
 
 
-# Callbacks for toggle tiles
+# Callbacks for toggle tiles - now using radio group
 @callback(
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
@@ -2169,117 +2173,53 @@ def toggle_health_layer(checked, health_data_in):
     Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
-    Input('population-tiles-layer','checked'),
-    Input("school-age-tiles-layer", "checked"),
-    Input("built-surface-tiles-layer", "checked"),
-    Input("settlement-tiles-layer", "checked"),
-    Input("rwi-tiles-layer", "checked"),
+    Input('tiles-layer-group','value'),
     Input('probability-tiles-layer','checked'),
     State('probability-tiles-layer','checked'),
     State('population-tiles-data-store','data'),
     prevent_initial_call = True,
 )
-def juggle_toggles(pop,children,built,smod,rwi,prob_checked_trigger, prob_checked_val, tiles_data_in):
-    if ctx.triggered_id == "probability-tiles-layer":
-        if pop + children + built + smod + rwi == 0:
-            if prob_checked_val:
-                #show probs
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key, False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, prob_checked_val, tiles_data_in):
+    """Handle tile layer display based on radio selection"""
+    # Radio buttons should always be enabled (not greyed out)
+    radios_enabled = (False, False, False, False, False)
+    
+    # If no layer is selected, return empty data
+    if not selected_layer:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+    
+    # Determine what data to show based on selected layer
+    if selected_layer == "population":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_population')
         else:
-            if pop:
-                if prob_checked_val:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_population')
-                    return tiles,zoom,key, False, True, True, True, True
-                else:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'population')
-                    return tiles,zoom,key, False, True, True, True, True
-            elif children:
-                if prob_checked_val:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_school_age_population')
-                    return tiles,zoom,key, True, False, True, True, True
-                else:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'school_age_population')
-                    return tiles,zoom,key, True, False, True, True, True
-            elif built:
-                if prob_checked_val:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_built_surface_m2')
-                    return tiles,zoom,key, True, True, False, True, True
-                else:
-                    tiles,zoom,key = update_tile_features(tiles_data_in,'built_surface')
-                    return tiles,zoom,key, True, True, False, True, True
-            elif smod:
-                # Do not process smod regardless of prob checked
-                return dash.no_update,dash.no_update,dash.no_update, True, True, True, False, True
-            elif rwi:
-                # Do not process rwi regardless of prob checked
-                return dash.no_update,dash.no_update,dash.no_update, True, True, True, True, False
-
-
-    elif ctx.triggered_id == "population-tiles-layer":
-        if pop:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'E_population')
-                return tiles,zoom,key,False, True, True, True, True
-            else:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'population')
-                return tiles,zoom,key,False, True, True, True, True
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif selected_layer == "school-age":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_school_age_population')
         else:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key,False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
-    elif ctx.triggered_id == "school-age-tiles-layer":
-        if children:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'E_school_age_population')
-                return tiles,zoom,key,True, False, True, True, True
-            else:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'school_age_population')
-                return tiles,zoom,key,True, False, True, True, True
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif selected_layer == "built-surface":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_built_surface_m2')
         else:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key, False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
-    elif ctx.triggered_id == "built-surface-tiles-layer":
-        if built:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'E_built_surface_m2')
-                return tiles,zoom,key, True, True, False, True, True
-            else:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'built_surface_m2')
-                return tiles,zoom,key, True, True, False, True, True
-        else:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key,False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
-    elif ctx.triggered_id == "settlement-tiles-layer":
-        if smod:
-            tiles,zoom,key = update_tile_features(tiles_data_in,'smod_class')
-            return tiles,zoom,key, True, True, True, False, True
-        else:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key,False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
-    elif ctx.triggered_id == "rwi-tiles-layer":
-        if rwi:
-            tiles,zoom,key = update_tile_features(tiles_data_in,'rwi')
-            return tiles,zoom,key,True, True, True, True, False
-        else:
-            if prob_checked_val:
-                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
-                return tiles,zoom,key,False, False, False, False, False
-            else:
-                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif selected_layer == "settlement":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'smod_class')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif selected_layer == "rwi":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
+        return tiles, zoom, key, *radios_enabled
+    
+    # Default: return empty data
+    return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
 
 # Callback to update info text when specific track is selected
 @callback(
@@ -2393,49 +2333,28 @@ def toggle_health_legend(checked):
     return {"display": "block" if checked else "none"}
 
 @callback(
-    Output("population-legend", "style"),
-    [Input("population-tiles-layer", "checked")],
+    [Output("population-legend", "style"),
+     Output("school-age-legend", "style"),
+     Output("built-surface-legend", "style"),
+     Output("settlement-legend", "style"),
+     Output("rwi-legend", "style")],
+    [Input("tiles-layer-group", "value")],
     prevent_initial_call=False
 )
-def toggle_population_legend(checked):
-    """Show/hide population density legend based on checkbox state"""
-    return {"display": "block" if checked else "none"}
-
-@callback(
-    Output("school-age-legend", "style"),
-    [Input("school-age-tiles-layer", "checked")],
-    prevent_initial_call=False
-)
-def toggle_school_age_legend(checked):
-    """Show/hide school-age population legend based on checkbox state"""
-    return {"display": "block" if checked else "none"}
-
-@callback(
-    Output("built-surface-legend", "style"),
-    [Input("built-surface-tiles-layer", "checked")],
-    prevent_initial_call=False
-)
-def toggle_built_surface_legend(checked):
-    """Show/hide built surface area legend based on checkbox state"""
-    return {"display": "block" if checked else "none"}
-
-@callback(
-    Output("settlement-legend", "style"),
-    [Input("settlement-tiles-layer", "checked")],
-    prevent_initial_call=False
-)
-def toggle_settlement_legend(checked):
-    """Show/hide settlement classification legend based on checkbox state"""
-    return {"display": "block" if checked else "none"}
-
-@callback(
-    Output("rwi-legend", "style"),
-    [Input("rwi-tiles-layer", "checked")],
-    prevent_initial_call=False
-)
-def toggle_rwi_legend(checked):
-    """Show/hide relative wealth index legend based on checkbox state"""
-    return {"display": "block" if checked else "none"}
+def toggle_tiles_legend(selected_value):
+    """Show/hide tile legends based on radio button selection"""
+    if selected_value == "population":
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    elif selected_value == "school-age":
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    elif selected_value == "built-surface":
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
+    elif selected_value == "settlement":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
+    elif selected_value == "rwi":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
+    else:
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
 
 # Register the page as the home page
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
