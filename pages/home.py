@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import dash
-from dash import Output, Input, State, callback, dcc, html, callback_context
+from dash import Output, Input, State, callback, dcc, html, callback_context, ctx
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import dash_leaflet as dl
@@ -21,7 +21,103 @@ from components.config import config
 
 from dash_extensions.javascript import assign
 
+#### Constant - add as selector at some point
 ZOOM_LEVEL = 14
+
+##############################################
+
+###### Colors for the tiles - move to a different file
+
+all_colors = {
+    'probability': ['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'population': ['transparent','#87ceeb', '#4682b4', '#1e90ff', '#0000cd', '#000080', '#191970'],
+    'E_population': ['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'school_age_population':['transparent','#90ee90','#32cd32','#228b22','#006400','#2e8b57','#1c4a1c'],
+    'E_school_age_population':['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'built_surface_m2':['transparent','#d3d3d3','#a9a9a9','#808080','#8b4513','#654321','#2f1b14'],
+    'E_built_surface_m2':['transparent','#FFFF00','#FFD700','#FFA500','#FF8C00','#FF6A00','#FF4500','#DC143C','#B22222','#A52A2A','#8B0000'],
+    'smod_class': ['transparent','#dda0dd','#9370db', '#4b0082'],
+    'rwi':['transparent','#8b0000','#dc143c','#ff6347','#ffa500','#ffd700','#ffff00','#adff2f','#32cd32'],
+}
+
+##############
+def update_tile_features(tiles_data_in,property):
+    if not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    # Ensure tiles_data has proper GeoJSON structure
+    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
+        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    tiles_data = copy.deepcopy(tiles_data_in)
+    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
+
+    try:
+        colors = all_colors[property]
+        buckets = len(colors)
+        if property=='smod_class':
+            values = [int(f["properties"][property]/10) for f in tiles_data["features"]]
+        else:
+            values = [f["properties"][property] for f in tiles_data["features"]]
+        
+        clean_values = [v for v in values if not pd.isna(v)]
+        nan_count = len(values)-len(clean_values)
+        zero_count = len([v for v in clean_values if v==0])
+        if not clean_values:
+            color_prop = colors[0] * len(values)  # All values are NaN
+        else:
+            max_val = max(clean_values)
+            if max_val == 0:
+                color_prop = colors[0] * len(values)  # All values are 0 or NaN
+            else:
+                step = max_val / buckets
+
+                color_prop = []
+                for val in values:
+                    if pd.isna(val):
+                        color_prop.append(colors[0])  # Assign NaNs to the first bucket
+                    else:
+                        index = min(int(val / step), buckets-1)
+                        color_prop.append(colors[index])
+        
+        for feature, color in zip(tiles_data["features"], color_prop):
+            feature['properties']['_color'] = color
+            if color==colors[0]:
+                feature['properties']['_fillOpacity'] = 0.0
+            else:
+                feature['properties']['_fillOpacity'] = 0.7
+            feature['properties']['_weight'] = 1
+            feature['properties']['_opacity'] = 0.8
+        
+        # Debug output
+        if values:
+            print(f"{property} tiles debug - Total tiles: {len(values)}")
+            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
+            print(f"Min {property}: {min(values)}, Max {property}: {max(values)}")
+            print(f"Sample values: {sorted(set(values))[:10]}")
+        
+        # Debug: Check data structure
+        if tiles_data:
+            print(f"Tiles data type: {type(tiles_data)}")
+            if isinstance(tiles_data, dict):
+                print(f"Tiles data keys: {list(tiles_data.keys())}")
+                if 'features' in tiles_data:
+                    print(f"Features count: {len(tiles_data['features'])}")
+                else:
+                    print("ERROR: No 'features' key in tiles_data!")
+            else:
+                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
+        
+        return tiles_data, True, key
+    except Exception as e:
+        print(f"Error styling {property} tiles: {e}")
+        return tiles_data, True, key
+##############
+
+###############################################
+
+###### Javascript functions - move to a different file
 
 # JavaScript styling for hurricane tracks
 style_tracks = assign("""
@@ -111,6 +207,8 @@ function(feature, context) {
 }
 """)
 
+##############################################
+
 # Load hurricane metadata at startup (like hurricanes page)
 
 from components.ui.appshell import make_default_appshell
@@ -135,8 +233,9 @@ ROOT_DATA_DIR = config.ROOT_DATA_DIR
 # Initialize data store using centralized utility
 data_store = get_data_store()
 giga_store = data_store
+##############################################
 
-
+#### Snowflake functions - move to data ####
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
     try:
@@ -161,23 +260,7 @@ def get_snowflake_data():
     except Exception as e:
         print(f"Error getting Snowflake data: {str(e)}")
         return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
-
-# Load initial metadata
-metadata_df = get_snowflake_data()
-# Parse dates and times from metadata
-metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
-metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
-
-# Get unique dates and times
-unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
-unique_times = sorted(metadata_df['TIME'].unique())
-##########################
-
-#### Get current hurricanes
-latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) + " " + metadata_df["TIME"]))
-            .sort_values(["TRACK_ID","dt"])
-            .drop_duplicates("TRACK_ID", keep="last"))
-
+    
 def get_lat_lons(row):
     """Get latitude and longitude for a hurricane track from Snowflake"""
     try:
@@ -208,6 +291,23 @@ def get_lat_lons(row):
     except Exception as e:
         print(f"Error getting lat/lon from Snowflake: {str(e)}")
         return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
+    
+###########################################
+
+###### Load initial metadata
+metadata_df = get_snowflake_data()
+# Parse dates and times from metadata
+metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
+metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
+
+# Get unique dates and times
+unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
+unique_times = sorted(metadata_df['TIME'].unique())
+
+#### Get current hurricanes
+latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) + " " + metadata_df["TIME"]))
+            .sort_values(["TRACK_ID","dt"])
+            .drop_duplicates("TRACK_ID", keep="last"))
 
 latest[["latitude","longitude"]] = latest.apply(get_lat_lons, axis=1)
 
@@ -225,140 +325,7 @@ gdf_latest = convert_to_geodataframe(latest_clean)
 
 user_name = "UNICEF-User"
 
-interactive_options = dmc.Group(
-    [
-        dmc.NavLink(
-            label="Hurricane Track Explorer",
-            rightSection=DashIconify(icon="mdi:chevron-right", width=24),
-            p="md",
-            # description="Additional information",
-            href="/hurricanes",
-            style={
-                "border": "1px solid #e0e0e0",  # Light grey border around each NavLink
-                "borderRadius": "5px",  # Rounded corners
-                "height": "8vh",
-            },
-        ),
-        dmc.NavLink(
-            label="Schools",
-            rightSection=DashIconify(icon="mdi:chevron-right", width=24),
-            p="md",
-            # description="Additional information",
-            href="/schools",
-            style={
-                "border": "1px solid #e0e0e0",  # Light grey border around each NavLink
-                "borderRadius": "5px",  # Rounded corners
-                "height": "8vh",
-            },
-        ),
-        dmc.NavLink(
-            label="Health Centers",
-            rightSection=DashIconify(icon="mdi:chevron-right", width=24),
-            p="md",
-            # description="Additional information",
-            href="/health",
-            style={
-                "border": "1px solid #e0e0e0",  # Light grey border around each NavLink
-                "borderRadius": "5px",  # Rounded corners
-                "height": "8vh",
-            },
-        ),
-        dmc.NavLink(
-            label="Tiles",
-            rightSection=DashIconify(icon="mdi:chevron-right", width=24),
-            p="md",
-            # description="Additional information",
-            href="/tiles",
-            style={
-                "border": "1px solid #e0e0e0",  # Light grey border around each NavLink
-                "borderRadius": "5px",  # Rounded corners
-                "height": "8vh",
-            },
-        ),
-        dmc.NavLink(
-            label="Envelopes",
-            rightSection=DashIconify(icon="mdi:chevron-right", width=24),
-            p="md",
-            # description="Additional information",
-            href="/envelopes",
-            style={
-                "border": "1px solid #e0e0e0",  # Light grey border around each NavLink
-                "borderRadius": "5px",  # Rounded corners
-                "height": "8vh",
-            },
-        ),
-    ],
-    gap="sm",
-    style={"marginTop": "40px"},
-)
-
-
-def make_welcome(user):
-    return dmc.Group(
-        [
-            dmc.Text("Welcome, ", style={"fontSize": "1vw"}),
-            dmc.Text(f"{user}!", fw=700, style={"fontSize": "1vw", "marginLeft": -10}),
-        ],
-    )
-
-
-def make_status_indicators(values):
-    return dmc.Stack(
-        [
-            dmc.Group(
-                [
-                    DashIconify(icon="mdi:alert", color="red", width=20),
-                    dmc.Text(
-                        f"{values[0]:,} Schools at risk",
-                        style={"fontSize": "0.7vw"},
-                    ),
-                ],
-                gap="xs",
-            ),
-            dmc.Group(
-                [
-                    DashIconify(icon="mdi:alert", color="red", width=20),
-                    dmc.Text(
-                        f"{values[1]:,} Health centers at risk",
-                        style={"fontSize": "0.7vw"},
-                    ),
-                ],
-                gap="xs",
-            ),
-            dmc.Group(
-                [
-                    DashIconify(icon="mdi:alert", color="red", width=20),
-                    dmc.Text(
-                        f"{values[2]:,} Population at risk",
-                        style={"fontSize": "0.7vw"},
-                    ),
-                ],
-                gap="xs",
-            ),
-        ],
-        gap="sm",
-        style={"marginTop": "20px"},
-    )
-
-
-def make_navbar(user, values):
-    return dmc.Container(
-        [
-            # Welcome Text
-            make_welcome(user),
-            # Status Indicators
-            make_status_indicators(values),
-            # Interactive Options
-            interactive_options,
-        ],
-        fluid=True,
-        px=0,
-        style={
-            "width": "100%",
-            "height": "100%",
-        },
-    )
-
+###### DASH components #########
 
 # Single-page dashboard layout
 def make_single_page_layout():
@@ -534,6 +501,24 @@ def make_single_page_layout():
                                         ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                                         
                                         dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
+
+                                        dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
+                                        dmc.Grid([
+                                            dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
+                                            dmc.GridCol(span=8, children=[
+                                                html.Div(style={
+                                                    "width": "100%", 
+                                                    "height": "10px", 
+                                                    "background": "linear-gradient(to right, #87ceeb, #4682b4, #1e90ff, #0000cd, #000080, #191970)",
+                                                    "border": "1px solid #ccc",
+                                                    "borderRadius": "1px"
+                                                })
+                                            ]),
+                                            dmc.GridCol(span=2, children=[dmc.Text("5000+", size="xs", c="dimmed")]),
+                                        ], id="probability-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                                        dmc.Divider(),
+
                                         dmc.Checkbox(id="population-tiles-layer", label="Population Density", checked=False, mb="xs", disabled=True),
                                         dmc.Grid([
                                             dmc.GridCol(span=2, children=[dmc.Text("0", size="xs", c="dimmed")]),
@@ -639,10 +624,6 @@ def make_single_page_layout():
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
                     dcc.Store(id="population-tiles-data-store", data={}),
-                    # dcc.Store(id="school-age-tiles-data-store", data={}),
-                    # dcc.Store(id="built-surface-tiles-data-store", data={}),
-                    # dcc.Store(id="settlement-tiles-data-store", data={}),
-                    # dcc.Store(id="rwi-tiles-data-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
@@ -659,12 +640,12 @@ def make_single_page_layout():
                                 style=style_tracks
                             ),
                             # Hurricane Envelopes Layer
-        dl.GeoJSON(
-            id="envelopes-json-test",
-            data={},
-            zoomToBounds=True,
-            style=style_envelopes
-        ),
+                            dl.GeoJSON(
+                                id="envelopes-json-test",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_envelopes
+                            ),
                             # Schools Impact Layer
                             dl.GeoJSON(
                                 id="schools-json-test",
@@ -688,34 +669,7 @@ def make_single_page_layout():
                                 zoomToBounds=True,
                                 style=style_tiles
                             ),
-                            # # School-Age Population Tiles Layer
-                            # dl.GeoJSON(
-                            #     id="school-age-tiles-json",
-                            #     data={},
-                            #     zoomToBounds=True,
-                            #     style=style_tiles
-                            # ),
-                            # # Built Surface Area Tiles Layer
-                            # dl.GeoJSON(
-                            #     id="built-surface-tiles-json",
-                            #     data={},
-                            #     zoomToBounds=True,
-                            #     style=style_tiles
-                            # ),
-                            # # Settlement Classification Tiles Layer
-                            # dl.GeoJSON(
-                            #     id="settlement-tiles-json",
-                            #     data={},
-                            #     zoomToBounds=True,
-                            #     style=style_tiles
-                            # ),
-                            # # Relative Wealth Index Tiles Layer
-                            # dl.GeoJSON(
-                            #     id="rwi-tiles-json",
-                            #     data={},
-                            #     zoomToBounds=True,
-                            #     style=style_tiles
-                            # ),
+                            
                             dl.FullScreenControl(),
                             dl.LocateControl(locateOptions={"enableHighAccuracy": True}),
                         ],
@@ -861,6 +815,41 @@ def make_single_page_layout():
         gutter="md",
         style={"height": "100%", "margin": 0}
     )
+
+
+
+# Use the standard header with Last Updated timestamp (now included in main header)
+def make_custom_header():
+    """Use the standard header which now includes Last Updated timestamp"""
+    from components.ui.header import make_header
+    return make_header(active_tab="tab-home")
+
+
+# Create single-page appshell using existing components
+def make_single_page_appshell():
+    """Create appshell with custom header using existing footer and appshell structure"""
+    from components.ui.footer import footer
+    
+    return dmc.AppShell(
+        [
+            dmc.AppShellHeader(make_custom_header(), px=15, zIndex=2000),
+            dmc.AppShellMain(
+                make_single_page_layout(),
+                style={"height": "calc(100vh - 67px - 80px)", "overflow": "hidden"}
+            ),
+            dmc.AppShellFooter(footer, zIndex=2000),
+        ],
+        id="single-page-shell",
+        header={"height": "67"},
+        padding=0,  # Remove all padding
+        footer={"height": "80"},
+    )
+
+# Use the single-page appshell
+layout = make_single_page_appshell()
+
+
+########################### Callbacks ####################################
 
 # Callbacks for interactive functionality
 @callback(
@@ -1199,6 +1188,8 @@ def update_storm_options(country, forecast_date, forecast_time):
     print(f"Storms for {forecast_date} {forecast_time}: available={available_storms}, options={len(storm_options)}, default (most recent)={default_storm}")
     return storm_options, default_storm
 
+
+
 # Callback to update wind threshold options based on storm, date, and time selection
 @callback(
     Output("wind-threshold-select", "data"),
@@ -1286,36 +1277,6 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
         ]
         return all_thresholds, "50"
 
-# Use the standard header with Last Updated timestamp (now included in main header)
-def make_custom_header():
-    """Use the standard header which now includes Last Updated timestamp"""
-    from components.ui.header import make_header
-    return make_header(active_tab="tab-home")
-
-
-# Create single-page appshell using existing components
-def make_single_page_appshell():
-    """Create appshell with custom header using existing footer and appshell structure"""
-    from components.ui.footer import footer
-    
-    return dmc.AppShell(
-        [
-            dmc.AppShellHeader(make_custom_header(), px=15, zIndex=2000),
-            dmc.AppShellMain(
-                make_single_page_layout(),
-                style={"height": "calc(100vh - 67px - 80px)", "overflow": "hidden"}
-            ),
-            dmc.AppShellFooter(footer, zIndex=2000),
-        ],
-        id="single-page-shell",
-        header={"height": "67"},
-        padding=0,  # Remove all padding
-        footer={"height": "80"},
-    )
-
-# Use the single-page appshell
-layout = make_single_page_appshell()
-
 # Load all layers callback with integrated loading indicator
 @callback(
     [Output('tracks-data-store', 'data'),
@@ -1323,21 +1284,18 @@ layout = make_single_page_appshell()
      Output('schools-data-store', 'data'),
      Output('health-data-store', 'data'),
      Output('population-tiles-data-store', 'data'),
-    #  Output('school-age-tiles-data-store', 'data'),
-    #  Output('built-surface-tiles-data-store', 'data'),
-    #  Output('settlement-tiles-data-store', 'data'),
-    #  Output('rwi-tiles-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
      Output('schools-layer', 'disabled'),
      Output('health-layer', 'disabled'),
-     Output('population-tiles-layer', 'disabled'),
-     Output('school-age-tiles-layer', 'disabled'),
-     Output('built-surface-tiles-layer', 'disabled'),
-     Output('settlement-tiles-layer', 'disabled'),
-     Output('rwi-tiles-layer', 'disabled')],
+     Output('probability-tiles-layer', 'disabled'),
+     Output('population-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
@@ -1362,8 +1320,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
-        #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1549,36 +1506,19 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 variant="light"
             )
         
-        # Enable all toggles - each tile layer gets its own independent copy of the data
-        import copy
-        
         # Create independent copies for each tile layer
-        if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
-            # Use JSON serialization/deserialization for complete independence
-            tiles_json = json.dumps(tiles_data)
-            tiles_copy1 = json.loads(tiles_json)
-            # tiles_copy2 = json.loads(tiles_json)
-            # tiles_copy3 = json.loads(tiles_json)
-            # tiles_copy4 = json.loads(tiles_json)
-            # tiles_copy5 = json.loads(tiles_json)
-        else:
-            empty_geojson = {"type": "FeatureCollection", "features": []}
-            tiles_copy1 = empty_geojson #tiles_copy2 = tiles_copy3 = tiles_copy4 = tiles_copy5 = empty_geojson
+        if not tiles_data or not isinstance(tiles_data, dict) or not 'features' in tiles_data:
+            tiles_data = {"type": "FeatureCollection", "features": []}
         
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False)
-        # return (tracks_data, envelope_data, schools_data, health_data, 
-        #         tiles_copy1, tiles_copy2, tiles_copy3, tiles_copy4, tiles_copy5,
-        #         True, status_alert, 
-        #         False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
-        #return {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
 @callback(
@@ -1837,355 +1777,128 @@ def toggle_health_layer(checked, health_data_in):
         print(f"Error styling health layer: {e}")
         return health_data, True, key
 
+
+# Callbacks for toggle tiles
 @callback(
     Output("population-tiles-json", "data", allow_duplicate=True),
     Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("population-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
-    prevent_initial_call=True
+    Output('population-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+    Input('population-tiles-layer','checked'),
+    Input("school-age-tiles-layer", "checked"),
+    Input("built-surface-tiles-layer", "checked"),
+    Input("settlement-tiles-layer", "checked"),
+    Input("rwi-tiles-layer", "checked"),
+    Input('probability-tiles-layer','checked'),
+    State('probability-tiles-layer','checked'),
+    State('population-tiles-data-store','data'),
+    prevent_initial_call = True,
 )
-def toggle_population_tiles_layer(checked, tiles_data_in):
-    """Toggle population density tiles layer visibility with blue color scheme"""
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data)}")
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-
-    try:
-        # Debug: Collect population values to understand the data
-        population_values = []
-        zero_count = 0
-        nan_count = 0
-        
-        # Add population-based styling to each feature
-        if 'features' in tiles_data:
-            for feature in tiles_data['features']:
-                if 'properties' in feature and 'population' in feature['properties']:
-                    pop = feature['properties']['population']
-                    population_values.append(pop)
-                    
-                    if pop == 0:
-                        zero_count += 1
-                    elif pd.isna(pop):
-                        nan_count += 1
-                    
-                    # Blue color scale for population density
-                    if pop == 0 or pop is None or pd.isna(pop):
-                        color = 'transparent'  # Transparent for no population
-                        fillOpacity = 0.0
-                    elif pop <= 100:
-                        color = '#87ceeb'  # Sky blue for low population
-                        fillOpacity = 0.7
-                    elif pop <= 500:
-                        color = '#4682b4'  # Steel blue for medium-low population
-                        fillOpacity = 0.7
-                    elif pop <= 1000:
-                        color = '#1e90ff'  # Dodger blue for medium population
-                        fillOpacity = 0.7
-                    elif pop <= 2500:
-                        color = '#0000cd'  # Medium blue for medium-high population
-                        fillOpacity = 0.7
-                    elif pop <= 5000:
-                        color = '#000080'  # Navy blue for high population
-                        fillOpacity = 0.7
-                    else:
-                        color = '#191970'  # Midnight blue for very high population
-                        fillOpacity = 0.7
-                    
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_fillOpacity'] = fillOpacity
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_opacity'] = 0.8
-        
-        # Debug output
-        if population_values:
-            print(f"Population tiles debug - Total tiles: {len(population_values)}")
-            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
-            print(f"Min population: {min(population_values)}, Max population: {max(population_values)}")
-            print(f"Sample values: {sorted(set(population_values))[:10]}")
-        
-        # Debug: Check data structure
-        if tiles_data:
-            print(f"Tiles data type: {type(tiles_data)}")
-            if isinstance(tiles_data, dict):
-                print(f"Tiles data keys: {list(tiles_data.keys())}")
-                if 'features' in tiles_data:
-                    print(f"Features count: {len(tiles_data['features'])}")
-                else:
-                    print("ERROR: No 'features' key in tiles_data!")
+def juggle_toggles(pop,children,built,smod,rwi,prob_checked_trigger, prob_checked_val, tiles_data_in):
+    if ctx.triggered_id == "probability-tiles-layer":
+        if pop + children + built + smod + rwi == 0:
+            if prob_checked_val:
+                #show probs
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key, False, False, False, False, False
             else:
-                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
-        
-        #gdf = gpd.GeoDataFrame.from_features(tiles_data, crs="EPSG:4326")
-        #return gdf.__geo_interface__, True
-        return copy.deepcopy(tiles_data), True, key
-    except Exception as e:
-        print(f"Error styling population tiles: {e}")
-        return tiles_data, True, key
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+        else:
+            if pop:
+                if prob_checked_val:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_population')
+                    return tiles,zoom,key, False, True, True, True, True
+                else:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'population')
+                    return tiles,zoom,key, False, True, True, True, True
+            elif children:
+                if prob_checked_val:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_school_age_population')
+                    return tiles,zoom,key, True, False, True, True, True
+                else:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'school_age_population')
+                    return tiles,zoom,key, True, False, True, True, True
+            elif built:
+                if prob_checked_val:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'E_built_surface_m2')
+                    return tiles,zoom,key, True, True, False, True, True
+                else:
+                    tiles,zoom,key = update_tile_features(tiles_data_in,'built_surface')
+                    return tiles,zoom,key, True, True, False, True, True
+            elif smod:
+                # Do not process smod regardless of prob checked
+                return dash.no_update,dash.no_update,dash.no_update, True, True, True, False, True
+            elif rwi:
+                # Do not process rwi regardless of prob checked
+                return dash.no_update,dash.no_update,dash.no_update, True, True, True, True, False
 
-@callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("school-age-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
-    prevent_initial_call=True
-)
-def toggle_school_age_tiles_layer(checked, tiles_data_in):
-    """Toggle school-age population tiles layer visibility with green color scheme"""
-    print(f"School-age tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-    
-    print(f"School-age tiles data structure OK: {len(tiles_data.get('features', []))} features")
-    
-    try:
-        # Add school-age population-based styling to each feature
-        if 'features' in tiles_data:
-            for feature in tiles_data['features']:
-                if 'properties' in feature and 'school_age_population' in feature['properties']:
-                    pop = feature['properties']['school_age_population']
-                    
-                    # Green color scale for school-age population
-                    if pop == 0 or pop is None or pd.isna(pop):
-                        color = 'transparent'  # Transparent for no school-age population
-                        fillOpacity = 0.0
-                    elif pop <= 50:
-                        color = '#90ee90'  # Light green for low school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 150:
-                        color = '#32cd32'  # Lime green for medium-low school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 300:
-                        color = '#228b22'  # Forest green for medium school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 500:
-                        color = '#006400'  # Dark green for medium-high school-age population
-                        fillOpacity = 0.7
-                    elif pop <= 750:
-                        color = '#2e8b57'  # Sea green for high school-age population
-                        fillOpacity = 0.7
-                    else:
-                        color = '#1c4a1c'  # Very dark green for very high school-age population
-                        fillOpacity = 0.7
-                    
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_fillOpacity'] = fillOpacity
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_opacity'] = 0.8
-        
-        return tiles_data, True, key
-    except Exception as e:
-        print(f"Error styling school-age tiles: {e}")
-        return tiles_data, True, key
 
-@callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("built-surface-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
-    prevent_initial_call=True
-)
-def toggle_built_surface_tiles_layer(checked, tiles_data_in):
-    """Toggle built surface area tiles layer visibility with brown/gray color scheme"""
-    print(f"Built surface tiles layer toggled: checked={checked}")
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-
-    print(f"Built surface tiles data structure OK: {len(tiles_data.get('features', []))} features")
-    
-    try:
-        # Add built surface-based styling to each feature
-        if 'features' in tiles_data:
-            for feature in tiles_data['features']:
-                if 'properties' in feature and 'built_surface_m2' in feature['properties']:
-                    surface = feature['properties']['built_surface_m2']
-                    
-                    # Brown/Gray color scale for built surface
-                    if surface == 0 or surface is None or pd.isna(surface):
-                        color = 'transparent'  # Transparent for no built surface
-                        fillOpacity = 0.0
-                    elif surface <= 1000:
-                        color = '#d3d3d3'  # Light gray for low built surface
-                        fillOpacity = 0.7
-                    elif surface <= 5000:
-                        color = '#a9a9a9'  # Dark gray for medium-low built surface
-                        fillOpacity = 0.7
-                    elif surface <= 10000:
-                        color = '#808080'  # Gray for medium built surface
-                        fillOpacity = 0.7
-                    elif surface <= 25000:
-                        color = '#8b4513'  # Saddle brown for medium-high built surface
-                        fillOpacity = 0.7
-                    elif surface <= 50000:
-                        color = '#654321'  # Dark brown for high built surface
-                        fillOpacity = 0.7
-                    else:
-                        color = '#2f1b14'  # Very dark brown for very high built surface
-                        fillOpacity = 0.7
-                    
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_fillOpacity'] = fillOpacity
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_opacity'] = 0.8
-        
-        return tiles_data, True, key
-    except Exception as e:
-        print(f"Error styling built surface tiles: {e}")
-        return tiles_data, True, key
-
-@callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("settlement-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
-    prevent_initial_call=True
-)
-def toggle_settlement_tiles_layer(checked, tiles_data_in):
-    """Toggle settlement classification tiles layer visibility with purple color scheme"""
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-    
-    try:
-        # Add settlement-based styling to each feature
-        if 'features' in tiles_data:
-            for feature in tiles_data['features']:
-                if 'properties' in feature and 'smod_class' in feature['properties']:
-                    smod = feature['properties']['smod_class']
-                    smod = int(smod/10)
-                    # Purple color scale for settlement classification
-                    # SMOD values: 0=no data, 1=rural, 2=urban clusters, 3=urban centers
-                    if smod == 0 or smod is None or pd.isna(smod):
-                        color = 'transparent'  # Transparent for no data
-                        fillOpacity = 0.0
-                    elif smod == 1:
-                        color = '#dda0dd'  # Plum for rural areas
-                        fillOpacity = 0.7
-                    elif smod == 2:
-                        color = '#9370db'  # Medium purple for urban clusters
-                        fillOpacity = 0.7
-                    elif smod == 3:
-                        color = '#4b0082'  # Indigo for urban centers
-                        fillOpacity = 0.7
-                    else:
-                        color = '#2e0854'  # Very dark purple for unknown
-                        fillOpacity = 0.7
-                    
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_fillOpacity'] = fillOpacity
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_opacity'] = 0.8
-        
-        return tiles_data, True, key
-    except Exception as e:
-        print(f"Error styling settlement tiles: {e}")
-        return tiles_data, True, key
-
-@callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
-    [Input("rwi-tiles-layer", "checked")],
-    State("population-data-store", "data"),
-    prevent_initial_call=True
-)
-def toggle_rwi_tiles_layer(checked, tiles_data_in):
-    """Toggle relative wealth index tiles layer visibility with orange/yellow color scheme"""
-    if not checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False
-    
-    # Ensure tiles_data has proper GeoJSON structure
-    if not isinstance(tiles_data_in, dict) or 'features' not in tiles_data_in:
-        print(f"ERROR: Invalid tiles_data structure: {type(tiles_data_in)}")
-        return {"type": "FeatureCollection", "features": []}, False
-    
-    tiles_data = copy.deepcopy(tiles_data_in)
-    key = hashlib.md5(json.dumps(tiles_data, sort_keys=True).encode()).hexdigest()
-    
-    try:
-        # Add RWI-based styling to each feature
-        if 'features' in tiles_data:
-            for feature in tiles_data['features']:
-                if 'properties' in feature and 'rwi' in feature['properties']:
-                    rwi = feature['properties']['rwi']
-                    
-                    # Orange/Yellow color scale for Relative Wealth Index
-                    # RWI typically ranges from -2 to +2, with higher values = wealthier
-                    if rwi is None or rwi == 0 or pd.isna(rwi):
-                        color = 'transparent'  # Transparent for no data
-                        fillOpacity = 0.0
-                    elif rwi <= -1.5:
-                        color = '#8b0000'  # Dark red for very low wealth
-                        fillOpacity = 0.7
-                    elif rwi <= -1.0:
-                        color = '#dc143c'  # Crimson for low wealth
-                        fillOpacity = 0.7
-                    elif rwi <= -0.5:
-                        color = '#ff6347'  # Tomato for below average wealth
-                        fillOpacity = 0.7
-                    elif rwi <= 0:
-                        color = '#ffa500'  # Orange for average wealth
-                        fillOpacity = 0.7
-                    elif rwi <= 0.5:
-                        color = '#ffd700'  # Gold for above average wealth
-                        fillOpacity = 0.7
-                    elif rwi <= 1.0:
-                        color = '#ffff00'  # Yellow for high wealth
-                        fillOpacity = 0.7
-                    elif rwi <= 1.5:
-                        color = '#adff2f'  # Green yellow for very high wealth
-                        fillOpacity = 0.7
-                    else:
-                        color = '#32cd32'  # Lime green for extremely high wealth
-                        fillOpacity = 0.7
-                    
-                    # Add styling properties
-                    feature['properties']['_color'] = color
-                    feature['properties']['_fillOpacity'] = fillOpacity
-                    feature['properties']['_weight'] = 1
-                    feature['properties']['_opacity'] = 0.8
-        
-        return tiles_data, True, key
-    except Exception as e:
-        print(f"Error styling RWI tiles: {e}")
-        return tiles_data, True, key
+    elif ctx.triggered_id == "population-tiles-layer":
+        if pop:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'E_population')
+                return tiles,zoom,key,False, True, True, True, True
+            else:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'population')
+                return tiles,zoom,key,False, True, True, True, True
+        else:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key,False, False, False, False, False
+            else:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+    elif ctx.triggered_id == "school-age-tiles-layer":
+        if children:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'E_school_age_population')
+                return tiles,zoom,key,True, False, True, True, True
+            else:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'school_age_population')
+                return tiles,zoom,key,True, False, True, True, True
+        else:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key, False, False, False, False, False
+            else:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+    elif ctx.triggered_id == "built-surface-tiles-layer":
+        if built:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'E_built_surface_m2')
+                return tiles,zoom,key, True, True, False, True, True
+            else:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'built_surface_m2')
+                return tiles,zoom,key, True, True, False, True, True
+        else:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key,False, False, False, False, False
+            else:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+    elif ctx.triggered_id == "settlement-tiles-layer":
+        if smod:
+            tiles,zoom,key = update_tile_features(tiles_data_in,'smod_class')
+            return tiles,zoom,key, True, True, True, False, True
+        else:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key,False, False, False, False, False
+            else:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
+    elif ctx.triggered_id == "rwi-tiles-layer":
+        if rwi:
+            tiles,zoom,key = update_tile_features(tiles_data_in,'rwi')
+            return tiles,zoom,key,True, True, True, True, False
+        else:
+            if prob_checked_val:
+                tiles,zoom,key = update_tile_features(tiles_data_in,'probability')
+                return tiles,zoom,key,False, False, False, False, False
+            else:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update, False, False, False, False, False
 
 # Callback to update info text when specific track is selected
 @callback(
