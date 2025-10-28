@@ -45,6 +45,12 @@ all_colors = {
     'E_school_age_population':['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'infant_population': ['transparent',
+                    '#d6e8ff', '#b3d9ff', '#8ac8ff', '#66b7ff', '#42a6ff',
+                    '#1e95ff', '#1685e6', '#0f75cc', '#0765b3', '#005599'],
+    'E_infant_population': ['transparent',
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
     'built_surface_m2': ['transparent',
                     '#f6e6d1', '#e8d4b8', '#dac29f', '#ccb086', '#be9e6d',
                     '#b08854', '#a2723b', '#945c22', '#864609', '#783000'],
@@ -168,8 +174,9 @@ def update_tile_features(tiles_data_in,property):
                     else:
                         color_prop.append(colors[0])  # transparent for unknown values
             else:
-                # Use log scale for population, school_age_population, and built_surface_m2; linear for others
-                if property in ['population', 'school_age_population', 'built_surface_m2']:
+                # Use log scale for population, school_age_population, infant_population, built_surface_m2, and their E_ equivalents; linear for others
+                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2',
+                                'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2']:
                     # Log scale: transform values using log10
                     import math
                     clean_positive_values = [v for v in clean_values if v > 0]
@@ -490,6 +497,7 @@ function(feature, layer) {
     const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
     const E_num_schools = props.E_num_schools || 0;
     const E_school_age_population = props.E_school_age_population || 0;
+    const E_infant_population = props.E_infant_population || 0;
     const E_num_hcs = props.E_num_hcs || 0;
     const E_rwi = props.E_rwi || 0;
     const probability = props.probability || 0;
@@ -499,6 +507,7 @@ function(feature, layer) {
     const built_surface = props.built_surface_m2 || 0;
     const num_schools = props.num_schools || 0;
     const school_age_pop = props.school_age_population || 0;
+    const infant_pop = props.infant_population || 0;
     const num_hcs = props.num_hcs || 0;
     const rwi = props.rwi || 0;
     const smod_class = props.smod_class || 'N/A';
@@ -819,7 +828,7 @@ def make_single_page_layout():
                                         loaderProps={"type": "dots"}
                                     ),
                                     
-                                    dmc.Text("Status: Not loaded", id="load-status", size="xs", c="dimmed", mb="md")
+                                    html.Div("Status: Not loaded", id="load-status", style={"fontSize": "12px", "color": "#868e96", "marginBottom": "16px"})
                                 ],
                                 p="md",
                                 shadow="xs",
@@ -1739,7 +1748,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1933,11 +1942,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True
 
 # Simple toggle callbacks - just show/hide pre-loaded data
 @callback(
@@ -2333,11 +2342,11 @@ def toggle_health_layer(checked, health_data_in):
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
     Input('tiles-layer-group','value'),
     Input('probability-tiles-layer','checked'),
+    Input('population-tiles-data-store','data'),
     State('probability-tiles-layer','checked'),
-    State('population-tiles-data-store','data'),
     prevent_initial_call = True,
 )
-def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, prob_checked_val, tiles_data_in):
+def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_in, prob_checked_val):
     """Handle tile layer display based on radio selection"""
     # Determine which layer is selected
     active_layer = selected_layer
@@ -2346,12 +2355,12 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, prob_checke
     # and regular layers should be enabled at all times
     if prob_checked_val:
         # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, True, True
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, True, True
     else:
         # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False, False
     
-    radios_enabled = (population_enabled, school_age_enabled, built_enabled, settlement_enabled, rwi_enabled)
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled)
     
     # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
     if not active_layer or active_layer == "none":
@@ -2569,6 +2578,8 @@ def toggle_tiles_legend(selected_value, tiles_data):
     pop_max = "Max"
     school_min = "Min"
     school_max = "Max"
+    infant_min = "Min"
+    infant_max = "Max"
     built_min = "Min"
     built_max = "Max"
     
@@ -2594,12 +2605,13 @@ def toggle_tiles_legend(selected_value, tiles_data):
                 school_max = format_number(school_max_val)
 
             # Infant population values
-            infant_values = [f["properties"].get('infant_population', 0) for f in tiles_data["features"] if
-                                 'properties' in f]
-            infant_min_val = min(infant_values)
-            infant_max_val = max(infant_values)
-            infant_min = f"{infant_min_val:,.0f}"
-            infant_max = format_number(infant_max_val)
+            infant_values = [f["properties"].get('infant_population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_infant = [v for v in infant_values if not pd.isna(v) and v > 0]
+            if clean_infant:
+                infant_min_val = min(clean_infant)
+                infant_max_val = max(clean_infant)
+                infant_min = f"{infant_min_val:,.0f}"
+                infant_max = format_number(infant_max_val)
             
             # Built surface values
             built_values = [f["properties"].get('built_surface_m2', 0) for f in tiles_data["features"] if 'properties' in f]
@@ -2611,9 +2623,6 @@ def toggle_tiles_legend(selected_value, tiles_data):
                 built_max = format_number(built_max_val)
         except Exception as e:
             print(f"Error calculating legend labels: {e}")
-
-    infant_min = "Min"
-    infant_max = "Max"
 
     if selected_value == "population":
         return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
