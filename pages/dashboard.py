@@ -184,6 +184,7 @@ def make_single_page_layout():
                                             {"value": "ATG", "label": "Antigua and Barbuda"},
                                             {"value": "BLZ", "label": "Belize"},
                                             {"value": "VGB", "label": "British Virgin Islands"},
+                                            {"value": "CUB", "label": "Cuba"},
                                             {"value": "DMA", "label": "Dominica"},
                                             {"value": "DOM", "label": "Dominican Republic"},
                                             {"value": "GRD", "label": "Grenada"},
