@@ -6,14 +6,16 @@ import os
 from components.ui.header import make_header
 from components.ui.footer import footer
 
-# from gigaspatial.core.io import ADLSDataStore
-from components.data.data_store_utils import get_data_store
+# Configuration: Set to True to use blob storage, False to use local file
+USE_BLOB_REPORT = os.getenv('USE_BLOB_REPORT', 'False').lower() == 'true'
 
-# giga_store = ADLSDataStore()
-giga_store = get_data_store()
 
-RESULTS_DIR = os.getenv('RESULTS_DIR')
-REPORT_FILE = os.getenv('REPORT_FILE')
+# Import and setup data store only if using blob storage
+if USE_BLOB_REPORT:
+    from components.data.data_store_utils import get_data_store
+    giga_store = get_data_store()
+    RESULTS_DIR = os.getenv('RESULTS_DIR')
+    REPORT_FILE = os.getenv('REPORT_FILE')
 
 dash.register_page(
     __name__, path="/report", name="Impact Report"
@@ -85,23 +87,43 @@ def make_custom_header():
     return make_header(active_tab="tab-report")
 
 def make_single_page_layout():
-    report_path = os.path.join(RESULTS_DIR, REPORT_FILE)
-    
-    # Check if file exists before trying to open it
-    if not giga_store.file_exists(report_path):
-        # Return a placeholder message if report doesn't exist yet
-        return dmc.Alert(
-            "Impact report not yet generated. Please run the data pipeline to generate reports.",
-            title="Report Not Available",
-            color="blue",
-            variant="light"
-        )
-    
-    with giga_store.open(report_path, 'r') as f:
-        html_str = f.read()
+    if USE_BLOB_REPORT:
+        # Read from blob storage using data store
+        report_path = os.path.join(RESULTS_DIR, REPORT_FILE)
+        
+        # Check if file exists in blob storage
+        if not giga_store.file_exists(report_path):
+            return dmc.Alert(
+                f"Impact report not found at {report_path} in blob storage. Please ensure the file exists.",
+                title="Report Not Available",
+                color="blue",
+                variant="light"
+            )
+        
+        # Read from blob storage
+        with giga_store.open(report_path, 'r') as f:
+            html_str = f.read()
+    else:
+        # Read from local assets folder
+        # pages/report.py -> go up one level -> assets/impact-report.html
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        report_path = os.path.join(project_root, 'assets', 'impact-report.html')
+        
+        # Check if file exists locally
+        if not os.path.exists(report_path):
+            return dmc.Alert(
+                f"Impact report not found at {report_path}. Please ensure the file exists.",
+                title="Report Not Available",
+                color="blue",
+                variant="light"
+            )
+        
+        # Read the HTML file directly from the local filesystem
+        with open(report_path, 'r', encoding='utf-8') as f:
+            html_str = f.read()
 
     return html.Iframe(
-        #src="../assets/impact-report.html",    # served automatically
         srcDoc=html_str,
         style={"width": "100%", "height": "100vh", "border": 0}
     )

@@ -34,3 +34,5 @@ export REPORT_FILE = "impact-report-current.html"
 export REPORT_TEMPLATE_FILE = "impact-report.html"
 export ACCOUNT_URL=""
 export SAS_TOKEN=""
+
+export USE_BLOB_REPORT=False
