@@ -13,7 +13,6 @@ __pycache__/
 *.nc
 *.kmz
 *.bin
-*.html
 *.bufr4
 *.grib2
 *.idx
