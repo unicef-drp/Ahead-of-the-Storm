@@ -165,10 +165,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Children: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+            Age 5-15: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Infants: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+            Age 0-5: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
@@ -335,10 +335,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         Population: ${formatValue(population)}
     </div>
     <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Children: ${formatValue(school_age_pop)}
+        Age 5-15: ${formatValue(school_age_pop)}
     </div>
     <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Infants: ${formatValue(infant_pop)}
+        Age 0-5: ${formatValue(infant_pop)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}
