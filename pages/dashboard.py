@@ -653,6 +653,15 @@ def make_single_page_layout():
                                     style={"display": "none"}
                                 ),
                                 
+                                dmc.Checkbox(
+                                    id="show-all-envelopes-toggle", 
+                                    label="Show Higher Wind Thresholds", 
+                                    checked=True, 
+                                    mb="md",
+                                    disabled=True,
+                                    description="Display all wind thresholds that are higher than the selected threshold for this track."
+                                ),
+                                
                                 dmc.Text(
                                     "Load layers first, then select a specific track to see exact impact numbers",
                                     size="xs",
@@ -1188,6 +1197,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
+     Output('show-all-envelopes-toggle', 'disabled'),
      Output('schools-layer', 'disabled'),
      Output('health-layer', 'disabled'),
      Output('probability-tiles-layer', 'disabled'),
@@ -1415,11 +1425,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True
 
 
 
@@ -1461,6 +1471,7 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
     Output("envelopes-json-test", "zoomToBounds"),
     Output("envelopes-json-test","key"),
     [Input("hurricane-envelopes-toggle", "checked"),
+     Input("show-all-envelopes-toggle", "checked"),
      Input("specific-track-select", "value")],
     [State("envelope-data-store", "data"),
      State("wind-threshold-select", "value"),
@@ -1470,7 +1481,7 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
      State("forecast-time", "value")],
     prevent_initial_call=False
 )
-def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_threshold, country, storm, forecast_date, forecast_time):
+def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope_data_in, wind_threshold, country, storm, forecast_date, forecast_time):
     """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
     
     if not checked:
@@ -1484,10 +1495,140 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
     time_str = forecast_time.replace(':', '') if forecast_time else ''
     forecast_datetime_str = f"{date_str}{time_str}00"
     
-    # If specific track is selected, create specific track envelope
-    if selected_track:
+    # If specific track is selected AND "Show All Envelopes" is checked, show all higher wind threshold envelopes
+    if selected_track and show_all_envelopes:
         try:
-            # Load specific track data
+            # Get the selected wind threshold as integer
+            wth_int = int(wind_threshold) if wind_threshold else 50
+            
+            if not envelope_data or not envelope_data.get('data'):
+                # Fallback: try to load from track_views if envelope data not available
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            # Load envelope data from Snowflake for the specific track
+            df = pd.DataFrame(envelope_data['data'])
+            if df.empty:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            # Filter for the specific ensemble member (selected track)
+            # ensemble_member could be in different column names
+            ensemble_col = None
+            if 'ENSEMBLE_MEMBER' in df.columns:
+                ensemble_col = 'ENSEMBLE_MEMBER'
+            elif 'ensemble_member' in df.columns:
+                ensemble_col = 'ensemble_member'
+            
+            if ensemble_col:
+                df_filtered = df[df[ensemble_col].astype(int) == int(selected_track)]
+            else:
+                # Fallback: assume envelope data doesn't have ensemble member info
+                df_filtered = df
+            
+            if df_filtered.empty:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            # Filter for wind thresholds >= selected threshold (all higher thresholds)
+            wind_thresh_col = 'wind_threshold' if 'wind_threshold' in df_filtered.columns else 'WIND_THRESHOLD'
+            if wind_thresh_col in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered[wind_thresh_col].astype(int) >= wth_int]
+            
+            if df_filtered.empty:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            # Convert to GeoDataFrame
+            geom_col = 'geometry' if 'geometry' in df_filtered.columns else 'ENVELOPE_REGION'
+            if df_filtered[geom_col].iloc[0].startswith('{') or isinstance(df_filtered[geom_col].iloc[0], dict):
+                from shapely.geometry import shape
+                geometries = []
+                for geom_str in df_filtered[geom_col]:
+                    if isinstance(geom_str, dict):
+                        geometries.append(shape(geom_str))
+                    elif isinstance(geom_str, str):
+                        if geom_str.startswith('{'):
+                            geom_dict = json.loads(geom_str)
+                            geometries.append(shape(geom_dict))
+                        else:
+                            geom_obj = wkt.loads(geom_str)
+                            geometries.append(geom_obj)
+                    else:
+                        geometries.append(geom_str)
+                gdf = gpd.GeoDataFrame(df_filtered.drop(geom_col, axis=1), geometry=geometries)
+            else:
+                gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered[geom_col]))
+            
+            # Try to add impact data from track_views if available
+            try:
+                if country and storm and forecast_datetime_str:
+                    # Define all possible wind thresholds
+                    all_thresholds = [34, 40, 50, 64, 83, 96, 113, 137]
+                    available_thresholds = [t for t in all_thresholds if t >= wth_int]
+                    
+                    impact_data_list = []
+                    for thresh in available_thresholds:
+                        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
+                        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                        
+                        if giga_store.file_exists(tracks_filepath):
+                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                            track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                            if not track_data.empty and 'wind_threshold' in track_data.columns:
+                                track_data_filtered = track_data[track_data['wind_threshold'] == thresh]
+                                if not track_data_filtered.empty:
+                                    impact_data_list.append({
+                                        'wind_threshold': thresh,
+                                        'severity_population': track_data_filtered['severity_population'].sum() if 'severity_population' in track_data_filtered.columns else 0,
+                                        'severity_school_age_population': track_data_filtered['severity_school_age_population'].sum() if 'severity_school_age_population' in track_data_filtered.columns else 0,
+                                        'severity_infant_population': track_data_filtered['severity_infant_population'].sum() if 'severity_infant_population' in track_data_filtered.columns else 0,
+                                        'severity_schools': track_data_filtered['severity_schools'].sum() if 'severity_schools' in track_data_filtered.columns else 0,
+                                        'severity_hcs': track_data_filtered['severity_hcs'].sum() if 'severity_hcs' in track_data_filtered.columns else 0,
+                                        'severity_built_surface_m2': track_data_filtered['severity_built_surface_m2'].sum() if 'severity_built_surface_m2' in track_data_filtered.columns else 0,
+                                    })
+                    
+                    # Add impact data to each envelope based on its wind threshold
+                    if impact_data_list:
+                        impact_df = pd.DataFrame(impact_data_list)
+                        wind_thresh_col_gdf = 'wind_threshold' if 'wind_threshold' in gdf.columns else 'WIND_THRESHOLD'
+                        if wind_thresh_col_gdf in gdf.columns:
+                            gdf = gdf.merge(impact_df, on=wind_thresh_col_gdf, how='left', suffixes=('', '_from_tracks'))
+                            # Fill NaN values with 0
+                            impact_cols = ['severity_population', 'severity_school_age_population', 'severity_infant_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                            for col in impact_cols:
+                                if col in gdf.columns:
+                                    gdf[col] = gdf[col].fillna(0)
+                    
+            except Exception as e:
+                print(f"Could not add impact data to stacked envelopes: {e}")
+            
+            # Convert to GeoJSON and return
+            geo_dict = gdf.__geo_interface__
+            
+            # Calculate max population for relative scaling across all thresholds
+            if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                max_pop = gdf['severity_population'].max()
+                for feature in geo_dict.get('features', []):
+                    if 'properties' in feature:
+                        feature['properties']['max_population'] = max_pop
+                        # Mark as stacked for higher opacity in visualization
+                        feature['properties']['is_stacked'] = True
+            
+            # Mark all features as stacked if not already marked
+            for feature in geo_dict.get('features', []):
+                if 'properties' in feature and 'is_stacked' not in feature['properties']:
+                    feature['properties']['is_stacked'] = True
+            
+            print(f"Showing stacked envelopes for track {selected_track} at wind thresholds >= {wth_int} ({len(gdf)} envelopes)")
+            return geo_dict, True, key
+            
+        except Exception as e:
+            print(f"Error creating stacked envelope view: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    
+    # If specific track is selected but "Show All Envelopes" is NOT checked, show only selected wind threshold
+    if selected_track and not show_all_envelopes:
+        try:
+            # Load specific track data for selected wind threshold only
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
@@ -1548,6 +1689,8 @@ def toggle_envelopes_layer(checked, selected_track, envelope_data_in, wind_thres
         
         if df.empty:
             return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+        
+        # When "Show All Envelopes" is checked, display all ensemble member envelopes for this wind threshold
         
         # Convert to GeoDataFrame
         if df['geometry'].iloc[0].startswith('{'):

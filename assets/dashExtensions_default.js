@@ -58,14 +58,17 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const props = feature.properties || {};
                 const severity_population = props.severity_population || 0;
                 const max_population = props.max_population || 1;
+                const is_stacked = props.is_stacked || false;
 
                 // Gray for no data or zero impact
                 if (!severity_population || severity_population === 0) {
+                    // Higher opacity for stacked envelopes
+                    const baseOpacity = is_stacked ? 0.6 : 0.3;
                     return {
                         color: '#808080',
                         weight: 2,
                         fillColor: '#808080',
-                        fillOpacity: 0.3
+                        fillOpacity: baseOpacity
                     };
                 }
 
@@ -89,15 +92,27 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
                 const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
 
-                // Opacity also increases with severity
-                const fillOpacity = 0.3 + (easedSeverity * 0.6);
-
-                return {
-                    color: color,
-                    weight: 2,
-                    fillColor: color,
-                    fillOpacity: fillOpacity
-                };
+                // Opacity increases with severity, and is higher for stacked envelopes
+                // Stacked envelopes: 0.6 to 0.95 opacity range for better visibility
+                // Regular envelopes: 0.3 to 0.9 opacity range
+                if (is_stacked) {
+                    const fillOpacity = 0.6 + (easedSeverity * 0.35); // Range: 0.6 to 0.95
+                    return {
+                        color: color,
+                        weight: 3,
+                        fillColor: color,
+                        fillOpacity: fillOpacity,
+                        opacity: 0.8
+                    };
+                } else {
+                    const fillOpacity = 0.3 + (easedSeverity * 0.6); // Range: 0.3 to 0.9 (original)
+                    return {
+                        color: color,
+                        weight: 2,
+                        fillColor: color,
+                        fillOpacity: fillOpacity
+                    };
+                }
             }
 
             ,
