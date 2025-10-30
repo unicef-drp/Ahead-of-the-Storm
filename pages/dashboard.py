@@ -337,7 +337,7 @@ infrastructure_impact = dmc.Box([
                             ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                         ],id='infrastructure_impact_box')
 
-#probability layer
+#probability layer for tiles
 probability_layer_tiles = dmc.Box([
                         # Discrete probability legend with buckets
                         dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
@@ -352,6 +352,22 @@ probability_layer_tiles = dmc.Box([
                             ], gutter="xs", mb="xs")
                         ], style={"display": "none"}),
                     ],id='probability_layer_tiles_box')
+
+#probability layer for admin
+probability_layer_admin = dmc.Box([
+                        # Discrete probability legend with buckets
+                        dmc.Checkbox(id="probability-admin-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
+                        html.Div(id="probability-legend-admin", children=[
+                            dmc.Grid([
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-min", children="0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=9, children=html.Div(
+                                    create_legend_divs('probability'),
+                                    style={"display": "flex", "width": "100%"}
+                                )),
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-max", children="100%", size="xs", c="dimmed")]),
+                            ], gutter="xs", mb="xs")
+                        ], style={"display": "none"}),
+                    ],id='probability_layer_admin_box')
 
 # tiles radiogroup
 tiles_radiogroup = dmc.RadioGroup([
@@ -438,36 +454,6 @@ tiles_legends = dmc.Box([
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                 ], id='tiles_legends_box')
 
-#tiles selection
-tiles_selection = dmc.Box([
-                    dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
-
-                    probability_layer_tiles,
-
-                    dmc.Space(h="xl"),
-
-                    tiles_radiogroup,
-
-                    tiles_legends,
-
-                ],id='tiles_selection_box')
-
-#probability layer
-probability_layer_admin = dmc.Box([
-                        # Discrete probability legend with buckets
-                        dmc.Checkbox(id="probability-admin-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
-                        html.Div(id="probability-legend-admin", children=[
-                            dmc.Grid([
-                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-min", children="0%", size="xs", c="dimmed")]),
-                                dmc.GridCol(span=9, children=html.Div(
-                                    create_legend_divs('probability'),
-                                    style={"display": "flex", "width": "100%"}
-                                )),
-                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-max", children="100%", size="xs", c="dimmed")]),
-                            ], gutter="xs", mb="xs")
-                        ], style={"display": "none"}),
-                    ],id='probability_layer_admin_box')
-
 # admin radiogroup
 admin_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-admin-layer", label="No Region Layer (just Probability)", value="none", mb="xs"),
@@ -553,19 +539,39 @@ admin_legends = dmc.Box([
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                 ], id='admin_legends_box')
 
-#tiles selection
-admin_selection = dmc.Box([
-                    dmc.Text("Population & Infrastructure by Region", size="sm", fw=600, mb="xs", mt="md"),
+# Unified Population & Infrastructure section with mode selector
+population_infrastructure_selection = dmc.Box([
+                    dmc.Text("Population & Infrastructure", size="sm", fw=600, mb="xs", mt="md"),
+                    
+                    # Mode selector: Tiles vs By Region
+                    dmc.SegmentedControl(
+                        id="layer-mode-selector",
+                        value="tiles",
+                        data=[
+                            {"value": "tiles", "label": "Tiles (Rasters)"},
+                            {"value": "admin", "label": "By Region"}
+                        ],
+                        mb="md",
+                        fullWidth=True
+                    ),
+                    
+                    # Tiles mode components
+                    dmc.Box([
+                        probability_layer_tiles,
+                        dmc.Space(h="xl"),
+                        tiles_radiogroup,
+                        tiles_legends,
+                    ], id="tiles-mode-box"),
+                    
+                    # Admin mode components
+                    dmc.Box([
+                        probability_layer_admin,
+                        dmc.Space(h="xl"),
+                        admin_radiogroup,
+                        admin_legends,
+                    ], id="admin-mode-box", style={"display": "none"}),
 
-                    probability_layer_admin,
-
-                    dmc.Space(h="xl"),
-
-                    admin_radiogroup,
-
-                    admin_legends,
-
-                ], id='admin_selection_box')
+                ],id='population_infrastructure_selection_box')
 
 # Layer Selection
 layer_selection = dmc.Stack([
@@ -574,9 +580,7 @@ layer_selection = dmc.Stack([
 
                         infrastructure_impact,
 
-                        tiles_selection,
-
-                        admin_selection,
+                        population_infrastructure_selection,
                         
                         # Disclaimer
                         dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
@@ -2671,6 +2675,20 @@ def sync_show_higher_winds_disabled(specific_track_disabled, _layers_loaded):
 # 3.8: CALLBACKS - LEGEND VISIBILITY
 # -----------------------------------------------------------------------------
 # Show/hide legends based on which layers are visible
+
+# Callback to toggle between tiles and admin mode
+@callback(
+    [Output("tiles-mode-box", "style"),
+     Output("admin-mode-box", "style")],
+    Input("layer-mode-selector", "value"),
+    prevent_initial_call=False
+)
+def toggle_layer_mode(selected_mode):
+    """Toggle between tiles (rasters) and admin (by region) mode"""
+    if selected_mode == "tiles":
+        return {"display": "block"}, {"display": "none"}
+    else:
+        return {"display": "none"}, {"display": "block"}
 
 @callback(
     Output("schools-legend", "style"),
