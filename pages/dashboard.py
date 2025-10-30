@@ -208,7 +208,7 @@ country_selection = dmc.Paper([
                                 {"value": "LCA", "label": "Saint Lucia"},
                                 {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
                             ],
-                            value="NIC",
+                            value="JAM",
                             mb="xs"
                         )
                     ],
@@ -343,12 +343,12 @@ probability_layer_tiles = dmc.Box([
                         dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
                         html.Div(id="probability-legend", children=[
                             dmc.Grid([
-                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-min", children="0%", size="xs", c="dimmed")]),
                                 dmc.GridCol(span=9, children=html.Div(
                                     create_legend_divs('probability'),
                                     style={"display": "flex", "width": "100%"}
                                 )),
-                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-max", children="100%", size="xs", c="dimmed")]),
                             ], gutter="xs", mb="xs")
                         ], style={"display": "none"}),
                     ],id='probability_layer_tiles_box')
@@ -458,12 +458,12 @@ probability_layer_admin = dmc.Box([
                         dmc.Checkbox(id="probability-admin-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
                         html.Div(id="probability-legend-admin", children=[
                             dmc.Grid([
-                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-min", children="0%", size="xs", c="dimmed")]),
                                 dmc.GridCol(span=9, children=html.Div(
                                     create_legend_divs('probability'),
                                     style={"display": "flex", "width": "100%"}
                                 )),
-                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=1.5, children=[dmc.Text(id="probability-legend-admin-max", children="100%", size="xs", c="dimmed")]),
                             ], gutter="xs", mb="xs")
                         ], style={"display": "none"}),
                     ],id='probability_layer_admin_box')
@@ -2318,33 +2318,25 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     if not active_layer or active_layer == "none":
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
     
-    # Determine what data to show based on active layer
+    # When probability is checked, hide the regular layer (probability layer will show E_* values instead)
+    if prob_checked_val and active_layer in ["population", "school-age", "infant", "built-surface"]:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+    
+    # Determine what data to show based on active layer (only when probability is not checked)
     if active_layer == "population":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "school-age":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_school_age_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
         return tiles, zoom, key, *radios_enabled
-
+    
     elif active_layer == "infant":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_infant_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "built-surface":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_built_surface_m2')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "settlement":
@@ -2395,33 +2387,25 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
     if not active_layer or active_layer == "none":
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
     
-    # Determine what data to show based on active layer
+    # When probability is checked, hide the regular layer (probability layer will show E_* values instead)
+    if prob_checked_val and active_layer in ["population", "school-age", "infant", "built-surface"]:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+    
+    # Determine what data to show based on active layer (only when probability is not checked)
     if active_layer == "population":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "school-age":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_school_age_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
         return tiles, zoom, key, *radios_enabled
-
+    
     elif active_layer == "infant":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_infant_population')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "built-surface":
-        if prob_checked_val:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_built_surface_m2')
-        else:
-            tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "settlement":
@@ -2441,23 +2425,69 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
     Output("probability-tiles-json", "zoomToBounds", allow_duplicate=True),
     Output("probability-tiles-json", "key", allow_duplicate=True),
     Output("probability-legend", "style", allow_duplicate=True),
+    Output("probability-legend-min", "children", allow_duplicate=True),
+    Output("probability-legend-max", "children", allow_duplicate=True),
     Input('probability-tiles-layer','checked'),
     Input('tiles-layer-group','value'),
     State('population-tiles-data-store','data'),
     prevent_initial_call = True,
 )
 def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
-    """Handle Impact Probability layer display - only show when checkbox is on and radio is 'none'"""
-    # Show probability legend whenever checkbox is on; show probability layer only when radio is 'none'
+    """Handle Impact Probability layer display - shows expected impact values when other layers are selected"""
+    # Show probability legend whenever checkbox is on
     legend_style = {"display": "block"} if prob_checked else {"display": "none"}
-    should_show = prob_checked and (selected_layer is None or selected_layer == "none") and tiles_data_in
     
-    if not should_show or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style
+    if not prob_checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style, "0%", "100%"
     
-    # Show probability data
-    tiles, zoom, key = update_tile_features(tiles_data_in, 'probability')
-    return tiles, zoom, key, legend_style
+    # Determine which property to show based on selected layer
+    property_map = {
+        "population": "E_population",
+        "school-age": "E_school_age_population",
+        "infant": "E_infant_population",
+        "built-surface": "E_built_surface_m2",
+        "settlement": None,  # Settlement and RWI don't have expected values
+        "rwi": None,
+        "none": "probability",
+        None: "probability"
+    }
+    
+    property_name = property_map.get(selected_layer, "probability")
+    
+    # If no valid property for selected layer, show probability
+    if property_name is None:
+        property_name = "probability"
+    
+    # Calculate min/max for legend based on the property
+    min_val = "0"
+    max_val = "100%"
+    
+    if property_name != "probability" and tiles_data_in and 'features' in tiles_data_in:
+        try:
+            values = [f["properties"].get(property_name, 0) for f in tiles_data_in["features"] if 'properties' in f]
+            clean_values = [v for v in values if not pd.isna(v) and v > 0]
+            
+            if clean_values:
+                min_val_num = min(clean_values)
+                max_val_num = max(clean_values)
+                
+                # Format numbers with k, M suffixes
+                def format_number(val):
+                    if val >= 1000000:
+                        return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+                    elif val >= 1000:
+                        return f"{val / 1000:.1f}k".replace('.0k', 'k')
+                    else:
+                        return f"{val:,.0f}"
+                
+                min_val = "0"
+                max_val = format_number(max_val_num)
+        except Exception as e:
+            print(f"Error calculating legend range: {e}")
+    
+    # Show the expected impact data (or probability if no layer selected)
+    tiles, zoom, key = update_tile_features(tiles_data_in, property_name)
+    return tiles, zoom, key, legend_style, min_val, max_val
 
 # Callback for Impact Probability layer for admins
 @callback(
@@ -2465,23 +2495,69 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
     Output("probability-admin-json", "zoomToBounds", allow_duplicate=True),
     Output("probability-admin-json", "key", allow_duplicate=True),
     Output("probability-legend-admin", "style", allow_duplicate=True),
+    Output("probability-legend-admin-min", "children", allow_duplicate=True),
+    Output("probability-legend-admin-max", "children", allow_duplicate=True),
     Input('probability-admin-layer','checked'),
     Input('admin-layer-group','value'),
     State('population-admin-data-store','data'),
     prevent_initial_call = True,
 )
 def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
-    """Handle Impact Probability layer display - only show when checkbox is on and radio is 'none'"""
-    # Show probability legend whenever checkbox is on; show probability layer only when radio is 'none'
+    """Handle Impact Probability layer display - shows expected impact values when other layers are selected"""
+    # Show probability legend whenever checkbox is on
     legend_style = {"display": "block"} if prob_checked else {"display": "none"}
-    should_show = prob_checked and (selected_layer is None or selected_layer == "none") and tiles_data_in
     
-    if not should_show or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style
+    if not prob_checked or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style, "0%", "100%"
     
-    # Show probability data
-    tiles, zoom, key = update_tile_features(tiles_data_in, 'probability')
-    return tiles, zoom, key, legend_style
+    # Determine which property to show based on selected layer
+    property_map = {
+        "population": "E_population",
+        "school-age": "E_school_age_population",
+        "infant": "E_infant_population",
+        "built-surface": "E_built_surface_m2",
+        "settlement": None,  # Settlement and RWI don't have expected values
+        "rwi": None,
+        "none": "probability",
+        None: "probability"
+    }
+    
+    property_name = property_map.get(selected_layer, "probability")
+    
+    # If no valid property for selected layer, show probability
+    if property_name is None:
+        property_name = "probability"
+    
+    # Calculate min/max for legend based on the property
+    min_val = "0"
+    max_val = "100%"
+    
+    if property_name != "probability" and tiles_data_in and 'features' in tiles_data_in:
+        try:
+            values = [f["properties"].get(property_name, 0) for f in tiles_data_in["features"] if 'properties' in f]
+            clean_values = [v for v in values if not pd.isna(v) and v > 0]
+            
+            if clean_values:
+                min_val_num = min(clean_values)
+                max_val_num = max(clean_values)
+                
+                # Format numbers with k, M suffixes
+                def format_number(val):
+                    if val >= 1000000:
+                        return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+                    elif val >= 1000:
+                        return f"{val / 1000:.1f}k".replace('.0k', 'k')
+                    else:
+                        return f"{val:,.0f}"
+                
+                min_val = "0"
+                max_val = format_number(max_val_num)
+        except Exception as e:
+            print(f"Error calculating legend range: {e}")
+    
+    # Show the expected impact data (or probability if no layer selected)
+    tiles, zoom, key = update_tile_features(tiles_data_in, property_name)
+    return tiles, zoom, key, legend_style, min_val, max_val
 
 
 
@@ -2629,11 +2705,12 @@ def toggle_health_legend(checked):
      Output("infant-legend-max", "children"),
      Output("built-surface-legend-min", "children"),
      Output("built-surface-legend-max", "children")],
-    [Input("tiles-layer-group", "value")],
+    [Input("tiles-layer-group", "value"),
+     Input("probability-tiles-layer", "checked")],
     State("population-tiles-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_tiles_legend(selected_value, tiles_data):
+def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
     import math
     
@@ -2697,6 +2774,10 @@ def toggle_tiles_legend(selected_value, tiles_data):
         except Exception as e:
             print(f"Error calculating legend labels: {e}")
 
+    # Hide regular layer legends when probability is checked and a layer with expected values is selected
+    if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    
     if selected_value == "population":
         return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "school-age":
@@ -2727,11 +2808,12 @@ def toggle_tiles_legend(selected_value, tiles_data):
      Output("infant-admin-legend-max", "children"),
      Output("built-surface-admin-legend-min", "children"),
      Output("built-surface-admin-legend-max", "children")],
-    [Input("admin-layer-group", "value")],
+    [Input("admin-layer-group", "value"),
+     Input("probability-admin-layer", "checked")],
     State("population-admin-data-store", "data"),
     prevent_initial_call=False
 )
-def toggle_admin_legend(selected_value, tiles_data):
+def toggle_admin_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
     import math
     
@@ -2795,6 +2877,10 @@ def toggle_admin_legend(selected_value, tiles_data):
         except Exception as e:
             print(f"Error calculating legend labels: {e}")
 
+    # Hide regular layer legends when probability is checked and a layer with expected values is selected
+    if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    
     if selected_value == "population":
         return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "school-age":
