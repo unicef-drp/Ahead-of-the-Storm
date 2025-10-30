@@ -158,286 +158,417 @@ user_name = "UNICEF-User"
 # =============================================================================
 # SECTION 2: LAYOUT CREATION
 # =============================================================================
-# Create the three-panel dashboard layout (left controls, center map, right metrics)
 
-def make_single_page_layout():
-    """Create the three-panel single-page dashboard layout"""
-    return dmc.Grid(
-        [
-            # Left Panel - Configuration
-            dmc.GridCol(
+######## Sections as variables
+
+# Step 1: Country Selection
+country_selection = dmc.Paper([
+                        dmc.Group([
+                            dmc.Badge("1", size="sm", color="#1cabe2", variant="filled"),
+                            dmc.Text("COUNTRY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                        ], mb="xs", justify="flex-start"),
+                        dmc.Select(
+                            id="country-select",
+                            placeholder="Select country...",
+                            data=[
+                                {"value": "AIA", "label": "Anguilla"},
+                                {"value": "ATG", "label": "Antigua and Barbuda"},
+                                {"value": "BLZ", "label": "Belize"},
+                                {"value": "VGB", "label": "British Virgin Islands"},
+                                {"value": "CUB", "label": "Cuba"},
+                                {"value": "DMA", "label": "Dominica"},
+                                {"value": "DOM", "label": "Dominican Republic"},
+                                {"value": "GRD", "label": "Grenada"},
+                                {"value": "JAM", "label": "Jamaica"},
+                                {"value": "MSR", "label": "Montserrat"},
+                                {"value": "NIC", "label": "Nicaragua"},
+                                {"value": "KNA", "label": "Saint Kitts and Nevis"},
+                                {"value": "LCA", "label": "Saint Lucia"},
+                                {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
+                            ],
+                            value="NIC",
+                            mb="xs"
+                        )
+                    ],
+                    p="sm",
+                    shadow="xs",
+                    style={"borderLeft": "3px solid #1cabe2", "marginBottom": "12px"}
+                )
+
+# Step 2: Hurricane Exploration (Snowflake Data)
+hurricane_exploration = dmc.Paper([
+                            dmc.Group([
+                                dmc.Badge("2", size="sm", color="#1cabe2", variant="filled"),
+                                dmc.Text("HURRICANE", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
+                            ], justify="flex-start", gap="sm", mb="xs"),
+                            
+                            # Forecast Selection (compact)
+                            dmc.Select(
+                                id="forecast-date",
+                                placeholder="Select forecast date...",
+                                data=[],  # Will be populated dynamically
+                                value="2025-10-22",  # Default to most recent date
+                                mb="xs"
+                            ),
+                            dmc.Select(
+                                id="forecast-time",
+                                placeholder="Select forecast time...",
+                                data=[],  # Will be populated based on selected date
+                                value="18:00",  # Default to most recent time
+                                mb="xs"
+                            ),
+                            dmc.Select(
+                                id="storm-select",
+                                placeholder="Select hurricane...",
+                                data=[],  # Will be populated based on date and time
+                                value="FENGSHEN",  # Default to most recent storm
+                                mb="xs"
+                            ),
+                            
+                            # Wind Threshold (compact)
+                            dmc.Select(
+                                id="wind-threshold-select",
+                                placeholder="Select wind threshold...",
+                                data=[
+                                    {"value": "34", "label": "34kt - Tropical storm force (17.49 m/s)"},
+                                    {"value": "40", "label": "40kt - Strong tropical storm (20.58 m/s)"},
+                                    {"value": "50", "label": "50kt - Very strong tropical storm (25.72 m/s)"},
+                                    {"value": "64", "label": "64kt - Category 1 hurricane (32.92 m/s)"},
+                                    {"value": "83", "label": "83kt - Category 2 hurricane (42.70 m/s)"},
+                                    {"value": "96", "label": "96kt - Category 3 hurricane (49.39 m/s)"},
+                                    {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
+                                    {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
+                                ],
+                                value="50",
+                                mb="xs"
+                            ),
+                            
+                        ],
+                        p="sm",
+                        shadow="xs",
+                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "12px"}
+                    )
+
+# Step 3: Load Layers Button
+load_layers_button = dmc.Paper([
+                        dmc.Group([
+                            dmc.Badge("3", size="sm", color="#1cabe2", variant="filled"),
+                            dmc.Text("LOAD LAYERS", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
+                        ], justify="flex-start", gap="sm", mb="sm"),
+                        
+                        dmc.Text("Load all available data layers for the selected hurricane", size="xs", c="dimmed", mb="md"),
+                        
+                        dmc.Button(
+                            "Load Layers",
+                            id="load-layers-btn",
+                            leftSection=DashIconify(icon="carbon:download", width=20),
+                            variant="filled",
+                            color="#1cabe2",
+                            fullWidth=True,
+                            mb="md",
+                            loaderProps={"type": "dots"}
+                        ),
+                        
+                        html.Div("Status: Not loaded", id="load-status", style={"fontSize": "12px", "color": "#868e96", "marginBottom": "16px"})
+                    ],
+                    p="md",
+                    shadow="xs",
+                    style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+                )
+
+# Hurrican selection
+hurricane_selection = dmc.Box([
+                        dmc.Text("Hurricane Data", size="sm", fw=600, mb="xs"),
+                        dmc.Checkbox(id="hurricane-tracks-toggle", label="Hurricane Tracks", checked=False, mb="xs", disabled=True),
+                        dmc.Checkbox(id="hurricane-envelopes-toggle", label="Hurricane Envelopes", checked=False, mb="xs", disabled=True),
+                    ])
+# infrastructure/poi selection
+infrastructure_impact = dmc.Box([
+                            dmc.Text("Infrastructure Impact", size="sm", fw=600, mb="xs", mt="md"),
+                            dmc.Checkbox(id="schools-layer", label="Schools Impact", checked=False, mb="xs", disabled=True),
+                            dmc.Grid([
+                                dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=8, children=[
+                                    html.Div(style={
+                                        "width": "100%", 
+                                        "height": "10px", 
+                                        "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                        "border": "1px solid #ccc",
+                                        "borderRadius": "1px"
+                                    })
+                                ]),
+                                dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], id="schools-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                            dmc.Checkbox(id="health-layer", label="Health Centers Impact", checked=False, mb="xs", disabled=True),
+                            dmc.Grid([
+                                dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=8, children=[
+                                    html.Div(style={
+                                        "width": "100%", 
+                                        "height": "10px", 
+                                        "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                        "border": "1px solid #ccc",
+                                        "borderRadius": "1px"
+                                    })
+                                ]),
+                                dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                        ])
+
+#probability layer
+probability_layer = dmc.Box([
+                        # Discrete probability legend with buckets
+                        dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
+                        html.Div(id="probability-legend", children=[
+                            dmc.Grid([
+                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=9, children=html.Div(
+                                    create_legend_divs('probability'),
+                                    style={"display": "flex", "width": "100%"}
+                                )),
+                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], gutter="xs", mb="xs")
+                        ], style={"display": "none"}),
+                    ])
+
+# tiles radiogroup
+tiles_radiogroup = dmc.RadioGroup([
+                        dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
+                        dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
+                        dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
+                        dmc.Radio(id="infant-tiles-layer", label="Infant Population", value="infant", mb="xs"),
+                        dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                        dmc.Divider(mb="xs", mt="xs"),
+                        dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
+                        dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
+                        dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                        dmc.Divider(mb="xs", mt="xs"),
+                    ], id="tiles-layer-group", value="none")
+
+# Legend grids for each layer
+tiles_legends = dmc.Box([
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('school_age_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-legend-min", children="0", size="xs",
+                                        c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('infant_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-legend-max", children="Max", size="xs",
+                                        c="dimmed")]),
+                    ], id="infant-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('built_surface_m2'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("No Data", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#dda0dd", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Rural", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#9370db", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Urban Clusters", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#4b0082", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
+                        ]),
+                    ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('rwi'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
+                    ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                ])
+
+#tiles selection
+tiles_selection = dmc.Box([
+                    dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
+
+                    probability_layer,
+
+                    dmc.Space(h="xl"),
+
+                    tiles_radiogroup,
+
+                    tiles_legends,
+
+                ])
+
+# admin radiogroup
+admin_radiogroup = dmc.RadioGroup([
+                        dmc.Radio(id="none-admin-layer", label="No Region Layer (just Probability)", value="none", mb="xs"),
+                        dmc.Radio(id="population-admin-layer", label="Population Density", value="population", mb="xs"),
+                        dmc.Radio(id="school-age-admin-layer", label="School-Age Population", value="school-age", mb="xs"),
+                        dmc.Radio(id="infant-admin-layer", label="Infant Population", value="infant", mb="xs"),
+                        dmc.Radio(id="built-surface-admin-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                        dmc.Divider(mb="xs", mt="xs"),
+                        dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
+                        dmc.Radio(id="settlement-admin-layer", label="Settlement Classification", value="settlement", mb="xs"),
+                        dmc.Radio(id="rwi-admin-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                        dmc.Divider(mb="xs", mt="xs"),
+                    ], id="admin-layer-group", value="none")
+
+# Legend grids for each region
+admin_legends = dmc.Box([
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="population-admin-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="population-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="population-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-admin-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('school_age_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="school-age-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-admin-legend-min", children="0", size="xs",
+                                        c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('infant_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-admin-legend-max", children="Max", size="xs",
+                                        c="dimmed")]),
+                    ], id="infant-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-admin-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('built_surface_m2'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="built-surface-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("No Data", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#dda0dd", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Rural", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#9370db", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Urban Clusters", size="xs", c="dimmed", ta="center")
+                        ]),
+                        dmc.GridCol(span=3, children=[
+                            html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#4b0082", "border": "1px solid #ccc", "borderRadius": "1px"}),
+                            dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
+                        ]),
+                    ], id="settlement-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('rwi'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
+                    ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                ])
+
+#tiles selection
+admin_selection = dmc.Box([
+                    dmc.Text("Population & Infrastructure by Region", size="sm", fw=600, mb="xs", mt="md"),
+
+                    admin_radiogroup,
+
+                    admin_legends,
+
+                ])
+
+# Layer Selection
+layer_selection = dmc.Stack([
+                        
+                        hurricane_selection,
+
+                        infrastructure_impact,
+
+                        tiles_selection,
+
+                        admin_selection,
+                        
+                        # Disclaimer
+                        dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
+                    ])
+
+# Step 4: Layer Controls
+layers_controls = dmc.Paper([
+                    dmc.Group([
+                        dmc.Badge("4", size="sm", color="#1cabe2", variant="filled"),
+                        dmc.Text("LAYER CONTROLS", size="sm", fw=700, c="dark", ta="left", style={"letterSpacing": "0.5px"}),
+                    ], justify="flex-start", gap="sm", mb="sm"),
+                    
+                    dmc.Text("Toggle layers on/off to explore different data types", size="xs", c="dimmed", mb="md"),
+                    
+                    layer_selection,
+                ],
+                p="md",
+                shadow="xs",
+                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+            )
+
+
+# Left Panel Configurations
+left_panel = dmc.GridCol(
                 [
                     dmc.Paper(
                         [
-                            # Step 1: Country Selection
-                            dmc.Paper(
-                                [
-                                    dmc.Group([
-                                        dmc.Badge("1", size="sm", color="#1cabe2", variant="filled"),
-                                        dmc.Text("COUNTRY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
-                                    ], mb="xs", justify="flex-start"),
-                                    dmc.Select(
-                                        id="country-select",
-                                        placeholder="Select country...",
-                                        data=[
-                                            {"value": "AIA", "label": "Anguilla"},
-                                            {"value": "ATG", "label": "Antigua and Barbuda"},
-                                            {"value": "BLZ", "label": "Belize"},
-                                            {"value": "VGB", "label": "British Virgin Islands"},
-                                            {"value": "CUB", "label": "Cuba"},
-                                            {"value": "DMA", "label": "Dominica"},
-                                            {"value": "DOM", "label": "Dominican Republic"},
-                                            {"value": "GRD", "label": "Grenada"},
-                                            {"value": "JAM", "label": "Jamaica"},
-                                            {"value": "MSR", "label": "Montserrat"},
-                                            {"value": "NIC", "label": "Nicaragua"},
-                                            {"value": "KNA", "label": "Saint Kitts and Nevis"},
-                                            {"value": "LCA", "label": "Saint Lucia"},
-                                            {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
-                                        ],
-                                        value="NIC",
-                                        mb="xs"
-                                    )
-                                ],
-                                p="sm",
-                                shadow="xs",
-                                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "12px"}
-                            ),
+                            country_selection,
                             
-                            # Step 2: Hurricane Exploration (Snowflake Data)
-                            dmc.Paper(
-                                [
-                                    dmc.Group([
-                                        dmc.Badge("2", size="sm", color="#1cabe2", variant="filled"),
-                                        dmc.Text("HURRICANE", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
-                                    ], justify="flex-start", gap="sm", mb="xs"),
-                                    
-                                    # Forecast Selection (compact)
-                                    dmc.Select(
-                                        id="forecast-date",
-                                        placeholder="Select forecast date...",
-                                        data=[],  # Will be populated dynamically
-                                        value="2025-10-22",  # Default to most recent date
-                                        mb="xs"
-                                    ),
-                                    dmc.Select(
-                                        id="forecast-time",
-                                        placeholder="Select forecast time...",
-                                        data=[],  # Will be populated based on selected date
-                                        value="18:00",  # Default to most recent time
-                                        mb="xs"
-                                    ),
-                                    dmc.Select(
-                                        id="storm-select",
-                                        placeholder="Select hurricane...",
-                                        data=[],  # Will be populated based on date and time
-                                        value="FENGSHEN",  # Default to most recent storm
-                                        mb="xs"
-                                    ),
-                                    
-                                    # Wind Threshold (compact)
-                                    dmc.Select(
-                                        id="wind-threshold-select",
-                                        placeholder="Select wind threshold...",
-                                        data=[
-                                            {"value": "34", "label": "34kt - Tropical storm force (17.49 m/s)"},
-                                            {"value": "40", "label": "40kt - Strong tropical storm (20.58 m/s)"},
-                                            {"value": "50", "label": "50kt - Very strong tropical storm (25.72 m/s)"},
-                                            {"value": "64", "label": "64kt - Category 1 hurricane (32.92 m/s)"},
-                                            {"value": "83", "label": "83kt - Category 2 hurricane (42.70 m/s)"},
-                                            {"value": "96", "label": "96kt - Category 3 hurricane (49.39 m/s)"},
-                                            {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
-                                            {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
-                                        ],
-                                        value="50",
-                                        mb="xs"
-                                    ),
-                                    
-                                ],
-                                p="sm",
-                                shadow="xs",
-                                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "12px"}
-                            ),
+                            hurricane_exploration,
                             
-                            # Step 3: Load Layers Button
-                            dmc.Paper(
-                                [
-                                    dmc.Group([
-                                        dmc.Badge("3", size="sm", color="#1cabe2", variant="filled"),
-                                        dmc.Text("LOAD LAYERS", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
-                                    ], justify="flex-start", gap="sm", mb="sm"),
-                                    
-                                    dmc.Text("Load all available data layers for the selected hurricane", size="xs", c="dimmed", mb="md"),
-                                    
-                                    dmc.Button(
-                                        "Load Layers",
-                                        id="load-layers-btn",
-                                        leftSection=DashIconify(icon="carbon:download", width=20),
-                                        variant="filled",
-                                        color="#1cabe2",
-                                        fullWidth=True,
-                                        mb="md",
-                                        loaderProps={"type": "dots"}
-                                    ),
-                                    
-                                    html.Div("Status: Not loaded", id="load-status", style={"fontSize": "12px", "color": "#868e96", "marginBottom": "16px"})
-                                ],
-                                p="md",
-                                shadow="xs",
-                                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
-                            ),
+                            load_layers_button,
                             
-                            # Step 4: Layer Controls
-                            dmc.Paper(
-                                [
-                                    dmc.Group([
-                                        dmc.Badge("4", size="sm", color="#1cabe2", variant="filled"),
-                                        dmc.Text("LAYER CONTROLS", size="sm", fw=700, c="dark", ta="left", style={"letterSpacing": "0.5px"}),
-                                    ], justify="flex-start", gap="sm", mb="sm"),
-                                    
-                                    dmc.Text("Toggle layers on/off to explore different data types", size="xs", c="dimmed", mb="md"),
-                                    
-                                    # Layer Selection
-                                    dmc.Stack([
-                                        dmc.Text("Hurricane Data", size="sm", fw=600, mb="xs"),
-                                        dmc.Checkbox(id="hurricane-tracks-toggle", label="Hurricane Tracks", checked=False, mb="xs", disabled=True),
-                                        dmc.Checkbox(id="hurricane-envelopes-toggle", label="Hurricane Envelopes", checked=False, mb="xs", disabled=True),
-                                        
-                                        dmc.Text("Infrastructure Impact", size="sm", fw=600, mb="xs", mt="md"),
-                                        dmc.Checkbox(id="schools-layer", label="Schools Impact", checked=False, mb="xs", disabled=True),
-                                        dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
-                                        ], id="schools-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Checkbox(id="health-layer", label="Health Centers Impact", checked=False, mb="xs", disabled=True),
-                                        dmc.Grid([
-                                            dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=8, children=[
-                                                html.Div(style={
-                                                    "width": "100%", 
-                                                    "height": "10px", 
-                                                    "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
-                                                    "border": "1px solid #ccc",
-                                                    "borderRadius": "1px"
-                                                })
-                                            ]),
-                                            dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
-                                        ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
-
-                                        dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
-                                        # Discrete probability legend with buckets
-                                        html.Div(id="probability-legend", children=[
-                                            dmc.Grid([
-                                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
-                                                dmc.GridCol(span=9, children=html.Div(
-                                                    create_legend_divs('probability'),
-                                                    style={"display": "flex", "width": "100%"}
-                                                )),
-                                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
-                                            ], gutter="xs", mb="xs")
-                                        ], style={"display": "none"}),
-
-                                        dmc.RadioGroup([
-                                            dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
-                                            dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
-                                            dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
-                                            dmc.Radio(id="infant-tiles-layer", label="Infant Population", value="infant", mb="xs"),
-                                            dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
-                                            dmc.Divider(mb="xs", mt="xs"),
-                                            dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
-                                            dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
-                                            dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
-                                            dmc.Divider(mb="xs", mt="xs"),
-                                        ], id="tiles-layer-group", value="none"),
-
-                                        # Legend grids for each layer
-                                        dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-min", children="0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=9, children=html.Div(
-                                                create_legend_divs('population'),
-                                                style={"display": "flex", "width": "100%"}
-                                            )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-max", children="Max", size="xs", c="dimmed")]),
-                                        ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-min", children="0", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=9, children=html.Div(
-                                                create_legend_divs('school_age_population'),
-                                                style={"display": "flex", "width": "100%"}
-                                            )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-max", children="Max", size="xs", c="dimmed")]),
-                                        ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-
-                                        dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[
-                                                dmc.Text(id="infant-legend-min", children="0", size="xs",
-                                                         c="dimmed")]),
-                                            dmc.GridCol(span=9, children=html.Div(
-                                                create_legend_divs('infant_population'),
-                                                style={"display": "flex", "width": "100%"}
-                                            )),
-                                            dmc.GridCol(span=1.5, children=[
-                                                dmc.Text(id="infant-legend-max", children="Max", size="xs",
-                                                         c="dimmed")]),
-                                        ], id="infant-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-min", children="Min", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=9, children=html.Div(
-                                                create_legend_divs('built_surface_m2'),
-                                                style={"display": "flex", "width": "100%"}
-                                            )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-max", children="Max", size="xs", c="dimmed")]),
-                                        ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Grid([
-                                            dmc.GridCol(span=3, children=[
-                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
-                                                dmc.Text("No Data", size="xs", c="dimmed", ta="center")
-                                            ]),
-                                            dmc.GridCol(span=3, children=[
-                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#dda0dd", "border": "1px solid #ccc", "borderRadius": "1px"}),
-                                                dmc.Text("Rural", size="xs", c="dimmed", ta="center")
-                                            ]),
-                                            dmc.GridCol(span=3, children=[
-                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#9370db", "border": "1px solid #ccc", "borderRadius": "1px"}),
-                                                dmc.Text("Urban Clusters", size="xs", c="dimmed", ta="center")
-                                            ]),
-                                            dmc.GridCol(span=3, children=[
-                                                html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#4b0082", "border": "1px solid #ccc", "borderRadius": "1px"}),
-                                                dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
-                                            ]),
-                                        ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Grid([
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
-                                            dmc.GridCol(span=9, children=html.Div(
-                                                create_legend_divs('rwi'),
-                                                style={"display": "flex", "width": "100%"}
-                                            )),
-                                            dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
-                                        ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                                        
-                                        dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
-                                    ])
-                                ],
-                                p="md",
-                                shadow="xs",
-                                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
-                            ),
+                            layers_controls,
                             
                         ],
                         p="md",
@@ -446,10 +577,11 @@ def make_single_page_layout():
                 ],
                 span=3,
                 style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
-            ),
-            
-            # Center Panel - Map (Dash Leaflet with all layers)
-            dmc.GridCol(
+            )
+
+
+# Center Panel - Map (Dash Leaflet with all layers)
+center_panel = dmc.GridCol(
                 html.Div([
                     dcc.Store(id="map-state-store", data={}),
                     dcc.Store(id="envelope-data-store", data={}),
@@ -531,154 +663,167 @@ def make_single_page_layout():
                 ]),
                 span=6,
                 style={"height": "100%", "minHeight": 0}
-            ),
-            
-            # Right Panel - Impact Metrics
-            dmc.GridCol(
-                [
-                    # Impact Summary Section
-                    dmc.Paper(
-                        [
-                            dmc.Group([
-                                dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
-                            ], justify="flex-start", gap="sm", mb="sm"),
-                            
-                            dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
-                            
-                            # Impact Summary Table
-                            dmc.Table(
-                                [
-                                    dmc.TableThead([
-                                        dmc.TableTr([
-                                            dmc.TableTh([
-                                                dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                                dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
-                                            ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
-                                            dmc.TableTh([
-                                                dmc.Text("Low", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                                dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
-                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
-                                            dmc.TableTh("Probabilistic", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
-                                            dmc.TableTh([
-                                                dmc.Text("High", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                                dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
-                                            ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
-                                        ])
-                                    ]),
-                                    dmc.TableTbody([
-                                        dmc.TableTr([
-                                            dmc.TableTd("Population", style={"fontWeight": 500}),
-                                            dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                            dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                            dmc.TableTd("N/A", id="infant-affected-low",
-                                                        style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("N/A", id="infant-affected-probabilistic",
-                                                        style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("N/A", id="infant-affected-high",
-                                                        style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                            dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                            dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ]),
-                                        dmc.TableTr([
-                                            dmc.TableTd([
-                                                html.Span("Built Surface m"),
-                                                html.Sup("2"),
-                                            ], style={"fontWeight": 500}),
-                                            dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                            dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
-                                        ])
-                                    ])
-                                ],
-                                striped=True,
-                                highlightOnHover=True,
-                                withTableBorder=True,
-                                withColumnBorders=True
-                            )
-                        ],
-                        p="md",
-                        shadow="xs",
-                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
-                    ),
+            )
+
+#impact summary
+# Impact Summary Section
+impact_summary = dmc.Paper([
+                    dmc.Group([
+                        dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                    ], justify="flex-start", gap="sm", mb="sm"),
                     
-                    # Specific Track View Section
-                    dmc.Paper(
+                    dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
+                    
+                    # Impact Summary Table
+                    dmc.Table(
                         [
-                            dmc.Group([
-                                dmc.Text("SPECIFIC TRACK VIEW", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
-                            ], justify="flex-start", gap="sm", mb="sm"),
-                            
-                            dmc.Text("Visualize individual hurricane track scenarios", size="xs", c="dimmed", mb="md"),
-                            
-                            # Specific Track Controls
-                            dmc.Stack([
-                                dmc.Button(
-                                    dmc.Group([
-                                        DashIconify(icon="mdi:map-marker-path", width=16),
-                                        dmc.Text("Show Specific Track", ml="xs")
-                                    ]),
-                                    id="show-specific-track-btn",
-                                    variant="outline",
-                                    size="sm",
-                                    disabled=True,
-                                    mb="md"
-                                ),
-                                
-                                dmc.Select(
-                                    id="specific-track-select",
-                                    label="Select Track Scenario",
-                                    placeholder="Choose ensemble member...",
-                                    data=[],
-                                    mb="md",
-                                    disabled=True,
-                                    style={"display": "none"}
-                                ),
-                                
-                                dmc.Checkbox(
-                                    id="show-all-envelopes-toggle", 
-                                    label="Show Higher Wind Thresholds", 
-                                    checked=True, 
-                                    mb="md",
-                                    disabled=True,
-                                    description="Display all wind thresholds that are higher than the selected threshold for this track."
-                                ),
-                                
-                                dmc.Text(
-                                    "Load layers first, then select a specific track to see exact impact numbers",
-                                    size="xs",
-                                    c="dimmed",
-                                    id="specific-track-info"
-                                )
+                            dmc.TableThead([
+                                dmc.TableTr([
+                                    dmc.TableTh([
+                                        dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
+                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                    dmc.TableTh([
+                                        dmc.Text("Best", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
+                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
+                                    dmc.TableTh([
+                                        dmc.Text("Worst", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
+                                ])
+                            ]),
+                            dmc.TableTbody([
+                                dmc.TableTr([
+                                    dmc.TableTd("Population", style={"fontWeight": 500}),
+                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
+                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
+                                    dmc.TableTd("N/A", id="infant-affected-low",
+                                                style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id="infant-affected-probabilistic",
+                                                style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id="infant-affected-high",
+                                                style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Schools", style={"fontWeight": 500}),
+                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Health Centers", style={"fontWeight": 500}),
+                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd([
+                                        html.Span("Built Surface m"),
+                                        html.Sup("2"),
+                                    ], style={"fontWeight": 500}),
+                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                ])
                             ])
                         ],
-                        p="md",
-                        shadow="xs",
-                        style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+                        striped=True,
+                        highlightOnHover=True,
+                        withTableBorder=True,
+                        withColumnBorders=True
                     )
                 ],
-                span=3,
-                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
+                p="md",
+                shadow="xs",
+                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
             )
+
+# Specific Track View Section
+specific_track_view = dmc.Paper([
+                        dmc.Group([
+                            dmc.Text("SPECIFIC TRACK VIEW", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                        ], justify="flex-start", gap="sm", mb="sm"),
+                        
+                        dmc.Text("Visualize individual hurricane track scenarios", size="xs", c="dimmed", mb="md"),
+                        
+                        # Specific Track Controls
+                        dmc.Stack([
+                            dmc.Button(
+                                dmc.Group([
+                                    DashIconify(icon="mdi:map-marker-path", width=16),
+                                    dmc.Text("Show Specific Track", ml="xs")
+                                ]),
+                                id="show-specific-track-btn",
+                                variant="outline",
+                                size="sm",
+                                disabled=True,
+                                mb="md"
+                            ),
+                            
+                            dmc.Select(
+                                id="specific-track-select",
+                                label="Select Track Scenario",
+                                placeholder="Choose ensemble member...",
+                                data=[],
+                                mb="md",
+                                disabled=True,
+                                style={"display": "none"}
+                            ),
+                            
+                            dmc.Checkbox(
+                                id="show-all-envelopes-toggle", 
+                                label="Show Higher Wind Thresholds", 
+                                checked=True, 
+                                mb="md",
+                                disabled=True,
+                                description="Display all wind thresholds that are higher than the selected threshold for this track."
+                            ),
+                            
+                            dmc.Text(
+                                "Load layers first, then select a specific track to see exact impact numbers",
+                                size="xs",
+                                c="dimmed",
+                                id="specific-track-info"
+                            )
+                        ])
+                    ],
+                    p="md",
+                    shadow="xs",
+                    style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+                )
+
+# Right Panel - Impact Metrics
+right_panel = dmc.GridCol([
+                impact_summary,
+                
+                specific_track_view,
+            ],
+            span=3,
+            style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
+        )
+
+# Create the three-panel dashboard layout (left controls, center map, right metrics)
+def make_single_page_layout():
+    """Create the three-panel single-page dashboard layout"""
+    return dmc.Grid(
+        [
+            left_panel,
+            
+            center_panel,
+            
+            right_panel,
         ],
         gutter="md",
         style={"height": "100%", "margin": 0}
