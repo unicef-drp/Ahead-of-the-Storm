@@ -281,7 +281,7 @@ hurricane_selection = dmc.Box([
                         dmc.Text("Hurricane Data", size="sm", fw=600, mb="xs"),
                         dmc.Checkbox(id="hurricane-tracks-toggle", label="Hurricane Tracks", checked=False, mb="xs", disabled=True),
                         dmc.Checkbox(id="hurricane-envelopes-toggle", label="Hurricane Envelopes", checked=False, mb="xs", disabled=True),
-                    ])
+                    ],id='hurrican_selection_box')
 # infrastructure/poi selection
 infrastructure_impact = dmc.Box([
                             dmc.Text("Infrastructure Impact", size="sm", fw=600, mb="xs", mt="md"),
@@ -313,10 +313,10 @@ infrastructure_impact = dmc.Box([
                                 ]),
                                 dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
                             ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                        ])
+                        ],id='infrastructure_impact_box')
 
 #probability layer
-probability_layer = dmc.Box([
+probability_layer_tiles = dmc.Box([
                         # Discrete probability legend with buckets
                         dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
                         html.Div(id="probability-legend", children=[
@@ -329,7 +329,7 @@ probability_layer = dmc.Box([
                                 dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
                             ], gutter="xs", mb="xs")
                         ], style={"display": "none"}),
-                    ])
+                    ],id='probability_layer_tiles_box')
 
 # tiles radiogroup
 tiles_radiogroup = dmc.RadioGroup([
@@ -414,13 +414,13 @@ tiles_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                ])
+                ], id='tiles_legends_box')
 
 #tiles selection
 tiles_selection = dmc.Box([
                     dmc.Text("Population & Infrastructure Tiles", size="sm", fw=600, mb="xs", mt="md"),
 
-                    probability_layer,
+                    probability_layer_tiles,
 
                     dmc.Space(h="xl"),
 
@@ -428,7 +428,23 @@ tiles_selection = dmc.Box([
 
                     tiles_legends,
 
-                ])
+                ],id='tiles_selection_box')
+
+#probability layer
+probability_layer_admin = dmc.Box([
+                        # Discrete probability legend with buckets
+                        dmc.Checkbox(id="probability-admin-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
+                        html.Div(id="probability-legend-admin", children=[
+                            dmc.Grid([
+                                dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=9, children=html.Div(
+                                    create_legend_divs('probability'),
+                                    style={"display": "flex", "width": "100%"}
+                                )),
+                                dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], gutter="xs", mb="xs")
+                        ], style={"display": "none"}),
+                    ],id='probability_layer_admin_box')
 
 # admin radiogroup
 admin_radiogroup = dmc.RadioGroup([
@@ -513,17 +529,21 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                ])
+                ], id='admin_legends_box')
 
 #tiles selection
 admin_selection = dmc.Box([
                     dmc.Text("Population & Infrastructure by Region", size="sm", fw=600, mb="xs", mt="md"),
 
+                    probability_layer_admin,
+
+                    dmc.Space(h="xl"),
+
                     admin_radiogroup,
 
                     admin_legends,
 
-                ])
+                ], id='admin_selection_box')
 
 # Layer Selection
 layer_selection = dmc.Stack([
@@ -538,7 +558,7 @@ layer_selection = dmc.Stack([
                         
                         # Disclaimer
                         dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
-                    ])
+                    ],id='layer_selection_stack')
 
 # Step 4: Layer Controls
 layers_controls = dmc.Paper([
@@ -588,6 +608,7 @@ center_panel = dmc.GridCol(
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
                     dcc.Store(id="population-tiles-data-store", data={}),
+                    dcc.Store(id="population-admin-data-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
@@ -636,10 +657,28 @@ center_panel = dmc.GridCol(
                                 style=style_tiles,
                                 onEachFeature=tooltip_tiles
                             ),
+
+                            # Population Density Admin Layer
+                            dl.GeoJSON(
+                                id="population-admin-json",
+                                data={},
+                                zoomToBounds=True,
+                                style=style_tiles,
+                                onEachFeature=tooltip_tiles
+                            ),
                             
                             # Impact Probability Tiles Layer
                             dl.GeoJSON(
                                 id="probability-tiles-json",
+                                data={},
+                                zoomToBounds=False,
+                                style=style_tiles,
+                                onEachFeature=tooltip_tiles
+                            ),
+
+                            # Impact Probability Admin Layer
+                            dl.GeoJSON(
+                                id="probability-admin-json",
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
@@ -1339,6 +1378,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('schools-data-store', 'data'),
      Output('health-data-store', 'data'),
      Output('population-tiles-data-store', 'data'),
+     Output('population-admin-data-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
      Output('hurricane-tracks-toggle', 'disabled'),
@@ -1352,7 +1392,14 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('infant-tiles-layer', 'disabled', allow_duplicate=True),
      Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
      Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
-     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True)],
+     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('probability-admin-layer', 'disabled'),
+     Output('population-admin-layer', 'disabled', allow_duplicate=True),
+     Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+     Output('infant-admin-layer', 'disabled', allow_duplicate=True),
+     Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
+     Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
+     Output('rwi-admin-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
@@ -1377,7 +1424,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1385,6 +1432,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         schools_data = {}
         health_data = {}
         tiles_data = {}
+        admin_data = {}
         
         # Load Hurricane Tracks
         try:
@@ -1485,6 +1533,14 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             data_files_found.append("infrastructure tiles")
         else:
             missing_files.append("infrastructure tiles")
+
+        # Check admin file
+        admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
+        admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
+        if giga_store.file_exists(admin_path):
+            data_files_found.append("infrastructure admins")
+        else:
+            missing_files.append("infrastructure admins")
         
         # Generate status alert based on data availability
         if not data_files_found:
@@ -1553,6 +1609,25 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     except Exception as e:
                         print(f"Error reading tiles file: {e}")
                         tiles_data = {}
+
+            # Admin
+            admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
+            admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
+            if giga_store.file_exists(admin_path):
+                base_admin_file = f"{country}_admin1.parquet"
+                base_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', base_admin_file)
+                if giga_store.file_exists(base_admin_path):
+                    try:
+                        df_admin = read_dataset(giga_store, admin_path)
+                        df_admin = df_admin.rename(columns={'zone_id':'tile_id'})
+                        gdf_base_admin = read_dataset(giga_store, base_admin_path)
+                        #gdf_base_admin['tile_id'] = df_admin['tile_id'].astype(int)
+                        tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+                        gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
+                        admin_data = gdf_admin.__geo_interface__
+                    except Exception as e:
+                        print(f"Error reading admin file: {e}")
+                        admin_data = {}
                 
         except Exception as e:
             print(f"Error loading impact data: {e}")
@@ -1566,16 +1641,19 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Create independent copies for each tile layer
         if not tiles_data or not isinstance(tiles_data, dict) or not 'features' in tiles_data:
             tiles_data = {"type": "FeatureCollection", "features": []}
+
+        if not admin_data or not isinstance(admin_data, dict) or not 'features' in admin_data:
+            admin_data = {"type": "FeatureCollection", "features": []}
         
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
         return (tracks_data, envelope_data, schools_data, health_data, 
-                tiles_data,
+                tiles_data, admin_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
 
 
 
@@ -2179,6 +2257,83 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     # Default: return empty data
     return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
 
+# Handle admin layer display and styling based on selected property
+@callback(
+    Output("population-admin-json", "data", allow_duplicate=True),
+    Output("population-admin-json", "zoomToBounds", allow_duplicate=True),
+    Output("population-admin-json", "key", allow_duplicate=True),
+    Output('population-admin-layer', 'disabled', allow_duplicate=True),
+    Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+    Output('infant-admin-layer', 'disabled', allow_duplicate=True),
+    Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
+    Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
+    Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+    Input('admin-layer-group','value'),
+    Input('probability-admin-layer','checked'),
+    Input('population-admin-data-store','data'),
+    State('probability-admin-layer','checked'),
+    prevent_initial_call = True,
+)
+def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_in, prob_checked_val):
+    """Handle tile layer display based on radio selection"""
+    # Determine which layer is selected
+    active_layer = selected_layer
+    
+    # Context data layers should be disabled when Impact Probability is on
+    # and regular layers should be enabled at all times
+    if prob_checked_val:
+        # When Impact Probability is on, disable context data radios
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, True, True
+    else:
+        # When Impact Probability is off, all radios are enabled
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False, False
+    
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled)
+    
+    # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
+    if not active_layer or active_layer == "none":
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+    
+    # Determine what data to show based on active layer
+    if active_layer == "population":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_population')
+        else:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "school-age":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_school_age_population')
+        else:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
+        return tiles, zoom, key, *radios_enabled
+
+    elif active_layer == "infant":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_infant_population')
+        else:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "built-surface":
+        if prob_checked_val:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'E_built_surface_m2')
+        else:
+            tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "settlement":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'smod_class')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "rwi":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
+        return tiles, zoom, key, *radios_enabled
+    
+    # Default: return empty data
+    return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+
 # Callback for Impact Probability layer
 @callback(
     Output("probability-tiles-json", "data", allow_duplicate=True),
@@ -2191,6 +2346,30 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     prevent_initial_call = True,
 )
 def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
+    """Handle Impact Probability layer display - only show when checkbox is on and radio is 'none'"""
+    # Show probability legend whenever checkbox is on; show probability layer only when radio is 'none'
+    legend_style = {"display": "block"} if prob_checked else {"display": "none"}
+    should_show = prob_checked and (selected_layer is None or selected_layer == "none") and tiles_data_in
+    
+    if not should_show or not tiles_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style
+    
+    # Show probability data
+    tiles, zoom, key = update_tile_features(tiles_data_in, 'probability')
+    return tiles, zoom, key, legend_style
+
+# Callback for Impact Probability layer for admins
+@callback(
+    Output("probability-admin-json", "data", allow_duplicate=True),
+    Output("probability-admin-json", "zoomToBounds", allow_duplicate=True),
+    Output("probability-admin-json", "key", allow_duplicate=True),
+    Output("probability-legend-admin", "style", allow_duplicate=True),
+    Input('probability-admin-layer','checked'),
+    Input('admin-layer-group','value'),
+    State('population-admin-data-store','data'),
+    prevent_initial_call = True,
+)
+def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
     """Handle Impact Probability layer display - only show when checkbox is on and radio is 'none'"""
     # Show probability legend whenever checkbox is on; show probability layer only when radio is 'none'
     legend_style = {"display": "block"} if prob_checked else {"display": "none"}
@@ -2420,6 +2599,103 @@ def toggle_tiles_legend(selected_value, tiles_data):
     else:
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
 
+@callback(
+    [Output("population-admin-legend", "style"),
+     Output("school-age-admin-legend", "style"),
+     Output("infant-admin-legend", "style"),
+     Output("built-surface-admin-legend", "style"),
+     Output("settlement-admin-legend", "style"),
+     Output("rwi-admin-legend", "style"),
+     Output("population-admin-legend-min", "children"),
+     Output("population-admin-legend-max", "children"),
+     Output("school-age-admin-legend-min", "children"),
+     Output("school-age-admin-legend-max", "children"),
+     Output("infant-admin-legend-min", "children"),
+     Output("infant-admin-legend-max", "children"),
+     Output("built-surface-admin-legend-min", "children"),
+     Output("built-surface-admin-legend-max", "children")],
+    [Input("admin-layer-group", "value")],
+    State("population-admin-data-store", "data"),
+    prevent_initial_call=False
+)
+def toggle_admin_legend(selected_value, tiles_data):
+    """Show/hide tile legends based on radio button selection and update legend labels"""
+    import math
+    
+    # Helper function to format numbers with k, M and commas
+    def format_number(val):
+        if val >= 1000000:
+            return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+        elif val >= 1000:
+            return f"{val / 1000:.1f}k".replace('.0k', 'k')
+        else:
+            return f"{val:,.0f}"
+    
+    # Default legend labels
+    pop_min = "Min"
+    pop_max = "Max"
+    school_min = "Min"
+    school_max = "Max"
+    infant_min = "Min"
+    infant_max = "Max"
+    built_min = "Min"
+    built_max = "Max"
+    
+    # Calculate log-scale legend labels if data is available
+    if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
+        try:
+            # Population values
+            pop_values = [f["properties"].get('population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_pop = [v for v in pop_values if not pd.isna(v) and v > 0]
+            if clean_pop:
+                pop_min_val = min(clean_pop)
+                pop_max_val = max(clean_pop)
+                pop_min = f"{pop_min_val:,.0f}"
+                pop_max = format_number(pop_max_val)
+            
+            # School-age population values
+            school_values = [f["properties"].get('school_age_population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_school = [v for v in school_values if not pd.isna(v) and v > 0]
+            if clean_school:
+                school_min_val = min(clean_school)
+                school_max_val = max(clean_school)
+                school_min = f"{school_min_val:,.0f}"
+                school_max = format_number(school_max_val)
+
+            # Infant population values
+            infant_values = [f["properties"].get('infant_population', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_infant = [v for v in infant_values if not pd.isna(v) and v > 0]
+            if clean_infant:
+                infant_min_val = min(clean_infant)
+                infant_max_val = max(clean_infant)
+                infant_min = f"{infant_min_val:,.0f}"
+                infant_max = format_number(infant_max_val)
+            
+            # Built surface values
+            built_values = [f["properties"].get('built_surface_m2', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_built = [v for v in built_values if not pd.isna(v) and v > 0]
+            if clean_built:
+                built_min_val = min(clean_built)
+                built_max_val = max(clean_built)
+                built_min = f"{built_min_val:,.0f}"
+                built_max = format_number(built_max_val)
+        except Exception as e:
+            print(f"Error calculating legend labels: {e}")
+
+    if selected_value == "population":
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "school-age":
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "infant":
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "built-surface":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "settlement":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "rwi":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    else:
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
 
 
 
