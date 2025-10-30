@@ -820,6 +820,14 @@ specific_track_view = dmc.Paper([
                                 disabled=True,
                                 style={"display": "none"}
                             ),
+                            dmc.Text(
+                                "Members are ordered by total population impacted (deterministic first).",
+                                id="specific-track-order-note",
+                                size="xs",
+                                c="dimmed",
+                                mb="sm",
+                                style={"display": "none"}
+                            ),
                             
                             dmc.Checkbox(
                                 id="show-all-envelopes-toggle", 
@@ -1096,7 +1104,8 @@ def enable_specific_track_button(layers_loaded):
 # Callback to populate specific track selector when layers are loaded
 @callback(
     [Output("specific-track-select", "data"),
-     Output("specific-track-select", "style")],
+     Output("specific-track-select", "style"),
+     Output("specific-track-order-note", "style")],
     [Input("layers-loaded-store", "data")],
     [State("country-select", "value"),
      State("storm-select", "value"),
@@ -1109,7 +1118,7 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
     """Populate specific track selector with available ensemble members"""
     
     if not layers_loaded or not all([country, storm, forecast_date, forecast_time, wind_threshold]):
-        return [], {"display": "none"}
+        return [], {"display": "none"}, {"display": "none"}
     
     try:
         # Convert date and time to YYYYMMDDHHMMSS format
@@ -1123,18 +1132,27 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
             gdf_tracks = read_dataset(giga_store, tracks_filepath)
             
             if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
-                # Get unique ensemble members
-                ensemble_members = sorted(gdf_tracks['zone_id'].unique())
+                # Sort ensemble members by total impacted population (descending)
+                member_totals = (
+                    gdf_tracks[["zone_id", "severity_population"]]
+                    .groupby("zone_id")["severity_population"]
+                    .sum()
+                    .fillna(0)
+                )
+                sorted_members = member_totals.sort_values(ascending=False).index.tolist()
+                # Ensure deterministic (51) appears first when present
+                ordered_members = ([51] if 51 in sorted_members else []) + [m for m in sorted_members if m != 51]
                 
                 # Find low and high impact members
-                member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
                 low_impact_member = member_totals.idxmin()
                 high_impact_member = member_totals.idxmax()
                 
                 # Create options with member type labels and impact indicators
-                options = []
-                for member in ensemble_members:
-                    member_type = "Control" if member in [51, 52] else f"Ensemble {member}"
+                deterministic_items = []
+                ensemble_items = []
+                for member in ordered_members:
+                    is_deterministic = (member == 51)
+                    label_prefix = "Deterministic #51" if is_deterministic else f"Ensemble #{member}"
                     
                     # Add impact scenario indicators
                     impact_indicator = ""
@@ -1143,18 +1161,31 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
                     elif member == high_impact_member:
                         impact_indicator = " (HIGH IMPACT)"
                     
-                    options.append({
+                    item = {
                         "value": str(member),
-                        "label": f"{member_type} (ID: {member}){impact_indicator}"
-                    })
-                
-                return options, {"display": "block"}
+                        "label": f"{label_prefix}{impact_indicator}"
+                    }
+                    if is_deterministic:
+                        deterministic_items.append(item)
+                    else:
+                        ensemble_items.append(item)
+
+                # Group options so a visual divider appears after deterministic
+                if deterministic_items:
+                    options = [
+                        {"group": "Deterministic", "items": deterministic_items},
+                        {"group": "Ensemble Members (by impact)", "items": ensemble_items},
+                    ]
+                else:
+                    options = ensemble_items
+
+                return options, {"display": "block"}, {"display": "block"}
         
-        return [], {"display": "none"}
+        return [], {"display": "none"}, {"display": "none"}
         
     except Exception as e:
         print(f"Error loading specific track options: {e}")
-        return [], {"display": "none"}
+        return [], {"display": "none"}, {"display": "none"}
 
 
 
@@ -1302,7 +1333,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
             {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
             {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
         ]
-        return all_thresholds, "50"  # Default to 50kt
+        return all_thresholds, "34"  # Default to 34kt
     
     try:
         # Get available wind thresholds from Snowflake
@@ -2475,6 +2506,18 @@ def clear_specific_track_when_disabled(is_disabled):
     if is_disabled:
         return None
     return dash.no_update
+
+
+# Keep "Show Higher Wind Thresholds" disabled unless Specific Track mode is active
+@callback(
+    Output("show-all-envelopes-toggle", "disabled", allow_duplicate=True),
+    [Input("specific-track-select", "disabled"),
+     Input("layers-loaded-store", "data")],
+    prevent_initial_call='initial_duplicate'
+)
+def sync_show_higher_winds_disabled(specific_track_disabled, _layers_loaded):
+    """Ensure the higher-winds checkbox is enabled only when specific track is enabled."""
+    return bool(specific_track_disabled)
 
 
 
