@@ -239,7 +239,7 @@ hurricane_exploration = dmc.Paper([
                                     {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
                                     {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
                                 ],
-                                value="50",
+                                value="34",
                                 mb="xs"
                             ),
                             

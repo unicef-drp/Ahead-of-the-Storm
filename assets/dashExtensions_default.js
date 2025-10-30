@@ -92,17 +92,18 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
                 const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
 
-                // Opacity increases with severity, and is higher for stacked envelopes
-                // Stacked envelopes: 0.6 to 0.95 opacity range for better visibility
+                // Opacity increases with severity
+                // Stacked envelopes: make more transparent to reveal basemap/country layers beneath
+                //   -> 0.15 to 0.50 range
                 // Regular envelopes: 0.3 to 0.9 opacity range
                 if (is_stacked) {
-                    const fillOpacity = 0.6 + (easedSeverity * 0.35); // Range: 0.6 to 0.95
+                    const fillOpacity = 0.15 + (easedSeverity * 0.35); // Range: 0.15 to 0.50
                     return {
                         color: color,
                         weight: 3,
                         fillColor: color,
                         fillOpacity: fillOpacity,
-                        opacity: 0.8
+                        opacity: 0.6
                     };
                 } else {
                     const fillOpacity = 0.3 + (easedSeverity * 0.6); // Range: 0.3 to 0.9 (original)
