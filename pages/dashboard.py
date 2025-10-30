@@ -457,7 +457,7 @@ tiles_legends = dmc.Box([
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('cci'),
+                            create_legend_divs('NEW_LAYER_PLACEHOLDER'),
                             style={"display": "flex", "width": "100%"}
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-max", children="Max", size="xs", c="dimmed")]),
@@ -547,6 +547,15 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-admin-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('NEW_LAYER_PLACEHOLDER'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="NEW_LAYER_PLACEHOLDER-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                 ], id='admin_legends_box')
 
 # Unified Population & Infrastructure section with mode selector
@@ -2468,8 +2477,9 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
         "school-age": "E_school_age_population",
         "infant": "E_infant_population",
         "built-surface": "E_built_surface_m2",
-        "settlement": None,  # Settlement and RWI don't have expected values
+        "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
+        "NEW_LAYER_PLACEHOLDER": None,
         "none": "probability",
         None: "probability"
     }
@@ -2538,8 +2548,9 @@ def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
         "school-age": "E_school_age_population",
         "infant": "E_infant_population",
         "built-surface": "E_built_surface_m2",
-        "settlement": None,  # Settlement and RWI don't have expected values
+        "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
+        "NEW_LAYER_PLACEHOLDER": None,
         "none": "probability",
         None: "probability"
     }
@@ -2933,7 +2944,7 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "rwi":
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
-    elif selected_value == "cci":
+    elif selected_value == "NEW_LAYER_PLACEHOLDER":
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     else:
         return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
