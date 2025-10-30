@@ -45,6 +45,9 @@ all_colors = {
     # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
     # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
     'rwi':['transparent','#d73027','#f46d43','#fdae61','#fee08b','#808080','#d9ef8b','#a6d96a','#66bd63','#1a9850'],
+    'cci': ['transparent',
+            '#ffcccb', '#ff9999', '#ff6666', '#ff3333', '#ff0000',
+            '#cc0000', '#990000', '#660000', '#330000', '#1a0000'],
 }
 
 
@@ -174,8 +177,8 @@ def update_tile_features(tiles_data_in, property):
                     else:
                         color_prop.append(colors[0])  # transparent for unknown values
             else:
-                # Use log scale for population, school_age_population, infant_population, built_surface_m2, and their E_ equivalents; linear for others
-                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2',
+                # Use log scale for population, school_age_population, infant_population, built_surface_m2, cci, and their E_ equivalents; linear for others
+                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2', 'cci',
                                 'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2']:
                     # Log scale: transform values using log10
                     import math

@@ -372,14 +372,15 @@ probability_layer_admin = dmc.Box([
 # tiles radiogroup
 tiles_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
-                        dmc.Radio(id="population-tiles-layer", label="Population Density", value="population", mb="xs"),
-                        dmc.Radio(id="school-age-tiles-layer", label="School-Age Population", value="school-age", mb="xs"),
-                        dmc.Radio(id="infant-tiles-layer", label="Infant Population", value="infant", mb="xs"),
+                        dmc.Radio(id="population-tiles-layer", label="Population", value="population", mb="xs"),
+                        dmc.Radio(id="school-age-tiles-layer", label="Age 5-15", value="school-age", mb="xs"),
+                        dmc.Radio(id="infant-tiles-layer", label="Age 0-5", value="infant", mb="xs"),
                         dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                         dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                         dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
                         dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                        dmc.Radio(id="NEW_LAYER_PLACEHOLDER-tiles-layer", label="CCI (Child Cyclone Index)", value="NEW_LAYER_PLACEHOLDER", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                     ], id="tiles-layer-group", value="none")
 
@@ -452,6 +453,15 @@ tiles_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('cci'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="NEW_LAYER_PLACEHOLDER-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                 ], id='tiles_legends_box')
 
 # admin radiogroup
@@ -1474,13 +1484,15 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
      Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
      Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('NEW_LAYER_PLACEHOLDER-tiles-layer', 'disabled', allow_duplicate=True),
      Output('probability-admin-layer', 'disabled'),
      Output('population-admin-layer', 'disabled', allow_duplicate=True),
      Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
      Output('infant-admin-layer', 'disabled', allow_duplicate=True),
      Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
-     Output('rwi-admin-layer', 'disabled', allow_duplicate=True)],
+     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+     Output('NEW_LAYER_PLACEHOLDER-admin-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
@@ -2296,6 +2308,7 @@ def toggle_health_layer(checked, health_data_in):
     Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('NEW_LAYER_PLACEHOLDER-tiles-layer', 'disabled', allow_duplicate=True),
     Input('tiles-layer-group','value'),
     Input('probability-tiles-layer','checked'),
     Input('population-tiles-data-store','data'),
@@ -2311,12 +2324,12 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     # and regular layers should be enabled at all times
     if prob_checked_val:
         # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, True, True
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, True, True, True
     else:
         # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False, False
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, False, False, False
     
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled)
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled)
     
     # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
     if not active_layer or active_layer == "none":
@@ -2365,6 +2378,7 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
     Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+    Output('NEW_LAYER_PLACEHOLDER-admin-layer', 'disabled', allow_duplicate=True),
     Input('admin-layer-group','value'),
     Input('probability-admin-layer','checked'),
     Input('population-admin-data-store','data'),
@@ -2380,12 +2394,12 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
     # and regular layers should be enabled at all times
     if prob_checked_val:
         # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, True, True
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, True, True, True
     else:
         # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled = False, False, False, False, False, False
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, False, False, False
     
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled)
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled)
     
     # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
     if not active_layer or active_layer == "none":
@@ -2418,6 +2432,10 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
     
     elif active_layer == "rwi":
         tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "NEW_LAYER_PLACEHOLDER":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'NEW_LAYER_PLACEHOLDER')
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
@@ -2715,6 +2733,7 @@ def toggle_health_legend(checked):
      Output("built-surface-legend", "style"),
      Output("settlement-legend", "style"),
      Output("rwi-legend", "style"),
+     Output("NEW_LAYER_PLACEHOLDER-legend", "style"),
      Output("population-legend-min", "children"),
      Output("population-legend-max", "children"),
      Output("school-age-legend-min", "children"),
@@ -2794,22 +2813,24 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "NEW_LAYER_PLACEHOLDER":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
 
 @callback(
     [Output("population-admin-legend", "style"),
@@ -2818,6 +2839,7 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
      Output("built-surface-admin-legend", "style"),
      Output("settlement-admin-legend", "style"),
      Output("rwi-admin-legend", "style"),
+     Output("NEW_LAYER_PLACEHOLDER-admin-legend", "style"),
      Output("population-admin-legend-min", "children"),
      Output("population-admin-legend-max", "children"),
      Output("school-age-admin-legend-min", "children"),
@@ -2897,22 +2919,24 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+    elif selected_value == "cci":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
 
 
 
