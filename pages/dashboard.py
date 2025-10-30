@@ -1692,6 +1692,30 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         return {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
 
 
+# Callback to warn when selectors change after layers are loaded
+@callback(
+    Output('load-status', 'children', allow_duplicate=True),
+    [Input('country-select', 'value'),
+     Input('storm-select', 'value'),
+     Input('forecast-date', 'value'),
+     Input('forecast-time', 'value'),
+     Input('wind-threshold-select', 'value')],
+    [State('layers-loaded-store', 'data')],
+    prevent_initial_call='initial_duplicate'
+)
+def warn_on_selector_change(country, storm, forecast_date, forecast_time, wind_threshold, layers_loaded):
+    """Show warning when selectors change after layers are loaded"""
+    # Only show warning if layers are already loaded
+    if layers_loaded:
+        return dmc.Alert(
+            "Selection changed. Please reload layers to see updated data.",
+            title="Reload Required",
+            color="orange",
+            variant="light"
+        )
+    # Otherwise, don't interfere with normal status updates
+    return dash.no_update
+
 
 # -----------------------------------------------------------------------------
 # 3.5: CALLBACKS - LAYER TOGGLES
