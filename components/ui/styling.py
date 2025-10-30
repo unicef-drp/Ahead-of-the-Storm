@@ -232,8 +232,8 @@ def update_tile_features(tiles_data_in, property):
             else:
                 print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
         
-        return tiles_data, True, key
+        return tiles_data, False, key
     except Exception as e:
         print(f"Error styling {property} tiles: {e}")
-        return tiles_data, True, key
+        return tiles_data, False, key
 

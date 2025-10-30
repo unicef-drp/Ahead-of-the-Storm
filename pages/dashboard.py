@@ -27,8 +27,31 @@ from components.map.javascript import (
 
 from dash_extensions.javascript import assign
 
+# Import map config early for use in constants
+from components.map.map_config import map_config, mapbox_token
+
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
+
+# Country-specific map centers and zoom levels
+COUNTRY_MAP_CONFIG = {
+    "AIA": {"center": [18.22, -63.05], "zoom": 11},  # Anguilla
+    "ATG": {"center": [17.05, -61.80], "zoom": 9},  # Antigua and Barbuda
+    "BLZ": {"center": [17.19, -88.50], "zoom": 8},   # Belize
+    "VGB": {"center": [18.43, -64.61], "zoom": 9},  # British Virgin Islands
+    "CUB": {"center": [21.50, -78.50], "zoom": 6},   # Cuba
+    "DMA": {"center": [15.41, -61.37], "zoom": 11},  # Dominica
+    "DOM": {"center": [18.74, -70.16], "zoom": 8},   # Dominican Republic
+    "GRD": {"center": [12.12, -61.67], "zoom": 11},  # Grenada
+    "JAM": {"center": [18.11, -77.30], "zoom": 9},  # Jamaica
+    "MSR": {"center": [16.74, -62.19], "zoom": 12},  # Montserrat
+    "NIC": {"center": [12.87, -85.21], "zoom": 7},   # Nicaragua
+    "KNA": {"center": [17.36, -62.75], "zoom": 11},  # Saint Kitts and Nevis
+    "LCA": {"center": [13.91, -60.98], "zoom": 11},  # Saint Lucia
+    "VCT": {"center": [12.98, -61.28], "zoom": 9},  # Saint Vincent and the Grenadines
+}
+# Default map config if country not found
+DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lon"]], "zoom": map_config.zoom}
 
 
 
@@ -41,7 +64,6 @@ ZOOM_LEVEL = 14
 from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
 import geopandas as gpd
-from components.map.map_config import map_config, mapbox_token
 from components.map.home_map import make_empty_map
 from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake
 
@@ -621,7 +643,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="hurricane-tracks-json",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 style=style_tracks,
                                 onEachFeature=tooltip_tracks
                             ),
@@ -629,7 +651,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="envelopes-json-test",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 style=style_envelopes,
                                 onEachFeature=tooltip_envelopes
                             ),
@@ -637,7 +659,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="schools-json-test",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
                                 onEachFeature=tooltip_schools
                             ),
@@ -645,7 +667,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="health-json-test",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
                                 onEachFeature=tooltip_health
                             ),
@@ -653,7 +675,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="population-tiles-json",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 style=style_tiles,
                                 onEachFeature=tooltip_tiles
                             ),
@@ -662,7 +684,7 @@ center_panel = dmc.GridCol(
                             dl.GeoJSON(
                                 id="population-admin-json",
                                 data={},
-                                zoomToBounds=True,
+                                zoomToBounds=False,
                                 style=style_tiles,
                                 onEachFeature=tooltip_tiles
                             ),
@@ -688,8 +710,10 @@ center_panel = dmc.GridCol(
                             dl.FullScreenControl(),
                             dl.LocateControl(locateOptions={"enableHighAccuracy": True}),
                         ],
+                        id="main-map",
                         center=[map_config.center["lat"], map_config.center["lon"]],
                         zoom=map_config.zoom,
+                        viewport={"center": [map_config.center["lat"], map_config.center["lon"]], "zoom": map_config.zoom},
                         scrollWheelZoom=True,
                         style={
                             "height": "calc(100vh - 147px)",
@@ -1198,6 +1222,23 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
 # 3.3: CALLBACKS - SELECTORS (Date, Time, Storm, Wind Threshold)
 # -----------------------------------------------------------------------------
 # Update dropdown options based on available data
+
+# Callback to update map view based on country selection
+@callback(
+    Output("main-map", "viewport"),
+    Input("country-select", "value"),
+    prevent_initial_call=False
+)
+def update_map_view(country):
+    """Update map center and zoom based on selected country"""
+    print(f"update_map_view called with country: {country}, type: {type(country)}")
+    print(f"Available countries in config: {list(COUNTRY_MAP_CONFIG.keys())}")
+    if country and country in COUNTRY_MAP_CONFIG:
+        config = COUNTRY_MAP_CONFIG[country]
+        print(f"Found config for {country}: center={config['center']}, zoom={config['zoom']}")
+        return {"center": config["center"], "zoom": config["zoom"]}
+    print(f"Country {country} not found in config, using default: center={DEFAULT_MAP_CONFIG['center']}, zoom={DEFAULT_MAP_CONFIG['zoom']}")
+    return {"center": DEFAULT_MAP_CONFIG["center"], "zoom": DEFAULT_MAP_CONFIG["zoom"]}
 
 @callback(
     Output("forecast-date", "data"),
@@ -1745,10 +1786,10 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
         for feature in tracks_data['features']:
             if feature.get('properties', {}).get('ensemble_member') == int(selected_track):
                 filtered_tracks['features'].append(feature)
-        return filtered_tracks, True, key
+        return filtered_tracks, False, key
     
     # Otherwise show all tracks
-    return tracks_data, True, key
+    return tracks_data, False, key
 
 @callback(
     Output("envelopes-json-test", "data"),
@@ -1901,7 +1942,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                     feature['properties']['is_stacked'] = True
             
             print(f"Showing stacked envelopes for track {selected_track} at wind thresholds >= {wth_int} ({len(gdf)} envelopes)")
-            return geo_dict, True, key
+            return geo_dict, False, key
             
         except Exception as e:
             print(f"Error creating stacked envelope view: {e}")
@@ -1953,7 +1994,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             }
                         }
                         specific_envelope['features'].append(feature)
-                    return specific_envelope, True, key
+                    return specific_envelope, False, key
         except Exception as e:
             print(f"Error creating specific track envelope: {e}")
     
@@ -2056,9 +2097,9 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                 for feature in geo_dict.get('features', []):
                     if 'properties' in feature:
                         feature['properties']['max_population'] = max_pop
-            return geo_dict, True, key
+            return geo_dict, False, key
         
-        return gdf.__geo_interface__, True, key
+        return gdf.__geo_interface__, False, key
         
     except Exception as e:
         print(f"Error toggling envelopes: {e}")
@@ -2143,10 +2184,10 @@ def toggle_schools_layer(checked, schools_data_in):
             
             schools_data['features'] = point_features
         
-        return schools_data, True, key
+        return schools_data, False, key
     except Exception as e:
         print(f"Error styling schools layer: {e}")
-        return schools_data, True, key
+        return schools_data, False, key
 
 @callback(
     Output("health-json-test", "data"),
@@ -2228,11 +2269,11 @@ def toggle_health_layer(checked, health_data_in):
             
             health_data['features'] = point_features
         
-        return health_data, True, key
+        return health_data, False, key
         
     except Exception as e:
         print(f"Error styling health layer: {e}")
-        return health_data, True, key
+        return health_data, False, key
 
 
 
