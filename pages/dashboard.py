@@ -207,21 +207,21 @@ hurricane_exploration = dmc.Paper([
                                 id="forecast-date",
                                 placeholder="Select forecast date...",
                                 data=[],  # Will be populated dynamically
-                                value="2025-10-22",  # Default to most recent date
+                                value=None,  # Let callback set most recent
                                 mb="xs"
                             ),
                             dmc.Select(
                                 id="forecast-time",
                                 placeholder="Select forecast time...",
                                 data=[],  # Will be populated based on selected date
-                                value="18:00",  # Default to most recent time
+                                value=None,  # Let callback set most recent
                                 mb="xs"
                             ),
                             dmc.Select(
                                 id="storm-select",
                                 placeholder="Select hurricane...",
                                 data=[],  # Will be populated based on date and time
-                                value="FENGSHEN",  # Default to most recent storm
+                                value=None,  # Let callback set most recent
                                 mb="xs"
                             ),
                             
@@ -940,15 +940,20 @@ layout = make_single_page_appshell()
      Output("bsm2-count-high", "children"),
      Output("low-impact-badge", "children"),
      Output("high-impact-badge", "children"),],
-    [Input("storm-select", "value"),
-     Input("wind-threshold-select", "value"),
-     Input("country-select", "value"),
-     Input("forecast-date", "value"),
-     Input("forecast-time", "value")],
+   [Input("storm-select", "value"),
+    Input("wind-threshold-select", "value"),
+    Input("country-select", "value"),
+    Input("forecast-date", "value"),
+    Input("forecast-time", "value"),
+    Input("layers-loaded-store", "data")],
     prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecast_time):
+def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecast_time, layers_loaded):
     """Update impact metrics for all three scenarios based on storm, wind threshold, and country selection"""
+    
+    # Only compute after user has loaded layers to avoid startup churn
+    if not layers_loaded:
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         # Return all scenarios with default values (population, children, infants, schools, health, built surface, badges)

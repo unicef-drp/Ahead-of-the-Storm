@@ -18,6 +18,7 @@ Usage:
 """
 
 import os
+from functools import lru_cache
 import pandas as pd
 import geopandas as gpd
 import snowflake.connector
@@ -209,6 +210,7 @@ def get_available_wind_thresholds(storm, forecast_time):
         # Return empty list on error - don't use defaults
         return []
 
+@lru_cache(maxsize=1)
 def get_latest_forecast_time_overall():
     """
     Get the latest forecast issue time from Snowflake across all storms
@@ -230,10 +232,8 @@ def get_latest_forecast_time_overall():
         
         if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
             latest_time = df['MAX_FORECAST_TIME'].iloc[0]
-            print(f"Latest forecast time found: {latest_time}")
             return latest_time
         else:
-            print("No forecast data found in Snowflake")
             return None
             
     except Exception as e:
