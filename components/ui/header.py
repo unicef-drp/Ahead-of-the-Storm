@@ -60,12 +60,12 @@ def make_header(active_tab="tab-home"):
                                     dmc.Anchor(
                                         dmc.TabsTab(
                                             "Forecast Analysis",
-                                            value="tab-deterministic",
+                                            value="tab-analysis",
                                             leftSection=DashIconify(
-                                                icon="carbon:weather-station", height=16
+                                                icon="carbon:analytics", height=16
                                             ),
                                         ),
-                                        href="/deterministic",
+                                        href="/analysis",
                                         style={
                                             "textDecoration": "none",
                                             "color": "inherit", 
