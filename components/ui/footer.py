@@ -62,7 +62,7 @@ footer = dmc.Group(
     justify="space-between",
     style={
         "width": "100%",
-        "height": 70,  # Adjusted height for smaller logos
+        "height": 79,  # Adjusted height for smaller logos
         "backgroundColor": "#1cabe2",  # UNICEF Blue
         "color": "#ffffff",
         "padding": "15px 30px",

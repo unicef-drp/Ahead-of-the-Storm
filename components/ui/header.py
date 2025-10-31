@@ -62,7 +62,7 @@ def make_header(active_tab="tab-home"):
                                             "Forecast Analysis",
                                             value="tab-analysis",
                                             leftSection=DashIconify(
-                                                icon="carbon:weather-station", height=16
+                                                icon="carbon:analytics", height=16
                                             ),
                                         ),
                                         href="/analysis",
