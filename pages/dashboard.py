@@ -674,18 +674,10 @@ center_panel = dmc.GridCol(
                                     ),
                                     dl.BaseLayer(
                                         dl.TileLayer(
-                                            url=f"https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                                            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                                            attribution='Tiles &copy; <a href="https://services.arcgisonline.com/">Esri</a> &mdash; Source: Esri, Maxar, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, and the GIS User Community'
                                         ),
-                                        name="Mapbox Streets",
-                                        checked=False
-                                    ),
-                                    dl.BaseLayer(
-                                        dl.TileLayer(
-                                            url=f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                                        ),
-                                        name="Mapbox Satellite",
+                                        name="Esri Satellite",
                                         checked=False
                                     ),
                                     dl.BaseLayer(
