@@ -662,10 +662,42 @@ center_panel = dmc.GridCol(
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
                         [
-                            ##################
-                            dl.TileLayer(
-                                url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                                attribution="mapbox",
+                            dl.LayersControl(
+                                [
+                                    dl.BaseLayer(
+                                        dl.TileLayer(
+                                            url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
+                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                                        ),
+                                        name="Mapbox Light",
+                                        checked=True
+                                    ),
+                                    dl.BaseLayer(
+                                        dl.TileLayer(
+                                            url=f"https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
+                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                                        ),
+                                        name="Mapbox Streets",
+                                        checked=False
+                                    ),
+                                    dl.BaseLayer(
+                                        dl.TileLayer(
+                                            url=f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
+                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                                        ),
+                                        name="Mapbox Satellite",
+                                        checked=False
+                                    ),
+                                    dl.BaseLayer(
+                                        dl.TileLayer(
+                                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                                            attribution='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                                        ),
+                                        name="OpenStreetMap",
+                                        checked=False
+                                    ),
+                                ],
+                                position="topright"
                             ),
                             # Hurricane Tracks Layer
                             dl.GeoJSON(
