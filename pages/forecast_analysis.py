@@ -110,7 +110,7 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
                     [
                         dmc.Paper(
                             [
-                                dmc.Text(f"{metric_label} Affected", size="sm", fw=600, mb="xs"),
+                                dmc.Text(f"{metric_label.upper()} AFFECTED", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
                                 dcc.Graph(id=f"analysis-{metric_prefix}-plot", style={"height": "350px"})
                             ],
                             p="md",
@@ -123,8 +123,8 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
                     [
                         dmc.Paper(
                             [
-                                dmc.Text("Cumulative Distribution", size="sm", fw=600, mb="xs"),
-                                dcc.Graph(id=f"analysis-{metric_prefix}-cdf", style={"height": "350px"})
+                                dmc.Text("EXCEEDANCE PROBABILITY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
+                                dcc.Graph(id=f"analysis-{metric_prefix}-exceedance", style={"height": "350px"})
                             ],
                             p="md",
                             shadow="xs"
@@ -140,14 +140,7 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
             [
                 dmc.GridCol(
                     [
-                        dmc.Paper(
-                            [
-                                dmc.Text("Exceedance Probability", size="sm", fw=600, mb="xs"),
-                                dcc.Graph(id=f"analysis-{metric_prefix}-exceedance", style={"height": "350px"})
-                            ],
-                            p="md",
-                            shadow="xs"
-                        )
+                        impact_summary
                     ],
                     span=6
                 ),
@@ -155,7 +148,7 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
                     [
                         dmc.Paper(
                             [
-                                dmc.Text("Impact Percentiles", size="sm", fw=600, mb="xs"),
+                                dmc.Text("IMPACT PERCENTILES", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
                                 html.Div(id=f"analysis-{metric_prefix}-percentiles")
                             ],
                             p="md",
@@ -338,7 +331,7 @@ impact_summary = dmc.Paper([
                 ],
                 p="sm",
                 shadow="xs",
-                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "12px"}
+                style={"marginBottom": "12px"}
             )
 
 def make_single_page_layout():
@@ -358,30 +351,6 @@ def make_single_page_layout():
                         DashIconify(icon="carbon:chart-box-plot", width=24),
                         dmc.Title("PROBABILISTIC FORECAST ANALYSIS", order=4)
                     ], gap="sm", mb="md"),
-                    
-                    # Impact Summary - compact at top
-                    dmc.Group(
-                        [
-                            dmc.Button(
-                                "Show Impact Summary",
-                                id="analysis-toggle-summary-btn",
-                                variant="light",
-                                size="xs",
-                                leftSection=DashIconify(icon="carbon:chevron-down", width=16)
-                            )
-                        ],
-                        mb="xs"
-                    ),
-                    dmc.Collapse(
-                        [
-                            impact_summary
-                        ],
-                        id="analysis-impact-summary-collapse",
-                        opened=False,
-                        transitionDuration=300,
-                        transitionTimingFunction="ease",
-                        mb="md"
-                    ),
                     
                     # Tabs for individual metrics
                     dmc.Tabs(
@@ -423,7 +392,7 @@ def make_single_page_layout():
                                                 [
                                                     dmc.Paper(
                                                         [
-                                                            dmc.Text("Population Affected", size="sm", fw=600, mb="xs"),
+                                                            dmc.Text("POPULATION AFFECTED", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
                                                             dcc.Graph(id="analysis-population-plot", style={"height": "350px"})
                                                         ],
                                                         p="md",
@@ -436,8 +405,8 @@ def make_single_page_layout():
                                                 [
                                                     dmc.Paper(
                                                         [
-                                                            dmc.Text("Cumulative Distribution", size="sm", fw=600, mb="xs"),
-                                                            dcc.Graph(id="analysis-population-cdf", style={"height": "350px"})
+                                                            dmc.Text("EXCEEDANCE PROBABILITY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
+                                                            dcc.Graph(id="analysis-population-exceedance", style={"height": "350px"})
                                                         ],
                                                         p="md",
                                                         shadow="xs"
@@ -453,14 +422,7 @@ def make_single_page_layout():
                                         [
                                             dmc.GridCol(
                                                 [
-                                                    dmc.Paper(
-                                                        [
-                                                            dmc.Text("Exceedance Probability", size="sm", fw=600, mb="xs"),
-                                                            dcc.Graph(id="analysis-population-exceedance", style={"height": "350px"})
-                                                        ],
-                                                        p="md",
-                                                        shadow="xs"
-                                                    )
+                                                    impact_summary
                                                 ],
                                                 span=6
                                             ),
@@ -468,7 +430,7 @@ def make_single_page_layout():
                                                 [
                                                     dmc.Paper(
                                                         [
-                                                            dmc.Text("Impact Percentiles", size="sm", fw=600, mb="xs"),
+                                                            dmc.Text("IMPACT PERCENTILES", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
                                                             html.Div(id="analysis-population-percentiles")
                                                         ],
                                                         p="md",
@@ -544,23 +506,6 @@ def make_single_page_appshell():
 
 # Use the single-page appshell
 layout = make_single_page_appshell()
-
-# =============================================================================
-# CALLBACK FOR TOGGLING IMPACT SUMMARY
-# =============================================================================
-
-@callback(
-    [Output("analysis-impact-summary-collapse", "opened"),
-     Output("analysis-toggle-summary-btn", "leftSection")],
-    Input("analysis-toggle-summary-btn", "n_clicks"),
-    State("analysis-impact-summary-collapse", "opened"),
-    prevent_initial_call=True
-)
-def toggle_impact_summary(n_clicks, opened):
-    """Toggle the impact summary collapse"""
-    new_state = not opened if opened is not None else True
-    icon = DashIconify(icon="carbon:chevron-up" if new_state else "carbon:chevron-down", width=16)
-    return new_state, icon
 
 # =============================================================================
 # CALLBACKS FOR HURRICANE SELECTORS
@@ -972,27 +917,21 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
 @callback(
     [Output("analysis-population-plot", "figure"),
-     Output("analysis-population-cdf", "figure"),
      Output("analysis-population-exceedance", "figure"),
      Output("analysis-population-percentiles", "children"),
      Output("analysis-children-plot", "figure"),
-     Output("analysis-children-cdf", "figure"),
      Output("analysis-children-exceedance", "figure"),
      Output("analysis-children-percentiles", "children"),
      Output("analysis-infants-plot", "figure"),
-     Output("analysis-infants-cdf", "figure"),
      Output("analysis-infants-exceedance", "figure"),
      Output("analysis-infants-percentiles", "children"),
      Output("analysis-schools-plot", "figure"),
-     Output("analysis-schools-cdf", "figure"),
      Output("analysis-schools-exceedance", "figure"),
      Output("analysis-schools-percentiles", "children"),
      Output("analysis-health-plot", "figure"),
-     Output("analysis-health-cdf", "figure"),
      Output("analysis-health-exceedance", "figure"),
      Output("analysis-health-percentiles", "children"),
      Output("analysis-built-surface-plot", "figure"),
-     Output("analysis-built-surface-cdf", "figure"),
      Output("analysis-built-surface-exceedance", "figure"),
      Output("analysis-built-surface-percentiles", "children"),
      Output("analysis-plots-status", "children")],
@@ -1034,15 +973,15 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             color="orange",
             variant="light"
         )
-        # Return: 6 metrics * (3 figures + 1 children) = 24 outputs
-        # Pattern: box, cdf, exceedance (figures), percentiles (children)
+        # Return: 6 metrics * (2 figures + 1 children) = 18 outputs
+        # Pattern: box, exceedance (figures), percentiles (children)
         return (
-            empty_fig, empty_fig, empty_fig, empty_children,  # population
-            empty_fig, empty_fig, empty_fig, empty_children,  # children
-            empty_fig, empty_fig, empty_fig, empty_children,  # infants
-            empty_fig, empty_fig, empty_fig, empty_children,  # schools
-            empty_fig, empty_fig, empty_fig, empty_children,  # health
-            empty_fig, empty_fig, empty_fig, empty_children,  # built_surface
+            empty_fig, empty_fig, empty_children,  # population
+            empty_fig, empty_fig, empty_children,  # children
+            empty_fig, empty_fig, empty_children,  # infants
+            empty_fig, empty_fig, empty_children,  # schools
+            empty_fig, empty_fig, empty_children,  # health
+            empty_fig, empty_fig, empty_children,  # built_surface
             status_msg
         )
     
@@ -1063,12 +1002,12 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 variant="light"
             )
             return (
-                empty_fig, empty_fig, empty_fig, empty_children,  # population
-                empty_fig, empty_fig, empty_fig, empty_children,  # children
-                empty_fig, empty_fig, empty_fig, empty_children,  # infants
-                empty_fig, empty_fig, empty_fig, empty_children,  # schools
-                empty_fig, empty_fig, empty_fig, empty_children,  # health
-                empty_fig, empty_fig, empty_fig, empty_children,  # built_surface
+                empty_fig, empty_fig, empty_children,  # population
+                empty_fig, empty_fig, empty_children,  # children
+                empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # schools
+                empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
         
@@ -1083,12 +1022,12 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 variant="light"
             )
             return (
-                empty_fig, empty_fig, empty_fig, empty_children,  # population
-                empty_fig, empty_fig, empty_fig, empty_children,  # children
-                empty_fig, empty_fig, empty_fig, empty_children,  # infants
-                empty_fig, empty_fig, empty_fig, empty_children,  # schools
-                empty_fig, empty_fig, empty_fig, empty_children,  # health
-                empty_fig, empty_fig, empty_fig, empty_children,  # built_surface
+                empty_fig, empty_fig, empty_children,  # population
+                empty_fig, empty_fig, empty_children,  # children
+                empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # schools
+                empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
         
@@ -1132,12 +1071,12 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 variant="light"
             )
             return (
-                empty_fig, empty_fig, empty_fig, empty_children,  # population
-                empty_fig, empty_fig, empty_fig, empty_children,  # children
-                empty_fig, empty_fig, empty_fig, empty_children,  # infants
-                empty_fig, empty_fig, empty_fig, empty_children,  # schools
-                empty_fig, empty_fig, empty_fig, empty_children,  # health
-                empty_fig, empty_fig, empty_fig, empty_children,  # built_surface
+                empty_fig, empty_fig, empty_children,  # population
+                empty_fig, empty_fig, empty_children,  # children
+                empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # schools
+                empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
         
@@ -1313,22 +1252,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['population']['color'],
             metrics_config['population']['x_label']
         )
-        pop_cdf = create_cdf_plot(
-            member_df['population'].values,
-            'Population Affected',
-            metrics_config['population']['color'],
-            metrics_config['population']['x_label']
-        )
         
         children_box = create_box_plot(
             member_df['children'].values,
             member_df['member'].values,
-            'Children Affected',
-            metrics_config['children']['color'],
-            metrics_config['children']['x_label']
-        )
-        children_cdf = create_cdf_plot(
-            member_df['children'].values,
             'Children Affected',
             metrics_config['children']['color'],
             metrics_config['children']['x_label']
@@ -1341,22 +1268,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['infants']['color'],
             metrics_config['infants']['x_label']
         )
-        infants_cdf = create_cdf_plot(
-            member_df['infants'].values,
-            'Infants Affected',
-            metrics_config['infants']['color'],
-            metrics_config['infants']['x_label']
-        )
         
         schools_box = create_box_plot(
             member_df['schools'].values,
             member_df['member'].values,
-            'Schools Affected',
-            metrics_config['schools']['color'],
-            metrics_config['schools']['x_label']
-        )
-        schools_cdf = create_cdf_plot(
-            member_df['schools'].values,
             'Schools Affected',
             metrics_config['schools']['color'],
             metrics_config['schools']['x_label']
@@ -1369,22 +1284,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['health']['color'],
             metrics_config['health']['x_label']
         )
-        health_cdf = create_cdf_plot(
-            member_df['health'].values,
-            'Health Centers Affected',
-            metrics_config['health']['color'],
-            metrics_config['health']['x_label']
-        )
         
         built_surface_box = create_box_plot(
             member_df['built_surface'].values,
             member_df['member'].values,
-            'Built Surface Affected',
-            metrics_config['built_surface']['color'],
-            metrics_config['built_surface']['x_label']
-        )
-        built_surface_cdf = create_cdf_plot(
-            member_df['built_surface'].values,
             'Built Surface Affected',
             metrics_config['built_surface']['color'],
             metrics_config['built_surface']['x_label']
@@ -1588,7 +1491,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['population']['color']
         )
         
-        print(f"Generated plots for population: box={type(pop_box)}, cdf={type(pop_cdf)}, exceedance={type(pop_exceedance)}")
+        print(f"Generated plots for population: box={type(pop_box)}, exceedance={type(pop_exceedance)}")
         
         children_exceedance = create_exceedance_plot(
             member_df['children'].values,
@@ -1652,17 +1555,17 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             variant="light"
         )
         
-        print(f"About to return plots. Total outputs: 6 metrics * 4 = 24 plots + 1 status = 25")
+        print(f"About to return plots. Total outputs: 6 metrics * 3 = 18 plots + 1 status = 19")
         print(f"Population values: pop={member_df['population'].sum():.0f}, len={len(member_df['population'])}")
-        print(f"Plot types: pop_box={type(pop_box)}, pop_cdf={type(pop_cdf)}")
+        print(f"Plot types: pop_box={type(pop_box)}, pop_exceedance={type(pop_exceedance)}")
         
         return (
-            pop_box, pop_cdf, pop_exceedance, pop_percentiles,
-            children_box, children_cdf, children_exceedance, children_percentiles,
-            infants_box, infants_cdf, infants_exceedance, infants_percentiles,
-            schools_box, schools_cdf, schools_exceedance, schools_percentiles,
-            health_box, health_cdf, health_exceedance, health_percentiles,
-            built_surface_box, built_surface_cdf, built_surface_exceedance, built_surface_percentiles,
+            pop_box, pop_exceedance, pop_percentiles,
+            children_box, children_exceedance, children_percentiles,
+            infants_box, infants_exceedance, infants_percentiles,
+            schools_box, schools_exceedance, schools_percentiles,
+            health_box, health_exceedance, health_percentiles,
+            built_surface_box, built_surface_exceedance, built_surface_percentiles,
             status_msg
         )
         
