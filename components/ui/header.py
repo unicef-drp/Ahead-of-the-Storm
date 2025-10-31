@@ -59,7 +59,7 @@ def make_header(active_tab="tab-home"):
                                     ),
                                     dmc.Anchor(
                                         dmc.TabsTab(
-                                            "Deterministic Forecast",
+                                            "Forecast Analysis",
                                             value="tab-deterministic",
                                             leftSection=DashIconify(
                                                 icon="carbon:weather-station", height=16
@@ -133,12 +133,6 @@ def make_header(active_tab="tab-home"):
                                         "English",
                                         id="translate-english",
                                         color="#1cabe2",
-                                        n_clicks=0,
-                                    ),
-                                    dmc.MenuItem(
-                                        "French",
-                                        id="translate-french",
-                                        disabled=True,
                                         n_clicks=0,
                                     ),
                                     dmc.MenuItem(

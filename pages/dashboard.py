@@ -468,9 +468,9 @@ tiles_legends = dmc.Box([
 # admin radiogroup
 admin_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-admin-layer", label="No Region Layer (just Probability)", value="none", mb="xs"),
-                        dmc.Radio(id="population-admin-layer", label="Population Density", value="population", mb="xs"),
-                        dmc.Radio(id="school-age-admin-layer", label="School-Age Population", value="school-age", mb="xs"),
-                        dmc.Radio(id="infant-admin-layer", label="Infant Population", value="infant", mb="xs"),
+                        dmc.Radio(id="population-admin-layer", label="Population", value="population", mb="xs"),
+                        dmc.Radio(id="school-age-admin-layer", label="Age 5-15", value="school-age", mb="xs"),
+                        dmc.Radio(id="infant-admin-layer", label="Age 0-5", value="infant", mb="xs"),
                         dmc.Radio(id="built-surface-admin-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Radio(id="cci-admin-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
@@ -775,8 +775,8 @@ impact_summary = dmc.Paper([
                                         dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
                                     ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                     dmc.TableTh([
-                                        dmc.Text("Best", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                        dmc.Badge("Member", id="low-impact-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
+                                        dmc.Text("Deterministic", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Badge("#51", id="deterministic-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
                                     ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
                                     dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
                                     dmc.TableTh([
@@ -904,14 +904,21 @@ specific_track_view = dmc.Paper([
                 )
 
 # Right Panel - Impact Metrics
-right_panel = dmc.GridCol([
-                impact_summary,
-                
-                specific_track_view,
-            ],
-            span=3,
-            style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
-        )
+right_panel = dmc.GridCol(
+                [
+                    dmc.Paper(
+                        [
+                            impact_summary,
+                            
+                            specific_track_view,
+                        ],
+                        p="md",
+                        shadow="sm"
+                    )
+                ],
+                span=3,
+                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
+            )
 
 # Create the three-panel dashboard layout (left controls, center map, right metrics)
 def make_single_page_layout():
@@ -969,7 +976,7 @@ layout = make_single_page_appshell()
 # -----------------------------------------------------------------------------
 # 3.1: CALLBACKS - IMPACT METRICS
 # -----------------------------------------------------------------------------
-# Calculate and display impact metrics for low/probabilistic/high scenarios
+# Calculate and display impact metrics for deterministic (member 51)/probabilistic/high scenarios
 
 @callback(
     [Output("population-count-low", "children"),
@@ -990,7 +997,6 @@ layout = make_single_page_appshell()
      Output("bsm2-count-low", "children"),
      Output("bsm2-count-probabilistic", "children"),
      Output("bsm2-count-high", "children"),
-     Output("low-impact-badge", "children"),
      Output("high-impact-badge", "children"),],
    [Input("storm-select", "value"),
     Input("wind-threshold-select", "value"),
@@ -1005,11 +1011,11 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     
     # Only compute after user has loaded layers to avoid startup churn
     if not layers_loaded:
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        # Return all scenarios with default values (population, children, infants, schools, health, built surface, badges)
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        # Return all scenarios with default values (population, children, infants, schools, health, built surface, badge)
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     # Calculate probabilistic impact metrics
     
@@ -1029,8 +1035,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         
-        # Initialize member badges
-        low_member_badge = "N/A"
+        # Initialize member badge (deterministic is always #51, doesn't need updating)
         high_member_badge = "N/A"
         
         if giga_store.file_exists(filepath):
@@ -1053,7 +1058,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                 probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
                 probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
                 
-                # Calculate LOW and HIGH scenarios (from track data)
+                # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
                 tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
@@ -1061,16 +1066,17 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     gdf_tracks = read_dataset(giga_store, tracks_filepath)
                     
                     if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
-                        # Find ensemble members with lowest and highest impact
+                        # Use deterministic member 51 (always member 51)
+                        deterministic_member = 51
+                        # Find ensemble member with highest impact
                         member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
-                        low_impact_member = member_totals.idxmin()
                         high_impact_member = member_totals.idxmax()
                         
-                        # Set member badge text
-                        low_member_badge = f"#{low_impact_member}"
+                        # Set member badge text (deterministic is always #51, no need to update)
                         high_member_badge = f"#{high_impact_member}"
                         
-                        low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == low_impact_member]
+                        # Get deterministic scenario data (member 51)
+                        low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == deterministic_member]
                         high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
                         
                         # Check if health center data is available for this time slot
@@ -1078,15 +1084,19 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
                         hc_data_available = giga_store.file_exists(hc_filepath)
                         
-                        # LOW scenario
-                        low_results["children"] = low_scenario_data[
-                            'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                        low_results["infant"] = low_scenario_data[
-                            'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
-                        low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
-                        low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
-                        low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                        low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                        # DETERMINISTIC scenario (member 51)
+                        if not low_scenario_data.empty:
+                            low_results["children"] = low_scenario_data[
+                                'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
+                            low_results["infant"] = low_scenario_data[
+                                'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
+                            low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
+                            low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
+                            low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
+                            low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                        else:
+                            # Member 51 not found in data (badge will still show #51 as static value)
+                            pass
 
                         # HIGH scenario
                         high_results["children"] = high_scenario_data[
@@ -1134,14 +1144,13 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
             format_value(high_results["built_surface_m2"]),
-            # Member badges
-            low_member_badge,
+            # Member badge (deterministic badge is static #51, doesn't need updating)
             high_member_badge
         )
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 
 

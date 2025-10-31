@@ -52,7 +52,7 @@ footer = dmc.Group(
                         variant="transparent",
                         style={"color": "#ffffff"},
                     ),
-                    href="https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline.git",
+                    href="https://github.com/unicef-drp/Ahead-of-the-Storm",
                     target="_blank",
                 ),
             ],
