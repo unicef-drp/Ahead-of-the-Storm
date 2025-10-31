@@ -287,6 +287,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const E_infant_population = props.E_infant_population || 0;
                 const E_num_hcs = props.E_num_hcs || 0;
                 const E_rwi = props.E_rwi || 0;
+                const E_cci = props.E_CCI || 0;
                 const probability = props.probability || 0;
 
                 // Base infrastructure values
@@ -297,6 +298,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const infant_pop = props.infant_population || 0;
                 const num_hcs = props.num_hcs || 0;
                 const rwi = props.rwi || 0;
+                const cci = props.CCI || 0;
                 const smod_class = props.smod_class || 'N/A';
 
                 // Settlement classification mapping (values are 0, 10, 20, 30)
@@ -364,6 +366,9 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
     </div>
     <div style="font-size: 11px; color: #555;">
         Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        CCI: ${formatDecimal(cci)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Settlement: ${formatSettlement(smod_class)}

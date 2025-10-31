@@ -376,11 +376,11 @@ tiles_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="school-age-tiles-layer", label="Age 5-15", value="school-age", mb="xs"),
                         dmc.Radio(id="infant-tiles-layer", label="Age 0-5", value="infant", mb="xs"),
                         dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                        dmc.Radio(id="cci-tiles-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                         dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                         dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
                         dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
-                        dmc.Radio(id="NEW_LAYER_PLACEHOLDER-tiles-layer", label="CCI (Child Cyclone Index)", value="NEW_LAYER_PLACEHOLDER", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                     ], id="tiles-layer-group", value="none")
 
@@ -425,6 +425,15 @@ tiles_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="built-surface-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('CCI'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="cci-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                     
                     dmc.Grid([
                         dmc.GridCol(span=3, children=[
@@ -454,14 +463,6 @@ tiles_legends = dmc.Box([
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                     
-                    dmc.Grid([
-                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-min", children="Min", size="xs", c="dimmed")]),
-                        dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('NEW_LAYER_PLACEHOLDER'),
-                            style={"display": "flex", "width": "100%"}
-                        )),
-                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-legend-max", children="Max", size="xs", c="dimmed")]),
-                    ], id="NEW_LAYER_PLACEHOLDER-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                 ], id='tiles_legends_box')
 
 # admin radiogroup
@@ -471,6 +472,7 @@ admin_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="school-age-admin-layer", label="School-Age Population", value="school-age", mb="xs"),
                         dmc.Radio(id="infant-admin-layer", label="Infant Population", value="infant", mb="xs"),
                         dmc.Radio(id="built-surface-admin-layer", label="Built Surface Area", value="built-surface", mb="xs"),
+                        dmc.Radio(id="cci-admin-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                         dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                         dmc.Radio(id="settlement-admin-layer", label="Settlement Classification", value="settlement", mb="xs"),
@@ -519,6 +521,15 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-admin-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="built-surface-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-admin-legend-min", children="Min", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('CCI'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="cci-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                     
                     dmc.Grid([
                         dmc.GridCol(span=3, children=[
@@ -548,14 +559,7 @@ admin_legends = dmc.Box([
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                     
-                    dmc.Grid([
-                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-admin-legend-min", children="Min", size="xs", c="dimmed")]),
-                        dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('NEW_LAYER_PLACEHOLDER'),
-                            style={"display": "flex", "width": "100%"}
-                        )),
-                        dmc.GridCol(span=1.5, children=[dmc.Text(id="NEW_LAYER_PLACEHOLDER-admin-legend-max", children="Max", size="xs", c="dimmed")]),
-                    ], id="NEW_LAYER_PLACEHOLDER-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                    
                 ], id='admin_legends_box')
 
 # Unified Population & Infrastructure section with mode selector
@@ -658,6 +662,7 @@ center_panel = dmc.GridCol(
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
                         [
+                            ##################
                             dl.TileLayer(
                                 url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
                                 attribution="mapbox",
@@ -1493,7 +1498,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
      Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
      Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
-     Output('NEW_LAYER_PLACEHOLDER-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
      Output('probability-admin-layer', 'disabled'),
      Output('population-admin-layer', 'disabled', allow_duplicate=True),
      Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
@@ -1501,7 +1506,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
      Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
-     Output('NEW_LAYER_PLACEHOLDER-admin-layer', 'disabled', allow_duplicate=True)],
+     Output('cci-admin-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
@@ -1526,7 +1531,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -1706,11 +1711,28 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
                         gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
                         tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
+
+                        #cci
+                        cci_tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv"
+                        cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', cci_tiles_file)
+                        if giga_store.file_exists(cci_tiles_path):
+                            try:
+                                df_cci_tiles = read_dataset(giga_store, cci_tiles_path)
+                                df_cci_tiles = df_cci_tiles.rename(columns={'zone_id':'tile_id'})
+                                if 'Unnamed: 0' in df_cci_tiles.columns:
+                                    df_cci_tiles.drop(columns=['Unnamed: 0'])
+                                tmp = pd.merge(tmp, df_cci_tiles, on="tile_id", how="left")
+                            except:
+                                print('Cannot merge CCI file')
+                        else:
+                            print('CCI file not found')
+
                         gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
                         tiles_data = gdf_tiles.__geo_interface__
                     except Exception as e:
                         print(f"Error reading tiles file: {e}")
                         tiles_data = {}
+
 
             # Admin
             admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
@@ -1725,6 +1747,22 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         gdf_base_admin = read_dataset(giga_store, base_admin_path)
                         #gdf_base_admin['tile_id'] = df_admin['tile_id'].astype(int)
                         tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+
+                        #cci
+                        cci_admin_file = f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv"
+                        cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', cci_admin_file)
+                        if giga_store.file_exists(cci_admin_path):
+                            try:
+                                df_cci_admin = read_dataset(giga_store, cci_admin_path)
+                                df_cci_admin = df_cci_admin.rename(columns={'zone_id':'tile_id'})
+                                if 'Unnamed: 0' in df_cci_admin.columns:
+                                    df_cci_admin.drop(columns=['Unnamed: 0'])
+                                tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
+                            except:
+                                print('Cannot merge CCI file')
+                        else:
+                            print('CCI file not found')
+
                         gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
                         admin_data = gdf_admin.__geo_interface__
                     except Exception as e:
@@ -1751,11 +1789,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data, admin_data,
                 True, status_alert, 
-                False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False)
+                False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False)
         
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
 
 
 # Callback to warn when selectors change after layers are loaded
@@ -2317,7 +2355,7 @@ def toggle_health_layer(checked, health_data_in):
     Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
-    Output('NEW_LAYER_PLACEHOLDER-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
     Input('tiles-layer-group','value'),
     Input('probability-tiles-layer','checked'),
     Input('population-tiles-data-store','data'),
@@ -2333,12 +2371,12 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     # and regular layers should be enabled at all times
     if prob_checked_val:
         # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, True, True, True
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, True, True, False
     else:
         # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, False, False, False
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, False, False, False
     
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled)
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled)
     
     # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
     if not active_layer or active_layer == "none":
@@ -2371,6 +2409,10 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     
     elif active_layer == "rwi":
         tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
+        return tiles, zoom, key, *radios_enabled
+    
+    elif active_layer == "cci":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'CCI')
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
@@ -2387,7 +2429,7 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
     Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
     Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
-    Output('NEW_LAYER_PLACEHOLDER-admin-layer', 'disabled', allow_duplicate=True),
+    Output('cci-admin-layer', 'disabled', allow_duplicate=True),
     Input('admin-layer-group','value'),
     Input('probability-admin-layer','checked'),
     Input('population-admin-data-store','data'),
@@ -2403,12 +2445,12 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
     # and regular layers should be enabled at all times
     if prob_checked_val:
         # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, True, True, True
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, True, True, False
     else:
         # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled = False, False, False, False, False, False, False
+        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, False, False, False
     
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, NEW_LAYER_PLACEHOLDER_enabled)
+    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled)
     
     # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
     if not active_layer or active_layer == "none":
@@ -2443,8 +2485,8 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
         tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
         return tiles, zoom, key, *radios_enabled
     
-    elif active_layer == "NEW_LAYER_PLACEHOLDER":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'NEW_LAYER_PLACEHOLDER')
+    elif active_layer == "cci":
+        tiles, zoom, key = update_tile_features(tiles_data_in, 'CCI')
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
@@ -2479,7 +2521,7 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
         "built-surface": "E_built_surface_m2",
         "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
-        "NEW_LAYER_PLACEHOLDER": None,
+        "cci": "E_CCI",
         "none": "probability",
         None: "probability"
     }
@@ -2550,7 +2592,7 @@ def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
         "built-surface": "E_built_surface_m2",
         "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
-        "NEW_LAYER_PLACEHOLDER": None,
+        "cci": "E_CCI",
         "none": "probability",
         None: "probability"
     }
@@ -2744,7 +2786,7 @@ def toggle_health_legend(checked):
      Output("built-surface-legend", "style"),
      Output("settlement-legend", "style"),
      Output("rwi-legend", "style"),
-     Output("NEW_LAYER_PLACEHOLDER-legend", "style"),
+     Output("cci-legend", "style"),
      Output("population-legend-min", "children"),
      Output("population-legend-max", "children"),
      Output("school-age-legend-min", "children"),
@@ -2752,7 +2794,10 @@ def toggle_health_legend(checked):
      Output("infant-legend-min", "children"),
      Output("infant-legend-max", "children"),
      Output("built-surface-legend-min", "children"),
-     Output("built-surface-legend-max", "children")],
+     Output("built-surface-legend-max", "children"),
+     Output("cci-legend-min", "children"),
+     Output("cci-legend-max", "children")
+     ],
     [Input("tiles-layer-group", "value"),
      Input("probability-tiles-layer", "checked")],
     State("population-tiles-data-store", "data"),
@@ -2780,6 +2825,8 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
     infant_max = "Max"
     built_min = "Min"
     built_max = "Max"
+    cci_min = "Min"
+    cci_max = "Max"
     
     # Calculate log-scale legend labels if data is available
     if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
@@ -2819,29 +2866,38 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
                 built_max_val = max(clean_built)
                 built_min = f"{built_min_val:,.0f}"
                 built_max = format_number(built_max_val)
+
+            # cci values
+            cci_values = [f["properties"].get('CCI', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
+            if clean_cci:
+                cci_min_val = min(clean_cci)
+                cci_max_val = max(clean_cci)
+                cci_min = f"{cci_min_val:,.0f}"
+                cci_max = format_number(cci_max_val)
         except Exception as e:
             print(f"Error calculating legend labels: {e}")
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
-    elif selected_value == "NEW_LAYER_PLACEHOLDER":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+    elif selected_value == "cci":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
 
 @callback(
     [Output("population-admin-legend", "style"),
@@ -2850,7 +2906,7 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
      Output("built-surface-admin-legend", "style"),
      Output("settlement-admin-legend", "style"),
      Output("rwi-admin-legend", "style"),
-     Output("NEW_LAYER_PLACEHOLDER-admin-legend", "style"),
+     Output("cci-admin-legend", "style"),
      Output("population-admin-legend-min", "children"),
      Output("population-admin-legend-max", "children"),
      Output("school-age-admin-legend-min", "children"),
@@ -2858,7 +2914,10 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
      Output("infant-admin-legend-min", "children"),
      Output("infant-admin-legend-max", "children"),
      Output("built-surface-admin-legend-min", "children"),
-     Output("built-surface-admin-legend-max", "children")],
+     Output("built-surface-admin-legend-max", "children"),
+     Output("cci-admin-legend-min", "children"),
+     Output("cci-admin-legend-max", "children")
+     ],
     [Input("admin-layer-group", "value"),
      Input("probability-admin-layer", "checked")],
     State("population-admin-data-store", "data"),
@@ -2886,6 +2945,8 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
     infant_max = "Max"
     built_min = "Min"
     built_max = "Max"
+    cci_min = "Min"
+    cci_max = "Max"
     
     # Calculate log-scale legend labels if data is available
     if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
@@ -2925,29 +2986,38 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
                 built_max_val = max(clean_built)
                 built_min = f"{built_min_val:,.0f}"
                 built_max = format_number(built_max_val)
+
+            # cci values
+            cci_values = [f["properties"].get('CCI', 0) for f in tiles_data["features"] if 'properties' in f]
+            clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
+            if clean_cci:
+                cci_min_val = min(clean_cci)
+                cci_max_val = max(clean_cci)
+                cci_min = f"{cci_min_val:,.0f}"
+                cci_max = format_number(cci_max_val)
         except Exception as e:
             print(f"Error calculating legend labels: {e}")
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
-    elif selected_value == "NEW_LAYER_PLACEHOLDER":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+    elif selected_value == "cci":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
 
 
 
