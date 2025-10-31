@@ -797,60 +797,60 @@ impact_summary = dmc.Paper([
                                     dmc.TableTh([
                                         dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
-                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px", "width": "auto"}),
                                     dmc.TableTh([
-                                        dmc.Text("Deterministic", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("#51", id="deterministic-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
-                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"}),
+                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top", "width": "110px"}),
                                     dmc.TableTh([
                                         dmc.Text("Worst", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"})
                                 ])
                             ]),
                             dmc.TableTbody([
                                 dmc.TableTr([
                                     dmc.TableTd("Population", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
                                     dmc.TableTd("N/A", id="infant-affected-low",
-                                                style={"textAlign": "center", "fontWeight": 500}),
+                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
                                     dmc.TableTd("N/A", id="infant-affected-probabilistic",
-                                                style={"textAlign": "center", "fontWeight": 500}),
+                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
                                     dmc.TableTd("N/A", id="infant-affected-high",
-                                                style={"textAlign": "center", "fontWeight": 500})
+                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
                                         html.Span("Built Surface m"),
                                         html.Sup("2"),
                                     ], style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
+                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
                                 ])
                             ])
                         ],
@@ -941,7 +941,7 @@ right_panel = dmc.GridCol(
                     )
                 ],
                 span=3,
-                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
+                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto", "minWidth": "300px"}
             )
 
 # Create the three-panel dashboard layout (left controls, center map, right metrics)
