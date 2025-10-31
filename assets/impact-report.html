@@ -59,7 +59,7 @@
             font-size: 20px;
             font-weight: 700;
             color: #1CABE2;
-            margin-bottom: 16px;
+            margin-bottom: 12px;
             padding-bottom: 8px;
             border-bottom: 2px solid #1CABE2;
         }
@@ -67,64 +67,74 @@
         .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-bottom: 20px;
+            gap: 12px;
+            margin-bottom: 12px;
+            page-break-inside: avoid;
         }
 
         .info-item {
-            background: #f8f9fa;
-            padding: 16px;
-            border-radius: 6px;
-            border-left: 3px solid #1CABE2;
+            background: white;
+            padding: 12px 16px;
+            border-left: 4px solid #1CABE2;
+            border-top: 1px solid #e9ecef;
+            border-right: 1px solid #e9ecef;
+            border-bottom: 1px solid #e9ecef;
+            page-break-inside: avoid;
         }
 
         .info-label {
-            font-size: 11px;
+            font-size: 12px;
             color: #666;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-bottom: 6px;
+            margin-bottom: 4px;
             font-weight: 600;
         }
 
         .info-value {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 700;
             color: #333;
         }
 
         .key-findings {
-            background: #f8f9fa;
+            background: white;
+            padding: 10px 14px;
+            margin-bottom: 16px;
             border-left: 4px solid #1CABE2;
-            padding: 20px;
-            border-radius: 6px;
-            margin-bottom: 24px;
+            border-top: 1px solid #e9ecef;
+            border-right: 1px solid #e9ecef;
+            border-bottom: 1px solid #e9ecef;
+            page-break-inside: avoid;
         }
 
         .key-findings h3 {
             color: #1CABE2;
-            font-size: 16px;
-            margin-bottom: 12px;
+            font-size: 14px;
+            margin-bottom: 8px;
             font-weight: 600;
         }
 
         .key-findings ul {
             list-style: none;
             padding: 0;
+            margin: 0;
+            page-break-inside: avoid;
         }
 
         .key-findings li {
-            padding: 6px 0;
-            padding-left: 20px;
+            padding: 2px 0;
+            padding-left: 16px;
             position: relative;
-            line-height: 1.5;
-            font-size: 14px;
+            line-height: 1.3;
+            font-size: 12px;
+            page-break-inside: avoid;
         }
 
         .key-findings li:before {
             content: '▸';
             position: absolute;
-            left: 6px;
+            left: 4px;
             color: #1CABE2;
             font-weight: bold;
         }
@@ -153,23 +163,23 @@
         .facilities-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 16px;
-            font-size: 13px;
+            margin-top: 8px;
+            font-size: 12px;
         }
 
         .facilities-table th {
             background: #1CABE2;
             color: white;
-            padding: 12px;
+            padding: 4px;
             text-align: left;
             font-weight: 600;
             font-size: 12px;
         }
 
         .facilities-table td {
-            padding: 10px 12px;
+            padding: 4px;
             border-bottom: 1px solid #e9ecef;
-            font-size: 13px;
+            font-size: 12px;
         }
 
         .facilities-table tr:hover {
@@ -180,7 +190,7 @@
             display: inline-block;
             padding: 4px 8px;
             border-radius: 4px;
-            font-size: 10px;
+            font-size: 12px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
@@ -275,7 +285,7 @@
         }
 
         .scenario-prob {
-            font-size: 11px;
+            font-size: 12px;
             color: #999;
         }
         
@@ -291,31 +301,68 @@
 
         .change-indicator {
             display: inline-block;
-            margin-left: 8px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 10px;
+            margin-left: 4px;
+            padding: 1px 4px;
+            border-radius: 0;
+            font-size: 11px;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            vertical-align: baseline;
+            line-height: 1.2;
         }
         
+        /* Small increases (light red) */
+        .change-increase-small {
+            background-color: #ffe0e0;
+            color: #8b0000;
+            border: none;
+        }
+        
+        /* Medium increases (medium red) */
+        .change-increase-medium {
+            background-color: #ffb3b3;
+            color: #660000;
+            border: none;
+        }
+        
+        /* Large increases (dark red) */
+        .change-increase-large {
+            background-color: #ff6666;
+            color: #330000;
+            border: none;
+        }
+        
+        /* Small decreases (light blue) */
+        .change-decrease-small {
+            background-color: #e0f0ff;
+            color: #003366;
+            border: none;
+        }
+        
+        /* Medium decreases (medium blue) */
+        .change-decrease-medium {
+            background-color: #b3d9ff;
+            color: #001a33;
+            border: none;
+        }
+        
+        /* Large decreases (dark blue) */
+        .change-decrease-large {
+            background-color: #66b3ff;
+            color: #000d1a;
+            border: none;
+        }
+        
+        /* Legacy classes for backwards compatibility - map to medium */
         .change-increase {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background-color: #ffb3b3;
+            color: #660000;
+            border: none;
         }
         
         .change-decrease {
-            background-color: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
-        }
-        
-        .change-no-change {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background-color: #b3d9ff;
+            color: #001a33;
+            border: none;
         }
         
         .back-button {
@@ -377,7 +424,8 @@
         /* Print Styles */
         @media print {
             body {
-                font-size: 10px;
+                font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+                font-size: 12px;
                 line-height: 1.2;
                 padding: 0;
                 margin: 0;
@@ -394,6 +442,7 @@
             .report-header {
                 padding: 12px;
                 page-break-inside: avoid;
+                page-break-after: avoid;
                 background: white !important;
                 color: #000 !important;
                 border-bottom: 1px solid #000;
@@ -416,7 +465,23 @@
             
             .section {
                 margin-bottom: 12px;
+            }
+            
+            /* Prevent page break after executive summary section */
+            .section:first-of-type {
+                page-break-after: avoid;
+                page-break-before: auto;
                 page-break-inside: avoid;
+            }
+            
+            /* Only prevent breaking inside sections for larger sections */
+            .section:not(:first-of-type) {
+                page-break-inside: avoid;
+            }
+            
+            /* Reduce spacing after key-findings in sections */
+            .section .key-findings {
+                margin-bottom: 4px;
             }
             
             .section-title {
@@ -425,26 +490,32 @@
                 color: #000 !important;
                 border-bottom: 1px solid #000;
                 padding-bottom: 3px;
+                page-break-after: avoid !important;
             }
             
             .info-grid {
                 gap: 8px;
                 margin-bottom: 12px;
+                page-break-inside: avoid !important;
+                page-break-after: avoid !important;
             }
             
             .info-item {
-                padding: 6px;
+                padding: 6px 8px;
                 background: white !important;
-                border-left: 1px solid #000 !important;
+                border: 1px solid #000 !important;
+                border-left: 2px solid #000 !important;
+                box-shadow: none !important;
+                page-break-inside: avoid !important;
             }
             
             .info-label {
-                font-size: 9px;
+                font-size: 11px;
                 color: #000 !important;
             }
             
             .info-value {
-                font-size: 11px;
+                font-size: 12px;
                 color: #000 !important;
             }
             
@@ -483,7 +554,7 @@
             }
             
             .scenario-title {
-                font-size: 9px;
+                font-size: 11px;
                 color: #000 !important;
             }
             
@@ -503,7 +574,7 @@
                 background: white !important;
                 border: 1px solid #000;
                 color: #000 !important;
-                font-size: 9px;
+                font-size: 11px;
             }
             
             .map-overlay {
@@ -511,13 +582,13 @@
             }
             
             .facilities-table {
-                font-size: 8px;
+                font-size: 10px;
                 border-collapse: collapse;
             }
             
             .facilities-table th {
                 padding: 4px;
-                font-size: 8px;
+                font-size: 10px;
                 background: white !important;
                 color: #000 !important;
                 border: 1px solid #000;
@@ -525,7 +596,7 @@
             
             .facilities-table td {
                 padding: 3px 4px;
-                font-size: 7px;
+                font-size: 10px;
                 border: 1px solid #ccc;
                 color: #000 !important;
             }
@@ -558,23 +629,70 @@
             }
             
             .key-findings {
-                padding: 8px;
-                margin-bottom: 12px;
+                padding: 6px 10px;
+                margin-bottom: 4px;
                 background: white !important;
+                border: 1px solid #000 !important;
                 border-left: 2px solid #000 !important;
+                box-shadow: none !important;
+                page-break-inside: avoid !important;
             }
             
             .key-findings h3 {
-                font-size: 10px;
-                margin-bottom: 6px;
+                font-size: 12px;
+                margin-bottom: 4px;
                 color: #000 !important;
             }
             
+            .key-findings ul {
+                page-break-inside: avoid !important;
+            }
+            
             .key-findings li {
-                padding: 2px 0;
+                padding: 1px 0;
                 padding-left: 12px;
-                font-size: 9px;
+                font-size: 11px;
                 color: #000 !important;
+                line-height: 1.2;
+                page-break-inside: avoid !important;
+                page-break-after: avoid !important;
+            }
+            
+            /* Preserve change indicator colors in print */
+            .change-indicator {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                color-adjust: exact;
+            }
+            
+            .change-increase-small {
+                background-color: #ffe0e0 !important;
+                color: #8b0000 !important;
+            }
+            
+            .change-increase-medium {
+                background-color: #ffb3b3 !important;
+                color: #660000 !important;
+            }
+            
+            .change-increase-large {
+                background-color: #ff6666 !important;
+                color: #330000 !important;
+            }
+            
+            .change-decrease-small {
+                background-color: #e0f0ff !important;
+                color: #003366 !important;
+            }
+            
+            .change-decrease-medium {
+                background-color: #b3d9ff !important;
+                color: #001a33 !important;
+            }
+            
+            .change-decrease-large {
+                background-color: #66b3ff !important;
+                color: #000d1a !important;
             }
             
             .back-button, .print-button, .breadcrumb {
@@ -583,7 +701,7 @@
             
             .footer {
                 padding: 12px 24px;
-                font-size: 10px;
+                font-size: 12px;
                 background-color: #fff3cd !important;
                 color: #856404 !important;
                 border-top: 2px solid #ffc107 !important;
@@ -592,7 +710,7 @@
             
             .footer-note {
                 margin-top: 6px;
-                font-size: 9px;
+                font-size: 11px;
                 color: #856404 !important;
                 font-style: italic !important;
                 line-height: 1.3 !important;
@@ -670,6 +788,17 @@
         }
     </style>
     <script>
+        // Change indicator thresholds (absolute values)
+        // Population thresholds (higher, since population changes are typically larger)
+        const CHANGE_THRESHOLD_POP_SMALL = 100;
+        const CHANGE_THRESHOLD_POP_MEDIUM = 500;
+        // Large population changes are anything above CHANGE_THRESHOLD_POP_MEDIUM
+        
+        // Facility thresholds (lower, since facility changes are more significant)
+        const CHANGE_THRESHOLD_FAC_SMALL = 3;
+        const CHANGE_THRESHOLD_FAC_MEDIUM = 10;
+        // Large facility changes are anything above CHANGE_THRESHOLD_FAC_MEDIUM
+        
         function goBackToDashboard() {
             window.location.href = 'main.html';
         }
@@ -680,6 +809,20 @@
         
         function goToForecastComparison() {
             window.location.href = 'forecast-comparison.html';
+        }
+        
+        function getChangeIndicatorClass(value) {
+            const absValue = Math.abs(parseInt(value) || 0);
+            if (absValue === 0) return ''; // No indicator for zero
+            const isIncrease = value > 0;
+            
+            if (absValue < CHANGE_THRESHOLD_SMALL) {
+                return isIncrease ? 'change-increase-small' : 'change-decrease-small';
+            } else if (absValue < CHANGE_THRESHOLD_MEDIUM) {
+                return isIncrease ? 'change-increase-medium' : 'change-decrease-medium';
+            } else {
+                return isIncrease ? 'change-increase-large' : 'change-decrease-large';
+            }
         }
         
         // Initialize interactive elements
@@ -755,6 +898,7 @@
                         <li><strong>Impact estimates increased</strong> by +850 children versus the previous forecast (<strong>+7.3%</strong>).</li>
                     </ul>
                 </div>
+
             </div>
 
             <!-- Probabilistic Scenario -->
@@ -763,317 +907,982 @@
                 <img src="/assets/img/nic_forecast_examlpe_img.png" alt="Hurricane Forecast Heatmap" style="width: 100%; height: auto; border-radius: 6px; margin: 16px 0;">
 
 
-                <!-- Change Indicator Legend -->
-                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 3px solid #1CABE2;">
-                    <div style="font-size: 12px; font-weight: 600; color: #333; margin-bottom: 8px;">Change Indicators:</div>
-                    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <span class="change-indicator change-increase">+850</span>
-                            <span style="font-size: 11px; color: #555;">Increase from previous forecast</span>
+                <!-- Vulnerable Population Analysis -->
+                <h3 style="font-size: 16px; color: #333; margin: 40px 0 20px 0; border-bottom: 2px solid #1CABE2; padding-bottom: 6px; font-weight: 600;">Impacted Population</h3>
+                
+                <!-- Population Change Indicator Legend -->
+                <div style="background: white; padding: 12px 16px; margin-bottom: 12px; border-left: 4px solid #1CABE2; border-top: 1px solid #e9ecef; border-right: 1px solid #e9ecef; border-bottom: 1px solid #e9ecef;">
+                    <div style="font-size: 12px; font-weight: 600; color: #333; margin-bottom: 8px;">Change Indicators (vs. previous forecast):</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div>
+                            <div style="font-size: 12px; color: #555; margin-bottom: 4px; font-weight: 600;">Increases:</div>
+                            <div style="display: flex; flex-direction: column; gap: 3px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-small">+150</span>
+                                    <span style="font-size: 11px; color: #555;">Small (100-500)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-medium">+750</span>
+                                    <span style="font-size: 11px; color: #555;">Medium (500-1000)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-large">+1,200</span>
+                                    <span style="font-size: 11px; color: #555;">Large (> 1000)</span>
+                                </div>
+                            </div>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <span class="change-indicator change-decrease">-400</span>
-                            <span style="font-size: 11px; color: #555;">Decrease from previous forecast</span>
+                        <div>
+                            <div style="font-size: 12px; color: #555; margin-bottom: 4px; font-weight: 600;">Decreases:</div>
+                            <div style="display: flex; flex-direction: column; gap: 3px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-small">-150</span>
+                                    <span style="font-size: 11px; color: #555;">Small (100-500)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-medium">-750</span>
+                                    <span style="font-size: 11px; color: #555;">Medium (500-1000)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-large">-400</span>
+                                    <span style="font-size: 11px; color: #555;">Large (> 1000)</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
-
-
-
-                <!-- Vulnerable Population Analysis -->
-                <h3 style="font-size: 18px; color: #333; margin: 32px 0 16px 0; border-bottom: 2px solid #1CABE2; padding-bottom: 8px;">Impacted Population</h3>
                 
-                
-                
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Population Segment</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Number Affected</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white;">Wind Threshold</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Total</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Age 5-15</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Age 0-5</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Total Population</td>
-                            <td style="text-align: center; padding: 6px;">12,450<span class="change-indicator change-increase">+850</span></td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">34kt - Tropical Storm</td>
+                            <td style="text-align: center; padding: 4px;">18,240<span class="change-indicator change-increase-large">+1,200</span></td>
+                            <td style="text-align: center; padding: 4px;">5,630</td>
+                            <td style="text-align: center; padding: 4px;">6,820</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Age Group 0-5 Years</td>
-                            <td style="text-align: center; padding: 6px;">4,980<span class="change-indicator change-increase">+340</span></td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">40kt - Strong Tropical Storm</td>
+                            <td style="text-align: center; padding: 4px;">15,680<span class="change-indicator change-increase-large">+950</span></td>
+                            <td style="text-align: center; padding: 4px;">4,700</td>
+                            <td style="text-align: center; padding: 4px;">5,870</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Age Group 5-15 Years</td>
-                            <td style="text-align: center; padding: 6px;">3,735<span class="change-indicator change-increase">+255</span></td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">50kt - Very Strong TS</td>
+                            <td style="text-align: center; padding: 4px;">12,450</td>
+                            <td style="text-align: center; padding: 4px;">3,735</td>
+                            <td style="text-align: center; padding: 4px;">4,980</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">64kt - Cat 1 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">9,240</td>
+                            <td style="text-align: center; padding: 4px;">2,540</td>
+                            <td style="text-align: center; padding: 4px;">3,420</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">83kt - Cat 2 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">6,180</td>
+                            <td style="text-align: center; padding: 4px;">1,910</td>
+                            <td style="text-align: center; padding: 4px;">2,310</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">96kt - Cat 3 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">4,320</td>
+                            <td style="text-align: center; padding: 4px;">1,296</td>
+                            <td style="text-align: center; padding: 4px;">1,728</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">113kt - Cat 4 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">2,890</td>
+                            <td style="text-align: center; padding: 4px;">867</td>
+                            <td style="text-align: center; padding: 4px;">1,156</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">137kt - Cat 5 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">1,640</td>
+                            <td style="text-align: center; padding: 4px;">492</td>
+                            <td style="text-align: center; padding: 4px;">656</td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h4 style="font-size: 16px; color: #333; margin: 12px 0 8px 0;">Population Breakdown by Admin Unit</h4>
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Total Population by Admin Unit</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Admin Unit</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Total</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Age 0-5</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Age 5-15</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">34kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">40kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">50kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">64kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">83kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">96kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">113kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">137kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white; border-left: 2px solid rgba(255,255,255,0.5);">CCI</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">North Caribbean Coast (RACCN)</td>
-                            <td style="text-align: center; padding: 6px;">3,820</td>
-                            <td style="text-align: center; padding: 6px;">1,540</td>
-                            <td style="text-align: center; padding: 6px;">1,140</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">1,650<span class="change-indicator change-increase-small">+85</span></td>
+                            <td style="text-align: center; padding: 4px;">1,420</td>
+                            <td style="text-align: center; padding: 4px;">1,240</td>
+                            <td style="text-align: center; padding: 4px;">920</td>
+                            <td style="text-align: center; padding: 4px;">610</td>
+                            <td style="text-align: center; padding: 4px;">430</td>
+                            <td style="text-align: center; padding: 4px;">290</td>
+                            <td style="text-align: center; padding: 4px;">165</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">245</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">South Caribbean Coast (RACCS)</td>
-                            <td style="text-align: center; padding: 6px;">4,120</td>
-                            <td style="text-align: center; padding: 6px;">1,590</td>
-                            <td style="text-align: center; padding: 6px;">1,250</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">1,180</td>
+                            <td style="text-align: center; padding: 4px;">1,020<span class="change-indicator change-increase-small">+120</span></td>
+                            <td style="text-align: center; padding: 4px;">890<span class="change-indicator change-increase-small">+105</span></td>
+                            <td style="text-align: center; padding: 4px;">660</td>
+                            <td style="text-align: center; padding: 4px;">440</td>
+                            <td style="text-align: center; padding: 4px;">310</td>
+                            <td style="text-align: center; padding: 4px;">210</td>
+                            <td style="text-align: center; padding: 4px;">120</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">147</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Jinotega</td>
-                            <td style="text-align: center; padding: 6px;">4,510</td>
-                            <td style="text-align: center; padding: 6px;">1,850</td>
-                            <td style="text-align: center; padding: 6px;">1,345</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">2,860<span class="change-indicator change-increase-medium">+148</span></td>
+                            <td style="text-align: center; padding: 4px;">2,460<span class="change-indicator change-increase-small">+108</span></td>
+                            <td style="text-align: center; padding: 4px;">2,150</td>
+                            <td style="text-align: center; padding: 4px;">1,590</td>
+                            <td style="text-align: center; padding: 4px;">1,070</td>
+                            <td style="text-align: center; padding: 4px;">750</td>
+                            <td style="text-align: center; padding: 4px;">510</td>
+                            <td style="text-align: center; padding: 4px;">290</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">412</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">900</td>
+                            <td style="text-align: center; padding: 4px;">780</td>
+                            <td style="text-align: center; padding: 4px;">680</td>
+                            <td style="text-align: center; padding: 4px;">500</td>
+                            <td style="text-align: center; padding: 4px;">340</td>
+                            <td style="text-align: center; padding: 4px;">240</td>
+                            <td style="text-align: center; padding: 4px;">160</td>
+                            <td style="text-align: center; padding: 4px;">90</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">345</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">2,020</td>
+                            <td style="text-align: center; padding: 4px;">1,740<span class="change-indicator change-increase-medium">+180</span></td>
+                            <td style="text-align: center; padding: 4px;">1,520</td>
+                            <td style="text-align: center; padding: 4px;">1,130</td>
+                            <td style="text-align: center; padding: 4px;">760</td>
+                            <td style="text-align: center; padding: 4px;">530</td>
+                            <td style="text-align: center; padding: 4px;">360</td>
+                            <td style="text-align: center; padding: 4px;">200</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">466</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">1,570</td>
+                            <td style="text-align: center; padding: 4px;">1,350<span class="change-indicator change-increase-small">+135</span></td>
+                            <td style="text-align: center; padding: 4px;">1,180</td>
+                            <td style="text-align: center; padding: 4px;">870</td>
+                            <td style="text-align: center; padding: 4px;">590</td>
+                            <td style="text-align: center; padding: 4px;">410</td>
+                            <td style="text-align: center; padding: 4px;">280</td>
+                            <td style="text-align: center; padding: 4px;">160</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">396</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">5,990<span class="change-indicator change-increase-large">+310</span></td>
+                            <td style="text-align: center; padding: 4px;">5,150<span class="change-indicator change-increase-medium">+227</span></td>
+                            <td style="text-align: center; padding: 4px;">4,510</td>
+                            <td style="text-align: center; padding: 4px;">3,340</td>
+                            <td style="text-align: center; padding: 4px;">2,240</td>
+                            <td style="text-align: center; padding: 4px;">1,570</td>
+                            <td style="text-align: center; padding: 4px;">1,060</td>
+                            <td style="text-align: center; padding: 4px;">600</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">568</td>
                         </tr>
                     </tbody>
+                    <tfoot>
+                        <tr style="background: #f8f9fa; font-weight: 700;">
+                            <td style="padding: 5px 4px; border-top: 2px solid #1CABE2;">Total</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">14,810</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">12,740</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">11,130</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">8,240</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">5,550</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">3,890</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">2,640</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">1,500</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2; border-left: 2px solid #ccc;">2,579</td>
+                        </tr>
+                    </tfoot>
+                </table>
+
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Age 5-15 Years by Admin Unit</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">34kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">40kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">50kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">64kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">83kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">96kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">113kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">137kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white; border-left: 2px solid rgba(255,255,255,0.5);">CCI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">495<span class="change-indicator change-increase-small">+26</span></td>
+                            <td style="text-align: center; padding: 4px;">426</td>
+                            <td style="text-align: center; padding: 4px;">372</td>
+                            <td style="text-align: center; padding: 4px;">276</td>
+                            <td style="text-align: center; padding: 4px;">183</td>
+                            <td style="text-align: center; padding: 4px;">129</td>
+                            <td style="text-align: center; padding: 4px;">87</td>
+                            <td style="text-align: center; padding: 4px;">50</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">178</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">472</td>
+                            <td style="text-align: center; padding: 4px;">408<span class="change-indicator change-increase-small">+48</span></td>
+                            <td style="text-align: center; padding: 4px;">356<span class="change-indicator change-increase-small">+42</span></td>
+                            <td style="text-align: center; padding: 4px;">264</td>
+                            <td style="text-align: center; padding: 4px;">176</td>
+                            <td style="text-align: center; padding: 4px;">124</td>
+                            <td style="text-align: center; padding: 4px;">84</td>
+                            <td style="text-align: center; padding: 4px;">48</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">5</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">1,144<span class="change-indicator change-increase-small">+59</span></td>
+                            <td style="text-align: center; padding: 4px;">984<span class="change-indicator change-increase-medium">+102</span></td>
+                            <td style="text-align: center; padding: 4px;">860</td>
+                            <td style="text-align: center; padding: 4px;">636<span class="change-indicator change-increase-small">+75</span></td>
+                            <td style="text-align: center; padding: 4px;">428</td>
+                            <td style="text-align: center; padding: 4px;">300</td>
+                            <td style="text-align: center; padding: 4px;">204</td>
+                            <td style="text-align: center; padding: 4px;">116</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">395</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">360</td>
+                            <td style="text-align: center; padding: 4px;">312</td>
+                            <td style="text-align: center; padding: 4px;">272</td>
+                            <td style="text-align: center; padding: 4px;">200</td>
+                            <td style="text-align: center; padding: 4px;">136</td>
+                            <td style="text-align: center; padding: 4px;">96</td>
+                            <td style="text-align: center; padding: 4px;">64</td>
+                            <td style="text-align: center; padding: 4px;">36</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">57</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">808</td>
+                            <td style="text-align: center; padding: 4px;">696</td>
+                            <td style="text-align: center; padding: 4px;">608</td>
+                            <td style="text-align: center; padding: 4px;">452</td>
+                            <td style="text-align: center; padding: 4px;">304</td>
+                            <td style="text-align: center; padding: 4px;">212</td>
+                            <td style="text-align: center; padding: 4px;">144</td>
+                            <td style="text-align: center; padding: 4px;">80</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">322</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">628</td>
+                            <td style="text-align: center; padding: 4px;">540</td>
+                            <td style="text-align: center; padding: 4px;">472</td>
+                            <td style="text-align: center; padding: 4px;">348</td>
+                            <td style="text-align: center; padding: 4px;">236</td>
+                            <td style="text-align: center; padding: 4px;">164</td>
+                            <td style="text-align: center; padding: 4px;">112</td>
+                            <td style="text-align: center; padding: 4px;">64</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">169</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">2,396</td>
+                            <td style="text-align: center; padding: 4px;">2,060</td>
+                            <td style="text-align: center; padding: 4px;">1,850</td>
+                            <td style="text-align: center; padding: 4px;">1,336</td>
+                            <td style="text-align: center; padding: 4px;">896</td>
+                            <td style="text-align: center; padding: 4px;">628</td>
+                            <td style="text-align: center; padding: 4px;">424</td>
+                            <td style="text-align: center; padding: 4px;">240</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">206</td>
+                        </tr>
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                    </tbody>
+                    <tfoot>
+                        <tr style="background: #f8f9fa; font-weight: 700;">
+                            <td style="padding: 5px 4px; border-top: 2px solid #1CABE2;">Total</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">15,840</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">13,640</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">11,920</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">8,830</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">5,940</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">4,160</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">2,830</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">1,610</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2; border-left: 2px solid #ccc;">2,140</td>
+                        </tr>
+                    </tfoot>
+                </table>
+
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Age 0-5 Years by Admin Unit</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">34kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">40kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">50kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">64kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">83kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">96kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">113kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">137kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white; border-left: 2px solid rgba(255,255,255,0.5);">CCI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">495</td>
+                            <td style="text-align: center; padding: 4px;">426</td>
+                            <td style="text-align: center; padding: 4px;">372</td>
+                            <td style="text-align: center; padding: 4px;">276</td>
+                            <td style="text-align: center; padding: 4px;">183</td>
+                            <td style="text-align: center; padding: 4px;">129</td>
+                            <td style="text-align: center; padding: 4px;">87</td>
+                            <td style="text-align: center; padding: 4px;">50</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">178</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">354</td>
+                            <td style="text-align: center; padding: 4px;">306</td>
+                            <td style="text-align: center; padding: 4px;">267</td>
+                            <td style="text-align: center; padding: 4px;">198</td>
+                            <td style="text-align: center; padding: 4px;">132</td>
+                            <td style="text-align: center; padding: 4px;">93</td>
+                            <td style="text-align: center; padding: 4px;">63</td>
+                            <td style="text-align: center; padding: 4px;">36</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">133</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">858</td>
+                            <td style="text-align: center; padding: 4px;">738</td>
+                            <td style="text-align: center; padding: 4px;">645</td>
+                            <td style="text-align: center; padding: 4px;">477</td>
+                            <td style="text-align: center; padding: 4px;">321</td>
+                            <td style="text-align: center; padding: 4px;">225</td>
+                            <td style="text-align: center; padding: 4px;">153</td>
+                            <td style="text-align: center; padding: 4px;">87</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">395</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">270</td>
+                            <td style="text-align: center; padding: 4px;">234</td>
+                            <td style="text-align: center; padding: 4px;">204</td>
+                            <td style="text-align: center; padding: 4px;">150</td>
+                            <td style="text-align: center; padding: 4px;">102</td>
+                            <td style="text-align: center; padding: 4px;">72</td>
+                            <td style="text-align: center; padding: 4px;">48</td>
+                            <td style="text-align: center; padding: 4px;">27</td>
+                                                    <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">272</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">606</td>
+                            <td style="text-align: center; padding: 4px;">522</td>
+                            <td style="text-align: center; padding: 4px;">456</td>
+                            <td style="text-align: center; padding: 4px;">339</td>
+                            <td style="text-align: center; padding: 4px;">228</td>
+                            <td style="text-align: center; padding: 4px;">159</td>
+                            <td style="text-align: center; padding: 4px;">108</td>
+                            <td style="text-align: center; padding: 4px;">60</td>
+                                                    <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">297</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">471</td>
+                            <td style="text-align: center; padding: 4px;">405</td>
+                            <td style="text-align: center; padding: 4px;">354</td>
+                            <td style="text-align: center; padding: 4px;">261</td>
+                            <td style="text-align: center; padding: 4px;">177</td>
+                            <td style="text-align: center; padding: 4px;">123</td>
+                            <td style="text-align: center; padding: 4px;">84</td>
+                            <td style="text-align: center; padding: 4px;">48</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">262</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">1,797</td>
+                            <td style="text-align: center; padding: 4px;">1,545</td>
+                            <td style="text-align: center; padding: 4px;">1,345</td>
+                            <td style="text-align: center; padding: 4px;">1,002</td>
+                            <td style="text-align: center; padding: 4px;">672</td>
+                            <td style="text-align: center; padding: 4px;">471</td>
+                            <td style="text-align: center; padding: 4px;">318</td>
+                            <td style="text-align: center; padding: 4px;">180</td>
+                            <td style="text-align: center; padding: 4px; border-left: 2px solid #ccc;">206</td>
+                        </tr>
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                    </tbody>
+                    <tfoot>
+                        <tr style="background: #f8f9fa; font-weight: 700;">
+                            <td style="padding: 5px 4px; border-top: 2px solid #1CABE2;">Total</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">5,451</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">4,692</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">4,099</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">3,031</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">2,037</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">1,425</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">969</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2;">548</td>
+                            <td style="text-align: center; padding: 5px 4px; border-top: 2px solid #1CABE2; border-left: 2px solid #ccc;">1,743</td>
+                        </tr>
+                    </tfoot>
                 </table>
 
                 <!-- Vulnerability Factors Breakdown -->
-                <h4 style="font-size: 16px; color: #333; margin: 20px 0 12px 0;">Vulnerability Factors by Age Group</h4>
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Vulnerability Factors by Age Group</h4>
                 
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Population Segment</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Poverty</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Severe Poverty</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Living in Urban Areas</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Living in Rural Areas</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white;">Population Segment</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Poverty</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Severe Poverty</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Living in Urban Areas</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Living in Rural Areas</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Total Population (12,450)</td>
-                            <td style="text-align: center; padding: 6px;">7,840 (63%)</td>
-                            <td style="text-align: center; padding: 6px;">3,560 (29%)</td>
-                            <td style="text-align: center; padding: 6px;">2,180 (18%)</td>
-                            <td style="text-align: center; padding: 6px;">4,210 (34%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Total Population (12,450)</td>
+                            <td style="text-align: center; padding: 4px;">7,840</td>
+                            <td style="text-align: center; padding: 4px;">3,560</td>
+                            <td style="text-align: center; padding: 4px;">2,180</td>
+                            <td style="text-align: center; padding: 4px;">4,210</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Age Group 0-5 Years (4,980)</td>
-                            <td style="text-align: center; padding: 6px;">3,140 (63%)</td>
-                            <td style="text-align: center; padding: 6px;">1,444 (29%)</td>
-                            <td style="text-align: center; padding: 6px;">896 (18%)</td>
-                            <td style="text-align: center; padding: 6px;">1,693 (34%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Age Group 5-15 Years (3,735)</td>
+                            <td style="text-align: center; padding: 4px;">2,353</td>
+                            <td style="text-align: center; padding: 4px;">1,083</td>
+                            <td style="text-align: center; padding: 4px;">672</td>
+                            <td style="text-align: center; padding: 4px;">1,270</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Age Group 5-15 Years (3,735)</td>
-                            <td style="text-align: center; padding: 6px;">2,353 (63%)</td>
-                            <td style="text-align: center; padding: 6px;">1,083 (29%)</td>
-                            <td style="text-align: center; padding: 6px;">672 (18%)</td>
-                            <td style="text-align: center; padding: 6px;">1,270 (34%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Age Group 0-5 Years (4,980)</td>
+                            <td style="text-align: center; padding: 4px;">3,140</td>
+                            <td style="text-align: center; padding: 4px;">1,444</td>
+                            <td style="text-align: center; padding: 4px;">896</td>
+                            <td style="text-align: center; padding: 4px;">1,693</td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h4 style="font-size: 16px; color: #333; margin: 12px 0 8px 0;">Vulnerability Factors by Admin Unit</h4>
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Vulnerability Factors by Admin Unit</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Admin Unit</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Poverty</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Severe Poverty</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Urban</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Rural</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Poverty</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Severe Poverty</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Urban</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Rural</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">North Caribbean Coast (RACCN)</td>
-                            <td style="text-align: center; padding: 6px;">1,980 (62%)</td>
-                            <td style="text-align: center; padding: 6px;">880 (28%)</td>
-                            <td style="text-align: center; padding: 6px;">560 (18%)</td>
-                            <td style="text-align: center; padding: 6px;">1,140 (36%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">781</td>
+                            <td style="text-align: center; padding: 4px;">360</td>
+                            <td style="text-align: center; padding: 4px;">223</td>
+                            <td style="text-align: center; padding: 4px;">422</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">South Caribbean Coast (RACCS)</td>
-                            <td style="text-align: center; padding: 6px;">2,340 (64%)</td>
-                            <td style="text-align: center; padding: 6px;">1,060 (29%)</td>
-                            <td style="text-align: center; padding: 6px;">710 (19%)</td>
-                            <td style="text-align: center; padding: 6px;">1,240 (34%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">561</td>
+                            <td style="text-align: center; padding: 4px;">258</td>
+                            <td style="text-align: center; padding: 4px;">160</td>
+                            <td style="text-align: center; padding: 4px;">302</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Jinotega</td>
-                            <td style="text-align: center; padding: 6px;">3,520 (63%)</td>
-                            <td style="text-align: center; padding: 6px;">1,620 (29%)</td>
-                            <td style="text-align: center; padding: 6px;">910 (16%)</td>
-                            <td style="text-align: center; padding: 6px;">1,830 (33%)</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">1,355</td>
+                            <td style="text-align: center; padding: 4px;">624</td>
+                            <td style="text-align: center; padding: 4px;">387</td>
+                            <td style="text-align: center; padding: 4px;">731</td>
                         </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">428</td>
+                            <td style="text-align: center; padding: 4px;">197</td>
+                            <td style="text-align: center; padding: 4px;">122</td>
+                            <td style="text-align: center; padding: 4px;">231</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">958</td>
+                            <td style="text-align: center; padding: 4px;">441</td>
+                            <td style="text-align: center; padding: 4px;">273</td>
+                            <td style="text-align: center; padding: 4px;">517</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">743</td>
+                            <td style="text-align: center; padding: 4px;">342</td>
+                            <td style="text-align: center; padding: 4px;">212</td>
+                            <td style="text-align: center; padding: 4px;">401</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">3,520</td>
+                            <td style="text-align: center; padding: 4px;">1,620</td>
+                            <td style="text-align: center; padding: 4px;">910</td>
+                            <td style="text-align: center; padding: 4px;">1,830</td>
+                        </tr>
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
                     </tbody>
                 </table>
 
                 <!-- Impacted Facilities -->
-                <h3 style="font-size: 18px; color: #333; margin: 32px 0 16px 0; border-bottom: 2px solid #1CABE2; padding-bottom: 8px;">Impacted Facilities</h3>
+                <h3 style="font-size: 16px; color: #333; margin: 40px 0 20px 0; border-bottom: 2px solid #1CABE2; padding-bottom: 6px; font-weight: 600;">Impacted Facilities</h3>
                 
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <!-- Facilities Change Indicator Legend -->
+                <div style="background: white; padding: 12px 16px; margin-bottom: 12px; border-left: 4px solid #1CABE2; border-top: 1px solid #e9ecef; border-right: 1px solid #e9ecef; border-bottom: 1px solid #e9ecef;">
+                    <div style="font-size: 12px; font-weight: 600; color: #333; margin-bottom: 8px;">Change Indicators (vs. previous forecast):</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div>
+                            <div style="font-size: 12px; color: #555; margin-bottom: 4px; font-weight: 600;">Increases:</div>
+                            <div style="display: flex; flex-direction: column; gap: 3px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-small">+2</span>
+                                    <span style="font-size: 11px; color: #555;">Small (3-10)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-medium">+7</span>
+                                    <span style="font-size: 11px; color: #555;">Medium (10-20)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-increase-large">+15</span>
+                                    <span style="font-size: 11px; color: #555;">Large (> 20)</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: #555; margin-bottom: 4px; font-weight: 600;">Decreases:</div>
+                            <div style="display: flex; flex-direction: column; gap: 3px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-small">-2</span>
+                                    <span style="font-size: 11px; color: #555;">Small (3-10)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-medium">-7</span>
+                                    <span style="font-size: 11px; color: #555;">Medium (10-20)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="change-indicator change-decrease-large">-15</span>
+                                    <span style="font-size: 11px; color: #555;">Large (> 20)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Per-threshold facilities breakdown -->
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Facilities by Wind Threshold</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Facility Type</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Facilities Affected</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Children Affected</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white;">Wind Threshold</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Schools</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">Health Facilities</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Schools</td>
-                            <td style="text-align: center; padding: 6px;">34<span class="change-indicator change-increase">+3</span></td>
-                            <td style="text-align: center; padding: 6px;">8,240<span class="change-indicator change-increase">+560</span></td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">34kt - Tropical Storm</td>
+                            <td style="text-align: center; padding: 4px;">42</td>
+                            <td style="text-align: center; padding: 4px;">10</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Health Facilities</td>
-                            <td style="text-align: center; padding: 6px;">8<span class="change-indicator change-increase">+1</span></td>
-                            <td style="text-align: center; padding: 6px;">4,210<span class="change-indicator change-increase">+290</span></td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">40kt - Strong Tropical Storm</td>
+                            <td style="text-align: center; padding: 4px;">37</td>
+                            <td style="text-align: center; padding: 4px;">9</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">50kt - Very Strong TS</td>
+                            <td style="text-align: center; padding: 4px;">34</td>
+                            <td style="text-align: center; padding: 4px;">8</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">64kt - Cat 1 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">26</td>
+                            <td style="text-align: center; padding: 4px;">6</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">83kt - Cat 2 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">19</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">96kt - Cat 3 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">14</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">113kt - Cat 4 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">9</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">137kt - Cat 5 Hurricane</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h4 style="font-size: 16px; color: #333; margin: 12px 0 8px 0;">Impacted Facilities by Admin Unit</h4>
-                <table class="facilities-table" style="width: 100%; margin-bottom: 16px;">
+                <!-- Admin unit x threshold (facilities) - Schools -->
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Schools by Admin Unit and Threshold</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
                     <thead>
                         <tr>
-                            <th style="text-align: left; padding: 6px; background: #1CABE2; color: white;">Admin Unit</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Schools</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Children (Schools)</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Health Facilities</th>
-                            <th style="text-align: center; padding: 6px; background: #1CABE2; color: white;">Children (Health)</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">34kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">40kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">50kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">64kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">83kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">96kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">113kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">137kt</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">North Caribbean Coast (RACCN)</td>
-                            <td style="text-align: center; padding: 6px;">12</td>
-                            <td style="text-align: center; padding: 6px;">2,860</td>
-                            <td style="text-align: center; padding: 6px;">3</td>
-                            <td style="text-align: center; padding: 6px;">1,120</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">South Caribbean Coast (RACCS)</td>
-                            <td style="text-align: center; padding: 6px;">10</td>
-                            <td style="text-align: center; padding: 6px;">2,540</td>
-                            <td style="text-align: center; padding: 6px;">2</td>
-                            <td style="text-align: center; padding: 6px;">980</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px; font-weight: 600;">Jinotega</td>
-                            <td style="text-align: center; padding: 6px;">12</td>
-                            <td style="text-align: center; padding: 6px;">2,840</td>
-                            <td style="text-align: center; padding: 6px;">3</td>
-                            <td style="text-align: center; padding: 6px;">1,110</td>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">8</td>
+                            <td style="text-align: center; padding: 4px;">7</td>
+                            <td style="text-align: center; padding: 4px;">7</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
                         </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">6</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">15</td>
+                            <td style="text-align: center; padding: 4px;">13</td>
+                            <td style="text-align: center; padding: 4px;">12</td>
+                            <td style="text-align: center; padding: 4px;">8</td>
+                            <td style="text-align: center; padding: 4px;">5</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                        </tr>
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                    </tbody>
+                </table>
+
+                <!-- Admin unit x threshold (facilities) - Health -->
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Health Facilities by Admin Unit and Threshold</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px;">
+                    <thead>
+                        <tr>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; max-width: 120px;">Admin Unit</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">34kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">40kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">50kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">64kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">83kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">96kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">113kt</th>
+                            <th style="text-align: center; padding: 4px; background: #1CABE2; color: white;">137kt</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Boaco</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Carazo</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chinandega</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Chontales</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Estelí</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Granada</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px; font-weight: 600; max-width: 120px; word-wrap: break-word;">Jinotega</td>
+                            <td style="text-align: center; padding: 4px;">4</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">3</td>
+                            <td style="text-align: center; padding: 4px;">2</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">1</td>
+                            <td style="text-align: center; padding: 4px;">0</td>
+                        </tr>
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
                     </tbody>
                 </table>
 
                 <!-- Most Impacted Schools -->
-                <h4 style="font-size: 16px; color: #333; margin: 20px 0 12px 0;">Most Impacted Schools</h4>
-                <table class="facilities-table">
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Most Impacted Schools</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px; border-collapse: collapse;">
                     <thead>
                         <tr>
-                            <th style="padding: 4px; font-size: 12px;">School Name</th>
-                            <th style="padding: 4px; font-size: 12px;">District</th>
-                            <th style="padding: 4px; font-size: 12px;">Children Served</th>
-                            <th style="padding: 4px; font-size: 12px;">Risk Level</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; font-weight: 600; border: none;">School Name</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; font-weight: 600; border: none;">District</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Escuela Primaria Central</td>
-                            <td style="padding: 4px; font-size: 11px;">Tegucigalpa</td>
-                            <td style="padding: 4px; font-size: 11px;">420</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Escuela Primaria Central</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Tegucigalpa</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Colegio San José</td>
-                            <td style="padding: 4px; font-size: 11px;">Comayagua</td>
-                            <td style="padding: 4px; font-size: 11px;">385</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Colegio San José</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Comayagua</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Instituto Básico Norte</td>
-                            <td style="padding: 4px; font-size: 11px;">La Ceiba</td>
-                            <td style="padding: 4px; font-size: 11px;">510</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-medium">MEDIUM</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Instituto Básico Norte</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">La Ceiba</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Escuela Rural La Esperanza</td>
-                            <td style="padding: 4px; font-size: 11px;">Olancho</td>
-                            <td style="padding: 4px; font-size: 11px;">180</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Escuela Rural La Esperanza</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Olancho</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Escuela Secundaria Sur</td>
-                            <td style="padding: 4px; font-size: 11px;">Tegucigalpa</td>
-                            <td style="padding: 4px; font-size: 11px;">320</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-medium">MEDIUM</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Escuela Secundaria Sur</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Tegucigalpa</td>
                         </tr>
                     </tbody>
                 </table>
+                <img src="/assets/img/nic_forecast_example_facilities_img.png" alt="Forecast Facilities Map" style="width: 100%; height: auto; border-radius: 6px; margin: 16px 0;">
 
                 <!-- Most Impacted Health Facilities -->
-                <h4 style="font-size: 16px; color: #333; margin: 20px 0 12px 0;">Most Impacted Health Facilities</h4>
-                <table class="facilities-table">
+                <h4 style="font-size: 14px; color: #333; margin: 24px 0 12px 0; font-weight: 600;">Most Impacted Health Facilities</h4>
+                <table class="facilities-table" style="width: 100%; margin-bottom: 12px; font-size: 12px; border-collapse: collapse;">
                     <thead>
                         <tr>
-                            <th style="padding: 4px; font-size: 12px;">Facility Name</th>
-                            <th style="padding: 4px; font-size: 12px;">District</th>
-                            <th style="padding: 4px; font-size: 12px;">Children Served</th>
-                            <th style="padding: 4px; font-size: 12px;">Risk Level</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; font-weight: 600; border: none;">Facility Name</th>
+                            <th style="text-align: left; padding: 4px; background: #1CABE2; color: white; font-weight: 600; border: none;">District</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Hospital Regional Norte</td>
-                            <td style="padding: 4px; font-size: 11px;">Tegucigalpa</td>
-                            <td style="padding: 4px; font-size: 11px;">1,240</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Hospital Regional Norte</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Tegucigalpa</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Centro de Salud Comayagua</td>
-                            <td style="padding: 4px; font-size: 11px;">Comayagua</td>
-                            <td style="padding: 4px; font-size: 11px;">890</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Centro de Salud Comayagua</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Comayagua</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Clínica Infantil La Ceiba</td>
-                            <td style="padding: 4px; font-size: 11px;">La Ceiba</td>
-                            <td style="padding: 4px; font-size: 11px;">620</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-medium">MEDIUM</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Clínica Infantil La Ceiba</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">La Ceiba</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Hospital Pediátrico Sur</td>
-                            <td style="padding: 4px; font-size: 11px;">Tegucigalpa</td>
-                            <td style="padding: 4px; font-size: 11px;">780</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-high">HIGH</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Hospital Pediátrico Sur</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Tegucigalpa</td>
                         </tr>
                         <tr>
-                            <td style="padding: 4px; font-size: 11px;">Centro de Salud Rural</td>
-                            <td style="padding: 4px; font-size: 11px;">Olancho</td>
-                            <td style="padding: 4px; font-size: 11px;">450</td>
-                            <td style="padding: 4px; font-size: 11px;"><span class="status-badge status-medium">MEDIUM</span></td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Centro de Salud Rural</td>
+                            <td style="padding: 4px; font-size: 12px; border-bottom: 1px solid #e9ecef; border-top: none; border-left: none; border-right: none;">Olancho</td>
                         </tr>
                     </tbody>
                 </table>
+                <img src="/assets/img/nic_forecast_example_facilities_img.png" alt="Forecast Facilities Map" style="width: 100%; height: auto; border-radius: 6px; margin: 16px 0;">
 
             </div>
 
-            <!-- Forecast Uncertainty -->
+            <!-- Next Forecast Update -->
             <div class="section">
-                <h2 class="section-title">Forecast Uncertainty & Next Update</h2>
-                <p style="line-height: 1.7; color: #555; margin-bottom: 16px;">
-                    This assessment is based on the 12:00 UTC forecast model with 51 ensemble members.
-                </p>
-                <p style="line-height: 1.7; color: #555;">
+                <p style="line-height: 1.7; color: #555; font-size: 14px;">
                     <strong>Next forecast update:</strong> October 27, 2023 18:00 UTC (6 hours)
                 </p>
             </div>
