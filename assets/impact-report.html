@@ -799,16 +799,8 @@
         const CHANGE_THRESHOLD_FAC_MEDIUM = 10;
         // Large facility changes are anything above CHANGE_THRESHOLD_FAC_MEDIUM
         
-        function goBackToDashboard() {
-            window.location.href = 'main.html';
-        }
-        
         function printReport() {
             window.print();
-        }
-        
-        function goToForecastComparison() {
-            window.location.href = 'forecast-comparison.html';
         }
         
         function getChangeIndicatorClass(value) {
@@ -827,33 +819,12 @@
         
         // Initialize interactive elements
         document.addEventListener('DOMContentLoaded', function() {
-            // Add back button
-            const backButton = document.createElement('button');
-            backButton.className = 'back-button';
-            backButton.textContent = 'Back to Dashboard';
-            backButton.addEventListener('click', goBackToDashboard);
-            document.body.appendChild(backButton);
-            
             // Add print button
             const printButton = document.createElement('button');
             printButton.className = 'print-button';
             printButton.textContent = 'Print Report';
             printButton.addEventListener('click', printReport);
             document.body.appendChild(printButton);
-            
-            // Add breadcrumb
-            const breadcrumb = document.createElement('div');
-            breadcrumb.className = 'breadcrumb';
-            breadcrumb.textContent = 'Main Dashboard → Impact Report';
-            document.body.appendChild(breadcrumb);
-            
-            // Add click handlers for interactive elements
-            const forecastMap = document.querySelector('img[alt="Hurricane Forecast Heatmap"]');
-            if (forecastMap) {
-                forecastMap.addEventListener('click', goToForecastComparison);
-                forecastMap.style.cursor = 'pointer';
-                forecastMap.title = 'Click to view detailed forecast comparison';
-            }
         });
     </script>
 </head>

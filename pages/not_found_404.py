@@ -7,15 +7,6 @@ from components.ui.footer import footer
 dash.register_page(__name__, name="oops!")
 
 header = dmc.Group(
-    # Left side - Logo
-    dmc.Anchor(
-        dmc.Image(
-            src="assets/img/aots-logo.png",
-            w=240,
-            style={"flex": 1},  # Ensures logo takes up space on the left
-        ),
-        href="/",
-    ),
     style={
         "alignItems": "center",
         "width": "100%",
