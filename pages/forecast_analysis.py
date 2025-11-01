@@ -8,13 +8,6 @@ import os
 import warnings
 import plotly.graph_objects as go
 
-# Optional scipy import for PDF estimation
-try:
-    from scipy.stats import gaussian_kde
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
-
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
 
@@ -32,8 +25,7 @@ VIEWS_DIR = config.VIEWS_DIR or "aos_views"
 ROOT_DATA_DIR = config.ROOT_DATA_DIR or "geodb"
 
 # Initialize data store
-data_store = get_data_store()
-giga_store = data_store
+giga_store = get_data_store()
 
 dash.register_page(
     __name__, path="/analysis", name="Forecast Analysis"
@@ -65,19 +57,14 @@ def get_snowflake_data():
         print(f"Error getting Snowflake data: {str(e)}")
         return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
 
-# Load initial metadata
+# Load initial metadata and pre-process for efficiency
 metadata_df = get_snowflake_data()
-# Parse dates and times from metadata
 if not metadata_df.empty:
-    metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
+    metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date.astype(str)
     metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
-    
-    # Get unique dates and times
     unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
-    unique_times = sorted(metadata_df['TIME'].unique())
 else:
     unique_dates = []
-    unique_times = []
 
 def make_custom_header():
     """Use the standard header which now includes Last Updated timestamp"""
@@ -90,16 +77,7 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
         dmc.SegmentedControl(
             id=f"analysis-{metric_prefix}-threshold-selector",
             value="34",
-            data=[
-                {"value": "34", "label": "34kt - Tropical storm"},
-                {"value": "40", "label": "40kt - Strong tropical"},
-                {"value": "50", "label": "50kt - Very strong tropical"},
-                {"value": "64", "label": "64kt - Cat 1 hurricane"},
-                {"value": "83", "label": "83kt - Cat 2 hurricane"},
-                {"value": "96", "label": "96kt - Cat 3 hurricane"},
-                {"value": "113", "label": "113kt - Cat 4 hurricane"},
-                {"value": "137", "label": "137kt - Cat 5 hurricane"},
-            ],
+            data=THRESHOLD_OPTIONS,
             mb="md",
             fullWidth=True
         ),
@@ -140,10 +118,10 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
             [
                 dmc.GridCol(
                     [
-                        impact_summary
+                        create_impact_summary(metric_prefix)  # Create fresh instance with unique IDs per tab
                     ],
                     span=6
-                ),
+                    ),
                 dmc.GridCol(
                     [
                         dmc.Paper(
@@ -163,7 +141,7 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
         ),
     ]
 
-# Selector section - full width, evenly distributed
+# Selector section
 selectors_section = dmc.Paper([
     dmc.Group(
         [
@@ -250,13 +228,14 @@ mb="0"
 )
 
 
-# Impact Summary Section
-impact_summary = dmc.Paper([
+# Impact Summary Section - Create as function to return fresh instances for each tab with unique IDs
+def create_impact_summary(tab_suffix=""):
+    """Create a fresh instance of the impact summary table for each tab with unique IDs per tab"""
+    suffix = f"-{tab_suffix}" if tab_suffix else ""
+    return dmc.Paper([
                     dmc.Group([
                         dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
                     ], justify="flex-start", gap="sm", mb="sm"),
-                    
-                    dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
                     
                     # Impact Summary Table
                     dmc.Table(
@@ -268,58 +247,58 @@ impact_summary = dmc.Paper([
                                         dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
                                     ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                     dmc.TableTh([
-                                        dmc.Text("Deterministic", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                        dmc.Badge("#51", id="analysis-deterministic-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
+                                        dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
+                                        dmc.Badge("#51", id=f"analysis-deterministic-badge{suffix}", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
                                     ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"}),
                                     dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top"}),
                                     dmc.TableTh([
                                         dmc.Text("Worst", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                        dmc.Badge("Member", id="analysis-high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
+                                        dmc.Badge("Member", id=f"analysis-high-impact-badge{suffix}", size="xs", color="red", variant="light", style={"marginTop": "2px"})
                                     ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px"})
                                 ])
                             ]),
                             dmc.TableTbody([
                                 dmc.TableTr([
                                     dmc.TableTd("Population", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-population-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-population-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id=f"analysis-population-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-population-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-population-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="analysis-children-affected-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-children-affected-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="analysis-infant-affected-low",
+                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-low{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-infant-affected-probabilistic",
+                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-probabilistic{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-infant-affected-high",
+                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-high{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-schools-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-schools-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-health-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-health-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
                                         html.Span("Built Surface m"),
                                         html.Sup("2"),
                                     ], style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-bsm2-count-low", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id="analysis-bsm2-count-high", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ])
                             ])
                         ],
@@ -334,14 +313,26 @@ impact_summary = dmc.Paper([
                 style={"marginBottom": "12px"}
             )
 
+# Threshold options constant to avoid duplication
+THRESHOLD_OPTIONS = [
+    {"value": "34", "label": "34kt - Tropical storm"},
+    {"value": "40", "label": "40kt - Strong tropical"},
+    {"value": "50", "label": "50kt - Very strong tropical"},
+    {"value": "64", "label": "64kt - Cat 1 hurricane"},
+    {"value": "83", "label": "83kt - Cat 2 hurricane"},
+    {"value": "96", "label": "96kt - Cat 3 hurricane"},
+    {"value": "113", "label": "113kt - Cat 4 hurricane"},
+    {"value": "137", "label": "137kt - Cat 5 hurricane"},
+]
+
 def make_single_page_layout():
     """Create the forecast analysis dashboard layout"""
     return dmc.Stack(
         [
-            # Selectors at top - full width
+            # Selectors at top
             selectors_section,
             
-            # Main content area - full width
+            # Main content area
             dmc.Paper(
                 [
                     # Store component to track selected wind threshold from nested tabs
@@ -367,93 +358,17 @@ def make_single_page_layout():
                             ),
                             # Population Tab
                             dmc.TabsPanel(
-                                [
-                                    # Wind threshold selector tabs - just for selecting, graphs are outside
-                                    dmc.SegmentedControl(
-                                        id="analysis-population-threshold-selector",
-                                        value="34",
-                                        data=[
-                                            {"value": "34", "label": "34kt - Tropical storm"},
-                                            {"value": "40", "label": "40kt - Strong tropical"},
-                                            {"value": "50", "label": "50kt - Very strong tropical"},
-                                            {"value": "64", "label": "64kt - Cat 1 hurricane"},
-                                            {"value": "83", "label": "83kt - Cat 2 hurricane"},
-                                            {"value": "96", "label": "96kt - Cat 3 hurricane"},
-                                            {"value": "113", "label": "113kt - Cat 4 hurricane"},
-                                            {"value": "137", "label": "137kt - Cat 5 hurricane"},
-                                        ],
-                                        mb="md",
-                                        fullWidth=True
-                                    ),
-                                    # Single set of graphs (no duplicates)
-                                    dmc.Grid(
-                                        [
-                                            dmc.GridCol(
-                                                [
-                                                    dmc.Paper(
-                                                        [
-                                                            dmc.Text("POPULATION AFFECTED", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
-                                                            dcc.Graph(id="analysis-population-plot", style={"height": "350px"})
-                                                        ],
-                                                        p="md",
-                                                        shadow="xs"
-                                                    )
-                                                ],
-                                                span=6
-                                            ),
-                                            dmc.GridCol(
-                                                [
-                                                    dmc.Paper(
-                                                        [
-                                                            dmc.Text("EXCEEDANCE PROBABILITY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
-                                                            dcc.Graph(id="analysis-population-exceedance", style={"height": "350px"})
-                                                        ],
-                                                        p="md",
-                                                        shadow="xs"
-                                                    )
-                                                ],
-                                                span=6
-                                            )
-                                        ],
-                                        gutter="md",
-                                        mb="md"
-                                    ),
-                                    dmc.Grid(
-                                        [
-                                            dmc.GridCol(
-                                                [
-                                                    impact_summary
-                                                ],
-                                                span=6
-                                            ),
-                                            dmc.GridCol(
-                                                [
-                                                    dmc.Paper(
-                                                        [
-                                                            dmc.Text("IMPACT PERCENTILES", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}, mb="xs"),
-                                                            html.Div(id="analysis-population-percentiles")
-                                                        ],
-                                                        p="md",
-                                                        shadow="xs"
-                                                    )
-                                                ],
-                                                span=6
-                                            )
-                                        ],
-                                        gutter="md",
-                                        mb="md"
-                                    ),
-                                ],
+                                create_wind_threshold_tabs_content("population", "Population"),
                                 value="population"
                             ),
                             # Children Tab
                             dmc.TabsPanel(
-                                create_wind_threshold_tabs_content("children", "Children (Age 5-15)"),
+                                create_wind_threshold_tabs_content("children", "Age 5-15"),
                                 value="children"
                             ),
                             # Infants Tab
                             dmc.TabsPanel(
-                                create_wind_threshold_tabs_content("infants", "Infants (Age 0-5)"),
+                                create_wind_threshold_tabs_content("infants", "Age 0-5"),
                                 value="infants"
                             ),
                             # Schools Tab
@@ -472,6 +387,7 @@ def make_single_page_layout():
                                 value="built_surface"
                             )
                         ],
+                        id="analysis-metrics-tabs",
                         value="population",
                         mb="md"
                     ),
@@ -511,6 +427,20 @@ layout = make_single_page_appshell()
 # CALLBACKS FOR HURRICANE SELECTORS
 # =============================================================================
 
+# Pre-compute date options for efficiency
+if unique_dates:
+    date_options = []
+    for date_str in unique_dates:
+        date_obj = pd.to_datetime(date_str).date()
+        date_options.append({
+            "value": date_str,
+            "label": date_obj.strftime('%b %d, %Y')
+        })
+    default_date = date_options[0]['value'] if date_options else None
+else:
+    date_options = []
+    default_date = None
+
 @callback(
     Output("analysis-forecast-date", "data"),
     Output("analysis-forecast-date", "value"),
@@ -519,71 +449,32 @@ layout = make_single_page_appshell()
 )
 def update_forecast_dates(country):
     """Get available forecast dates from pre-loaded data and set most recent as default"""
-    print(f"Analysis: update_forecast_dates called with country: {country}")
-    
-    if not metadata_df.empty:
-        # Format dates and create options
-        date_options = []
-        for date in unique_dates:
-            formatted_date = date.strftime('%Y-%m-%d')
-            display_date = date.strftime('%b %d, %Y')
-            date_options.append({
-                "value": formatted_date,
-                "label": display_date
-            })
-        
-        # Set default to most recent date (first in the list since unique_dates is sorted reverse=True)
-        default_date = date_options[0]['value'] if date_options else None
-        print(f"Analysis: Returning {len(date_options)} date options from pre-loaded data")
-        return date_options, default_date
-    else:
-        print("Analysis: No metadata available, returning fallback dates")
-        # Return some fallback data for testing
-        fallback_dates = [
-            {"value": "2025-10-20", "label": "Oct 20, 2025"},
-            {"value": "2025-10-15", "label": "Oct 15, 2025"},
-            {"value": "2025-10-10", "label": "Oct 10, 2025"},
-            {"value": "2025-10-05", "label": "Oct 05, 2025"},
-            {"value": "2025-09-30", "label": "Sep 30, 2025"}
-        ]
-        return fallback_dates, fallback_dates[0]['value']
+    return date_options, default_date
 
 @callback(
     Output("analysis-forecast-time", "data"),
     Output("analysis-forecast-time", "value", allow_duplicate=True),
-    [Input("analysis-forecast-date", "value")],
+    Input("analysis-forecast-date", "value"),
     prevent_initial_call='initial_duplicate'
 )
 def update_forecast_times(selected_date):
     """Get available forecast times for selected date, with most recent time as default"""
+    all_possible_times = ["00:00", "06:00", "12:00", "18:00"]
+    
     if not selected_date or metadata_df.empty:
-        # Return all possible times with unavailable ones grayed out
-        all_times = ["00:00", "06:00", "12:00", "18:00"]
-        return [{"value": t, "label": f"{t} UTC", "disabled": True} for t in all_times], "00:00"
+        return [{"value": t, "label": f"{t} UTC", "disabled": True} for t in all_possible_times], "00:00"
     
-    # Filter metadata for selected date
-    df = metadata_df.copy()
-    df['DATE'] = pd.to_datetime(df['FORECAST_TIME']).dt.date.astype(str)
-    df['TIME'] = pd.to_datetime(df['FORECAST_TIME']).dt.strftime('%H:%M')
-    
-    # Get available times for selected date
-    available_times = sorted(df[df['DATE'] == selected_date]['TIME'].unique())
+    # Get available times for selected date (metadata_df already has DATE and TIME columns)
+    available_times = sorted(metadata_df[metadata_df['DATE'] == selected_date]['TIME'].unique())
     
     # Create options with all possible times, marking unavailable ones as disabled
-    all_possible_times = ["00:00", "06:00", "12:00", "18:00"]
-    time_options = []
+    time_options = [
+        {"value": t, "label": f"{t} UTC", "disabled": t not in available_times}
+        for t in all_possible_times
+    ]
     
-    for time in all_possible_times:
-        is_available = time in available_times
-        time_options.append({
-            "value": time,
-            "label": f"{time} UTC",
-            "disabled": not is_available
-        })
-    
-    # Set default to most recent available time (last in sorted list)
+    # Set default to most recent available time
     default_time = available_times[-1] if available_times else "00:00"
-    print(f"Analysis: Forecast times for {selected_date}: available={available_times}, default (most recent)={default_time}")
     return time_options, default_time
 
 @callback(
@@ -599,25 +490,14 @@ def update_storm_options(country, forecast_date, forecast_time):
     if not forecast_date or not forecast_time or metadata_df.empty:
         return [], None
     
-    # Filter metadata for selected date and time
-    df = metadata_df.copy()
-    df['DATE'] = pd.to_datetime(df['FORECAST_TIME']).dt.date.astype(str)
-    df['TIME'] = pd.to_datetime(df['FORECAST_TIME']).dt.strftime('%H:%M')
+    # Get available storms for selected date and time (metadata_df already has DATE and TIME columns)
+    available_storms = sorted(
+        metadata_df[(metadata_df['DATE'] == forecast_date) & (metadata_df['TIME'] == forecast_time)]['TRACK_ID'].unique()
+    )
     
-    # Get available storms for selected date and time
-    available_storms = sorted(df[(df['DATE'] == forecast_date) & (df['TIME'] == forecast_time)]['TRACK_ID'].unique())
-    
-    # Create options with only available storms (no grayed out options)
-    storm_options = []
-    for storm in available_storms:
-        storm_options.append({
-            "value": storm,
-            "label": storm
-        })
-    
-    # Set default to most recent storm (last in sorted list)
+    # Create options and set default to most recent storm
+    storm_options = [{"value": storm, "label": storm} for storm in available_storms]
     default_storm = available_storms[-1] if available_storms else None
-    print(f"Analysis: Storms for {forecast_date} {forecast_time}: available={available_storms}, options={len(storm_options)}, default (most recent)={default_storm}")
     return storm_options, default_storm
 
 # Callback to update wind threshold store when any threshold selector changes
@@ -650,127 +530,226 @@ def update_wind_threshold_store(pop_val, children_val, infants_val, schools_val,
     return pop_val if pop_val else "34"
 
 @callback(
-    Output("analysis-wind-threshold-select", "data"),
-    Output("analysis-wind-threshold-select", "value", allow_duplicate=True),
+    [Output("analysis-population-threshold-selector", "data"),
+     Output("analysis-population-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-children-threshold-selector", "data"),
+     Output("analysis-children-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-infants-threshold-selector", "data"),
+     Output("analysis-infants-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-schools-threshold-selector", "data"),
+     Output("analysis-schools-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-health-threshold-selector", "data"),
+     Output("analysis-health-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-built-surface-threshold-selector", "data"),
+     Output("analysis-built-surface-threshold-selector", "value", allow_duplicate=True)],
     [Input("analysis-storm-select", "value"),
      Input("analysis-forecast-date", "value"),
      Input("analysis-forecast-time", "value")],
-    [State("analysis-wind-threshold-select", "value")],
+    [State("analysis-population-threshold-selector", "value")],
     prevent_initial_call='initial_duplicate'
 )
-def update_wind_threshold_options(storm, date, time, current_threshold):
-    """Update wind threshold dropdown based on selected storm, date, and time - set most recent available as default"""
+def update_threshold_selectors(storm, date, time, current_threshold):
+    """Update all threshold SegmentedControls based on available thresholds from Snowflake"""
+    
     if not all([storm, date, time]):
-        # Return all thresholds if no storm selected
-        all_thresholds = [
-            {"value": "34", "label": "34kt - Tropical storm force (17.49 m/s)"},
-            {"value": "40", "label": "40kt - Strong tropical storm (20.58 m/s)"},
-            {"value": "50", "label": "50kt - Very strong tropical storm (25.72 m/s)"},
-            {"value": "64", "label": "64kt - Category 1 hurricane (32.92 m/s)"},
-            {"value": "83", "label": "83kt - Category 2 hurricane (42.70 m/s)"},
-            {"value": "96", "label": "96kt - Category 3 hurricane (49.39 m/s)"},
-            {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
-            {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
-        ]
-        return all_thresholds, "34"  # Default to 34kt
+        # Return all thresholds enabled if no storm selected
+        return (
+            THRESHOLD_OPTIONS, "34",  # population
+            THRESHOLD_OPTIONS, "34",  # children
+            THRESHOLD_OPTIONS, "34",  # infants
+            THRESHOLD_OPTIONS, "34",  # schools
+            THRESHOLD_OPTIONS, "34",  # health
+            THRESHOLD_OPTIONS, "34"   # built-surface
+        )
     
     try:
         # Get available wind thresholds from Snowflake
         forecast_datetime = f"{date} {time}:00"
         available_thresholds = get_available_wind_thresholds(storm, forecast_datetime)
         
-        # Define all possible thresholds with labels
-        all_thresholds = {
-            "34": "34kt - Tropical storm force (17.49 m/s)",
-            "40": "40kt - Strong tropical storm (20.58 m/s)",
-            "50": "50kt - Very strong tropical storm (25.72 m/s)",
-            "64": "64kt - Category 1 hurricane (32.92 m/s)",
-            "83": "83kt - Category 2 hurricane (42.70 m/s)",
-            "96": "96kt - Category 3 hurricane (49.39 m/s)",
-            "113": "113kt - Category 4 hurricane (58.12 m/s)",
-            "137": "137kt - Category 5 hurricane (70.48 m/s)"
-        }
+        # Filter options to only include available thresholds
+        filtered_options = [opt for opt in THRESHOLD_OPTIONS if opt["value"] in available_thresholds]
         
-        # Create options list, marking unavailable ones as disabled
-        options = []
-        for threshold, label in all_thresholds.items():
-            is_available = threshold in available_thresholds
-            options.append({
-                "value": threshold,
-                "label": label,
-                "disabled": not is_available
-            })
-        
-        # Set default threshold - preserve user selection if still available, otherwise default to 50kt
-        default_threshold = None
-        if available_thresholds:
-            # If user's current selection is still available, keep it
-            if current_threshold and current_threshold in available_thresholds:
-                default_threshold = current_threshold
-            else:
-                # Otherwise, prefer 50kt if available, otherwise use the highest available
-                if "50" in available_thresholds:
-                    default_threshold = "50"
-                else:
-                    sorted_thresholds = sorted([int(t) for t in available_thresholds], reverse=True)
-                    default_threshold = str(sorted_thresholds[0])
+        # Set default threshold - preserve user selection if still available, otherwise prefer 50kt or first available
+        if not filtered_options:
+            filtered_options = THRESHOLD_OPTIONS
+            default_threshold = "34"
+        elif current_threshold and current_threshold in available_thresholds:
+            default_threshold = current_threshold
+        elif "50" in available_thresholds:
+            default_threshold = "50"
         else:
-            default_threshold = "50"  # Fallback default
+            default_threshold = str(sorted([int(t) for t in available_thresholds])[0])
         
-        print(f"Analysis: Wind thresholds for {storm} at {forecast_datetime}: available={available_thresholds}, current={current_threshold}, default={default_threshold}")
-        return options, default_threshold
+        # Return same options and default for all selectors (they should stay in sync)
+        return (
+            filtered_options, default_threshold,  # population
+            filtered_options, default_threshold,  # children
+            filtered_options, default_threshold,  # infants
+            filtered_options, default_threshold,  # schools
+            filtered_options, default_threshold,  # health
+            filtered_options, default_threshold   # built-surface
+        )
         
     except Exception as e:
         print(f"Analysis: Error getting wind threshold options: {e}")
-        # Return all thresholds on error
-        all_thresholds = [
-            {"value": "34", "label": "34kt - Tropical storm force (17.49 m/s)"},
-            {"value": "40", "label": "40kt - Strong tropical storm (20.58 m/s)"},
-            {"value": "50", "label": "50kt - Very strong tropical storm (25.72 m/s)"},
-            {"value": "64", "label": "64kt - Category 1 hurricane (32.92 m/s)"},
-            {"value": "83", "label": "83kt - Category 2 hurricane (42.70 m/s)"},
-            {"value": "96", "label": "96kt - Category 3 hurricane (49.39 m/s)"},
-            {"value": "113", "label": "113kt - Category 4 hurricane (58.12 m/s)"},
-            {"value": "137", "label": "137kt - Category 5 hurricane (70.48 m/s)"}
-        ]
-        return all_thresholds, "50"
+        return (
+            THRESHOLD_OPTIONS, "34",  # population
+            THRESHOLD_OPTIONS, "34",  # children
+            THRESHOLD_OPTIONS, "34",  # infants
+            THRESHOLD_OPTIONS, "34",  # schools
+            THRESHOLD_OPTIONS, "34",  # health
+            THRESHOLD_OPTIONS, "34"   # built-surface
+        )
 
 # =============================================================================
 # CALLBACK FOR IMPACT SUMMARY
 # =============================================================================
 
 @callback(
-    [Output("analysis-population-count-low", "children"),
-     Output("analysis-population-count-probabilistic", "children"),
-     Output("analysis-population-count-high", "children"),
-     Output("analysis-children-affected-low", "children"),
-     Output("analysis-children-affected-probabilistic", "children"),
-     Output("analysis-children-affected-high", "children"),
-     Output("analysis-infant-affected-low", "children"),
-     Output("analysis-infant-affected-probabilistic", "children"),
-     Output("analysis-infant-affected-high", "children"),
-     Output("analysis-schools-count-low", "children"),
-     Output("analysis-schools-count-probabilistic", "children"),
-     Output("analysis-schools-count-high", "children"),
-     Output("analysis-health-count-low", "children"),
-     Output("analysis-health-count-probabilistic", "children"),
-     Output("analysis-health-count-high", "children"),
-     Output("analysis-bsm2-count-low", "children"),
-     Output("analysis-bsm2-count-probabilistic", "children"),
-     Output("analysis-bsm2-count-high", "children"),
-     Output("analysis-high-impact-badge", "children")],
+    # Outputs for population tab
+    [Output("analysis-population-count-low-population", "children"),
+     Output("analysis-population-count-probabilistic-population", "children"),
+     Output("analysis-population-count-high-population", "children"),
+     Output("analysis-children-affected-low-population", "children"),
+     Output("analysis-children-affected-probabilistic-population", "children"),
+     Output("analysis-children-affected-high-population", "children"),
+     Output("analysis-infant-affected-low-population", "children"),
+     Output("analysis-infant-affected-probabilistic-population", "children"),
+     Output("analysis-infant-affected-high-population", "children"),
+     Output("analysis-schools-count-low-population", "children"),
+     Output("analysis-schools-count-probabilistic-population", "children"),
+     Output("analysis-schools-count-high-population", "children"),
+     Output("analysis-health-count-low-population", "children"),
+     Output("analysis-health-count-probabilistic-population", "children"),
+     Output("analysis-health-count-high-population", "children"),
+     Output("analysis-bsm2-count-low-population", "children"),
+     Output("analysis-bsm2-count-probabilistic-population", "children"),
+     Output("analysis-bsm2-count-high-population", "children"),
+     Output("analysis-high-impact-badge-population", "children"),
+     # Outputs for children tab
+     Output("analysis-population-count-low-children", "children"),
+     Output("analysis-population-count-probabilistic-children", "children"),
+     Output("analysis-population-count-high-children", "children"),
+     Output("analysis-children-affected-low-children", "children"),
+     Output("analysis-children-affected-probabilistic-children", "children"),
+     Output("analysis-children-affected-high-children", "children"),
+     Output("analysis-infant-affected-low-children", "children"),
+     Output("analysis-infant-affected-probabilistic-children", "children"),
+     Output("analysis-infant-affected-high-children", "children"),
+     Output("analysis-schools-count-low-children", "children"),
+     Output("analysis-schools-count-probabilistic-children", "children"),
+     Output("analysis-schools-count-high-children", "children"),
+     Output("analysis-health-count-low-children", "children"),
+     Output("analysis-health-count-probabilistic-children", "children"),
+     Output("analysis-health-count-high-children", "children"),
+     Output("analysis-bsm2-count-low-children", "children"),
+     Output("analysis-bsm2-count-probabilistic-children", "children"),
+     Output("analysis-bsm2-count-high-children", "children"),
+     Output("analysis-high-impact-badge-children", "children"),
+     # Outputs for infants tab
+     Output("analysis-population-count-low-infants", "children"),
+     Output("analysis-population-count-probabilistic-infants", "children"),
+     Output("analysis-population-count-high-infants", "children"),
+     Output("analysis-children-affected-low-infants", "children"),
+     Output("analysis-children-affected-probabilistic-infants", "children"),
+     Output("analysis-children-affected-high-infants", "children"),
+     Output("analysis-infant-affected-low-infants", "children"),
+     Output("analysis-infant-affected-probabilistic-infants", "children"),
+     Output("analysis-infant-affected-high-infants", "children"),
+     Output("analysis-schools-count-low-infants", "children"),
+     Output("analysis-schools-count-probabilistic-infants", "children"),
+     Output("analysis-schools-count-high-infants", "children"),
+     Output("analysis-health-count-low-infants", "children"),
+     Output("analysis-health-count-probabilistic-infants", "children"),
+     Output("analysis-health-count-high-infants", "children"),
+     Output("analysis-bsm2-count-low-infants", "children"),
+     Output("analysis-bsm2-count-probabilistic-infants", "children"),
+     Output("analysis-bsm2-count-high-infants", "children"),
+     Output("analysis-high-impact-badge-infants", "children"),
+     # Outputs for schools tab
+     Output("analysis-population-count-low-schools", "children"),
+     Output("analysis-population-count-probabilistic-schools", "children"),
+     Output("analysis-population-count-high-schools", "children"),
+     Output("analysis-children-affected-low-schools", "children"),
+     Output("analysis-children-affected-probabilistic-schools", "children"),
+     Output("analysis-children-affected-high-schools", "children"),
+     Output("analysis-infant-affected-low-schools", "children"),
+     Output("analysis-infant-affected-probabilistic-schools", "children"),
+     Output("analysis-infant-affected-high-schools", "children"),
+     Output("analysis-schools-count-low-schools", "children"),
+     Output("analysis-schools-count-probabilistic-schools", "children"),
+     Output("analysis-schools-count-high-schools", "children"),
+     Output("analysis-health-count-low-schools", "children"),
+     Output("analysis-health-count-probabilistic-schools", "children"),
+     Output("analysis-health-count-high-schools", "children"),
+     Output("analysis-bsm2-count-low-schools", "children"),
+     Output("analysis-bsm2-count-probabilistic-schools", "children"),
+     Output("analysis-bsm2-count-high-schools", "children"),
+     Output("analysis-high-impact-badge-schools", "children"),
+     # Outputs for health tab
+     Output("analysis-population-count-low-health", "children"),
+     Output("analysis-population-count-probabilistic-health", "children"),
+     Output("analysis-population-count-high-health", "children"),
+     Output("analysis-children-affected-low-health", "children"),
+     Output("analysis-children-affected-probabilistic-health", "children"),
+     Output("analysis-children-affected-high-health", "children"),
+     Output("analysis-infant-affected-low-health", "children"),
+     Output("analysis-infant-affected-probabilistic-health", "children"),
+     Output("analysis-infant-affected-high-health", "children"),
+     Output("analysis-schools-count-low-health", "children"),
+     Output("analysis-schools-count-probabilistic-health", "children"),
+     Output("analysis-schools-count-high-health", "children"),
+     Output("analysis-health-count-low-health", "children"),
+     Output("analysis-health-count-probabilistic-health", "children"),
+     Output("analysis-health-count-high-health", "children"),
+     Output("analysis-bsm2-count-low-health", "children"),
+     Output("analysis-bsm2-count-probabilistic-health", "children"),
+     Output("analysis-bsm2-count-high-health", "children"),
+     Output("analysis-high-impact-badge-health", "children"),
+     # Outputs for built-surface tab
+     Output("analysis-population-count-low-built-surface", "children"),
+     Output("analysis-population-count-probabilistic-built-surface", "children"),
+     Output("analysis-population-count-high-built-surface", "children"),
+     Output("analysis-children-affected-low-built-surface", "children"),
+     Output("analysis-children-affected-probabilistic-built-surface", "children"),
+     Output("analysis-children-affected-high-built-surface", "children"),
+     Output("analysis-infant-affected-low-built-surface", "children"),
+     Output("analysis-infant-affected-probabilistic-built-surface", "children"),
+     Output("analysis-infant-affected-high-built-surface", "children"),
+     Output("analysis-schools-count-low-built-surface", "children"),
+     Output("analysis-schools-count-probabilistic-built-surface", "children"),
+     Output("analysis-schools-count-high-built-surface", "children"),
+     Output("analysis-health-count-low-built-surface", "children"),
+     Output("analysis-health-count-probabilistic-built-surface", "children"),
+     Output("analysis-health-count-high-built-surface", "children"),
+     Output("analysis-bsm2-count-low-built-surface", "children"),
+     Output("analysis-bsm2-count-probabilistic-built-surface", "children"),
+     Output("analysis-bsm2-count-high-built-surface", "children"),
+     Output("analysis-high-impact-badge-built-surface", "children")],
    [Input("analysis-storm-select", "value"),
     Input("analysis-wind-threshold-store", "data"),
+    Input("analysis-population-threshold-selector", "value"),
+    Input("analysis-children-threshold-selector", "value"),
+    Input("analysis-infants-threshold-selector", "value"),
+    Input("analysis-schools-threshold-selector", "value"),
+    Input("analysis-health-threshold-selector", "value"),
+    Input("analysis-built-surface-threshold-selector", "value"),
     Input("analysis-country-select", "value"),
     Input("analysis-forecast-date", "value"),
-    Input("analysis-forecast-time", "value")],
+    Input("analysis-forecast-time", "value"),
+    Input("analysis-metrics-tabs", "value")],  # Trigger on tab switch to force update
     prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecast_time):
+def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thresh, infants_thresh, schools_thresh, health_thresh, built_surface_thresh, country, forecast_date, forecast_time, active_tab):
     """Update impact metrics for all three scenarios when Load Impact Summary button is clicked"""
     
+    # Use the store value as primary
+    wind_threshold = wind_threshold_store or pop_thresh or children_thresh or infants_thresh or schools_thresh or health_thresh or built_surface_thresh or "34"
+    
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        return ("N/A",) * 18 + ("N/A",)  # 18 metrics + 1 badge = 19 outputs
+        na_values = ("N/A",) * 19  # 18 metrics + 1 badge = 19 outputs per tab
+        return na_values * 6  # Return for all 6 tabs
     
     # Calculate probabilistic impact metrics
     try:
@@ -789,9 +768,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         
-        # Initialize member badge (deterministic is always #51, doesn't need updating)
+        # Initialize member badge
         high_member_badge = "N/A"
-        status_msg = None
         
         if giga_store.file_exists(filepath):
             try:
@@ -863,21 +841,17 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
                         high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
                 
-                print(f"Analysis Impact metrics: Successfully loaded {len(df)} features")
-                status_msg = dmc.Alert("Impact summary loaded successfully", title="Success", color="green", variant="light")
-                
             except Exception as e:
                 print(f"Analysis Impact metrics: Error reading file {filename}: {e}")
-                status_msg = dmc.Alert(f"Error loading impact data: {str(e)}", title="Error", color="red", variant="light")
         else:
             print(f"Analysis Impact metrics: File not found {filename}")
-            status_msg = dmc.Alert("Impact data file not found. Please ensure the storm data has been processed.", title="Data Not Found", color="orange", variant="light")
         
         # Format results
         def format_value(value):
             return str(value) if isinstance(value, str) else f"{value:,.0f}"
         
-        return (
+        # Create the single set of values (19 outputs per tab)
+        tab_values = (
             # Population count
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
@@ -905,10 +879,14 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             # Member badge (deterministic badge is static #51, doesn't need updating)
             high_member_badge
         )
+        
+        # Return the same values for all 6 tabs (6 * 19 = 114 outputs)
+        return tab_values * 6
             
     except Exception as e:
         print(f"Analysis Impact metrics: Error updating metrics: {e}")
-        return ("N/A",) * 18 + ("N/A",)  # 18 metrics + 1 badge = 19 outputs
+        na_values = ("N/A",) * 19  # 18 metrics + 1 badge = 19 outputs per tab
+        return na_values * 6  # Return for all 6 tabs
 
 
 # =============================================================================
@@ -944,9 +922,6 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 )
 def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_time):
     """Generate horizontal box plot showing population impact distribution across ensemble members"""
-    
-    # Debug logging
-    print(f"update_box_plots called with: storm={storm}, wind_threshold={wind_threshold}, country={country}, date={forecast_date}, time={forecast_time}")
     
     # Create empty figure as default
     empty_fig = go.Figure()
@@ -1048,11 +1023,9 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             available_wind_thresholds = []
         
         # Calculate totals per ensemble member for all metrics
-        print(f"Loading data from: {tracks_filepath}")
-        print(f"Found {len(gdf_tracks)} track records with {len(gdf_tracks['zone_id'].unique())} unique members")
-        
         member_data = []
-        for member_id in gdf_tracks['zone_id'].unique():
+        unique_members = gdf_tracks['zone_id'].unique()
+        for member_id in unique_members:
             member_data_subset = gdf_tracks[gdf_tracks['zone_id'] == member_id]
             
             member_row = {'member': member_id}
@@ -1070,9 +1043,6 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_data.append(member_row)
         
         member_df = pd.DataFrame(member_data)
-        print(f"Created member_df with {len(member_df)} rows")
-        print(f"Columns: {member_df.columns.tolist()}")
-        print(f"Sample data:\n{member_df.head()}")
         
         # Load data for higher wind thresholds
         higher_threshold_data = {}  # Structure: {metric_name: {threshold: values_array}}
@@ -1107,28 +1077,14 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                             higher_member_df = pd.DataFrame(higher_member_data)
                             
                             # Store values for each metric
-                            if 'population' not in higher_threshold_data:
-                                higher_threshold_data['population'] = {}
-                            if 'children' not in higher_threshold_data:
-                                higher_threshold_data['children'] = {}
-                            if 'infants' not in higher_threshold_data:
-                                higher_threshold_data['infants'] = {}
-                            if 'schools' not in higher_threshold_data:
-                                higher_threshold_data['schools'] = {}
-                            if 'health' not in higher_threshold_data:
-                                higher_threshold_data['health'] = {}
-                            if 'built_surface' not in higher_threshold_data:
-                                higher_threshold_data['built_surface'] = {}
+                            metric_names = ['population', 'children', 'infants', 'schools', 'health', 'built_surface']
+                            for metric in metric_names:
+                                if metric not in higher_threshold_data:
+                                    higher_threshold_data[metric] = {}
                             
                             if not higher_member_df.empty:
-                                higher_threshold_data['population'][higher_thresh] = higher_member_df['population'].values
-                                higher_threshold_data['children'][higher_thresh] = higher_member_df['children'].values
-                                higher_threshold_data['infants'][higher_thresh] = higher_member_df['infants'].values
-                                higher_threshold_data['schools'][higher_thresh] = higher_member_df['schools'].values
-                                higher_threshold_data['health'][higher_thresh] = higher_member_df['health'].values
-                                higher_threshold_data['built_surface'][higher_thresh] = higher_member_df['built_surface'].values
-                                
-                                print(f"Loaded higher threshold data for {higher_thresh}kt: {len(higher_member_df)} members")
+                                for metric in metric_names:
+                                    higher_threshold_data[metric][higher_thresh] = higher_member_df[metric].values
                 except Exception as e:
                     print(f"Error loading higher threshold {higher_thresh}kt data: {e}")
                     continue
@@ -1155,11 +1111,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             fig = go.Figure()
             
             # Box plot without points (just the box)
-            # Convert hex color to rgba
-            r = int(color[1:3], 16)
-            g = int(color[3:5], 16)
-            b = int(color[5:7], 16)
-            fillcolor_rgba = f'rgba({r}, {g}, {b}, 0.2)'
+            fillcolor_rgba = hex_to_rgba(color, 0.2)
             
             fig.add_trace(go.Box(
                 x=values,
@@ -1246,63 +1198,17 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             )
             return fig
         
-        # Helper function to create CDF plot for a metric
-        def create_cdf_plot(values, metric_name, color, x_axis_title):
-            sorted_values = np.sort(values)
-            n = len(sorted_values)
-            cdf_y = np.arange(1, n + 1) / n * 100
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=sorted_values,
-                y=cdf_y,
-                mode='lines',
-                name=metric_name,
-                line=dict(color=color, width=2.5),
-                hovertemplate=f'<b>{metric_name}</b><br>Value: %{{x:,.0f}}<br>Probability: %{{y:.1f}}%<extra></extra>'
-            ))
-            
-            # Highlight member 51 if present
-            if 51 in member_df['member'].values:
-                member_51_idx = member_df['member'].values.tolist().index(51)
-                member_51_value = values[member_51_idx]
-                member_51_cdf = (np.sum(sorted_values <= member_51_value) / n) * 100
-                fig.add_trace(go.Scatter(
-                    x=[member_51_value],
-                    y=[member_51_cdf],
-                    mode='markers',
-                    marker=dict(
-                        symbol='circle',
-                        size=10,
-                        color='#ff6b35',
-                        line=dict(width=2, color='white')
-                    ),
-                    name='Member 51 (Deterministic)',
-                    hovertemplate=f'<b>Member 51:</b><br>Value: %{{x:,.0f}}<br>Percentile: ~%{{y:.1f}}%<extra></extra>',
-                    showlegend=True
-                ))
-            
-            fig.update_layout(
-                xaxis=dict(
-                    title=dict(text=x_axis_title, font=dict(size=11)),
-                    tickformat=",.0f",
-                    gridcolor='rgba(200, 200, 200, 0.3)',
-                    showline=True
-                ),
-                yaxis=dict(
-                    title=dict(text="Cumulative Probability (%)", font=dict(size=11)),
-                    range=[0, 100],
-                    gridcolor='rgba(200, 200, 200, 0.3)',
-                    showline=True
-                ),
-                showlegend=True,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                plot_bgcolor='rgba(250, 250, 250, 1)',
-                paper_bgcolor='white',
-                margin=dict(l=60, r=40, t=30, b=40),
-                height=350
-            )
-            return fig
+        # Helper function to convert hex color to rgba
+        def hex_to_rgba(hex_color, alpha=0.2):
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            return f'rgba({r}, {g}, {b}, {alpha})'
+        
+        # Cache member 51 index if present
+        member_51_idx = None
+        if 51 in member_df['member'].values:
+            member_51_idx = member_df['member'].values.tolist().index(51)
         
         # Define metrics with their colors and labels
         metrics_config = {
@@ -1385,11 +1291,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 threshold = np.percentile(values, percentile)
                 impact_thresholds.append(threshold)
             
-            # Convert hex color to rgba
-            r = int(color[1:3], 16)
-            g = int(color[3:5], 16)
-            b = int(color[5:7], 16)
-            fillcolor_rgba = f'rgba({r}, {g}, {b}, 0.2)'
+            fillcolor_rgba = hex_to_rgba(color, 0.2)
             
             # Add main curve (current wind threshold)
             fig.add_trace(go.Scatter(
@@ -1453,8 +1355,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                         ))
             
             # Add horizontal line for deterministic value
-            if 51 in member_df['member'].values:
-                member_51_idx = member_df['member'].values.tolist().index(51)
+            if member_51_idx is not None:
                 member_51_val = values[member_51_idx] if len(values) > member_51_idx else None
                 if member_51_val is not None:
                     exceedance_prob_51 = np.sum(values > member_51_val) / len(values) * 100
@@ -1499,87 +1400,6 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             )
             return fig
         
-        def create_pdf_plot(values, metric_name, color, x_axis_title):
-            """Create PDF plot for a metric"""
-            fig = go.Figure()
-            
-            if len(values) == 0:
-                return fig
-            
-            # Use KDE to estimate PDF if scipy is available
-            if SCIPY_AVAILABLE:
-                try:
-                    kde = gaussian_kde(values)
-                    x_pdf = np.linspace(np.max([0, np.min(values) * 0.9]), np.max(values) * 1.1, 200)
-                    y_pdf = kde(x_pdf) * len(values)
-                    
-                    # Convert hex color to rgba
-                    r = int(color[1:3], 16)
-                    g = int(color[3:5], 16)
-                    b = int(color[5:7], 16)
-                    fillcolor_rgba = f'rgba({r}, {g}, {b}, 0.3)'
-                    
-                    fig.add_trace(go.Scatter(
-                        x=x_pdf,
-                        y=y_pdf,
-                        mode='lines',
-                        name=f'{metric_name} PDF',
-                        line=dict(color=color, width=2.5),
-                        fill='tozeroy',
-                        fillcolor=fillcolor_rgba,
-                        hovertemplate='<b>Value:</b> %{x:,.0f}<br>Density: %{y:.2f}<extra></extra>'
-                    ))
-                    
-                    # Highlight deterministic value
-                    if 51 in member_df['member'].values:
-                        member_51_idx = member_df['member'].values.tolist().index(51)
-                        member_51_val = values[member_51_idx] if len(values) > member_51_idx else None
-                        if member_51_val is not None:
-                            pdf_51 = kde(member_51_val) * len(values)
-                            fig.add_trace(go.Scatter(
-                                x=[member_51_val],
-                                y=[pdf_51],
-                                mode='markers',
-                                marker=dict(symbol='circle', size=12, color='#ff6b35', line=dict(width=2, color='white')),
-                                name='Member 51 (Deterministic)',
-                                hovertemplate=f'<b>Member 51:</b> %{{x:,.0f}}<extra></extra>',
-                                showlegend=True
-                            ))
-                except:
-                    # Fallback to histogram
-                    fig.add_trace(go.Histogram(
-                        x=values, histnorm='probability density', name=f'{metric_name} PDF',
-                        marker_color=color, opacity=0.7,
-                        hovertemplate='<b>Value:</b> %{x:,.0f}<br>Density: %{y:.4f}<extra></extra>'
-                    ))
-            else:
-                fig.add_trace(go.Histogram(
-                    x=values, histnorm='probability density', name=f'{metric_name} PDF',
-                    marker_color=color, opacity=0.7,
-                    hovertemplate='<b>Value:</b> %{x:,.0f}<br>Density: %{y:.4f}<extra></extra>'
-                ))
-            
-            fig.update_layout(
-                xaxis=dict(
-                    title=dict(text=x_axis_title, font=dict(size=12)),
-                    tickformat=",.0f",
-                    gridcolor='rgba(200, 200, 200, 0.3)',
-                    showline=True
-                ),
-                yaxis=dict(
-                    title=dict(text="Probability Density", font=dict(size=12)),
-                    gridcolor='rgba(200, 200, 200, 0.3)',
-                    showline=True
-                ),
-                showlegend=True,
-                legend=dict(x=1.02, y=1),
-                plot_bgcolor='rgba(250, 250, 250, 1)',
-                paper_bgcolor='white',
-                margin=dict(l=60, r=100, t=30, b=40),
-                height=350
-            )
-            return fig
-        
         def create_percentiles_display(values, color):
             """Create percentile display for a metric"""
             if len(values) == 0:
@@ -1595,8 +1415,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 ('Standard Deviation', np.std(values)),
             ]
             
-            if 51 in member_df['member'].values:
-                member_51_idx = member_df['member'].values.tolist().index(51)
+            if member_51_idx is not None:
                 member_51_val = values[member_51_idx] if len(values) > member_51_idx else None
                 if member_51_val is not None:
                     percentile_data.append(('Member 51 (Deterministic)', member_51_val))
@@ -1705,10 +1524,6 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             color="green",
             variant="light"
         )
-        
-        print(f"About to return plots. Total outputs: 6 metrics * 3 = 18 plots + 1 status = 19")
-        print(f"Population values: pop={member_df['population'].sum():.0f}, len={len(member_df['population'])}")
-        print(f"Plot types: pop_box={type(pop_box)}, pop_exceedance={type(pop_exceedance)}")
         
         return (
             pop_box, pop_exceedance, pop_percentiles,
