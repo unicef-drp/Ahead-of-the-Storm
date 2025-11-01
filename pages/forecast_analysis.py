@@ -986,6 +986,9 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         )
     
     try:
+        # Initialize higher threshold data (will be populated if available)
+        higher_threshold_data = {}
+        
         # Construct the filename for track data
         date_str = forecast_date.replace('-', '')
         time_str = forecast_time.replace(':', '')
@@ -1036,6 +1039,14 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
         hc_data_available = giga_store.file_exists(hc_filepath)
         
+        # Get available wind thresholds for this storm
+        try:
+            forecast_datetime_str = f"{forecast_date} {forecast_time}:00"
+            available_wind_thresholds = get_available_wind_thresholds(storm, forecast_datetime_str)
+        except Exception as e:
+            print(f"Error getting available wind thresholds: {e}")
+            available_wind_thresholds = []
+        
         # Calculate totals per ensemble member for all metrics
         print(f"Loading data from: {tracks_filepath}")
         print(f"Found {len(gdf_tracks)} track records with {len(gdf_tracks['zone_id'].unique())} unique members")
@@ -1062,6 +1073,65 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         print(f"Created member_df with {len(member_df)} rows")
         print(f"Columns: {member_df.columns.tolist()}")
         print(f"Sample data:\n{member_df.head()}")
+        
+        # Load data for higher wind thresholds
+        higher_threshold_data = {}  # Structure: {metric_name: {threshold: values_array}}
+        if available_wind_thresholds and wind_threshold:
+            current_thresh_int = int(wind_threshold)
+            higher_thresholds = [t for t in available_wind_thresholds if t.isdigit() and int(t) > current_thresh_int]
+            
+            for higher_thresh in sorted(higher_thresholds, key=int):
+                try:
+                    higher_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{higher_thresh}.parquet"
+                    higher_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', higher_tracks_filename)
+                    
+                    if giga_store.file_exists(higher_tracks_filepath):
+                        higher_gdf_tracks = read_dataset(giga_store, higher_tracks_filepath)
+                        
+                        if 'zone_id' in higher_gdf_tracks.columns and len(higher_gdf_tracks) > 0:
+                            # Calculate totals per ensemble member for higher threshold
+                            higher_member_data = []
+                            for member_id in higher_gdf_tracks['zone_id'].unique():
+                                higher_member_subset = higher_gdf_tracks[higher_gdf_tracks['zone_id'] == member_id]
+                                
+                                higher_member_row = {'member': member_id}
+                                higher_member_row['population'] = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else 0
+                                higher_member_row['children'] = higher_member_subset['severity_school_age_population'].sum() if 'severity_school_age_population' in higher_member_subset.columns else 0
+                                higher_member_row['infants'] = higher_member_subset['severity_infant_population'].sum() if 'severity_infant_population' in higher_member_subset.columns else 0
+                                higher_member_row['schools'] = higher_member_subset['severity_schools'].sum() if 'severity_schools' in higher_member_subset.columns else 0
+                                higher_member_row['health'] = higher_member_subset['severity_hcs'].sum() if ('severity_hcs' in higher_member_subset.columns and hc_data_available) else 0
+                                higher_member_row['built_surface'] = higher_member_subset['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in higher_member_subset.columns and hc_data_available) else 0
+                                
+                                higher_member_data.append(higher_member_row)
+                            
+                            higher_member_df = pd.DataFrame(higher_member_data)
+                            
+                            # Store values for each metric
+                            if 'population' not in higher_threshold_data:
+                                higher_threshold_data['population'] = {}
+                            if 'children' not in higher_threshold_data:
+                                higher_threshold_data['children'] = {}
+                            if 'infants' not in higher_threshold_data:
+                                higher_threshold_data['infants'] = {}
+                            if 'schools' not in higher_threshold_data:
+                                higher_threshold_data['schools'] = {}
+                            if 'health' not in higher_threshold_data:
+                                higher_threshold_data['health'] = {}
+                            if 'built_surface' not in higher_threshold_data:
+                                higher_threshold_data['built_surface'] = {}
+                            
+                            if not higher_member_df.empty:
+                                higher_threshold_data['population'][higher_thresh] = higher_member_df['population'].values
+                                higher_threshold_data['children'][higher_thresh] = higher_member_df['children'].values
+                                higher_threshold_data['infants'][higher_thresh] = higher_member_df['infants'].values
+                                higher_threshold_data['schools'][higher_thresh] = higher_member_df['schools'].values
+                                higher_threshold_data['health'][higher_thresh] = higher_member_df['health'].values
+                                higher_threshold_data['built_surface'][higher_thresh] = higher_member_df['built_surface'].values
+                                
+                                print(f"Loaded higher threshold data for {higher_thresh}kt: {len(higher_member_df)} members")
+                except Exception as e:
+                    print(f"Error loading higher threshold {higher_thresh}kt data: {e}")
+                    continue
         
         if member_df.empty:
             status_msg = dmc.Alert(
@@ -1294,25 +1364,26 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         )
         
         # Helper functions for uncertainty metrics
-        def create_exceedance_plot(values, metric_name, color, x_axis_title):
-            """Create exceedance probability plot for a metric"""
+        def create_exceedance_plot(values, metric_name, color, x_axis_title, wind_threshold=None, available_thresholds=None, higher_threshold_data=None):
+            """Create exceedance probability plot for a metric with wind threshold indicators and higher threshold overlays"""
             fig = go.Figure()
             
             if len(values) == 0:
                 return fig
             
-            max_val = np.max(values)
-            min_val = np.max([0, np.min(values)])
+            # Create probability levels from 0% to 100%
+            n_probabilities = 100
+            probability_levels = np.linspace(0, 100, n_probabilities)
             
-            # Create threshold values
-            n_thresholds = 100
-            thresholds = np.linspace(min_val, max_val * 1.1, n_thresholds)
-            
-            # Calculate exceedance probability for each threshold
-            exceedance_probs = []
-            for threshold in thresholds:
-                prob = np.sum(values > threshold) / len(values) * 100
-                exceedance_probs.append(prob)
+            # For each probability level, find the impact threshold where P(X > threshold) = probability
+            # The threshold for probability p% is the (100-p)th percentile
+            # (e.g., for 50% probability, we want the 50th percentile where 50% exceed it)
+            impact_thresholds = []
+            for prob in probability_levels:
+                # Convert probability to percentile: percentile = 100 - probability
+                percentile = 100 - prob
+                threshold = np.percentile(values, percentile)
+                impact_thresholds.append(threshold)
             
             # Convert hex color to rgba
             r = int(color[1:3], 16)
@@ -1320,25 +1391,75 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             b = int(color[5:7], 16)
             fillcolor_rgba = f'rgba({r}, {g}, {b}, 0.2)'
             
+            # Add main curve (current wind threshold)
             fig.add_trace(go.Scatter(
-                x=thresholds,
-                y=exceedance_probs,
+                x=probability_levels,
+                y=impact_thresholds,
                 mode='lines',
-                name=metric_name,
+                name=f"{metric_name} ({wind_threshold}kt)" if wind_threshold else metric_name,
                 line=dict(color=color, width=2.5),
-                fill='tozeroy',
+                fill='tozerox',  # Fill to zero on x-axis (left side)
                 fillcolor=fillcolor_rgba,
-                hovertemplate='<b>Threshold:</b> %{x:,.0f}<br>Probability: %{y:.1f}%<extra></extra>'
+                hovertemplate='<b>Probability:</b> %{x:.1f}%<br>Impact Threshold: %{y:,.0f}<extra></extra>'
             ))
             
-            # Add vertical line for deterministic value
+            # Add curves for higher wind thresholds if available
+            if higher_threshold_data:
+                # Define colors for different thresholds (progressively darker/more intense)
+                higher_threshold_colors = {
+                    "40": "#5dade2",
+                    "50": "#3498db",
+                    "64": "#2980b9",
+                    "83": "#1f618d",
+                    "96": "#1a5490",
+                    "113": "#154360",
+                    "137": "#0b2638"
+                }
+                
+                # Define threshold labels
+                threshold_labels = {
+                    "34": "34kt TS",
+                    "40": "40kt Strong TS",
+                    "50": "50kt V.Strong TS",
+                    "64": "64kt Cat 1",
+                    "83": "83kt Cat 2",
+                    "96": "96kt Cat 3",
+                    "113": "113kt Cat 4",
+                    "137": "137kt Cat 5"
+                }
+                
+                for higher_thresh, higher_values in higher_threshold_data.items():
+                    if len(higher_values) > 0:
+                        # Calculate exceedance curve for this higher threshold
+                        higher_impact_thresholds = []
+                        for prob in probability_levels:
+                            percentile = 100 - prob
+                            threshold = np.percentile(higher_values, percentile)
+                            higher_impact_thresholds.append(threshold)
+                        
+                        # Get color for this threshold
+                        trace_color = higher_threshold_colors.get(higher_thresh, "#888888")
+                        
+                        # Add as dashed line to show it's a different threshold
+                        fig.add_trace(go.Scatter(
+                            x=probability_levels,
+                            y=higher_impact_thresholds,
+                            mode='lines',
+                            name=threshold_labels.get(higher_thresh, f"{higher_thresh}kt"),
+                            line=dict(color=trace_color, width=2, dash='dash'),
+                            hovertemplate=f'<b>{threshold_labels.get(higher_thresh, higher_thresh+"kt")}:</b><br>Probability: %{{x:.1f}}%<br>Impact Threshold: %{{y:,.0f}}<extra></extra>',
+                            legendgroup="higher_thresholds",
+                            showlegend=True
+                        ))
+            
+            # Add horizontal line for deterministic value
             if 51 in member_df['member'].values:
                 member_51_idx = member_df['member'].values.tolist().index(51)
                 member_51_val = values[member_51_idx] if len(values) > member_51_idx else None
                 if member_51_val is not None:
                     exceedance_prob_51 = np.sum(values > member_51_val) / len(values) * 100
-                    fig.add_vline(
-                        x=member_51_val,
+                    fig.add_hline(
+                        y=member_51_val,
                         line_dash="dash",
                         line_color="#ff6b35",
                         line_width=2,
@@ -1348,21 +1469,33 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             
             fig.update_layout(
                 xaxis=dict(
-                    title=dict(text=f"Impact Threshold ({x_axis_title})", font=dict(size=12)),
-                    tickformat=",.0f",
-                    gridcolor='rgba(200, 200, 200, 0.3)',
-                    showline=True
-                ),
-                yaxis=dict(
                     title=dict(text="Probability of Exceeding Threshold (%)", font=dict(size=12)),
                     range=[0, 100],
                     gridcolor='rgba(200, 200, 200, 0.3)',
                     showline=True
                 ),
+                yaxis=dict(
+                    title=dict(text=f"Impact Threshold ({x_axis_title})", font=dict(size=12)),
+                    tickformat=",.0f",
+                    gridcolor='rgba(200, 200, 200, 0.3)',
+                    showline=True
+                ),
                 plot_bgcolor='rgba(250, 250, 250, 1)',
                 paper_bgcolor='white',
-                margin=dict(l=60, r=40, t=30, b=40),
-                height=350
+                margin=dict(l=60, r=120, t=30, b=40),  # Increased right margin for legend
+                height=350,
+                showlegend=True,
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="right",
+                    x=1.02,
+                    font=dict(size=10),
+                    bgcolor="rgba(255, 255, 255, 0.8)",
+                    bordercolor="#cccccc",
+                    borderwidth=1
+                )
             )
             return fig
         
@@ -1484,7 +1617,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['population'].values,
             'Population',
             metrics_config['population']['color'],
-            metrics_config['population']['x_label']
+            metrics_config['population']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('population', {})
         )
         pop_percentiles = create_percentiles_display(
             member_df['population'].values,
@@ -1497,7 +1633,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['children'].values,
             'Children',
             metrics_config['children']['color'],
-            metrics_config['children']['x_label']
+            metrics_config['children']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('children', {})
         )
         children_percentiles = create_percentiles_display(
             member_df['children'].values,
@@ -1508,7 +1647,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['infants'].values,
             'Infants',
             metrics_config['infants']['color'],
-            metrics_config['infants']['x_label']
+            metrics_config['infants']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('infants', {})
         )
         infants_percentiles = create_percentiles_display(
             member_df['infants'].values,
@@ -1519,7 +1661,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['schools'].values,
             'Schools',
             metrics_config['schools']['color'],
-            metrics_config['schools']['x_label']
+            metrics_config['schools']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('schools', {})
         )
         schools_percentiles = create_percentiles_display(
             member_df['schools'].values,
@@ -1530,7 +1675,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['health'].values,
             'Health Centers',
             metrics_config['health']['color'],
-            metrics_config['health']['x_label']
+            metrics_config['health']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('health', {})
         )
         health_percentiles = create_percentiles_display(
             member_df['health'].values,
@@ -1541,7 +1689,10 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['built_surface'].values,
             'Built Surface',
             metrics_config['built_surface']['color'],
-            metrics_config['built_surface']['x_label']
+            metrics_config['built_surface']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('built_surface', {})
         )
         built_surface_percentiles = create_percentiles_display(
             member_df['built_surface'].values,

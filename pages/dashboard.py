@@ -674,10 +674,10 @@ center_panel = dmc.GridCol(
                                     ),
                                     dl.BaseLayer(
                                         dl.TileLayer(
-                                            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                                            attribution='Tiles &copy; <a href="https://services.arcgisonline.com/">Esri</a> &mdash; Source: Esri, Maxar, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, and the GIS User Community<br>The boundaries and names shown and the designations used on this map do not imply official endorsement or acceptance by the United Nations.'
+                                            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+                                            attribution='Tiles &copy; <a href="https://services.arcgisonline.com/">Esri</a> &mdash; Source: Esri, HERE, Garmin, FAO, NOAA, USGS<br>The boundaries and names shown and the designations used on this map do not imply official endorsement or acceptance by the United Nations.'
                                         ),
-                                        name="Esri Satellite",
+                                        name="Esri Topographic",
                                         checked=False
                                     ),
                                     dl.BaseLayer(
