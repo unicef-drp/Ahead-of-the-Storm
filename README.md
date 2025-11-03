@@ -1,167 +1,177 @@
-# Ahead of the Storm – Setup Guide
+# Ahead of the Storm – Application Setup Guide
+
+This repository contains the **Dash web application** for visualizing hurricane impact forecasts. The application displays interactive maps, probabilistic analysis, and impact reports based on pre-processed hurricane data.
+
+## Related Repositories
+
+- **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)**: Data processing pipeline for creating bounding boxes, initializing base data, and processing storm impact files that are read by the application
+- **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)**: Pipeline for processing ECMWF BUFR tropical cyclone and wind forecast data
 
 ## Prerequisites
 
 1. **Python 3.11+** installed
 2. **Virtual environment** activated (`.venv`)
 3. **Environment variables** configured in `.env` file
+   - Start from the provided example: `cp sample_env .env`
+   - Edit values to match your environment (Snowflake, optional Azure)
+4. **Pre-processed data** available (see [Data Requirements](#data-requirements) below)
 
-## Step 1: Set Up Bounding Box (Required Only Once)
+### Environment Setup
 
-The bounding box defines the geographic region of interest for hurricane impact analysis.
-
-Using here countries in the Caribbean + Central America: ['ATG','BLZ','NIC','DOM','DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']
-
-**Command:**
 ```bash
-python -c "import sys; sys.path.append('components/data'); from impact_analysis import save_bounding_box; countries = ['ATG','BLZ','NIC','DOM','DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB']; save_bounding_box(countries); print('Bounding box created!')"
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-**What it does:**
-- Fetches administrative boundaries for all specified countries from UNICEF GeoRepo
-- Creates a padded bounding box (1000km padding) that encompasses all countries
-- Saves the bounding box to `project_results/climate/lacro_project/bbox.parquet`
+### Required Environment Variables
 
+#### Snowflake Configuration
+- `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`
+- `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`
 
-## Step 2: Initialize Base Data (Required Only Once or After Adding Countries)
+#### Data Storage Configuration
+- `RESULTS_DIR` (default: `project_results/climate/lacro_project`)
+- `BBOX_FILE` (e.g., `bbox.parquet`)
+- `STORMS_FILE` (e.g., `storms.json`)
+- `ROOT_DATA_DIR` (e.g., `geodb`)
+- `VIEWS_DIR` (e.g., `aos_views`)
 
-This step creates the mercator tile views with demographic and infrastructure data for each country.
+#### Optional: Azure Blob Storage
+- `DATA_PIPELINE_DB` (`LOCAL` by default; use `BLOB` or `RO_BLOB` for Azure)
+- If using Azure: `ACCOUNT_URL`, `SAS_TOKEN`
 
-**Command:**
-```bash
-python components/data/main_pipeline.py --type initialize
-```
+#### Mapbox (for map visualization)
+- `MAPBOX_ACCESS_TOKEN` (optional)
 
-**What it does:**
-- Creates mercator tiles for each country at zoom level 14
-- Downloads and aggregates demographic data (WorldPop population)
-- Downloads and aggregates infrastructure data (GHSL built surface, SMOD settlement)
-- Fetches school locations (via GIGA API)
-- Fetches health center locations (via HealthSites API)
-- Saves base views to `geodb/aos_views/mercator_views/`
+## Data Requirements
 
-**Note:** This process can take 30-60 minutes and downloads several GB of data. It only needs to be run once, or when you add new countries.
+Before running the application, you need to have pre-processed data available. This includes:
 
+1. **Bounding box** file: `project_results/climate/lacro_project/bbox.parquet`
+2. **Base views**: Mercator tiles with demographic and infrastructure data in `geodb/aos_views/mercator_views/`
+3. **Impact views**: Processed storm impact data in:
+   - `geodb/aos_views/hc_views/` (health centers)
+   - `geodb/aos_views/school_views/` (schools)
+   - `geodb/aos_views/track_views/` (hurricane tracks)
+   - `geodb/aos_views/mercator_views/` (tile impact data)
 
-## Step 3: Process Storm Data
+### Setting Up Data Processing
 
-Once initialized, you can run the pipeline to process hurricane data from Snowflake.
+To generate the required data, follow the setup guide in the **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)** repository:
 
-**Command:**
-```bash
-python components/data/main_pipeline.py
-```
+1. **Create bounding box** (one-time setup)
+2. **Initialize base data** (demographic and infrastructure data - one-time setup)
+3. **Process storm data** (run regularly to update with new storm data from Snowflake)
 
-**What it does:**
-- Connects to Snowflake and retrieves available storm data
-- For each storm/forecast combination that intersects the bounding box:
-  - Loads hurricane envelope data
-  - Creates impact views for schools, health centers, tiles, and tracks
-  - Saves views to `geodb/aos_views/hc_views/`, `geodb/aos_views/school_views/`, etc.
-  - Records processed storms in `storms.json`
+The hurricane forecast data is processed by the **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)** and can be loaded into Snowflake.
 
-**Process Flow:**
-1. Reads `storms.json` to track which storms have been processed
-2. Queries Snowflake for new storms
-3. For each storm not yet processed:
-   - Loads envelope data (wind impact areas at different thresholds)
-   - Checks if envelopes intersect with region of interest
-   - Creates impact views for each country in the region
-   - Marks storm as processed in `storms.json`
+## Running the Application
 
-**Output Example:**
-```
-======================================================================
-HURRICANE IMPACT ANALYSIS PIPELINE
-======================================================================
-Storm: LORENZO
-Forecast Time: 20251015120000
-Countries: ATG, BLZ, NIC, DOM, DMA, GRD, MSR, KNA, LCA, VCT, AIA, VGB
-Skip Analysis: False
-======================================================================
-STEP 1: Impact Analysis
---------------------------------------------------
-Running impact analysis for LORENZO at 20251015120000
-Countries: ATG, BLZ, NIC, DOM, DMA, GRD, MSR, KNA, LCA, VCT, AIA, VGB
-Loading envelope data from Snowflake...
-Loaded 23 envelope records
-Envelopes already converted to GeoDataFrame
-Getting bounding box...
-Envelopes intersect with region
-Creating impact views...
-  Processing ATG...
-    Processing schools...
-    Created 3 school views
-    Processing health centers...
-    Created 3 health center views
-    Processing tiles...
-    Created 3 tile views
-    Processing tracks...
-    Created 3 track views
-Impact analysis completed successfully
-======================================================================
-```
+### Development Mode
 
-## Step 4: Run the Dash Application
-
-After processing storm data, you can visualize the results in the web application.
-
-**Command:**
 ```bash
 python app.py
 ```
 
-**What it does:**
-- Starts a Dash web server (typically on http://127.0.0.1:8050)
-- Loads processed storm data and impact views
-- Displays interactive maps showing hurricane tracks and impact zones
-- Shows schools, health centers, and population at risk
+The application will start on `http://127.0.0.1:8050` (or the port specified in your environment).
 
+### Production Deployment
 
+For production (e.g., Azure App Service), use the provided `startup.sh` script with Gunicorn:
+
+```bash
+./startup.sh
+```
+
+Or manually:
+
+```bash
+gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 120 app:server
+```
+
+## Application Features
+
+The application provides three main views:
+
+1. **Dashboard** (`/`): Interactive map showing:
+   - Hurricane tracks (ensemble members and deterministic track)
+   - Impact envelopes at different wind thresholds
+   - Schools and health centers at risk
+   - Population impact tiles
+   - Impact metrics (deterministic, probabilistic, worst-case scenarios)
+
+2. **Forecast Analysis** (`/analysis`): Statistical analysis including:
+   - Box plots showing impact distribution across ensemble members
+   - Exceedance probability curves
+   - Impact summaries for population, children, infants, schools, health centers, and built surface
+   - Percentile analysis
+
+3. **Impact Report** (`/report`): HTML-based impact report with detailed administrative-level breakdowns
 
 ## Troubleshooting
 
 ### "Bounding box not found" error
-- Run **Step 1** to create the bounding box
+- Ensure the bounding box file exists at the path specified by `RESULTS_DIR`/`BBOX_FILE`
+- Run the bounding box creation step from the [DATAPIPELINE repository](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)
 
-### "No envelope data found" error
-- This is normal for storms that don't affect the region
-- Check that envelopes intersect with the bounding box
+### "No data available" or missing views
+- Verify that impact views exist in `geodb/aos_views/`
+- Run the storm processing pipeline from the [DATAPIPELINE repository](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)
+- Check that Snowflake contains the expected storm data
 
-### "401 Unauthorized" for school data
-- Verify `GIGA_SCHOOL_LOCATION_API_KEY` is set correctly in `.env`
+### "Snowflake connection error"
+- Verify all `SNOWFLAKE_*` environment variables are set correctly
+- Check network connectivity to Snowflake
+- Ensure Snowflake credentials have proper permissions
 
-### "SSL Certificate" errors
-- Install: `pip install pip-system-certs`
+### "Map not loading" or missing map tiles
+- Verify `MAPBOX_ACCESS_TOKEN` is set (optional but recommended)
+- Check browser console for JavaScript errors
 
-### Pipeline fails on specific countries
-- Some smaller Caribbean islands may have issues
-- You can skip problematic countries or run with only working ones:
-  ```bash
-  python components/data/main_pipeline.py --countries ATG BLZ DOM
-  ```
+### Application fails to start
+- Verify all dependencies are installed: `pip install -r requirements.txt`
+- Check that Python version is 3.11 or higher
+- Review error logs for specific package or import errors
+
+## Data Storage Locations
+
+The application expects data in the following structure:
+
+- **Bounding box:** `{RESULTS_DIR}/{BBOX_FILE}` (typically `project_results/climate/lacro_project/bbox.parquet`)
+- **Base views:** `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/` (e.g., `geodb/aos_views/mercator_views/`)
+- **Impact views:** 
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` (health centers)
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` (schools)
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` (hurricane tracks)
+- **Processed storms metadata:** `{RESULTS_DIR}/{STORMS_FILE}` (typically `project_results/climate/lacro_project/storms.json`)
 
 ## Quick Start Summary
 
 ```bash
-# 1. Create bounding box (one-time setup)
-python -c "import sys; sys.path.append('components/data'); from impact_analysis import save_bounding_box; save_bounding_box(['ATG','BLZ','NIC','DOM','DMA','GRD','MSR','KNA','LCA','VCT','AIA','VGB'])"
+# 1. Set up environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-# 2. Initialize base data (one-time setup, takes 30-60 min)
-python components/data/main_pipeline.py --type initialize
+# 2. Configure environment variables
+cp sample_env .env
+# Edit .env with your Snowflake credentials and data paths
 
-# 3. Process storms (run regularly to update with new storm data)
-python components/data/main_pipeline.py
+# 3. Ensure pre-processed data exists (see Data Requirements above)
+# If not, follow the setup guide in:
+# https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE
 
-# 4. Launch the application
+# 4. Run the application
 python app.py
 ```
 
-## Data Storage
+## Architecture
 
-- **Bounding box:** `project_results/climate/lacro_project/bbox.parquet`
-- **Base views:** `geodb/aos_views/mercator_views/`
-- **Impact views:** `geodb/aos_views/hc_views/`, `geodb/aos_views/school_views/`, etc.
-- **Processed storms:** `project_results/climate/lacro_project/storms.json`
-- **Raw data:** `geodb/bronze/` (downloaded automatically)
-
+- **Frontend**: Dash with Mantine Components, Dash Leaflet for maps, Plotly for charts
+- **Backend**: Python with GeoPandas for geospatial processing
+- **Data Sources**: 
+  - Snowflake (hurricane track and envelope data)
+  - Pre-processed impact views using [giga-spatial](https://github.com/unicef/giga-spatial)(local filesystem or Azure Blob Storage)
+- **Deployment**: Gunicorn for production (Azure App Service compatible)
