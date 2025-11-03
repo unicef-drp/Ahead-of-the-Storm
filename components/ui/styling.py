@@ -5,7 +5,7 @@ Contains color schemes, legend helpers, and tile processing functions
 import pandas as pd
 from dash import html
 import dash
-
+from components.config import config
 
 # =============================================================================
 # COLOR SCHEMES
@@ -45,10 +45,10 @@ all_colors = {
     # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
     # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
     'rwi':['transparent','#d73027','#f46d43','#fdae61','#fee08b','#808080','#d9ef8b','#a6d96a','#66bd63','#1a9850'],
-    'CCI': ['transparent',
+    config.CCI_COL: ['transparent',
             '#ffcccb', '#ff9999', '#ff6666', '#ff3333', '#ff0000',
             '#cc0000', '#990000', '#660000', '#330000', '#1a0000'],
-    'E_CCI': ['transparent',
+    config.E_CCI_COL: ['transparent',
             '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
             '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
 }
@@ -181,8 +181,8 @@ def update_tile_features(tiles_data_in, property):
                         color_prop.append(colors[0])  # transparent for unknown values
             else:
                 # Use log scale for population, school_age_population, infant_population, built_surface_m2, cci, and their E_ equivalents; linear for others
-                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2', 'CCI',
-                                'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2','E_CCI']:
+                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2', config.CCI_COL,
+                                'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2',config.E_CCI_COL]:
                     # Log scale: transform values using log10
                     import math
                     clean_positive_values = [v for v in clean_values if v > 0]

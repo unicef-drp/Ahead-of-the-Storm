@@ -1,6 +1,6 @@
 import dash
 import dash_mantine_components as dmc
-from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State
+from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State, dcc
 from flask_caching import Cache
 from dotenv import load_dotenv
 import pandas as pd
@@ -27,6 +27,9 @@ server = app.server
 app.layout = dmc.MantineProvider(
     [
         dash.page_container,
+        dcc.Store("country-store",data=""),
+        dcc.Store("storm-store",data=""),
+        dcc.Store("date-store",data=""),
     ],
     id="mantine-provider",
     forceColorScheme="light",
