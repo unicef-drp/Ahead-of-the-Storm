@@ -102,6 +102,8 @@ The application provides three main views:
    - Population impact tiles
    - Impact metrics (deterministic, probabilistic, worst-case scenarios)
 
+![app_preview.png](assets/img/app_preview.png)
+
 2. **Forecast Analysis** (`/analysis`): Statistical analysis including:
    - Box plots showing impact distribution across ensemble members
    - Exceedance probability curves
@@ -146,26 +148,6 @@ The application expects data in the following structure:
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` (schools)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` (hurricane tracks)
 - **Processed storms metadata:** `{RESULTS_DIR}/{STORMS_FILE}` (typically `project_results/climate/lacro_project/storms.json`)
-
-## Quick Start Summary
-
-```bash
-# 1. Set up environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 2. Configure environment variables
-cp sample_env .env
-# Edit .env with your Snowflake credentials and data paths
-
-# 3. Ensure pre-processed data exists (see Data Requirements above)
-# If not, follow the setup guide in:
-# https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE
-
-# 4. Run the application
-python app.py
-```
 
 ## Architecture
 
