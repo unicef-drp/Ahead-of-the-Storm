@@ -4,6 +4,7 @@ from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State
 from flask_caching import Cache
 from dotenv import load_dotenv
 import pandas as pd
+import os
 
 load_dotenv()
 
@@ -22,6 +23,38 @@ app.config["suppress_callback_exceptions"] = True
 app.title = "AoS Hurricane Impact"
 app._favicon = "img/aots_icon.png"
 server = app.server
+
+# Configure caching for better performance
+# SimpleCache is per-worker in-memory (fastest for single worker or small deployments)
+# For multi-worker deployments, consider Azure Cache for Redis
+cache_config = {
+    'CACHE_TYPE': 'SimpleCache',
+    'CACHE_DEFAULT_TIMEOUT': 600,  # 10 minutes - longer for metadata that doesn't change often
+    'CACHE_THRESHOLD': 500  # Limit cache size to prevent memory issues
+}
+
+# Try to use Redis if available (Azure Cache for Redis)
+# Fall back to SimpleCache if Redis not configured
+redis_url = os.getenv('REDIS_URL') or os.getenv('REDISCACHE_HOSTNAME')
+if redis_url:
+    try:
+        # Check if redis package is installed
+        import redis
+        cache_config = {
+            'CACHE_TYPE': 'RedisCache',
+            'CACHE_REDIS_URL': redis_url,
+            'CACHE_DEFAULT_TIMEOUT': 600,
+            'CACHE_KEY_PREFIX': 'aos_'
+        }
+        print("Using Redis cache for improved performance across workers")
+    except ImportError:
+        print("Redis package not installed. Install with: pip install redis")
+        print("Using SimpleCache instead (cache not shared across workers)")
+    except Exception as e:
+        print(f"Redis cache not available, using SimpleCache: {e}")
+
+cache = Cache()
+cache.init_app(server, config=cache_config)
 
 
 app.layout = dmc.MantineProvider(
