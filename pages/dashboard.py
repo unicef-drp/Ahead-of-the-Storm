@@ -12,6 +12,7 @@ import json
 from shapely import wkt
 import copy
 import hashlib
+import plotly.graph_objects as go
 
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -927,6 +928,31 @@ specific_track_view = dmc.Paper([
                     style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
                 )
 
+# Exceedance Probability Chart Section
+exceedance_chart = dmc.Paper([
+                    dmc.Group([
+                        dmc.Text("EXCEEDANCE PROBABILITY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+                    ], justify="flex-start", gap="sm", mb="sm"),
+                    
+                    dmc.Text("Probability of exceeding different impact thresholds", size="xs", c="dimmed", mb="md"),
+                    
+                    dcc.Graph(id="exceedance-probability-chart", style={"height": "400px"}),
+                    
+                    # Custom 3-column legend
+                    html.Div(id="exceedance-legend", style={"marginTop": "10px", "marginBottom": "10px"}),
+                    
+                    dmc.Text(
+                        "Load layers to view exceedance probability based on ensemble forecasts.",
+                        size="xs",
+                        c="dimmed",
+                        id="exceedance-chart-info"
+                    )
+                ],
+                p="md",
+                shadow="xs",
+                style={"borderLeft": "3px solid #1cabe2", "marginBottom": "16px"}
+            )
+
 # Right Panel - Impact Metrics
 right_panel = dmc.GridCol(
                 [
@@ -935,6 +961,8 @@ right_panel = dmc.GridCol(
                             impact_summary,
                             
                             specific_track_view,
+                            
+                            exceedance_chart,
                         ],
                         p="md",
                         shadow="sm"
@@ -2772,6 +2800,314 @@ def clear_specific_track_when_disabled(is_disabled):
 def sync_show_higher_winds_disabled(specific_track_disabled, _layers_loaded):
     """Ensure the higher-winds checkbox is enabled only when specific track is enabled."""
     return bool(specific_track_disabled)
+
+
+# -----------------------------------------------------------------------------
+# 3.7.1: CALLBACKS - EXCEEDANCE PROBABILITY CHART
+# -----------------------------------------------------------------------------
+# Generate exceedance probability chart based on ensemble member data
+
+@callback(
+    [Output("exceedance-probability-chart", "figure"),
+     Output("exceedance-chart-info", "children"),
+     Output("exceedance-legend", "children")],
+    [Input("storm-select", "value"),
+     Input("wind-threshold-select", "value"),
+     Input("country-select", "value"),
+     Input("forecast-date", "value"),
+     Input("forecast-time", "value"),
+     Input("layers-loaded-store", "data")],
+    prevent_initial_call=True
+)
+def update_exceedance_probability_chart(storm, wind_threshold, country, forecast_date, forecast_time, layers_loaded):
+    """Generate exceedance probability plot showing population impact distribution"""
+    
+    # Create empty figure as default
+    empty_fig = go.Figure()
+    empty_fig.add_annotation(
+        text="Load layers to view exceedance probability chart.",
+        xref="paper", yref="paper",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=14, color="gray")
+    )
+    empty_fig.update_layout(
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        plot_bgcolor="white",
+        margin=dict(l=20, r=20, t=20, b=20)
+    )
+    
+    empty_legend = html.Div()
+    
+    if not layers_loaded:
+        return empty_fig, "Load layers to view exceedance probability based on ensemble forecasts.", empty_legend
+    
+    if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
+        return empty_fig, "Please select all required fields (country, storm, date, time, wind threshold) and load layers.", empty_legend
+    
+    try:
+        # Construct the filename for track data
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime = f"{date_str}{time_str}00"
+        
+        tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+        
+        if not giga_store.file_exists(tracks_filepath):
+            empty_fig.add_annotation(
+                text="Track data file not found. Please ensure the storm data has been processed.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=12, color="orange")
+            )
+            return empty_fig, "Track data not found for the selected storm and wind threshold.", empty_legend
+        
+        # Load track data
+        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        
+        if 'zone_id' not in gdf_tracks.columns or 'severity_population' not in gdf_tracks.columns:
+            empty_fig.add_annotation(
+                text="Track data does not contain ensemble member information.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=12, color="orange")
+            )
+            return empty_fig, "Invalid track data structure.", empty_legend
+        
+        # Calculate totals per ensemble member
+        member_data = []
+        unique_members = gdf_tracks['zone_id'].unique()
+        for member_id in unique_members:
+            member_data_subset = gdf_tracks[gdf_tracks['zone_id'] == member_id]
+            total_population = member_data_subset['severity_population'].sum() if 'severity_population' in member_data_subset.columns else 0
+            member_data.append({'member': member_id, 'population': total_population})
+        
+        member_df = pd.DataFrame(member_data)
+        
+        if member_df.empty:
+            return empty_fig, "No ensemble member data found.", empty_legend
+        
+        values = member_df['population'].values
+        member_ids = member_df['member'].values
+        
+        # Get available wind thresholds for higher threshold curves
+        try:
+            forecast_datetime_str = f"{forecast_date} {forecast_time}:00"
+            available_wind_thresholds = get_available_wind_thresholds(storm, forecast_datetime_str)
+        except Exception as e:
+            print(f"Error getting available wind thresholds: {e}")
+            available_wind_thresholds = []
+        
+        # Load data for higher wind thresholds
+        higher_threshold_data = {}
+        if available_wind_thresholds and wind_threshold:
+            current_thresh_int = int(wind_threshold)
+            higher_thresholds = [t for t in available_wind_thresholds if t.isdigit() and int(t) > current_thresh_int]
+            
+            for higher_thresh in sorted(higher_thresholds, key=int):
+                try:
+                    higher_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{higher_thresh}.parquet"
+                    higher_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', higher_tracks_filename)
+                    
+                    if giga_store.file_exists(higher_tracks_filepath):
+                        higher_gdf_tracks = read_dataset(giga_store, higher_tracks_filepath)
+                        
+                        if 'zone_id' in higher_gdf_tracks.columns and len(higher_gdf_tracks) > 0:
+                            higher_member_data = []
+                            for member_id in higher_gdf_tracks['zone_id'].unique():
+                                higher_member_subset = higher_gdf_tracks[higher_gdf_tracks['zone_id'] == member_id]
+                                higher_total = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else 0
+                                higher_member_data.append(higher_total)
+                            
+                            if higher_member_data:
+                                higher_threshold_data[higher_thresh] = np.array(higher_member_data)
+                except Exception as e:
+                    print(f"Error loading higher threshold {higher_thresh}kt data: {e}")
+                    continue
+        
+        # Create exceedance probability plot
+        fig = go.Figure()
+        
+        if len(values) == 0:
+            return empty_fig, "No data available for exceedance probability calculation.", empty_legend
+        
+        # Create probability levels from 0% to 100%
+        n_probabilities = 100
+        probability_levels = np.linspace(0, 100, n_probabilities)
+        
+        # For each probability level, find the impact threshold where P(X > threshold) = probability
+        impact_thresholds = []
+        for prob in probability_levels:
+            percentile = 100 - prob
+            threshold = np.percentile(values, percentile)
+            impact_thresholds.append(threshold)
+        
+        # Helper function to convert hex color to rgba
+        def hex_to_rgba(hex_color, alpha=0.2):
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            return f'rgba({r}, {g}, {b}, {alpha})'
+        
+        color = '#1cabe2'  # UNICEF blue
+        fillcolor_rgba = hex_to_rgba(color, 0.2)
+        
+        # Collect legend items for custom 3-column legend
+        legend_items = []
+        
+        # Add main curve (current wind threshold) - use shorter label for legend
+        main_label = f"{wind_threshold}kt"
+        fig.add_trace(go.Scatter(
+            x=probability_levels,
+            y=impact_thresholds,
+            mode='lines',
+            name=main_label,
+            line=dict(color=color, width=2.5),
+            fill='tozerox',
+            fillcolor=fillcolor_rgba,
+            hovertemplate=f'<b>Population ({wind_threshold}kt):</b><br>Probability: %{{x:.1f}}%<br>Impact Threshold: %{{y:,.0f}}<extra></extra>',
+            showlegend=False  # Hide from Plotly legend
+        ))
+        legend_items.append({"label": main_label, "color": color, "line_style": "solid"})
+        
+        # Add curves for higher wind thresholds if available
+        if higher_threshold_data:
+            higher_threshold_colors = {
+                "40": "#5dade2",
+                "50": "#3498db",
+                "64": "#2980b9",
+                "83": "#1f618d",
+                "96": "#1a5490",
+                "113": "#154360",
+                "137": "#0b2638"
+            }
+            
+            threshold_labels = {
+                "34": "34kt",
+                "40": "40kt",
+                "50": "50kt",
+                "64": "64kt",
+                "83": "83kt",
+                "96": "96kt",
+                "113": "113kt",
+                "137": "137kt"
+            }
+            
+            for higher_thresh, higher_values in higher_threshold_data.items():
+                if len(higher_values) > 0:
+                    higher_impact_thresholds = []
+                    for prob in probability_levels:
+                        percentile = 100 - prob
+                        threshold = np.percentile(higher_values, percentile)
+                        higher_impact_thresholds.append(threshold)
+                    
+                    trace_color = higher_threshold_colors.get(higher_thresh, "#888888")
+                    
+                    higher_label = threshold_labels.get(higher_thresh, f"{higher_thresh}kt")
+                    fig.add_trace(go.Scatter(
+                        x=probability_levels,
+                        y=higher_impact_thresholds,
+                        mode='lines',
+                        name=higher_label,
+                        line=dict(color=trace_color, width=2, dash='dash'),
+                        hovertemplate=f'<b>{higher_label}:</b><br>Probability: %{{x:.1f}}%<br>Impact Threshold: %{{y:,.0f}}<extra></extra>',
+                        showlegend=False  # Hide from Plotly legend
+                    ))
+                    legend_items.append({"label": higher_label, "color": trace_color, "line_style": "dash"})
+        
+        # Add horizontal line for deterministic value (Member 51)
+        member_51_idx = None
+        if 51 in member_ids:
+            member_51_idx = np.where(member_ids == 51)[0]
+            if len(member_51_idx) > 0:
+                member_51_val = values[member_51_idx[0]]
+                exceedance_prob_51 = np.sum(values > member_51_val) / len(values) * 100
+                fig.add_hline(
+                    y=member_51_val,
+                    line_dash="dash",
+                    line_color="#ff6b35",
+                    line_width=2,
+                    annotation_text=f"Deterministic ({exceedance_prob_51:.1f}%)",
+                    annotation_position="top right"
+                )
+        
+        # Get y-axis range for custom tick formatting
+        y_min = min(impact_thresholds) if impact_thresholds else 0
+        y_max = max(impact_thresholds) if impact_thresholds else 1000000
+        
+        fig.update_layout(
+            xaxis=dict(
+                title=dict(text="Probability of Exceeding Threshold (%)", font=dict(size=11)),
+                range=[0, 100],
+                gridcolor='rgba(200, 200, 200, 0.3)',
+                showline=True
+            ),
+            yaxis=dict(
+                title=dict(text="Impact Threshold (Affected Population)", font=dict(size=11)),
+                tickformat='.2s',  # Use SI prefixes (K, M, etc.) with 2 significant digits
+                gridcolor='rgba(200, 200, 200, 0.3)',
+                showline=True
+            ),
+            plot_bgcolor='rgba(250, 250, 250, 1)',
+            paper_bgcolor='white',
+            margin=dict(l=45, r=20, t=20, b=50),  # Reduced bottom margin since legend is separate
+            height=400,
+            showlegend=False  # Hide Plotly legend, use custom legend below
+        )
+        
+        # Create custom 3-column legend
+        legend_cols = []
+        items_per_col = (len(legend_items) + 2) // 3  # Divide into 3 columns
+        
+        for col_idx in range(3):
+            col_items = []
+            start_idx = col_idx * items_per_col
+            end_idx = min(start_idx + items_per_col, len(legend_items))
+            
+            for item in legend_items[start_idx:end_idx]:
+                # Determine line style CSS
+                if item['line_style'] == 'solid':
+                    line_style_css = f"3px solid {item['color']}"
+                else:  # dash
+                    line_style_css = f"2px dashed {item['color']}"
+                
+                col_items.append(
+                    dmc.Group([
+                        html.Div(style={
+                            "width": "25px",
+                            "height": "2px",
+                            "borderTop": line_style_css,
+                            "marginRight": "8px"
+                        }),
+                        dmc.Text(item['label'], size="xs", style={"fontSize": "9px"})
+                    ], gap="xs", align="center", style={"marginBottom": "4px"})
+                )
+            
+            if col_items:
+                legend_cols.append(
+                    dmc.GridCol(
+                        dmc.Stack(col_items, gap="xs"),
+                        span=4  # 3 columns = 12/3 = 4 spans each
+                    )
+                )
+        
+        custom_legend = dmc.Grid(legend_cols, gutter="sm") if legend_cols else html.Div()
+        
+        info_text = f"Showing exceedance probability for {len(member_df)-1} ensemble members at {wind_threshold}kt wind threshold."
+        return fig, info_text, custom_legend
+        
+    except Exception as e:
+        print(f"Error generating exceedance probability chart: {e}")
+        import traceback
+        traceback.print_exc()
+        empty_fig.add_annotation(
+            text=f"Error generating chart: {str(e)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=12, color="red")
+        )
+        return empty_fig, f"Error: {str(e)}", empty_legend
 
 
 
