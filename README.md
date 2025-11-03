@@ -155,5 +155,5 @@ The application expects data in the following structure:
 - **Backend**: Python with GeoPandas for geospatial processing
 - **Data Sources**: 
   - Snowflake (hurricane track and envelope data)
-  - Pre-processed impact views using [giga-spatial](https://github.com/unicef/giga-spatial)(local filesystem or Azure Blob Storage)
+  - Pre-processed impact views using [giga-spatial](https://github.com/unicef/giga-spatial) (local filesystem or Azure Blob Storage)
 - **Deployment**: Gunicorn for production (Azure App Service compatible)
