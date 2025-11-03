@@ -17,6 +17,7 @@ Usage:
 """
 
 import os
+import math
 from dotenv import load_dotenv
 
 # Load environment variables from the project root
@@ -48,6 +49,12 @@ class Config:
     
     # Mapbox Configuration
     MAPBOX_TOKEN = os.getenv('MAPBOX_TOKEN')
+
+    CCI_COL = 'CCI_children' 
+    E_CCI_COL = 'E_CCI_children' 
+    
+    CHANGES_POP = [(100,500),(500,1000),(1000,math.inf)]
+    CHANGES_FACILITIES = [(3,10),(10,20),(20,math.inf)]
     
     @classmethod
     def validate_snowflake_config(cls):

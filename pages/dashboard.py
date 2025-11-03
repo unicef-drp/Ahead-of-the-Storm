@@ -526,7 +526,7 @@ admin_legends = dmc.Box([
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-admin-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('CCI'),
+                            create_legend_divs(config.CCI_COL),
                             style={"display": "flex", "width": "100%"}
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-admin-legend-max", children="Max", size="xs", c="dimmed")]),
@@ -1311,6 +1311,40 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
 # 3.3: CALLBACKS - SELECTORS (Date, Time, Storm, Wind Threshold)
 # -----------------------------------------------------------------------------
 # Update dropdown options based on available data
+
+#callback to update country-store
+@callback(
+    Output("country-store", "data"),
+    Input("country-select", "value"),
+)
+def update_country_store(country):
+    return country
+
+#callback to update storm-store
+@callback(
+    Output("storm-store", "data"),
+    Input("storm-select", "value"),
+)
+def update_storm_store(storm):
+    return storm
+
+
+#callback to update date-store
+@callback(
+    Output("date-store", "data"),
+    Input("forecast-date", "value"),
+    Input("forecast-time", "value"),
+    State("forecast-date", "value"),
+    State("forecast-time", "value"),
+)
+def update_date_store(i_date,i_time,s_date,s_time):
+    if s_date and s_time:
+        date_str = s_date.replace('-', '')
+        time_str = s_time.replace(':', '')
+        return f"{date_str}{time_str}00"
+
+    return dash.no_update
+
 
 # Callback to update map view based on country selection
 @callback(
@@ -2473,7 +2507,7 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "cci":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'CCI')
+        tiles, zoom, key = update_tile_features(tiles_data_in, config.CCI_COL)
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
@@ -2547,7 +2581,7 @@ def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_
         return tiles, zoom, key, *radios_enabled
     
     elif active_layer == "cci":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'CCI')
+        tiles, zoom, key = update_tile_features(tiles_data_in, config.CCI_COL)
         return tiles, zoom, key, *radios_enabled
     
     # Default: return empty data
@@ -2582,7 +2616,7 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
         "built-surface": "E_built_surface_m2",
         "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
-        "cci": "E_CCI",
+        "cci": config.E_CCI_COL,
         "none": "probability",
         None: "probability"
     }
@@ -2653,7 +2687,7 @@ def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
         "built-surface": "E_built_surface_m2",
         "settlement": None,  # Settlement, RWI, and CCI don't have expected values
         "rwi": None,
-        "cci": "E_CCI",
+        "cci": config.E_CCI_COL,
         "none": "probability",
         None: "probability"
     }
@@ -3237,7 +3271,7 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
                 built_max = format_number(built_max_val)
 
             # cci values
-            cci_values = [f["properties"].get('CCI', 0) for f in tiles_data["features"] if 'properties' in f]
+            cci_values = [f["properties"].get(config.CCI_COL, 0) for f in tiles_data["features"] if 'properties' in f]
             clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
             if clean_cci:
                 cci_min_val = min(clean_cci)
@@ -3357,7 +3391,7 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
                 built_max = format_number(built_max_val)
 
             # cci values
-            cci_values = [f["properties"].get('CCI', 0) for f in tiles_data["features"] if 'properties' in f]
+            cci_values = [f["properties"].get(config.CCI_COL, 0) for f in tiles_data["features"] if 'properties' in f]
             clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
             if clean_cci:
                 cci_min_val = min(clean_cci)
