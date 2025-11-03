@@ -4,7 +4,6 @@ from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State, dcc
 from flask_caching import Cache
 from dotenv import load_dotenv
 import pandas as pd
-import os
 
 load_dotenv()
 
@@ -23,16 +22,6 @@ app.config["suppress_callback_exceptions"] = True
 app.title = "AoS Hurricane Impact"
 app._favicon = "img/aots_icon.png"
 server = app.server
-
-# Initialize caching
-# Use simple cache (in-memory) for Azure App Service
-# For production with multiple workers, consider Redis or Memcached
-cache_config = {
-    'CACHE_TYPE': 'SimpleCache',  # Simple in-memory cache
-    'CACHE_DEFAULT_TIMEOUT': 300,  # 5 minutes default timeout
-}
-app.server.config.update(cache_config)
-cache = Cache(app.server)
 
 
 app.layout = dmc.MantineProvider(
