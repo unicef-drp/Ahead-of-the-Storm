@@ -654,12 +654,12 @@ left_panel = dmc.GridCol(
 center_panel = dmc.GridCol(
                 html.Div([
                     dcc.Store(id="map-state-store", data={}),
-                    dcc.Store(id="envelope-data-store", data={}),
-                    dcc.Store(id="schools-data-store", data={}),
-                    dcc.Store(id="health-data-store", data={}),
-                    dcc.Store(id="population-tiles-data-store", data={}),
-                    dcc.Store(id="population-admin-data-store", data={}),
-                    dcc.Store(id="tracks-data-store", data={}),
+                    dcc.Store(id="envelope-data-store", data={}, storage_type="local"),
+                    dcc.Store(id="schools-data-store", data={}, storage_type="local"),
+                    dcc.Store(id="health-data-store", data={}, storage_type="local"),
+                    dcc.Store(id="population-tiles-data-store", data={}, storage_type="local"),
+                    dcc.Store(id="population-admin-data-store", data={}, storage_type="local"),
+                    dcc.Store(id="tracks-data-store", data={}, storage_type="local"),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
                         [
