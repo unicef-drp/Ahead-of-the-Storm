@@ -5,7 +5,7 @@ import dash_leaflet.express as dlx
 from dash_extensions.javascript import arrow_function, assign
 from dash import html
 
-from .map_config import map_config, mapbox_token
+from .map_config import map_config, mapbox_token, get_tile_layer_url
 
 
 
@@ -30,8 +30,8 @@ def make_empty_map():
     return dl.Map(
         [
             dl.TileLayer(
-                url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                attribution="mapbox",
+                url=get_tile_layer_url(),
+                attribution="© OpenStreetMap contributors" if not mapbox_token else "mapbox",
             ),
             #admin1_layer,
             #admin2_layer,
@@ -74,8 +74,8 @@ def make_map_layers(gdf):
     return dl.Map(
         [
             dl.TileLayer(
-                url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                attribution="mapbox",
+                url=get_tile_layer_url(),
+                attribution="© OpenStreetMap contributors" if not mapbox_token else "mapbox",
             ),
             layer_h,
             dl.FullScreenControl(),

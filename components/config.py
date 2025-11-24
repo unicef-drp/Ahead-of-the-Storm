@@ -35,6 +35,12 @@ class Config:
     SNOWFLAKE_DATABASE = os.getenv('SNOWFLAKE_DATABASE')
     SNOWFLAKE_SCHEMA = os.getenv('SNOWFLAKE_SCHEMA')
     
+    # SPCS (Snowflake Container Services) OAuth Configuration
+    SPCS_RUN = os.getenv('SPCS_RUN', 'false').lower() == 'true'
+    SPCS_TOKEN_PATH = os.getenv('SPCS_TOKEN_PATH', '/snowflake/session/token')
+    SNOWFLAKE_HOST = os.getenv('SNOWFLAKE_HOST')
+    SNOWFLAKE_PORT = os.getenv('SNOWFLAKE_PORT')
+    
     # Azure Blob Storage Configuration
     ACCOUNT_URL = os.getenv('ACCOUNT_URL')
     SAS_TOKEN = os.getenv('SAS_TOKEN')
@@ -59,14 +65,35 @@ class Config:
     @classmethod
     def validate_snowflake_config(cls):
         """Validate that all required Snowflake configuration is present"""
-        required_vars = [
-            'SNOWFLAKE_ACCOUNT',
-            'SNOWFLAKE_USER', 
-            'SNOWFLAKE_PASSWORD',
-            'SNOWFLAKE_WAREHOUSE',
-            'SNOWFLAKE_DATABASE',
-            'SNOWFLAKE_SCHEMA'
-        ]
+        # Check for SPCS mode
+        if cls.SPCS_RUN:
+            # SPCS OAuth mode: validate token file exists
+            from pathlib import Path
+            token_file = Path(cls.SPCS_TOKEN_PATH)
+            if not token_file.exists():
+                raise ValueError(f"SPCS token file not found: {cls.SPCS_TOKEN_PATH}")
+            if not token_file.is_file():
+                raise ValueError(f"SPCS token path is not a file: {cls.SPCS_TOKEN_PATH}")
+            
+            # SPCS mode requires: ACCOUNT, WAREHOUSE, DATABASE, SCHEMA, HOST, PORT
+            required_vars = [
+                'SNOWFLAKE_ACCOUNT',
+                'SNOWFLAKE_WAREHOUSE',
+                'SNOWFLAKE_DATABASE',
+                'SNOWFLAKE_SCHEMA',
+                'SNOWFLAKE_HOST',
+                'SNOWFLAKE_PORT'
+            ]
+        else:
+            # Non-SPCS mode requires: ACCOUNT, USER, PASSWORD, WAREHOUSE, DATABASE, SCHEMA
+            required_vars = [
+                'SNOWFLAKE_ACCOUNT',
+                'SNOWFLAKE_USER', 
+                'SNOWFLAKE_PASSWORD',
+                'SNOWFLAKE_WAREHOUSE',
+                'SNOWFLAKE_DATABASE',
+                'SNOWFLAKE_SCHEMA'
+            ]
         
         missing = [var for var in required_vars if not getattr(cls, var)]
         if missing:

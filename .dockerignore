@@ -1,0 +1,60 @@
+# Exclude large data directories that will be mounted from Snowflake stage
+geodb/
+project_results/
+datastore/
+
+# Exclude Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Exclude virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Exclude IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Exclude Git files
+.git/
+.gitignore
+.gitattributes
+
+# Exclude documentation and test files
+*.md
+!README.md
+*.ipynb
+testing.ipynb
+
+# Exclude logs
+*.log
+main_pipeline.log
+
+# Exclude environment files (sensitive data)
+# Note: For SPCS, env vars are set in the service definition, so .env is not needed
+# For local Docker runs, mount .env as a volume or use -e flags instead
+.env
+.env.local
+.env.*.local
+sample_env
+
+# Exclude Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Exclude other build artifacts
+*.egg-info/
+dist/
+build/
+*.egg
+

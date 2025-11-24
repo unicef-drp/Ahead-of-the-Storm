@@ -13,6 +13,8 @@ from shapely import wkt
 import copy
 import hashlib
 import plotly.graph_objects as go
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 # Suppress pandas SQLAlchemy warnings
 warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
@@ -29,7 +31,7 @@ from components.map.javascript import (
 from dash_extensions.javascript import assign
 
 # Import map config early for use in constants
-from components.map.map_config import map_config, mapbox_token
+from components.map.map_config import map_config, mapbox_token, get_tile_layer_url
 
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
@@ -667,10 +669,10 @@ center_panel = dmc.GridCol(
                                 [
                                     dl.BaseLayer(
                                         dl.TileLayer(
-                                            url=f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>The boundaries and names shown and the designations used on this map do not imply official endorsement or acceptance by the United Nations.'
+                                            url=get_tile_layer_url(),
+                                            attribution='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>The boundaries and names shown and the designations used on this map do not imply official endorsement or acceptance by the United Nations.' if mapbox_token else '© <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors<br>The boundaries and names shown and the designations used on this map do not imply official endorsement or acceptance by the United Nations.'
                                         ),
-                                        name="Mapbox Light",
+                                        name="Mapbox Light" if mapbox_token else "OpenStreetMap",
                                         checked=True
                                     ),
                                     dl.BaseLayer(
@@ -1081,6 +1083,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
         print(f"Impact metrics: Looking for file {filename}")
+        print(f"Impact metrics: Full path = {filepath}")
+        print(f"Impact metrics: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
         
         # Initialize all scenario results
         low_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
@@ -1689,14 +1693,154 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         
         # Load Hurricane Envelopes
         try:
+            envelope_start = time.time()
             envelope_df = get_envelope_data_snowflake(storm, forecast_datetime)
             
             if not envelope_df.empty:
+                # Filter out obviously invalid geometries (empty/null) without parsing
+                if 'geometry' in envelope_df.columns:
+                    # Quick filter - just check if not null/empty, actual parsing happens later when needed
+                    envelope_df = envelope_df[envelope_df['geometry'].notna() & (envelope_df['geometry'].astype(str).str.strip() != '')]
+                
+                # Pre-process envelopes for multiple wind thresholds in parallel to speed up display
+                # Pre-process selected threshold + most common ones (50kt, 64kt) for instant switching
+                preprocessed_envelopes = {}
+                if wind_threshold and 'wind_threshold' in envelope_df.columns:
+                    try:
+                        wth_int = int(wind_threshold)
+                        # Pre-process selected threshold + common ones (50, 64) in parallel
+                        thresholds_to_preprocess = [wth_int]
+                        if wth_int != 50:
+                            thresholds_to_preprocess.append(50)
+                        if wth_int != 64:
+                            thresholds_to_preprocess.append(64)
+                        # Remove duplicates
+                        thresholds_to_preprocess = list(set(thresholds_to_preprocess))
+                        
+                        def preprocess_threshold(thresh):
+                            """Pre-process envelopes for a specific wind threshold"""
+                            try:
+                                df_filtered = envelope_df[envelope_df['wind_threshold'].astype(int) == thresh].copy()
+                                
+                                if df_filtered.empty:
+                                    return thresh, None
+                                
+                                parse_start = time.time()
+                                # Check geometry format - could be WKT or GeoJSON
+                                first_geom = df_filtered['geometry'].iloc[0] if len(df_filtered) > 0 else None
+                                if first_geom and isinstance(first_geom, str):
+                                    if first_geom.strip().startswith('{') or first_geom.strip().startswith('['):
+                                        # GeoJSON format - parse using shapely.geometry.shape
+                                        from shapely.geometry import shape
+                                        geometries = []
+                                        for geom_str in df_filtered['geometry']:
+                                            if pd.notna(geom_str) and isinstance(geom_str, str):
+                                                try:
+                                                    if geom_str.strip().startswith('{'):
+                                                        geom_dict = json.loads(geom_str)
+                                                        geometries.append(shape(geom_dict))
+                                                    else:
+                                                        geometries.append(wkt.loads(geom_str))
+                                                except:
+                                                    geometries.append(None)
+                                            else:
+                                                geometries.append(None)
+                                        gdf = gpd.GeoDataFrame(df_filtered.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                    else:
+                                        # WKT format - use optimized bulk parsing
+                                        gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered['geometry'], crs='EPSG:4326'))
+                                else:
+                                    gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered['geometry'], crs='EPSG:4326'))
+                                
+                                gdf = gdf[gdf.geometry.notna()]
+                                
+                                # Simplify geometries for faster rendering (reduce vertices by ~10%)
+                                # This makes rendering much faster without noticeable visual difference
+                                if len(gdf) > 0:
+                                    try:
+                                        # Simplify with tolerance of 0.0001 degrees (~11 meters)
+                                        gdf['geometry'] = gdf['geometry'].simplify(0.0001, preserve_topology=True)
+                                    except:
+                                        pass  # If simplification fails, use original
+                                
+                                # Try to add impact data from track_views if available
+                                if country and storm:
+                                    date_str = forecast_date.replace('-', '')
+                                    time_str = forecast_time.replace(':', '')
+                                    forecast_datetime_str = f"{date_str}{time_str}00"
+                                    tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
+                                    tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                                    
+                                    if giga_store.file_exists(tracks_filepath):
+                                        try:
+                                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                            if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
+                                                tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == thresh]
+                                                if not tracks_thresh.empty:
+                                                    ensemble_col = 'ENSEMBLE_MEMBER' if 'ENSEMBLE_MEMBER' in gdf.columns else 'ensemble_member'
+                                                    if ensemble_col in gdf.columns:
+                                                        impact_summary = tracks_thresh.groupby('zone_id').agg({
+                                                            'severity_population': 'sum',
+                                                            'severity_school_age_population': 'sum',
+                                                            'severity_infant_population': 'sum',
+                                                            'severity_schools': 'sum',
+                                                            'severity_hcs': 'sum',
+                                                            'severity_built_surface_m2': 'sum'
+                                                        }).reset_index()
+                                                        impact_summary.columns = ['ensemble_member'] + [col for col in impact_summary.columns if col != 'zone_id']
+                                                        
+                                                        if ensemble_col != 'ensemble_member':
+                                                            gdf['ensemble_member'] = gdf[ensemble_col].astype(int)
+                                                        
+                                                        gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
+                                                        impact_cols = ['severity_population', 'severity_school_age_population', 'severity_infant_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                                                        for col in impact_cols:
+                                                            if col in gdf.columns:
+                                                                gdf[col] = gdf[col].fillna(0)
+                                        except Exception as e:
+                                            pass  # Impact data is optional
+                                
+                                # Convert to GeoJSON and store
+                                geo_dict = gdf.__geo_interface__
+                                
+                                # Calculate max population for relative scaling
+                                if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
+                                    max_pop = gdf['severity_population'].max()
+                                    for feature in geo_dict.get('features', []):
+                                        if 'properties' in feature:
+                                            feature['properties']['max_population'] = max_pop
+                                
+                                parse_elapsed = time.time() - parse_start
+                                print(f"Pre-processed {len(gdf)} envelopes for {thresh}kt in {parse_elapsed:.2f}s")
+                                return thresh, geo_dict
+                            except Exception as e:
+                                print(f"Error pre-processing threshold {thresh}: {e}")
+                                return thresh, None
+                        
+                        # Pre-process multiple thresholds in parallel
+                        with ThreadPoolExecutor(max_workers=3) as executor:
+                            futures = {executor.submit(preprocess_threshold, thresh): thresh for thresh in thresholds_to_preprocess}
+                            for future in futures:
+                                thresh, geo_dict = future.result()
+                                if geo_dict:
+                                    preprocessed_envelopes[str(thresh)] = geo_dict
+                        
+                        # Fallback: if parallel processing didn't work, do selected threshold synchronously
+                        if str(wth_int) not in preprocessed_envelopes:
+                            thresh, geo_dict = preprocess_threshold(wth_int)
+                            if geo_dict:
+                                preprocessed_envelopes[str(wth_int)] = geo_dict
+                    except Exception as e:
+                        print(f"Error pre-processing envelopes: {e}")
+                
                 envelope_data = {
                     'track_id': storm,
                     'forecast_time': forecast_datetime,
-                    'data': envelope_df.to_dict('records')
+                    'data': envelope_df.to_dict('records'),
+                    'preprocessed': preprocessed_envelopes  # Store pre-processed GeoJSON by wind threshold
                 }
+                envelope_elapsed = time.time() - envelope_start
+                print(f"Loaded {len(envelope_df)} envelopes from Snowflake in {envelope_elapsed:.2f}s")
         except Exception as e:
             print(f"Error loading envelopes: {e}")
         
@@ -1707,6 +1851,39 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         forecast_datetime_str = f"{date_str}{time_str}00"
         
         print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
+        print(f"DEBUG: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
+        print(f"DEBUG: VIEWS_DIR = {VIEWS_DIR}")
+        print(f"DEBUG: Full base path = {os.path.join(ROOT_DATA_DIR, VIEWS_DIR)}")
+        
+        # Debug: Check if mount point exists and list directory contents
+        base_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR)
+        print(f"DEBUG: Checking if base path exists: {base_path}")
+        if os.path.exists(base_path):
+            print(f"DEBUG: Base path exists! Listing contents...")
+            try:
+                contents = os.listdir(base_path)
+                print(f"DEBUG: Found {len(contents)} items in {base_path}: {contents}")
+            except Exception as e:
+                print(f"DEBUG: Error listing directory: {e}")
+        else:
+            print(f"DEBUG: Base path does NOT exist!")
+        
+        # Debug: Check mercator_views directory specifically
+        mercator_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views')
+        print(f"DEBUG: Checking mercator_views path: {mercator_path}")
+        if os.path.exists(mercator_path):
+            print(f"DEBUG: mercator_views directory exists!")
+            try:
+                mercator_files = [f for f in os.listdir(mercator_path) if f.endswith('.csv')]
+                print(f"DEBUG: Found {len(mercator_files)} CSV files in mercator_views")
+                # Show first 10 files matching the pattern
+                pattern = f"{country}_{storm}_{forecast_datetime_str[:8]}"
+                matching = [f for f in mercator_files if pattern in f]
+                print(f"DEBUG: Files matching pattern '{pattern}': {matching[:10]}")
+            except Exception as e:
+                print(f"DEBUG: Error listing mercator_views: {e}")
+        else:
+            print(f"DEBUG: mercator_views directory does NOT exist!")
         
         # Check for data file availability
         data_files_found = []
@@ -1715,6 +1892,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Check schools file
         schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+        print(f"DEBUG: Checking schools file at: {schools_path}")
+        print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(schools_path)}")
+        print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(schools_path)}")
         if giga_store.file_exists(schools_path):
             data_files_found.append("schools")
         else:
@@ -1731,6 +1911,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Check tiles file
         tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
+        print(f"DEBUG: Checking tiles file at: {tiles_path}")
+        print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(tiles_path)}")
+        print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(tiles_path)}")
         if giga_store.file_exists(tiles_path):
             data_files_found.append("infrastructure tiles")
         else:
@@ -1769,29 +1952,50 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         
         print(f"Data availability: Found={data_files_found}, Missing={missing_files}")
         
+        load_start_time = time.time()
+        
         try:
-            # Load available data files
-            # Schools
+            # Helper function to load a dataset
+            def load_dataset(file_path, dataset_name):
+                """Load a dataset and return its geo_interface"""
+                try:
+                    start = time.time()
+                    gdf = read_dataset(giga_store, file_path)
+                    geo_data = gdf.__geo_interface__
+                    elapsed = time.time() - start
+                    print(f"Loaded {dataset_name} in {elapsed:.2f}s ({len(gdf)} features)")
+                    return geo_data
+                except Exception as e:
+                    print(f"Error reading {dataset_name} file: {e}")
+                    return {}
+            
+            # Load independent files in parallel for better performance
             schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
-            if giga_store.file_exists(schools_path):
-                try:
-                    gdf_schools = read_dataset(giga_store, schools_path)
-                    schools_data = gdf_schools.__geo_interface__
-                except Exception as e:
-                    print(f"Error reading schools file: {e}")
-                    schools_data = {}
             
-            # Health Centers
             health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
-            if giga_store.file_exists(health_path):
-                try:
-                    gdf_health = read_dataset(giga_store, health_path)
-                    health_data = gdf_health.__geo_interface__
-                except Exception as e:
-                    print(f"Error reading health file: {e}")
-                    health_data = {}
+            
+            # Load schools and health in parallel
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {}
+                if giga_store.file_exists(schools_path):
+                    futures['schools'] = executor.submit(load_dataset, schools_path, 'schools')
+                if giga_store.file_exists(health_path):
+                    futures['health'] = executor.submit(load_dataset, health_path, 'health')
+                
+                # Collect results
+                schools_data = {}
+                health_data = {}
+                for name, future in futures.items():
+                    try:
+                        result = future.result()
+                        if name == 'schools':
+                            schools_data = result
+                        elif name == 'health':
+                            health_data = result
+                    except Exception as e:
+                        print(f"Error in parallel load for {name}: {e}")
             
             # Tiles
             tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
@@ -1880,7 +2084,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         if not admin_data or not isinstance(admin_data, dict) or not 'features' in admin_data:
             admin_data = {"type": "FeatureCollection", "features": []}
         
-        print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY ===")
+        load_elapsed = time.time() - load_start_time
+        print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY in {load_elapsed:.2f}s ===")
         return (tracks_data, envelope_data, schools_data, health_data, 
                 tiles_data, admin_data,
                 True, status_alert, 
@@ -2018,26 +2223,69 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
             if df_filtered.empty:
                 return {"type": "FeatureCollection", "features": []}, False, dash.no_update
             
-            # Convert to GeoDataFrame
+            # Convert to GeoDataFrame - handle both WKT and GeoJSON formats
             geom_col = 'geometry' if 'geometry' in df_filtered.columns else 'ENVELOPE_REGION'
-            if df_filtered[geom_col].iloc[0].startswith('{') or isinstance(df_filtered[geom_col].iloc[0], dict):
-                from shapely.geometry import shape
-                geometries = []
-                for geom_str in df_filtered[geom_col]:
-                    if isinstance(geom_str, dict):
-                        geometries.append(shape(geom_str))
-                    elif isinstance(geom_str, str):
-                        if geom_str.startswith('{'):
-                            geom_dict = json.loads(geom_str)
-                            geometries.append(shape(geom_dict))
+            
+            if len(df_filtered) == 0:
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            # Check geometry format - could be WKT or GeoJSON
+            first_geom = df_filtered[geom_col].iloc[0] if len(df_filtered) > 0 else None
+            parse_start = time.time()
+            
+            if first_geom and isinstance(first_geom, str):
+                if first_geom.strip().startswith('{') or first_geom.strip().startswith('['):
+                    # GeoJSON format - parse using shapely.geometry.shape
+                    print("Detected GeoJSON format in stacked envelope geometries")
+                    from shapely.geometry import shape
+                    geometries = []
+                    for geom_str in df_filtered[geom_col]:
+                        if pd.notna(geom_str) and isinstance(geom_str, str):
+                            try:
+                                if geom_str.strip().startswith('{') or geom_str.strip().startswith('['):
+                                    geom_dict = json.loads(geom_str)
+                                    geometries.append(shape(geom_dict))
+                                else:
+                                    # Try WKT as fallback
+                                    from shapely import wkt
+                                    geometries.append(wkt.loads(geom_str))
+                            except Exception as e:
+                                print(f"Error parsing geometry: {e}")
+                                geometries.append(None)
                         else:
-                            geom_obj = wkt.loads(geom_str)
-                            geometries.append(geom_obj)
-                    else:
-                        geometries.append(geom_str)
-                gdf = gpd.GeoDataFrame(df_filtered.drop(geom_col, axis=1), geometry=geometries)
+                            geometries.append(None)
+                    gdf = gpd.GeoDataFrame(df_filtered.drop(geom_col, axis=1), geometry=geometries, crs='EPSG:4326')
+                else:
+                    # WKT format - use optimized bulk parsing
+                    print("Detected WKT format in stacked envelope geometries")
+                    try:
+                        gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered[geom_col], crs='EPSG:4326'))
+                    except Exception as e:
+                        print(f"Error with bulk WKT parsing, trying individual: {e}")
+                        # Fallback: parse individually
+                        from shapely import wkt as shapely_wkt
+                        geometries = []
+                        for wkt_str in df_filtered[geom_col]:
+                            if pd.notna(wkt_str) and isinstance(wkt_str, str):
+                                try:
+                                    geometries.append(shapely_wkt.loads(wkt_str))
+                                except:
+                                    geometries.append(None)
+                            else:
+                                geometries.append(None)
+                        gdf = gpd.GeoDataFrame(df_filtered.drop(geom_col, axis=1), geometry=geometries, crs='EPSG:4326')
             else:
-                gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered[geom_col]))
+                # Unknown format, try WKT
+                print("Unknown geometry format in stacked envelopes, trying WKT")
+                try:
+                    gdf = gpd.GeoDataFrame(df_filtered, geometry=gpd.GeoSeries.from_wkt(df_filtered[geom_col], crs='EPSG:4326'))
+                except Exception as e:
+                    print(f"Error parsing geometries: {e}")
+                    return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+            
+            gdf = gdf[gdf.geometry.notna()]
+            parse_elapsed = time.time() - parse_start
+            print(f"Parsed {len(gdf)} envelope geometries in {parse_elapsed:.2f}s")
             
             # Try to add impact data from track_views if available
             try:
@@ -2046,26 +2294,40 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                     all_thresholds = [34, 40, 50, 64, 83, 96, 113, 137]
                     available_thresholds = [t for t in all_thresholds if t >= wth_int]
                     
+                    # Load track_views files in parallel for better performance
+                    def load_impact_data_for_threshold(thresh):
+                        """Load impact data for a specific wind threshold"""
+                        try:
+                            tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
+                            tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                            
+                            if giga_store.file_exists(tracks_filepath):
+                                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                                if not track_data.empty and 'wind_threshold' in track_data.columns:
+                                    track_data_filtered = track_data[track_data['wind_threshold'] == thresh]
+                                    if not track_data_filtered.empty:
+                                        return {
+                                            'wind_threshold': thresh,
+                                            'severity_population': track_data_filtered['severity_population'].sum() if 'severity_population' in track_data_filtered.columns else 0,
+                                            'severity_school_age_population': track_data_filtered['severity_school_age_population'].sum() if 'severity_school_age_population' in track_data_filtered.columns else 0,
+                                            'severity_infant_population': track_data_filtered['severity_infant_population'].sum() if 'severity_infant_population' in track_data_filtered.columns else 0,
+                                            'severity_schools': track_data_filtered['severity_schools'].sum() if 'severity_schools' in track_data_filtered.columns else 0,
+                                            'severity_hcs': track_data_filtered['severity_hcs'].sum() if 'severity_hcs' in track_data_filtered.columns else 0,
+                                            'severity_built_surface_m2': track_data_filtered['severity_built_surface_m2'].sum() if 'severity_built_surface_m2' in track_data_filtered.columns else 0,
+                                        }
+                        except Exception as e:
+                            print(f"Error loading impact data for threshold {thresh}: {e}")
+                        return None
+                    
+                    # Load impact data in parallel
                     impact_data_list = []
-                    for thresh in available_thresholds:
-                        tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
-                        tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
-                        
-                        if giga_store.file_exists(tracks_filepath):
-                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
-                            track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
-                            if not track_data.empty and 'wind_threshold' in track_data.columns:
-                                track_data_filtered = track_data[track_data['wind_threshold'] == thresh]
-                                if not track_data_filtered.empty:
-                                    impact_data_list.append({
-                                        'wind_threshold': thresh,
-                                        'severity_population': track_data_filtered['severity_population'].sum() if 'severity_population' in track_data_filtered.columns else 0,
-                                        'severity_school_age_population': track_data_filtered['severity_school_age_population'].sum() if 'severity_school_age_population' in track_data_filtered.columns else 0,
-                                        'severity_infant_population': track_data_filtered['severity_infant_population'].sum() if 'severity_infant_population' in track_data_filtered.columns else 0,
-                                        'severity_schools': track_data_filtered['severity_schools'].sum() if 'severity_schools' in track_data_filtered.columns else 0,
-                                        'severity_hcs': track_data_filtered['severity_hcs'].sum() if 'severity_hcs' in track_data_filtered.columns else 0,
-                                        'severity_built_surface_m2': track_data_filtered['severity_built_surface_m2'].sum() if 'severity_built_surface_m2' in track_data_filtered.columns else 0,
-                                    })
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        futures = {executor.submit(load_impact_data_for_threshold, thresh): thresh for thresh in available_thresholds}
+                        for future in futures:
+                            result = future.result()
+                            if result:
+                                impact_data_list.append(result)
                     
                     # Add impact data to each envelope based on its wind threshold
                     if impact_data_list:
@@ -2160,6 +2422,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
     if not envelope_data or not envelope_data.get('data'):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
+    # Check if we have pre-processed envelopes for this wind threshold (fast path)
+    if wind_threshold and envelope_data.get('preprocessed') and str(wind_threshold) in envelope_data['preprocessed']:
+        print(f"Using pre-processed envelopes for {wind_threshold}kt (fast path)")
+        return envelope_data['preprocessed'][str(wind_threshold)], False, key
+    
+    # Fallback: process on-the-fly (slower, but handles edge cases)
     try:
         df = pd.DataFrame(envelope_data['data'])
         if df.empty:
@@ -2175,16 +2443,63 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
         
         # When "Show All Envelopes" is checked, display all ensemble member envelopes for this wind threshold
         
-        # Convert to GeoDataFrame
-        if df['geometry'].iloc[0].startswith('{'):
-            from shapely.geometry import shape
-            geometries = []
-            for geom_str in df['geometry']:
-                geom_dict = json.loads(geom_str)
-                geometries.append(shape(geom_dict))
-            gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries)
+        # Convert to GeoDataFrame - handle both WKT and GeoJSON formats
+        parse_start = time.time()
+        # Check geometry format - could be WKT or GeoJSON
+        first_geom = df['geometry'].iloc[0] if len(df) > 0 else None
+        if first_geom and isinstance(first_geom, str):
+            if first_geom.strip().startswith('{') or first_geom.strip().startswith('['):
+                # GeoJSON format - parse using shapely.geometry.shape
+                print("Detected GeoJSON format in envelope geometries")
+                from shapely.geometry import shape
+                geometries = []
+                for geom_str in df['geometry']:
+                    if pd.notna(geom_str) and isinstance(geom_str, str):
+                        try:
+                            if geom_str.strip().startswith('{') or geom_str.strip().startswith('['):
+                                geom_dict = json.loads(geom_str)
+                                geometries.append(shape(geom_dict))
+                            else:
+                                # Try WKT as fallback
+                                from shapely import wkt
+                                geometries.append(wkt.loads(geom_str))
+                        except Exception as e:
+                            print(f"Error parsing geometry: {e}")
+                            geometries.append(None)
+                    else:
+                        geometries.append(None)
+                gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+            else:
+                # WKT format - use optimized bulk parsing
+                print("Detected WKT format in envelope geometries")
+                try:
+                    gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry'], crs='EPSG:4326'))
+                except Exception as e:
+                    print(f"Error with bulk WKT parsing, trying individual: {e}")
+                    # Fallback: parse individually
+                    from shapely import wkt as shapely_wkt
+                    geometries = []
+                    for wkt_str in df['geometry']:
+                        if pd.notna(wkt_str) and isinstance(wkt_str, str):
+                            try:
+                                geometries.append(shapely_wkt.loads(wkt_str))
+                            except:
+                                geometries.append(None)
+                        else:
+                            geometries.append(None)
+                    gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
         else:
-            gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry']))
+            # Unknown format, try WKT
+            print("Unknown geometry format, trying WKT")
+            try:
+                gdf = gpd.GeoDataFrame(df, geometry=gpd.GeoSeries.from_wkt(df['geometry'], crs='EPSG:4326'))
+            except Exception as e:
+                print(f"Error parsing geometries: {e}")
+                return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+        
+        gdf = gdf[gdf.geometry.notna()]
+        parse_elapsed = time.time() - parse_start
+        print(f"Parsed {len(gdf)} envelope geometries in {parse_elapsed:.2f}s (fallback path)")
         
         # Try to add impact data from track_views if available
         try:

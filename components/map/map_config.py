@@ -4,7 +4,24 @@ import dash_leaflet as dl
 from pydantic import BaseModel
 import os
 
-mapbox_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
+# Support both MAPBOX_ACCESS_TOKEN and MAPBOX_TOKEN for compatibility
+mapbox_token = os.environ.get("MAPBOX_ACCESS_TOKEN") or os.environ.get("MAPBOX_TOKEN") or None
+
+# Debug: Log token status (without exposing the actual token)
+if mapbox_token:
+    print(f"✓ Mapbox token found (length: {len(mapbox_token)} characters)")
+else:
+    print("⚠ Mapbox token not found - will use OpenStreetMap fallback")
+
+# Fallback tile layer URL if Mapbox token is not available
+def get_tile_layer_url():
+    """Get the appropriate tile layer URL based on whether Mapbox token is available"""
+    if mapbox_token:
+        return f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}"
+    else:
+        # Fallback to OpenStreetMap if no Mapbox token
+        print("Using OpenStreetMap tiles (Mapbox token not available)")
+        return "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 class MapConfig(BaseModel):
 

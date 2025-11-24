@@ -9,17 +9,22 @@ import json
 from components.ui.header import make_header
 from components.ui.footer import footer
 from components.config import config
+from components.data.data_store_utils import get_data_store
 
-# Configuration: Set to True to use blob storage, False to use local file
+# Always use data store (works for both local filesystem and blob storage)
+# For SPCS, this will be LocalDataStore pointing to /datastore
+# For blob storage, this will be ADLSDataStore
+giga_store = get_data_store()
+
+# Get configuration from environment or config
+RESULTS_DIR = config.RESULTS_DIR or os.getenv('RESULTS_DIR') or "project_results/climate/lacro_project"
+REPORT_FILE = os.getenv('REPORT_FILE', 'impact-report-current.html')
+# Try both possible template file names
+REPORT_TEMPLATE_FILE = os.getenv('REPORT_TEMPLATE_FILE') or 'impact-report-template.html'
+REPORT_TEMPLATE_FILE_ALT = 'impact-report.html'  # Alternative name to try
+
+# Legacy flag for backward compatibility (now always uses data store)
 USE_BLOB_REPORT = os.getenv('USE_BLOB_REPORT', 'False').lower() == 'true'
-
-# Import and setup data store only if using blob storage
-if USE_BLOB_REPORT:
-    from components.data.data_store_utils import get_data_store
-    giga_store = get_data_store()
-    RESULTS_DIR = os.getenv('RESULTS_DIR')
-    REPORT_FILE = os.getenv('REPORT_FILE')
-    REPORT_TEMPLATE_FILE = os.getenv('REPORT_TEMPLATE_FILE')
 
 
 dash.register_page(
@@ -168,43 +173,46 @@ def make_custom_header():
     return make_header(active_tab="tab-report")
 
 def make_single_page_layout():
-    if USE_BLOB_REPORT:
-        # Read from blob storage using data store
-        report_path = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE)
-        
-        # Check if file exists in blob storage
-        if not giga_store.file_exists(report_path):
-            return dmc.Alert(
-                f"Impact report not found at {report_path} in blob storage. Please ensure the file exists.",
-                title="Report Not Available",
-                color="blue",
-                variant="light"
-            )
-        
-        # Read from blob storage
-        with giga_store.open(report_path, 'r') as f:
-            html_str = f.read()
-
-        
-    else:
-        # Read from local assets folder
-        # pages/report.py -> go up one level -> assets/impact-report.html
+    # Try to read from data store first (for SPCS or blob storage)
+    report_path = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE)
+    report_path_alt = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE_ALT)
+    
+    html_str = None
+    
+    # Try primary template file name
+    if giga_store.file_exists(report_path):
+        print(f"Impact report: Found template at {report_path}")
+        try:
+            with giga_store.open(report_path, 'r') as f:
+                html_str = f.read()
+        except Exception as e:
+            print(f"Error reading report template from data store: {e}")
+    # Try alternative template file name
+    elif giga_store.file_exists(report_path_alt):
+        print(f"Impact report: Found template at alternative path {report_path_alt}")
+        try:
+            with giga_store.open(report_path_alt, 'r') as f:
+                html_str = f.read()
+        except Exception as e:
+            print(f"Error reading report template from alternative path: {e}")
+    
+    # Fall back to local assets folder if not found in data store
+    if not html_str:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(current_dir)
-        report_path = os.path.join(project_root, 'assets', 'impact-report.html')
+        local_report_path = os.path.join(project_root, 'assets', 'impact-report.html')
         
-        # Check if file exists locally
-        if not os.path.exists(report_path):
+        if os.path.exists(local_report_path):
+            print(f"Impact report: Using local template from {local_report_path}")
+            with open(local_report_path, 'r', encoding='utf-8') as f:
+                html_str = f.read()
+        else:
             return dmc.Alert(
-                f"Impact report not found at {report_path}. Please ensure the file exists.",
+                f"Impact report template not found at any of: {report_path}, {report_path_alt}, {local_report_path}. Please ensure the file exists.",
                 title="Report Not Available",
                 color="blue",
                 variant="light"
             )
-        
-        # Read the HTML file directly from the local filesystem
-        with open(report_path, 'r', encoding='utf-8') as f:
-            html_str = f.read()
 
     return html.Iframe(
         srcDoc=html_str,
@@ -249,19 +257,93 @@ def update_iframe(i_country,i_storm,i_date,s_country,s_storm,s_date):
     if s_country and s_storm and s_date:
         file = f"{s_country}_{s_storm}_{s_date}.json"
         filename = os.path.join(RESULTS_DIR, "jsons", file)
+        
+        print(f"Impact report: Looking for JSON file: {filename}")
+        print(f"Impact report: RESULTS_DIR = {RESULTS_DIR}")
+        print(f"Impact report: Country={s_country}, Storm={s_storm}, Date={s_date}")
+        
+        # Debug: List jsons directory if it exists
+        jsons_dir = os.path.join(RESULTS_DIR, "jsons")
+        print(f"Impact report: Checking jsons directory: {jsons_dir}")
+        if giga_store.file_exists(jsons_dir) or os.path.exists(jsons_dir):
+            try:
+                # Try to list files in jsons directory
+                if hasattr(giga_store, 'list_files'):
+                    json_files = giga_store.list_files(jsons_dir)
+                    print(f"Impact report: Found {len(json_files)} files in jsons directory")
+                    # Show files matching the pattern
+                    matching = [f for f in json_files if s_country in f and s_storm in f]
+                    print(f"Impact report: Files matching pattern: {matching[:5]}")
+            except Exception as e:
+                print(f"Impact report: Could not list jsons directory: {e}")
+        
+        # Check if JSON file exists in data store
         if not giga_store.file_exists(filename):
+            print(f"Impact report: JSON file not found at {filename}")
+            # Try alternative path construction
+            alt_filename = os.path.join(RESULTS_DIR, "jsons", file.lower())
+            if giga_store.file_exists(alt_filename):
+                print(f"Impact report: Found JSON file at alternative path: {alt_filename}")
+                filename = alt_filename
+            else:
+                print(f"Impact report: Also tried alternative path: {alt_filename}")
+                return dash.no_update
+
+        # Get the HTML template path - try both possible names
+        report_path = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE)
+        report_path_alt = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE_ALT)
+        
+        html_str = None
+        
+        # Try primary template file name
+        if giga_store.file_exists(report_path):
+            print(f"Impact report: Found template at {report_path}")
+            with giga_store.open(report_path, 'r') as f:
+                html_str = f.read()
+        # Try alternative template file name
+        elif giga_store.file_exists(report_path_alt):
+            print(f"Impact report: Found template at alternative path {report_path_alt}")
+            with giga_store.open(report_path_alt, 'r') as f:
+                html_str = f.read()
+        else:
+            # Fall back to local assets folder
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(current_dir)
+            local_report_path = os.path.join(project_root, 'assets', 'impact-report.html')
+            
+            if os.path.exists(local_report_path):
+                print(f"Impact report: Using local template from {local_report_path}")
+                with open(local_report_path, 'r', encoding='utf-8') as f:
+                    html_str = f.read()
+            else:
+                print(f"Impact report: HTML template not found at any of: {report_path}, {report_path_alt}, {local_report_path}")
+                return dash.no_update
+
+        if not html_str:
+            print(f"Impact report: Failed to load HTML template")
             return dash.no_update
 
-        report_path = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE)
+        # Read the JSON data file
+        try:
+            with giga_store.open(filename, 'r') as f:
+                d = json.load(f)
+            print(f"Impact report: Successfully loaded JSON data from {filename}")
+            print(f"Impact report: JSON keys: {list(d.keys())[:10]}...")  # Show first 10 keys
+        except Exception as e:
+            print(f"Impact report: Error reading JSON file {filename}: {e}")
+            import traceback
+            print(f"Impact report: Traceback: {traceback.format_exc()}")
+            return dash.no_update
 
-        # Read the HTML file 
-        with giga_store.open(report_path, 'r') as f:
-            html_str = f.read()
-
-        # Read the HTML file 
-        with giga_store.open(filename, 'r') as f:
-            d = json.load(f)
-
-        return refactor_html_str(html_str,d)
+        # Generate the report
+        try:
+            result = refactor_html_str(html_str, d)
+            print(f"Impact report: Successfully generated report")
+            return result
+        except Exception as e:
+            print(f"Impact report: Error generating report: {e}")
+            import traceback
+            print(f"Impact report: Traceback: {traceback.format_exc()}")
+            return dash.no_update
 
     return dash.no_update

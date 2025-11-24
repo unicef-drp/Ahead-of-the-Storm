@@ -18,6 +18,18 @@ WORKERS=$((WORKERS < 2 ? 2 : WORKERS))
 # Use dynamic port if provided by Azure (PORT env var), otherwise default to 8000
 PORT=${PORT:-8000}
 
+# Check datastore mount (for SPCS, this is /datastore; for Azure, this might be /DataStore)
+# Try both locations to support different deployment environments
+if [ -d "/datastore" ]; then
+    echo "Found datastore mount at /datastore"
+    ls -lrt /datastore | head -20
+elif [ -d "/DataStore" ]; then
+    echo "Found datastore mount at /DataStore"
+    ls -lrt /DataStore | head -20
+else
+    echo "Warning: No datastore mount found at /datastore or /DataStore"
+fi
+
 echo "Starting Gunicorn with $WORKERS workers on port $PORT"
 
 gunicorn \

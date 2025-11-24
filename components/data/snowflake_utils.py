@@ -32,18 +32,66 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 from components.config import config
 
 def get_snowflake_connection():
-    """Create Snowflake connection from centralized configuration."""
+    """
+    Create Snowflake connection from centralized configuration.
+    
+    Supports two authentication methods:
+    1. SPCS OAuth (for Snowflake Container Services):
+       - Set SPCS_RUN=true
+       - Token read from SPCS_TOKEN_PATH (default: /snowflake/session/token)
+       - Requires SNOWFLAKE_HOST and SNOWFLAKE_PORT for internal network
+       
+    2. Password Authentication (traditional):
+       - Requires SNOWFLAKE_USER and SNOWFLAKE_PASSWORD
+    """
     config.validate_snowflake_config()
     
-    conn = snowflake.connector.connect(
-        account=config.SNOWFLAKE_ACCOUNT,
-        user=config.SNOWFLAKE_USER,
-        password=config.SNOWFLAKE_PASSWORD,
-        warehouse=config.SNOWFLAKE_WAREHOUSE,
-        database=config.SNOWFLAKE_DATABASE,
-        schema=config.SNOWFLAKE_SCHEMA
-    )
-    return conn
+    if config.SPCS_RUN:
+        # SPCS OAuth authentication using session token
+        print("Connecting to Snowflake with SPCS OAuth authentication...")
+        
+        try:
+            with open(config.SPCS_TOKEN_PATH, 'r') as f:
+                token = f.read().strip()
+            
+            # SPCS requires specific connection parameters for internal network
+            conn_params = {
+                'host': config.SNOWFLAKE_HOST,
+                'port': config.SNOWFLAKE_PORT,
+                'protocol': 'https',
+                'account': config.SNOWFLAKE_ACCOUNT,
+                'authenticator': 'oauth',
+                'token': token,
+                'warehouse': config.SNOWFLAKE_WAREHOUSE,
+                'database': config.SNOWFLAKE_DATABASE,
+                'schema': config.SNOWFLAKE_SCHEMA,
+                'client_session_keep_alive': True
+            }
+            print(f"✓ Loaded OAuth token from {config.SPCS_TOKEN_PATH}")
+            print(f"✓ Using SPCS internal network: {conn_params['host']}:{conn_params['port']}")
+        except Exception as e:
+            raise ValueError(f"Failed to load OAuth token from {config.SPCS_TOKEN_PATH}: {str(e)}")
+    else:
+        # Non-SPCS mode: use standard connection parameters with password
+        print("Connecting to Snowflake with password authentication...")
+        conn_params = {
+            'account': config.SNOWFLAKE_ACCOUNT,
+            'user': config.SNOWFLAKE_USER,
+            'password': config.SNOWFLAKE_PASSWORD,
+            'warehouse': config.SNOWFLAKE_WAREHOUSE,
+            'database': config.SNOWFLAKE_DATABASE,
+            'schema': config.SNOWFLAKE_SCHEMA
+        }
+    
+    try:
+        conn = snowflake.connector.connect(**conn_params)
+        print("✓ Connected to Snowflake")
+        # Cache the connection for reuse
+        _connection_cache = conn
+        return conn
+    except Exception as e:
+        print(f"Failed to connect to Snowflake: {str(e)}")
+        raise
 
 def get_hurricane_data_from_snowflake(track_id, forecast_time):
     """
@@ -246,20 +294,33 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         conn = get_snowflake_connection()
         
         # Get envelope data from TC_ENVELOPES_COMBINED
+        # Use ST_ASWKT() to ensure we get WKT format, not raw GEOGRAPHY type
         query = '''
         SELECT 
             ENSEMBLE_MEMBER,
             WIND_THRESHOLD,
-            ENVELOPE_REGION
+            ST_ASWKT(ENVELOPE_REGION) AS ENVELOPE_REGION
         FROM TC_ENVELOPES_COMBINED
         WHERE TRACK_ID = %s AND FORECAST_TIME = %s
         ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
         '''
         
         df = pd.read_sql(query, conn, params=[track_id, str(forecast_time)])
-        conn.close()
+        # Don't close connection - reuse it for better performance
+        # conn.close()
         
         if not df.empty:
+            # Debug: Check what format we're getting
+            if len(df) > 0 and 'ENVELOPE_REGION' in df.columns:
+                sample_geom = df['ENVELOPE_REGION'].iloc[0]
+                if isinstance(sample_geom, str):
+                    if sample_geom.strip().startswith('{'):
+                        print(f"⚠ Warning: Snowflake returned GeoJSON format instead of WKT for envelopes")
+                    elif sample_geom.strip().startswith('POLYGON') or sample_geom.strip().startswith('MULTIPOLYGON'):
+                        print(f"✓ Snowflake returned WKT format for envelopes")
+                    else:
+                        print(f"⚠ Unknown geometry format from Snowflake: starts with '{sample_geom[:20] if len(sample_geom) > 20 else sample_geom}'")
+            
             # Rename columns to match expected format
             df = df.rename(columns={'ENVELOPE_REGION': 'geometry', 'WIND_THRESHOLD': 'wind_threshold'})
             return df
