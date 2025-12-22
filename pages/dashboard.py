@@ -1121,9 +1121,13 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
                 if giga_store.file_exists(tracks_filepath):
-                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    try:
+                        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    except Exception as e:
+                        print(f"Error reading track file {tracks_filepath}: {e}")
+                        gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
                     
-                    if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                    if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                         # Use deterministic member 51 (always member 51)
                         deterministic_member = 51
                         # Find ensemble member with highest impact
@@ -1253,9 +1257,13 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
         if giga_store.file_exists(tracks_filepath):
-            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            try:
+                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            except Exception as e:
+                print(f"Error reading track file {tracks_filepath}: {e}")
+                gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
             
-            if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+            if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                 # Sort ensemble members by total impacted population (descending)
                 member_totals = (
                     gdf_tracks[["zone_id", "severity_population"]]
@@ -1962,13 +1970,95 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 """Load a dataset and return its geo_interface"""
                 try:
                     start = time.time()
-                    gdf = read_dataset(giga_store, file_path)
+                    df = read_dataset(giga_store, file_path)
+                    
+                    # Ensure we have a GeoDataFrame
+                    if isinstance(df, gpd.GeoDataFrame):
+                        gdf = df
+                    elif isinstance(df, pd.DataFrame):
+                        # Try to convert to GeoDataFrame if geometry column exists
+                        if 'geometry' in df.columns:
+                            # Check geometry column type and sample
+                            geom_dtype = df['geometry'].dtype
+                            geom_sample = df['geometry'].iloc[0] if len(df) > 0 else None
+                            
+                            # Handle different geometry formats
+                            # First check if sample is bytes (WKB format) - this takes priority
+                            # Note: bytes can have dtype 'object' in pandas, so check isinstance first
+                            if geom_sample is not None and isinstance(geom_sample, bytes):
+                                # Binary format (WKB) - convert from WKB
+                                try:
+                                    from shapely import wkb
+                                    geometries = gpd.GeoSeries([wkb.loads(g) if isinstance(g, bytes) else g for g in df['geometry']], crs='EPSG:4326')
+                                    gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                except Exception as e:
+                                    print(f"Warning: Failed to convert WKB geometry for {dataset_name}: {e}")
+                                    # Try convert_to_geodataframe as fallback
+                                    try:
+                                        gdf = convert_to_geodataframe(df)
+                                    except:
+                                        print(f"Error: Could not convert WKB geometry for {dataset_name}")
+                                        return {}
+                            elif geom_dtype == 'object' and geom_sample is not None:
+                                # String format - could be WKT or already Shapely objects
+                                if geom_sample is not None:
+                                    # Check if it's WKT string
+                                    if isinstance(geom_sample, str):
+                                        try:
+                                            from shapely import wkt
+                                            # Try WKT conversion
+                                            geometries = gpd.GeoSeries.from_wkt(df['geometry'], crs='EPSG:4326')
+                                            gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                        except:
+                                            # If WKT fails, might be already Shapely objects
+                                            try:
+                                                # Try as Shapely objects
+                                                gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+                                            except:
+                                                # Last resort: convert using convert_to_geodataframe
+                                                try:
+                                                    gdf = convert_to_geodataframe(df)
+                                                except:
+                                                    print(f"Error: Could not convert geometry for {dataset_name}")
+                                                    return {}
+                                    else:
+                                        # Not a string or bytes, try as Shapely objects
+                                        try:
+                                            gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+                                        except:
+                                            try:
+                                                gdf = convert_to_geodataframe(df)
+                                            except:
+                                                print(f"Error: Could not convert geometry for {dataset_name}")
+                                                return {}
+                                else:
+                                    try:
+                                        gdf = convert_to_geodataframe(df)
+                                    except:
+                                        print(f"Error: Could not convert geometry for {dataset_name}")
+                                        return {}
+                            else:
+                                # Numeric or other type - try direct conversion
+                                try:
+                                    gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+                                except:
+                                    gdf = convert_to_geodataframe(df)
+                        else:
+                            # No geometry column - this shouldn't happen for spatial data
+                            print(f"Warning: {dataset_name} file has no geometry column, converting...")
+                            gdf = convert_to_geodataframe(df)
+                    else:
+                        # Unknown type, try to convert
+                        gdf = convert_to_geodataframe(df)
+                    
                     geo_data = gdf.__geo_interface__
                     elapsed = time.time() - start
                     print(f"Loaded {dataset_name} in {elapsed:.2f}s ({len(gdf)} features)")
                     return geo_data
                 except Exception as e:
                     print(f"Error reading {dataset_name} file: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return {}
             
             # Load independent files in parallel for better performance
@@ -2304,8 +2394,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                             
                             if giga_store.file_exists(tracks_filepath):
-                                gdf_tracks = read_dataset(giga_store, tracks_filepath)
-                                track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                                try:
+                                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                    track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                                except Exception as e:
+                                    print(f"Error reading track file {tracks_filepath}: {e}")
+                                    track_data = pd.DataFrame()  # Empty dataframe
                                 if not track_data.empty and 'wind_threshold' in track_data.columns:
                                     track_data_filtered = track_data[track_data['wind_threshold'] == thresh]
                                     if not track_data_filtered.empty:
@@ -2380,8 +2474,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
             if giga_store.file_exists(tracks_filepath):
-                gdf_tracks = read_dataset(giga_store, tracks_filepath)
-                specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                try:
+                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
+                except Exception as e:
+                    print(f"Error reading track file {tracks_filepath}: {e}")
+                    return f"Error loading track data: {str(e)}"
                 
                 if not specific_track_data.empty:
                     # Create specific track envelope
@@ -2511,10 +2609,14 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
                 if giga_store.file_exists(tracks_filepath):
-                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    try:
+                        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    except Exception as e:
+                        print(f"Error reading track file {tracks_filepath}: {e}")
+                        gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
                     
-                    # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
-                    if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
+                    if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
+                        # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
                         # Filter by wind threshold
                         tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == wth_int]
                         
@@ -3081,7 +3183,11 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
             return "Track data not found"
         
         # Load track data
-        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        try:
+            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        except Exception as e:
+            print(f"Error reading track file {tracks_filepath}: {e}")
+            return f"Error loading track data: {str(e)}"
         
         # Filter for specific track
         specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
@@ -3205,7 +3311,23 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
         tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if not giga_store.file_exists(tracks_filepath):
+        # Check if file exists - for Snowflake stages, file_exists() might check directories
+        # So we also verify by trying to list files in the directory
+        file_exists_check = giga_store.file_exists(tracks_filepath)
+        
+        # Additional verification: check if file is in list_files() results
+        # This helps catch cases where file_exists() returns True but file doesn't actually exist
+        file_actually_exists = False
+        if file_exists_check:
+            try:
+                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
+                files_in_dir = giga_store.list_files(track_views_dir)
+                file_actually_exists = tracks_filepath in files_in_dir or tracks_filename in [os.path.basename(f) for f in files_in_dir]
+            except:
+                # If list_files fails, fall back to file_exists() result
+                file_actually_exists = file_exists_check
+        
+        if not file_exists_check or not file_actually_exists:
             empty_fig.add_annotation(
                 text="Track data file not found. Please ensure the storm data has been processed.",
                 xref="paper", yref="paper",
@@ -3214,8 +3336,33 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
             )
             return empty_fig, "Track data not found for the selected storm and wind threshold.", empty_legend
         
-        # Load track data
-        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        # Load track data - wrap in try-except to handle Snowflake stage read errors gracefully
+        try:
+            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        except (IOError, ValueError, FileNotFoundError, Exception) as e:
+            # If file_exists() returned True but read fails, it might be a path/permission issue
+            print(f"Warning: file_exists() returned True but read failed for {tracks_filepath}: {e}")
+            # Try to find the actual file name if path doesn't match exactly
+            try:
+                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
+                files_in_dir = giga_store.list_files(track_views_dir)
+                matching_files = [f for f in files_in_dir if tracks_filename in f or f.endswith(tracks_filename)]
+                if matching_files:
+                    print(f"Found similar files: {matching_files[:3]}")
+                    # Try the first matching file
+                    actual_path = matching_files[0]
+                    print(f"Trying alternative path: {actual_path}")
+                    gdf_tracks = read_dataset(giga_store, actual_path)
+                else:
+                    raise e  # Re-raise original error if no matches found
+            except Exception as e2:
+                empty_fig.add_annotation(
+                    text="Track data file exists but could not be read. This may be a temporary issue.",
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=12, color="orange")
+                )
+                return empty_fig, f"Track data file could not be read: {str(e)}", empty_legend
         
         if 'zone_id' not in gdf_tracks.columns or 'severity_population' not in gdf_tracks.columns:
             empty_fig.add_annotation(

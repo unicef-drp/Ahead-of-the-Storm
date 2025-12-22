@@ -31,9 +31,28 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 # Import centralized configuration
 from components.config import config
 
+# Connection caching
+_connection_cache = None
+_connection_created = False
+_connection_verbose = True  # Set to False to suppress connection messages
+
+def _is_connection_alive(conn):
+    """Check if a Snowflake connection is still alive"""
+    try:
+        # Try a simple query to check if connection is alive
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        return True
+    except:
+        return False
+
 def get_snowflake_connection():
     """
-    Create Snowflake connection from centralized configuration.
+    Get or create a Snowflake connection from centralized configuration.
+    
+    Reuses a cached connection if it's still alive, otherwise creates a new one.
+    This improves efficiency by avoiding unnecessary reconnections.
     
     Supports two authentication methods:
     1. SPCS OAuth (for Snowflake Container Services):
@@ -44,11 +63,28 @@ def get_snowflake_connection():
     2. Password Authentication (traditional):
        - Requires SNOWFLAKE_USER and SNOWFLAKE_PASSWORD
     """
+    global _connection_cache, _connection_created, _connection_verbose
     config.validate_snowflake_config()
+    
+    # Check if we have a cached connection that's still alive
+    if _connection_cache is not None:
+        if _is_connection_alive(_connection_cache):
+            return _connection_cache
+        else:
+            # Connection is dead, clear cache
+            try:
+                _connection_cache.close()
+            except:
+                pass
+            _connection_cache = None
+    
+    # Need to create a new connection
+    should_print = _connection_verbose and not _connection_created
     
     if config.SPCS_RUN:
         # SPCS OAuth authentication using session token
-        print("Connecting to Snowflake with SPCS OAuth authentication...")
+        if should_print:
+            print("Connecting to Snowflake with SPCS OAuth authentication...")
         
         try:
             with open(config.SPCS_TOKEN_PATH, 'r') as f:
@@ -67,13 +103,15 @@ def get_snowflake_connection():
                 'schema': config.SNOWFLAKE_SCHEMA,
                 'client_session_keep_alive': True
             }
-            print(f"✓ Loaded OAuth token from {config.SPCS_TOKEN_PATH}")
-            print(f"✓ Using SPCS internal network: {conn_params['host']}:{conn_params['port']}")
+            if should_print:
+                print(f"✓ Loaded OAuth token from {config.SPCS_TOKEN_PATH}")
+                print(f"✓ Using SPCS internal network: {conn_params['host']}:{conn_params['port']}")
         except Exception as e:
             raise ValueError(f"Failed to load OAuth token from {config.SPCS_TOKEN_PATH}: {str(e)}")
     else:
         # Non-SPCS mode: use standard connection parameters with password
-        print("Connecting to Snowflake with password authentication...")
+        if should_print:
+            print("Connecting to Snowflake with password authentication...")
         conn_params = {
             'account': config.SNOWFLAKE_ACCOUNT,
             'user': config.SNOWFLAKE_USER,
@@ -85,12 +123,14 @@ def get_snowflake_connection():
     
     try:
         conn = snowflake.connector.connect(**conn_params)
-        print("✓ Connected to Snowflake")
+        if should_print:
+            print("✓ Connected to Snowflake (connection will be reused)")
         # Cache the connection for reuse
         _connection_cache = conn
+        _connection_created = True
         return conn
     except Exception as e:
-        print(f"Failed to connect to Snowflake: {str(e)}")
+        print(f"✗ Failed to connect to Snowflake: {str(e)}")
         raise
 
 def get_hurricane_data_from_snowflake(track_id, forecast_time):
@@ -139,7 +179,7 @@ def get_hurricane_data_from_snowflake(track_id, forecast_time):
     """
     
     df = pd.read_sql(query, conn, params=[track_id, forecast_time])
-    conn.close()
+    # Don't close connection - it's cached and will be reused
     
     return df
 
@@ -171,7 +211,7 @@ def get_envelopes_from_snowflake(track_id, forecast_time):
     """
     
     df = pd.read_sql(query, conn, params=[track_id, forecast_time])
-    conn.close()
+    # Don't close connection - it's cached and will be reused
     
     return df
 
@@ -240,7 +280,7 @@ def get_available_wind_thresholds(storm, forecast_time):
         """
         
         df = pd.read_sql(query, conn, params=[storm, forecast_time])
-        conn.close()
+        # Don't close connection - it's cached and will be reused
         
         if not df.empty:
             # Convert to list of strings and sort
@@ -276,7 +316,7 @@ def get_latest_forecast_time_overall():
         """
         
         df = pd.read_sql(query, conn)
-        conn.close()
+        # Don't close connection - it's cached and will be reused
         
         if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
             latest_time = df['MAX_FORECAST_TIME'].iloc[0]
@@ -349,7 +389,7 @@ def get_snowflake_data():
         '''
         
         df = pd.read_sql(query, conn)
-        conn.close()
+        # Don't close connection - it's cached and will be reused
         
         return df
         

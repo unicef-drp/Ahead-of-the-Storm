@@ -42,12 +42,14 @@ class Config:
     SNOWFLAKE_PORT = os.getenv('SNOWFLAKE_PORT')
     
     # Impact Data Storage Configuration
-    # Controls where pre-processed impact views are stored (LOCAL or BLOB)
-    # Note: Snowflake is a separate data source for raw hurricane forecast data
+    # Controls where pre-processed impact views are stored (LOCAL, BLOB, or SNOWFLAKE)
+    # Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
     # ADLS variables are read directly by giga-spatial's ADLSDataStore
     ADLS_ACCOUNT_URL = os.getenv('ADLS_ACCOUNT_URL')
     ADLS_SAS_TOKEN = os.getenv('ADLS_SAS_TOKEN')
     ADLS_CONTAINER_NAME = os.getenv('ADLS_CONTAINER_NAME')
+    # Snowflake stage name for impact views (only needed if IMPACT_DATA_STORE='SNOWFLAKE')
+    SNOWFLAKE_STAGE_NAME = os.getenv('SNOWFLAKE_STAGE_NAME')
     IMPACT_DATA_STORE = os.getenv('IMPACT_DATA_STORE', 'LOCAL')
     
     # Application Configuration
@@ -111,6 +113,16 @@ class Config:
             missing = [var for var in required_vars if not getattr(cls, var)]
             if missing:
                 raise ValueError(f"Missing Azure environment variables: {', '.join(missing)}")
+    
+    @classmethod
+    def validate_snowflake_stage_config(cls):
+        """Validate that all required Snowflake stage configuration is present"""
+        if cls.IMPACT_DATA_STORE == 'SNOWFLAKE':
+            # Validate Snowflake connection config first
+            cls.validate_snowflake_config()
+            # Then validate stage name
+            if not cls.SNOWFLAKE_STAGE_NAME:
+                raise ValueError("SNOWFLAKE_STAGE_NAME is required when IMPACT_DATA_STORE='SNOWFLAKE'")
 
 # Create a global config instance
 config = Config()

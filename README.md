@@ -39,15 +39,17 @@ pip install -r requirements.txt
 - `VIEWS_DIR` (e.g., `aos_views`)
 
 #### Optional: Impact Data Storage
-- `IMPACT_DATA_STORE` (`LOCAL` by default; use `BLOB` for Azure)
+- `IMPACT_DATA_STORE` (`LOCAL` by default; use `BLOB` for Azure or `SNOWFLAKE` for Snowflake stage)
   - Controls where pre-processed impact views are stored (CSV/Parquet files in `geodb/aos_views/`)
   - Options:
     - `LOCAL`: Local filesystem
       - **For SPCS deployment**: Uses mounted volume at `/datastore` (persistent Snowflake storage)
       - **For local development**: Uses local filesystem
     - `BLOB`: Azure Blob Storage (read-only, this app only reads data)
-  - Note: Snowflake is a separate data source for raw hurricane forecast data
+    - `SNOWFLAKE`: Snowflake internal stage (read-only, this app only reads data)
+  - Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
 - If using Azure Blob Storage: `ADLS_ACCOUNT_URL`, `ADLS_SAS_TOKEN`, `ADLS_CONTAINER_NAME`
+- If using Snowflake stage: `SNOWFLAKE_STAGE_NAME` (name of the Snowflake internal stage)
 
 #### Mapbox (for map visualization)
 - `MAPBOX_ACCESS_TOKEN` (optional)

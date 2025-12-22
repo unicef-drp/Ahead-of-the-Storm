@@ -43,10 +43,16 @@ export REPORT_TEMPLATE_FILE="impact-report.html"
 # REQUIRED: Impact Data Storage
 ################################################################################
 # Controls where pre-processed impact views are read from
-# Options: 'LOCAL' (default) or 'BLOB' (Azure Blob Storage)
-# Note: Snowflake is a SEPARATE data source for raw hurricane forecast data
+# Options:
+#   - 'LOCAL': Local filesystem (default)
+#     * For SPCS deployment: Uses mounted volume at /datastore (persistent Snowflake storage)
+#     * For local development: Uses local filesystem
+#   - 'BLOB': Azure Blob Storage (read-only, this app only reads data)
+#   - 'SNOWFLAKE': Snowflake internal stage (read-only, this app only reads data)
+# Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
 export IMPACT_DATA_STORE='LOCAL'
 #export IMPACT_DATA_STORE='BLOB'
+#export IMPACT_DATA_STORE='SNOWFLAKE'
 
 ################################################################################
 # OPTIONAL: Azure Blob Storage (only if IMPACT_DATA_STORE='BLOB')
@@ -57,6 +63,14 @@ export ADLS_ACCOUNT_URL=""
 export ADLS_SAS_TOKEN=""
 export ADLS_CONTAINER_NAME=""
 export ADLS_CONNECTION_STRING=""
+
+################################################################################
+# OPTIONAL: Snowflake Stage (only if IMPACT_DATA_STORE='SNOWFLAKE')
+################################################################################
+# Required only if using Snowflake stage for impact views
+# This is the name of the Snowflake internal stage where impact views are stored
+# Note: Snowflake stages use standard password authentication (SPCS_RUN=false)
+export SNOWFLAKE_STAGE_NAME=""
 
 ################################################################################
 # OPTIONAL: Mapbox (for map visualization)

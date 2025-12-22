@@ -86,12 +86,13 @@ ENV ROOT_DATA_DIR="/datastore/geodb" \
     STORMS_FILE="storms.json"
 
 # Impact Data Storage Configuration (optional)
-# Controls where pre-processed impact views are stored (LOCAL or BLOB)
-# Note: Snowflake is a separate data source for raw hurricane forecast data
+# Controls where pre-processed impact views are stored (LOCAL, BLOB, or SNOWFLAKE)
+# Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
 ENV IMPACT_DATA_STORE="LOCAL" \
     ADLS_ACCOUNT_URL="" \
     ADLS_SAS_TOKEN="" \
-    ADLS_CONTAINER_NAME="giga"
+    ADLS_CONTAINER_NAME="giga" \
+    SNOWFLAKE_STAGE_NAME=""
 
 # Mapbox Configuration (optional)
 ENV MAPBOX_ACCESS_TOKEN=""

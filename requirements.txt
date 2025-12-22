@@ -30,5 +30,4 @@ python-dotenv>=1.0.0
 azure-storage-blob>=12.0.0
 
 # GigaSpatial platform integration
-giga-spatial>=0.7.0
-# pip install giga-spatial
+giga-spatial>=0.7.4
