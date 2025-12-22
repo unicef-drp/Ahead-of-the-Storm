@@ -4,8 +4,8 @@ import dash_leaflet as dl
 from pydantic import BaseModel
 import os
 
-# Support both MAPBOX_ACCESS_TOKEN and MAPBOX_TOKEN for compatibility
-mapbox_token = os.environ.get("MAPBOX_ACCESS_TOKEN") or os.environ.get("MAPBOX_TOKEN") or None
+# Mapbox access token for map visualization
+mapbox_token = os.environ.get("MAPBOX_ACCESS_TOKEN") or None
 
 # Debug: Log token status (without exposing the actual token)
 if mapbox_token:

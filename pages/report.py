@@ -23,10 +23,6 @@ REPORT_FILE = os.getenv('REPORT_FILE', 'impact-report-current.html')
 REPORT_TEMPLATE_FILE = os.getenv('REPORT_TEMPLATE_FILE') or 'impact-report-template.html'
 REPORT_TEMPLATE_FILE_ALT = 'impact-report.html'  # Alternative name to try
 
-# Legacy flag for backward compatibility (now always uses data store)
-USE_BLOB_REPORT = os.getenv('USE_BLOB_REPORT', 'False').lower() == 'true'
-
-
 dash.register_page(
     __name__, path="/report", name="Impact Report"
 )

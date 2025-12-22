@@ -85,15 +85,16 @@ ENV ROOT_DATA_DIR="/datastore/geodb" \
     BBOX_FILE="bbox.parquet" \
     STORMS_FILE="storms.json"
 
-# Azure Blob Storage Configuration (optional)
-ENV DATA_PIPELINE_DB="LOCAL" \
-    ACCOUNT_URL="" \
-    SAS_TOKEN=""
+# Impact Data Storage Configuration (optional)
+# Controls where pre-processed impact views are stored (LOCAL or BLOB)
+# Note: Snowflake is a separate data source for raw hurricane forecast data
+ENV IMPACT_DATA_STORE="LOCAL" \
+    ADLS_ACCOUNT_URL="" \
+    ADLS_SAS_TOKEN="" \
+    ADLS_CONTAINER_NAME="giga"
 
 # Mapbox Configuration (optional)
-# Supports both MAPBOX_ACCESS_TOKEN and MAPBOX_TOKEN environment variables
-ENV MAPBOX_TOKEN="" \
-    MAPBOX_ACCESS_TOKEN=""
+ENV MAPBOX_ACCESS_TOKEN=""
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -24,16 +24,6 @@ __pycache__/
 
 *.share
 
-tc_data/
-tc_extracted/
-tc_transformed/
-test_output/
-wind_data/
-wind_extracted/
 geodb/
 project_results/
-components/data/geodb/
-AotS-mockup/
-backup/
-TESTING/
-pages/alt_home.py
+gigaspatial/

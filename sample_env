@@ -1,38 +1,74 @@
-#### gigaspatial ####
-export ADLS_CONNECTION_STRING=""
-export ADLS_CONTAINER_NAME="giga"
-export MAPBOX_ACCESS_TOKEN=""
-export BRONZE_DIR="bronze"
-export SILVER_DIR="silver"
-export GOLD_DIR="gold"
-export VIEWS_DIR="aos_views"
-export CACHE_DIR=""
-#export ADMIN_BOUNDARIES_DIR=""
-export ROOT_DATA_DIR="geodb"
-export GEOREPO_API_KEY=""
-export GEOREPO_USER_EMAIL=""
-export GIGA_SCHOOL_LOCATION_API_KEY= ""
-export HEALTHSITES_API_KEY=""
+################################################################################
+# Ahead of the Storm - Environment Variables Configuration
+################################################################################
+# Copy this file to .env and fill in the values for your environment
+# cp sample_env .env
 
-#### SnowFlake ####
+################################################################################
+# REQUIRED: Snowflake Configuration
+################################################################################
+# Snowflake is the data source for raw hurricane forecast data (tracks, envelopes)
+# Choose ONE authentication method below:
+
+# Method 1: Standard Password Authentication (default)
 export SNOWFLAKE_ACCOUNT=''
 export SNOWFLAKE_USER=''
 export SNOWFLAKE_PASSWORD=''
-export SNOWFLAKE_WAREHOUSE='H'
+export SNOWFLAKE_WAREHOUSE=''
 export SNOWFLAKE_DATABASE=''
 export SNOWFLAKE_SCHEMA=''
 
-#### internal ####
-export TRACKS_DB='BLOB'
-#export DATA_PIPELINE_DB='LOCAL'
-#export DATA_PIPELINE_DB='BLOB'
-export DATA_PIPELINE_DB='RO_BLOB'
-export RESULTS_DIR = "project_results/climate/lacro_project"
-export BBOX_FILE = "bbox.parquet"
-export STORMS_FILE = "storms.json"
-export REPORT_FILE = "impact-report-current.html"
-export REPORT_TEMPLATE_FILE = "impact-report.html"
-export ACCOUNT_URL=""
-export SAS_TOKEN=""
+# Method 2: SPCS OAuth Authentication (for Snowflake Container Services deployment)
+# Set SPCS_RUN=true and provide SPCS connection details instead of password
+export SPCS_RUN='false'
+export SPCS_TOKEN_PATH='/snowflake/session/token'
+export SNOWFLAKE_HOST=''
+export SNOWFLAKE_PORT=''
 
-export USE_BLOB_REPORT=False
+################################################################################
+# REQUIRED: Application Data Paths
+################################################################################
+# These paths point to where pre-processed impact views are stored
+# For SPCS: These will be under /datastore (mounted volume)
+# For local: Use relative or absolute paths
+export ROOT_DATA_DIR="geodb"
+export VIEWS_DIR="aos_views"
+export RESULTS_DIR="project_results/climate/lacro_project"
+export BBOX_FILE="bbox.parquet"
+export STORMS_FILE="storms.json"
+export REPORT_FILE="impact-report-current.html"
+export REPORT_TEMPLATE_FILE="impact-report.html"
+
+################################################################################
+# REQUIRED: Impact Data Storage
+################################################################################
+# Controls where pre-processed impact views are read from
+# Options: 'LOCAL' (default) or 'BLOB' (Azure Blob Storage)
+# Note: Snowflake is a SEPARATE data source for raw hurricane forecast data
+export IMPACT_DATA_STORE='LOCAL'
+#export IMPACT_DATA_STORE='BLOB'
+
+################################################################################
+# OPTIONAL: Azure Blob Storage (only if IMPACT_DATA_STORE='BLOB')
+################################################################################
+# Required only if using Azure Blob Storage for impact views
+# These variables are used by the giga-spatial library's ADLSDataStore
+export ADLS_ACCOUNT_URL=""
+export ADLS_SAS_TOKEN=""
+export ADLS_CONTAINER_NAME=""
+export ADLS_CONNECTION_STRING=""
+
+################################################################################
+# OPTIONAL: Mapbox (for map visualization)
+################################################################################
+# If not set, the app will use OpenStreetMap tiles as fallback
+export MAPBOX_ACCESS_TOKEN=""
+
+################################################################################
+# OPTIONAL: Giga-Spatial Library Configuration
+################################################################################
+# Additional giga-spatial library configuration (if needed)
+export BRONZE_DIR="bronze"
+export SILVER_DIR="silver"
+export GOLD_DIR="gold"
+export CACHE_DIR=""

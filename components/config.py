@@ -41,10 +41,14 @@ class Config:
     SNOWFLAKE_HOST = os.getenv('SNOWFLAKE_HOST')
     SNOWFLAKE_PORT = os.getenv('SNOWFLAKE_PORT')
     
-    # Azure Blob Storage Configuration
-    ACCOUNT_URL = os.getenv('ACCOUNT_URL')
-    SAS_TOKEN = os.getenv('SAS_TOKEN')
-    DATA_PIPELINE_DB = os.getenv('DATA_PIPELINE_DB', 'LOCAL')
+    # Impact Data Storage Configuration
+    # Controls where pre-processed impact views are stored (LOCAL or BLOB)
+    # Note: Snowflake is a separate data source for raw hurricane forecast data
+    # ADLS variables are read directly by giga-spatial's ADLSDataStore
+    ADLS_ACCOUNT_URL = os.getenv('ADLS_ACCOUNT_URL')
+    ADLS_SAS_TOKEN = os.getenv('ADLS_SAS_TOKEN')
+    ADLS_CONTAINER_NAME = os.getenv('ADLS_CONTAINER_NAME')
+    IMPACT_DATA_STORE = os.getenv('IMPACT_DATA_STORE', 'LOCAL')
     
     # Application Configuration
     RESULTS_DIR = os.getenv('RESULTS_DIR')
@@ -54,7 +58,7 @@ class Config:
     ROOT_DATA_DIR = os.getenv('ROOT_DATA_DIR')
     
     # Mapbox Configuration
-    MAPBOX_TOKEN = os.getenv('MAPBOX_TOKEN')
+    MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN')
 
     CCI_COL = 'CCI_children' 
     E_CCI_COL = 'E_CCI_children' 
@@ -102,8 +106,8 @@ class Config:
     @classmethod
     def validate_azure_config(cls):
         """Validate that all required Azure configuration is present"""
-        if cls.DATA_PIPELINE_DB in ['BLOB', 'RO_BLOB']:
-            required_vars = ['ACCOUNT_URL', 'SAS_TOKEN']
+        if cls.IMPACT_DATA_STORE == 'BLOB':
+            required_vars = ['ADLS_ACCOUNT_URL', 'ADLS_SAS_TOKEN', 'ADLS_CONTAINER_NAME']
             missing = [var for var in required_vars if not getattr(cls, var)]
             if missing:
                 raise ValueError(f"Missing Azure environment variables: {', '.join(missing)}")
