@@ -52,6 +52,7 @@ COUNTRY_MAP_CONFIG = {
     "KNA": {"center": [17.36, -62.75], "zoom": 11},  # Saint Kitts and Nevis
     "LCA": {"center": [13.91, -60.98], "zoom": 11},  # Saint Lucia
     "VCT": {"center": [12.98, -61.28], "zoom": 9},  # Saint Vincent and the Grenadines
+    "VNM": {"center": [16.00, 107.00], "zoom": 6}, # Vietnam
 }
 # Default map config if country not found
 DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lon"]], "zoom": map_config.zoom}
@@ -209,7 +210,8 @@ country_selection = dmc.Paper([
                                 {"value": "NIC", "label": "Nicaragua"},
                                 {"value": "KNA", "label": "Saint Kitts and Nevis"},
                                 {"value": "LCA", "label": "Saint Lucia"},
-                                {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
+                                {"value": "VCT", "label": "Saint Vincent and the Grenadines"},
+                                {"value": "VNM", "label": "Vietnam"},
                             ],
                             value="JAM",
                             mb="xs"
