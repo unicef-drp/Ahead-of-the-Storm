@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 from components.config import config
 from components.ui.header import make_header
 from components.ui.footer import footer
-from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds
+from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds, get_active_countries, get_snowflake_data
 from gigaspatial.core.io.readers import read_dataset
 from components.data.data_store_utils import get_data_store
 
@@ -27,35 +27,25 @@ ROOT_DATA_DIR = config.ROOT_DATA_DIR or "geodb"
 # Initialize data store
 giga_store = get_data_store()
 
+# Load active countries from Snowflake
+countries_df = get_active_countries()
+
+# Build country options list for dropdowns
+COUNTRY_OPTIONS = []
+if not countries_df.empty:
+    COUNTRY_OPTIONS = [
+        {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
+        for _, row in countries_df.iterrows()
+    ]
+    # Set default country to JAM if available, otherwise first in list
+    DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
+else:
+    DEFAULT_COUNTRY = None
+    print("⚠ No country options available - country dropdown will be empty")
+
 dash.register_page(
     __name__, path="/analysis", name="Forecast Analysis"
 )
-
-# Load hurricane metadata from Snowflake
-def get_snowflake_data():
-    """Get hurricane metadata directly from Snowflake"""
-    try:
-        conn = get_snowflake_connection()
-        
-        # Get unique storm/forecast combinations from TC_TRACKS
-        query = '''
-        SELECT DISTINCT 
-            TRACK_ID,
-            FORECAST_TIME,
-            COUNT(DISTINCT ENSEMBLE_MEMBER) as ENSEMBLE_COUNT
-        FROM TC_TRACKS
-        GROUP BY TRACK_ID, FORECAST_TIME
-        ORDER BY FORECAST_TIME DESC, TRACK_ID
-        '''
-        
-        df = pd.read_sql(query, conn)
-        conn.close()
-        
-        return df
-        
-    except Exception as e:
-        print(f"Error getting Snowflake data: {str(e)}")
-        return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
 
 # Load initial metadata and pre-process for efficiency
 metadata_df = get_snowflake_data()
@@ -151,23 +141,8 @@ selectors_section = dmc.Paper([
                     dmc.Select(
                         id="analysis-country-select",
                         placeholder="Select country...",
-                        data=[
-                            {"value": "AIA", "label": "Anguilla"},
-                            {"value": "ATG", "label": "Antigua and Barbuda"},
-                            {"value": "BLZ", "label": "Belize"},
-                            {"value": "VGB", "label": "British Virgin Islands"},
-                            {"value": "CUB", "label": "Cuba"},
-                            {"value": "DMA", "label": "Dominica"},
-                            {"value": "DOM", "label": "Dominican Republic"},
-                            {"value": "GRD", "label": "Grenada"},
-                            {"value": "JAM", "label": "Jamaica"},
-                            {"value": "MSR", "label": "Montserrat"},
-                            {"value": "NIC", "label": "Nicaragua"},
-                            {"value": "KNA", "label": "Saint Kitts and Nevis"},
-                            {"value": "LCA", "label": "Saint Lucia"},
-                            {"value": "VCT", "label": "Saint Vincent and the Grenadines"}
-                        ],
-                        value="JAM",
+                        data=COUNTRY_OPTIONS,
+                        value=DEFAULT_COUNTRY,
                         style={"width": "100%", "minWidth": "150px"}
                     )
                 ],

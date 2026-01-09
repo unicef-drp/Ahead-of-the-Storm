@@ -33,29 +33,47 @@ from dash_extensions.javascript import assign
 # Import map config early for use in constants
 from components.map.map_config import map_config, mapbox_token, get_tile_layer_url
 
+# Import Snowflake utilities for country loading
+from components.data.snowflake_utils import get_active_countries
+
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
 
-# Country-specific map centers and zoom levels
-COUNTRY_MAP_CONFIG = {
-    "AIA": {"center": [18.22, -63.05], "zoom": 11},  # Anguilla
-    "ATG": {"center": [17.05, -61.80], "zoom": 9},  # Antigua and Barbuda
-    "BLZ": {"center": [17.19, -88.50], "zoom": 8},   # Belize
-    "VGB": {"center": [18.43, -64.61], "zoom": 9},  # British Virgin Islands
-    "CUB": {"center": [21.50, -78.50], "zoom": 6},   # Cuba
-    "DMA": {"center": [15.41, -61.37], "zoom": 11},  # Dominica
-    "DOM": {"center": [18.74, -70.16], "zoom": 8},   # Dominican Republic
-    "GRD": {"center": [12.12, -61.67], "zoom": 11},  # Grenada
-    "JAM": {"center": [18.11, -77.30], "zoom": 9},  # Jamaica
-    "MSR": {"center": [16.74, -62.19], "zoom": 12},  # Montserrat
-    "NIC": {"center": [12.87, -85.21], "zoom": 7},   # Nicaragua
-    "KNA": {"center": [17.36, -62.75], "zoom": 11},  # Saint Kitts and Nevis
-    "LCA": {"center": [13.91, -60.98], "zoom": 11},  # Saint Lucia
-    "VCT": {"center": [12.98, -61.28], "zoom": 9},  # Saint Vincent and the Grenadines
-    "VNM": {"center": [16.00, 107.00], "zoom": 6}, # Vietnam
-}
+# Load active countries from Snowflake and build country map config
+countries_df = get_active_countries()
+
+# Build country-specific map centers and zoom levels from Snowflake data
+COUNTRY_MAP_CONFIG = {}
+if not countries_df.empty:
+    for _, row in countries_df.iterrows():
+        country_code = row['COUNTRY_CODE']
+        center_lat = row['CENTER_LAT'] if pd.notna(row['CENTER_LAT']) else map_config.center["lat"]
+        center_lon = row['CENTER_LON'] if pd.notna(row['CENTER_LON']) else map_config.center["lon"]
+        view_zoom = row['VIEW_ZOOM'] if pd.notna(row['VIEW_ZOOM']) else map_config.zoom
+        
+        COUNTRY_MAP_CONFIG[country_code] = {
+            "center": [center_lat, center_lon],
+            "zoom": int(view_zoom) if pd.notna(view_zoom) else map_config.zoom
+        }
+    print(f"✓ Loaded {len(COUNTRY_MAP_CONFIG)} countries into COUNTRY_MAP_CONFIG")
+else:
+    print("⚠ No countries loaded - using default map config only")
+
 # Default map config if country not found
 DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lon"]], "zoom": map_config.zoom}
+
+# Build country options list for dropdowns
+COUNTRY_OPTIONS = []
+if not countries_df.empty:
+    COUNTRY_OPTIONS = [
+        {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
+        for _, row in countries_df.iterrows()
+    ]
+    # Set default country to first in list, or JAM if available
+    DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
+else:
+    DEFAULT_COUNTRY = None
+    print("No country options available - country dropdown will be empty")
 
 
 
@@ -69,7 +87,7 @@ from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
 import geopandas as gpd
 from components.map.home_map import make_empty_map
-from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake
+from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data, get_lat_lons
 
 #### Metadata 
 from gigaspatial.core.io.readers import read_dataset
@@ -88,63 +106,6 @@ data_store = get_data_store()
 giga_store = data_store
 ##############################################
 
-#### Snowflake functions - move to data ####
-def get_snowflake_data():
-    """Get hurricane metadata directly from Snowflake"""
-    try:
-        conn = get_snowflake_connection()
-        
-        # Get unique storm/forecast combinations from TC_TRACKS
-        query = '''
-        SELECT DISTINCT 
-            TRACK_ID,
-            FORECAST_TIME,
-            COUNT(DISTINCT ENSEMBLE_MEMBER) as ENSEMBLE_COUNT
-        FROM TC_TRACKS
-        GROUP BY TRACK_ID, FORECAST_TIME
-        ORDER BY FORECAST_TIME DESC, TRACK_ID
-        '''
-        
-        df = pd.read_sql(query, conn)
-        conn.close()
-        
-        return df
-        
-    except Exception as e:
-        print(f"Error getting Snowflake data: {str(e)}")
-        return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
-    
-def get_lat_lons(row):
-    """Get latitude and longitude for a hurricane track from Snowflake"""
-    try:
-        conn = get_snowflake_connection()
-        
-        # Get any available track data at lead time 0
-        query = '''
-        SELECT LATITUDE, LONGITUDE
-        FROM TC_TRACKS
-        WHERE TRACK_ID = %s AND FORECAST_TIME = %s 
-        AND LEAD_TIME = 0
-        LIMIT 1
-        '''
-        
-        df_latlon = pd.read_sql(query, conn, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
-        
-        conn.close()
-        
-        if len(df_latlon) > 0:
-            lat = df_latlon.iloc[0]['LATITUDE']
-            lon = df_latlon.iloc[0]['LONGITUDE']
-        else:
-            lat = np.nan
-            lon = np.nan
-            
-        return pd.Series([lat, lon], index=["latitude", "longitude"])
-            
-    except Exception as e:
-        print(f"Error getting lat/lon from Snowflake: {str(e)}")
-        return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
-    
 ###########################################
 
 ###### Load initial metadata
@@ -196,24 +157,8 @@ country_selection = dmc.Paper([
                         dmc.Select(
                             id="country-select",
                             placeholder="Select country...",
-                            data=[
-                                {"value": "AIA", "label": "Anguilla"},
-                                {"value": "ATG", "label": "Antigua and Barbuda"},
-                                {"value": "BLZ", "label": "Belize"},
-                                {"value": "VGB", "label": "British Virgin Islands"},
-                                {"value": "CUB", "label": "Cuba"},
-                                {"value": "DMA", "label": "Dominica"},
-                                {"value": "DOM", "label": "Dominican Republic"},
-                                {"value": "GRD", "label": "Grenada"},
-                                {"value": "JAM", "label": "Jamaica"},
-                                {"value": "MSR", "label": "Montserrat"},
-                                {"value": "NIC", "label": "Nicaragua"},
-                                {"value": "KNA", "label": "Saint Kitts and Nevis"},
-                                {"value": "LCA", "label": "Saint Lucia"},
-                                {"value": "VCT", "label": "Saint Vincent and the Grenadines"},
-                                {"value": "VNM", "label": "Vietnam"},
-                            ],
-                            value="JAM",
+                            data=COUNTRY_OPTIONS,
+                            value=DEFAULT_COUNTRY,
                             mb="xs"
                         )
                     ],

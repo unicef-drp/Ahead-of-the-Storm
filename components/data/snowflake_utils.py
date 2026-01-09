@@ -20,6 +20,7 @@ Usage:
 import os
 from functools import lru_cache
 import pandas as pd
+import numpy as np
 import geopandas as gpd
 import snowflake.connector
 from shapely import wkt as shapely_wkt
@@ -371,6 +372,85 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         print(f"Error getting envelope data from Snowflake: {str(e)}")
         return pd.DataFrame()
     
+
+def get_active_countries():
+    """
+    Get active countries from PIPELINE_COUNTRIES table in Snowflake
+    
+    Returns:
+        pandas.DataFrame: DataFrame with columns COUNTRY_CODE, COUNTRY_NAME, CENTER_LAT, CENTER_LON, VIEW_ZOOM, ZOOM_LEVEL
+        Returns empty DataFrame on error
+    """
+    try:
+        conn = get_snowflake_connection()
+        
+        # Get active countries from PIPELINE_COUNTRIES table
+        query = '''
+        SELECT 
+            COUNTRY_CODE,
+            COUNTRY_NAME,
+            CENTER_LAT,
+            CENTER_LON,
+            VIEW_ZOOM,
+            ZOOM_LEVEL
+        FROM PIPELINE_COUNTRIES
+        WHERE ACTIVE = TRUE
+        ORDER BY COUNTRY_CODE
+        '''
+        
+        df = pd.read_sql(query, conn)
+        # Don't close connection - it's cached and will be reused
+        
+        if not df.empty:
+            print(f"✓ Loaded {len(df)} active countries from PIPELINE_COUNTRIES")
+        else:
+            print("⚠ No active countries found in PIPELINE_COUNTRIES table")
+        
+        return df
+        
+    except Exception as e:
+        print(f"Error getting active countries from Snowflake: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL'])
+
+def get_lat_lons(row):
+    """
+    Get latitude and longitude for a hurricane track from Snowflake
+    
+    Args:
+        row: pandas Series or dict with 'TRACK_ID' and 'FORECAST_TIME' keys
+    
+    Returns:
+        pandas.Series: Series with 'latitude' and 'longitude' values
+    """
+    try:
+        conn = get_snowflake_connection()
+        
+        # Get any available track data at lead time 0
+        query = '''
+        SELECT LATITUDE, LONGITUDE
+        FROM TC_TRACKS
+        WHERE TRACK_ID = %s AND FORECAST_TIME = %s 
+        AND LEAD_TIME = 0
+        LIMIT 1
+        '''
+        
+        df_latlon = pd.read_sql(query, conn, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
+        # Don't close connection - it's cached and will be reused
+        
+        if len(df_latlon) > 0:
+            lat = df_latlon.iloc[0]['LATITUDE']
+            lon = df_latlon.iloc[0]['LONGITUDE']
+        else:
+            lat = np.nan
+            lon = np.nan
+            
+        return pd.Series([lat, lon], index=["latitude", "longitude"])
+            
+    except Exception as e:
+        print(f"Error getting lat/lon from Snowflake: {str(e)}")
+        return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
 
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
