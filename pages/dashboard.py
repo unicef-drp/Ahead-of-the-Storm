@@ -1042,83 +1042,123 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         high_member_badge = "N/A"
         
         if giga_store.file_exists(filepath):
-            try:
-                df = read_dataset(giga_store, filepath)
-                
-                # Calculate PROBABILISTIC scenario (from tiles data)
-                if 'E_school_age_population' in df.columns and not df['E_school_age_population'].isna().all():
-                    probabilistic_results["children"] = df['E_school_age_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
-                else:
-                    probabilistic_results["children"] = "N/A"
-
-                if 'E_infant_population' in df.columns and not df['E_infant_population'].isna().all():
-                    probabilistic_results["infant"] = df['E_infant_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
-                else:
-                    probabilistic_results["infant"] = "N/A"
-                
-                probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
-                probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
-                probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
-                probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
-                
-                # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
-                tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
-                tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
-                
-                if giga_store.file_exists(tracks_filepath):
-                    try:
-                        gdf_tracks = read_dataset(giga_store, tracks_filepath)
-                    except Exception as e:
-                        print(f"Error reading track file {tracks_filepath}: {e}")
-                        gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
+            # Retry logic for reading tiles CSV file
+            df = None
+            max_retries = 3
+            retry_delay = 1.0
+            
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        delay = retry_delay * (2 ** (attempt - 1))  # Exponential backoff
+                        print(f"Impact metrics: Retry attempt {attempt + 1}/{max_retries} after {delay:.1f}s delay...")
+                        time.sleep(delay)
                     
-                    if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
-                        # Use deterministic member 51 (always member 51)
-                        deterministic_member = 51
-                        # Find ensemble member with highest impact
-                        member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
-                        high_impact_member = member_totals.idxmax()
-                        
-                        # Set member badge text (deterministic is always #51, no need to update)
-                        high_member_badge = f"#{high_impact_member}"
-                        
-                        # Get deterministic scenario data (member 51)
-                        low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == deterministic_member]
-                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
-                        
-                        # Check if health center data is available for this time slot
-                        hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
-                        hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
-                        hc_data_available = giga_store.file_exists(hc_filepath)
-                        
-                        # DETERMINISTIC scenario (member 51)
-                        if not low_scenario_data.empty:
-                            low_results["children"] = low_scenario_data[
-                                'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                            low_results["infant"] = low_scenario_data[
-                                'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
-                            low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
-                            low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
-                            low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                            low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
-                        else:
-                            # Member 51 not found in data (badge will still show #51 as static value)
-                            pass
+                    df = read_dataset(giga_store, filepath)
+                    break  # Success, exit retry loop
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    is_retryable = (
+                        "FileNotFoundError" in error_msg or
+                        "No such file or directory" in error_msg or
+                        "connection" in error_msg.lower() or
+                        "timeout" in error_msg.lower() or
+                        "253002" in error_msg or
+                        "parquet magic bytes" in error_msg.lower() or
+                        "arrowinvalid" in error_msg.lower() or
+                        "could not open parquet" in error_msg.lower()
+                    )
+                    
+                    if attempt < max_retries - 1 and is_retryable:
+                        print(f"Impact metrics: Retryable error (attempt {attempt + 1}/{max_retries}): {error_msg[:200]}")
+                        continue  # Retry
+                    else:
+                        # Final attempt failed or non-retryable error
+                        print(f"Impact metrics: Error reading file {filename}: {error_msg}")
+                        if attempt == max_retries - 1:
+                            print(f"Impact metrics: Failed after {max_retries} attempts")
+                        df = None
+                        break
+            
+            if df is not None:
+                try:
+                    # Calculate PROBABILISTIC scenario (from tiles data)
+                    if 'E_school_age_population' in df.columns and not df['E_school_age_population'].isna().all():
+                        probabilistic_results["children"] = df['E_school_age_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
+                    else:
+                        probabilistic_results["children"] = "N/A"
 
-                        # HIGH scenario
-                        high_results["children"] = high_scenario_data[
-                            'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
-                        high_results["infant"] = high_scenario_data[
-                            'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
-                        high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
-                        high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
-                        high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
-                        high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
-                
-                print(f"Impact metrics: Successfully loaded {len(df)} features")
-                
-            except Exception as e:
-                print(f"Impact metrics: Error reading file {filename}: {e}")
+                    if 'E_infant_population' in df.columns and not df['E_infant_population'].isna().all():
+                        probabilistic_results["infant"] = df['E_infant_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
+                    else:
+                        probabilistic_results["infant"] = "N/A"
+                    
+                    probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
+                    probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                    probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
+                    probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
+                    
+                    # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
+                    tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                    tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
+                    
+                    if giga_store.file_exists(tracks_filepath):
+                        try:
+                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                        except Exception as e:
+                            print(f"Error reading track file {tracks_filepath}: {e}")
+                            gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
+                        
+                        if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
+                            # Use deterministic member 51 (always member 51)
+                            deterministic_member = 51
+                            # Find ensemble member with highest impact
+                            member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
+                            high_impact_member = member_totals.idxmax()
+                            
+                            # Set member badge text (deterministic is always #51, no need to update)
+                            high_member_badge = f"#{high_impact_member}"
+                            
+                            # Get deterministic scenario data (member 51)
+                            low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == deterministic_member]
+                            high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
+                            
+                            # Check if health center data is available for this time slot
+                            hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
+                            hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
+                            hc_data_available = giga_store.file_exists(hc_filepath)
+                            
+                            # DETERMINISTIC scenario (member 51)
+                            if not low_scenario_data.empty:
+                                low_results["children"] = low_scenario_data[
+                                    'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
+                                low_results["infant"] = low_scenario_data[
+                                    'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
+                                low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
+                                low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
+                                low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
+                                low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                            else:
+                                # Member 51 not found in data (badge will still show #51 as static value)
+                                pass
+
+                            # HIGH scenario
+                            high_results["children"] = high_scenario_data[
+                                'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
+                            high_results["infant"] = high_scenario_data[
+                                'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
+                            high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
+                            high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
+                            high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
+                            high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
+                    
+                    print(f"Impact metrics: Successfully loaded {len(df)} features")
+                except Exception as e:
+                    print(f"Impact metrics: Error processing file {filename}: {e}")
+            else:
+                # df is None - file read failed after all retries
+                print(f"Impact metrics: Could not read file {filename} after {max_retries} attempts")
         else:
             print(f"Impact metrics: File not found {filename}")
         
@@ -1910,101 +1950,148 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         load_start_time = time.time()
         
         try:
-            # Helper function to load a dataset
-            def load_dataset(file_path, dataset_name):
-                """Load a dataset and return its geo_interface"""
-                try:
-                    start = time.time()
-                    df = read_dataset(giga_store, file_path)
-                    
-                    # Ensure we have a GeoDataFrame
-                    if isinstance(df, gpd.GeoDataFrame):
-                        gdf = df
-                    elif isinstance(df, pd.DataFrame):
-                        # Try to convert to GeoDataFrame if geometry column exists
-                        if 'geometry' in df.columns:
-                            # Check geometry column type and sample
-                            geom_dtype = df['geometry'].dtype
-                            geom_sample = df['geometry'].iloc[0] if len(df) > 0 else None
-                            
-                            # Handle different geometry formats
-                            # First check if sample is bytes (WKB format) - this takes priority
-                            # Note: bytes can have dtype 'object' in pandas, so check isinstance first
-                            if geom_sample is not None and isinstance(geom_sample, bytes):
-                                # Binary format (WKB) - convert from WKB
-                                try:
-                                    from shapely import wkb
-                                    geometries = gpd.GeoSeries([wkb.loads(g) if isinstance(g, bytes) else g for g in df['geometry']], crs='EPSG:4326')
-                                    gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
-                                except Exception as e:
-                                    print(f"Warning: Failed to convert WKB geometry for {dataset_name}: {e}")
-                                    # Try convert_to_geodataframe as fallback
+            # Helper function to load a dataset with retry logic
+            def load_dataset(file_path, dataset_name, max_retries=3, retry_delay=1.0):
+                """
+                Load a dataset and return its geo_interface with retry logic.
+                
+                Args:
+                    file_path: Path to the file
+                    dataset_name: Name of the dataset (for logging)
+                    max_retries: Maximum number of retry attempts (default: 3)
+                    retry_delay: Initial delay between retries in seconds (default: 1.0)
+                
+                Returns:
+                    dict: GeoJSON-like geo_interface or empty dict on failure
+                """
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        start = time.time()
+                        # Add small delay for retries to avoid connection pool exhaustion
+                        if attempt > 0:
+                            delay = retry_delay * (2 ** (attempt - 1))  # Exponential backoff
+                            print(f"Retry attempt {attempt + 1}/{max_retries} for {dataset_name} after {delay:.1f}s delay...")
+                            time.sleep(delay)
+                        
+                        df = read_dataset(giga_store, file_path)
+                        
+                        # Ensure we have a GeoDataFrame
+                        if isinstance(df, gpd.GeoDataFrame):
+                            gdf = df
+                        elif isinstance(df, pd.DataFrame):
+                            # Try to convert to GeoDataFrame if geometry column exists
+                            if 'geometry' in df.columns:
+                                # Check geometry column type and sample
+                                geom_dtype = df['geometry'].dtype
+                                geom_sample = df['geometry'].iloc[0] if len(df) > 0 else None
+                                
+                                # Handle different geometry formats
+                                # First check if sample is bytes (WKB format) - this takes priority
+                                # Note: bytes can have dtype 'object' in pandas, so check isinstance first
+                                if geom_sample is not None and isinstance(geom_sample, bytes):
+                                    # Binary format (WKB) - convert from WKB
                                     try:
-                                        gdf = convert_to_geodataframe(df)
-                                    except:
-                                        print(f"Error: Could not convert WKB geometry for {dataset_name}")
-                                        return {}
-                            elif geom_dtype == 'object' and geom_sample is not None:
-                                # String format - could be WKT or already Shapely objects
-                                if geom_sample is not None:
-                                    # Check if it's WKT string
-                                    if isinstance(geom_sample, str):
+                                        from shapely import wkb
+                                        geometries = gpd.GeoSeries([wkb.loads(g) if isinstance(g, bytes) else g for g in df['geometry']], crs='EPSG:4326')
+                                        gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                    except Exception as e:
+                                        print(f"Warning: Failed to convert WKB geometry for {dataset_name}: {e}")
+                                        # Try convert_to_geodataframe as fallback
                                         try:
-                                            from shapely import wkt
-                                            # Try WKT conversion
-                                            geometries = gpd.GeoSeries.from_wkt(df['geometry'], crs='EPSG:4326')
-                                            gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                            gdf = convert_to_geodataframe(df)
                                         except:
-                                            # If WKT fails, might be already Shapely objects
+                                            print(f"Error: Could not convert WKB geometry for {dataset_name}")
+                                            return {}
+                                elif geom_dtype == 'object' and geom_sample is not None:
+                                    # String format - could be WKT or already Shapely objects
+                                    if geom_sample is not None:
+                                        # Check if it's WKT string
+                                        if isinstance(geom_sample, str):
                                             try:
-                                                # Try as Shapely objects
+                                                from shapely import wkt
+                                                # Try WKT conversion
+                                                geometries = gpd.GeoSeries.from_wkt(df['geometry'], crs='EPSG:4326')
+                                                gdf = gpd.GeoDataFrame(df.drop('geometry', axis=1), geometry=geometries, crs='EPSG:4326')
+                                            except:
+                                                # If WKT fails, might be already Shapely objects
+                                                try:
+                                                    # Try as Shapely objects
+                                                    gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+                                                except:
+                                                    # Last resort: convert using convert_to_geodataframe
+                                                    try:
+                                                        gdf = convert_to_geodataframe(df)
+                                                    except:
+                                                        print(f"Error: Could not convert geometry for {dataset_name}")
+                                                        return {}
+                                        else:
+                                            # Not a string or bytes, try as Shapely objects
+                                            try:
                                                 gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
                                             except:
-                                                # Last resort: convert using convert_to_geodataframe
                                                 try:
                                                     gdf = convert_to_geodataframe(df)
                                                 except:
                                                     print(f"Error: Could not convert geometry for {dataset_name}")
                                                     return {}
                                     else:
-                                        # Not a string or bytes, try as Shapely objects
                                         try:
-                                            gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+                                            gdf = convert_to_geodataframe(df)
                                         except:
-                                            try:
-                                                gdf = convert_to_geodataframe(df)
-                                            except:
-                                                print(f"Error: Could not convert geometry for {dataset_name}")
-                                                return {}
+                                            print(f"Error: Could not convert geometry for {dataset_name}")
+                                            return {}
                                 else:
+                                    # Numeric or other type - try direct conversion
                                     try:
-                                        gdf = convert_to_geodataframe(df)
+                                        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
                                     except:
-                                        print(f"Error: Could not convert geometry for {dataset_name}")
-                                        return {}
+                                        gdf = convert_to_geodataframe(df)
                             else:
-                                # Numeric or other type - try direct conversion
-                                try:
-                                    gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
-                                except:
-                                    gdf = convert_to_geodataframe(df)
+                                # No geometry column - this shouldn't happen for spatial data
+                                print(f"Warning: {dataset_name} file has no geometry column, converting...")
+                                gdf = convert_to_geodataframe(df)
                         else:
-                            # No geometry column - this shouldn't happen for spatial data
-                            print(f"Warning: {dataset_name} file has no geometry column, converting...")
+                            # Unknown type, try to convert
                             gdf = convert_to_geodataframe(df)
-                    else:
-                        # Unknown type, try to convert
-                        gdf = convert_to_geodataframe(df)
                     
-                    geo_data = gdf.__geo_interface__
-                    elapsed = time.time() - start
-                    print(f"Loaded {dataset_name} in {elapsed:.2f}s ({len(gdf)} features)")
-                    return geo_data
-                except Exception as e:
-                    print(f"Error reading {dataset_name} file: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    return {}
+                        geo_data = gdf.__geo_interface__
+                        elapsed = time.time() - start
+                        print(f"Loaded {dataset_name} in {elapsed:.2f}s ({len(gdf)} features)")
+                        return geo_data
+                    except (IOError, FileNotFoundError, ValueError, ConnectionError, Exception) as e:
+                        last_error = e
+                        error_msg = str(e)
+                        
+                        # Check if this is a retryable error
+                        # Include parquet/arrow errors as they can be transient Snowflake stage issues
+                        is_retryable = (
+                            "FileNotFoundError" in error_msg or
+                            "No such file or directory" in error_msg or
+                            "connection" in error_msg.lower() or
+                            "timeout" in error_msg.lower() or
+                            "253002" in error_msg or  # Snowflake file transfer error
+                            "parquet magic bytes" in error_msg.lower() or  # Can be transient when file is being read during transfer
+                            "arrowinvalid" in error_msg.lower() or  # Arrow/Parquet read errors can be transient
+                            "could not open parquet" in error_msg.lower()  # Parquet file access errors can be transient
+                        )
+                        
+                        if attempt < max_retries - 1 and is_retryable:
+                            print(f"Retryable error reading {dataset_name} file (attempt {attempt + 1}/{max_retries}): {error_msg[:200]}")
+                            continue  # Retry
+                        else:
+                            # Final attempt failed or non-retryable error
+                            print(f"Error reading {dataset_name} file: {error_msg}")
+                            if attempt == max_retries - 1:
+                                print(f"Failed after {max_retries} attempts for {dataset_name}")
+                            import traceback
+                            traceback.print_exc()
+                            return {}
+                
+                # If we get here, all retries failed
+                if last_error:
+                    print(f"Failed to load {dataset_name} after {max_retries} attempts. Last error: {last_error}")
+                return {}
             
             # Load independent files in parallel for better performance
             schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
@@ -2013,26 +2100,41 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
             
-            # Load schools and health in parallel
+            # Load schools and health in parallel with staggered start to avoid connection pool exhaustion
+            schools_data = {}
+            health_data = {}
+            
             with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = {}
+                
+                # Submit with small delay between submissions to avoid overwhelming connection pool
                 if giga_store.file_exists(schools_path):
                     futures['schools'] = executor.submit(load_dataset, schools_path, 'schools')
+                    time.sleep(0.1)  # Small delay to stagger connection requests
+                
                 if giga_store.file_exists(health_path):
                     futures['health'] = executor.submit(load_dataset, health_path, 'health')
                 
-                # Collect results
-                schools_data = {}
-                health_data = {}
+                # Collect results with timeout and better error handling
                 for name, future in futures.items():
                     try:
-                        result = future.result()
-                        if name == 'schools':
-                            schools_data = result
-                        elif name == 'health':
-                            health_data = result
+                        # Add timeout to prevent hanging (30 seconds per file)
+                        result = future.result(timeout=30)
+                        if result and isinstance(result, dict) and len(result) > 0:
+                            if name == 'schools':
+                                schools_data = result
+                            elif name == 'health':
+                                health_data = result
+                        else:
+                            print(f"Warning: {name} loaded but returned empty result")
+                    except TimeoutError:
+                        print(f"Error: Timeout loading {name} file (exceeded 30s)")
                     except Exception as e:
-                        print(f"Error in parallel load for {name}: {e}")
+                        error_msg = str(e)
+                        print(f"Error in parallel load for {name}: {error_msg[:300]}")
+                        # Try to get more details if it's a connection-related error
+                        if "connection" in error_msg.lower() or "253002" in error_msg:
+                            print(f"  This appears to be a connection/network issue. The file may exist but be temporarily unavailable.")
             
             # Tiles
             tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
@@ -2045,7 +2147,15 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         df_tiles = read_dataset(giga_store, tiles_path)
                         df_tiles = df_tiles.rename(columns={'zone_id':'tile_id'})
                         gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
-                        gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                        # Ensure both tile_id columns have the same type before merging
+                        if 'tile_id' in gdf_base_tiles.columns and 'tile_id' in df_tiles.columns:
+                            # Convert both to int to match existing behavior
+                            gdf_base_tiles['tile_id'] = gdf_base_tiles['tile_id'].astype(int)
+                            df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                        elif 'tile_id' in df_tiles.columns and 'tile_id' not in gdf_base_tiles.columns:
+                            # If base tiles doesn't have tile_id, create it from df_tiles
+                            gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                            df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
                         tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
 
                         #cci
@@ -2057,6 +2167,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                 df_cci_tiles = df_cci_tiles.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_tiles.columns:
                                     df_cci_tiles.drop(columns=['Unnamed: 0'])
+                                # Ensure tile_id type matches tmp (which is int from line 2048)
+                                if 'tile_id' in df_cci_tiles.columns:
+                                    df_cci_tiles['tile_id'] = df_cci_tiles['tile_id'].astype(int)
                                 tmp = pd.merge(tmp, df_cci_tiles, on="tile_id", how="left")
                             except:
                                 print('Cannot merge CCI file')
@@ -2081,7 +2194,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         df_admin = read_dataset(giga_store, admin_path)
                         df_admin = df_admin.rename(columns={'zone_id':'tile_id'})
                         gdf_base_admin = read_dataset(giga_store, base_admin_path)
-                        #gdf_base_admin['tile_id'] = df_admin['tile_id'].astype(int)
+                        # Ensure both tile_id columns have the same type before merging
+                        if 'tile_id' in gdf_base_admin.columns and 'tile_id' in df_admin.columns:
+                            # Convert both to string to avoid type mismatch issues
+                            gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
+                            df_admin['tile_id'] = df_admin['tile_id'].astype(str)
                         tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
 
                         #cci
@@ -2093,6 +2210,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                 df_cci_admin = df_cci_admin.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_admin.columns:
                                     df_cci_admin.drop(columns=['Unnamed: 0'])
+                                # Ensure tile_id type matches tmp (which is string)
+                                if 'tile_id' in df_cci_admin.columns:
+                                    df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
                                 tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
                             except:
                                 print('Cannot merge CCI file')
