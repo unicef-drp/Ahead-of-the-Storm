@@ -213,6 +213,49 @@ SELECT
 FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
     (FILE_FORMAT => CSV_ADMIN_VIEWS_FORMAT, PATTERN => '.*_[0-9]+_[0-9]+\\.csv');
 
+-- ----------------------------------------------------------------------------
+-- BASE_ADMIN_VIEWS_RAW View
+-- ----------------------------------------------------------------------------
+-- Reads base admin parquet files that contain admin ID to name mappings.
+-- File pattern: {country}_admin1.parquet
+-- Location: admin_views/
+-- These files contain the mapping between admin IDs (e.g., "JAM_0005_V2") and actual names (e.g., "Kingston")
+-- Used to join with ADMIN_IMPACT_VIEWS_RAW to get human-readable admin names
+--
+-- The stored procedures (GET_ADMIN_LEVEL_BREAKDOWN, GET_ADMIN_LEVEL_TREND_COMPARISON) will
+-- automatically use names if available, otherwise fall back to admin IDs.
+
+CREATE OR REPLACE VIEW BASE_ADMIN_VIEWS_RAW AS
+WITH parquet_data AS (
+    SELECT 
+        METADATA$FILENAME AS file_path,
+        $1 AS parquet_variant
+    FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/admin_views/
+        (FILE_FORMAT => PARQUET_ADMIN_FORMAT, PATTERN => '.*_admin1\\.parquet')
+),
+flattened_data AS (
+    SELECT 
+        SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 1) AS country,
+        parquet_variant,
+        parquet_variant:zone_id::VARCHAR AS zone_id_direct,
+        parquet_variant:tile_id::VARCHAR AS tile_id_direct,
+        parquet_variant:name::VARCHAR AS name_direct,
+        parquet_variant:NAME::VARCHAR AS name_upper_direct,
+        parquet_variant:properties:zone_id::VARCHAR AS zone_id_props,
+        parquet_variant:properties:tile_id::VARCHAR AS tile_id_props,
+        parquet_variant:properties:name::VARCHAR AS name_props,
+        parquet_variant:properties:NAME::VARCHAR AS name_upper_props
+    FROM parquet_data
+)
+SELECT DISTINCT
+    country,
+    COALESCE(zone_id_direct, tile_id_direct, zone_id_props, tile_id_props) AS tile_id,
+    COALESCE(name_direct, name_upper_direct, name_props, name_upper_props) AS admin_name,
+    COALESCE(name_direct, name_upper_direct, name_props, name_upper_props) AS name
+FROM flattened_data
+WHERE COALESCE(zone_id_direct, tile_id_direct, zone_id_props, tile_id_props) IS NOT NULL
+  AND COALESCE(name_direct, name_upper_direct, name_props, name_upper_props) IS NOT NULL;
+
 
 -- ============================================================================
 -- Verification Queries
@@ -220,6 +263,9 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
 
 -- Check that all views exist
 SHOW VIEWS LIKE '%_RAW' IN SCHEMA AOTS.TC_ECMWF;
+
+-- Grant access to BASE_ADMIN_VIEWS_RAW
+GRANT SELECT ON VIEW BASE_ADMIN_VIEWS_RAW TO ROLE SYSADMIN;
 
 -- Verify views have data
 SELECT 
@@ -260,4 +306,12 @@ SELECT
     COUNT(DISTINCT country),
     COUNT(DISTINCT storm),
     CASE WHEN COUNT(*) > 0 THEN 'Data found' ELSE 'No data' END
-FROM MERCATOR_TILE_IMPACT_VIEWS_RAW;
+FROM MERCATOR_TILE_IMPACT_VIEWS_RAW
+UNION ALL
+SELECT 
+    'BASE_ADMIN_VIEWS_RAW',
+    COUNT(*),
+    COUNT(DISTINCT country),
+    NULL,
+    CASE WHEN COUNT(*) > 0 THEN 'Data found' ELSE 'No data' END
+FROM BASE_ADMIN_VIEWS_RAW;
