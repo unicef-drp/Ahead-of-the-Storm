@@ -791,6 +791,81 @@ $$
   };
 $$;
 
+-- ============================================================================
+-- Stored Procedure: Get Country ISO3 Code from Country Name
+-- ============================================================================
+-- Resolves a country name to its ISO3 code by querying PIPELINE_COUNTRIES table.
+-- This allows dynamic country name resolution without hardcoded mappings.
+
+CREATE OR REPLACE PROCEDURE GET_COUNTRY_ISO3_CODE(
+    country_name VARCHAR
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+  var sql_command = `
+    SELECT 
+        COUNTRY_CODE,
+        COUNTRY_NAME
+    FROM AOTS.TC_ECMWF.PIPELINE_COUNTRIES
+    WHERE UPPER(COUNTRY_NAME) LIKE UPPER('%' || ? || '%')
+    ORDER BY 
+        CASE 
+            WHEN UPPER(COUNTRY_NAME) = UPPER(?) THEN 1
+            WHEN UPPER(COUNTRY_NAME) LIKE UPPER(? || '%') THEN 2
+            ELSE 3
+        END,
+        COUNTRY_NAME
+    LIMIT 10
+  `;
+  
+  var stmt = snowflake.createStatement({
+    sqlText: sql_command,
+    binds: [COUNTRY_NAME, COUNTRY_NAME, COUNTRY_NAME]
+  });
+  
+  var result = stmt.execute();
+  var countries = [];
+  
+  while (result.next()) {
+    countries.push({
+      country_code: result.getColumnValue(1),
+      country_name: result.getColumnValue(2)
+    });
+  }
+  
+  if (countries.length === 0) {
+    return {
+      found: false,
+      error: 'Country not found in PIPELINE_COUNTRIES table',
+      country_name: COUNTRY_NAME,
+      suggestions: []
+    };
+  }
+  
+  // If exact match, return it
+  var exactMatch = countries.find(c => c.country_name.toUpperCase() === COUNTRY_NAME.toUpperCase());
+  if (exactMatch) {
+    return {
+      found: true,
+      country_code: exactMatch.country_code,
+      country_name: exactMatch.country_name,
+      match_type: 'exact',
+      all_matches: countries
+    };
+  }
+  
+  // Return best match (first in sorted list)
+  return {
+    found: true,
+    country_code: countries[0].country_code,
+    country_name: countries[0].country_name,
+    match_type: 'partial',
+    all_matches: countries
+  };
+$$;
 
 -- Grant execute permission to roles that will use the agent
 -- MUST grant to the role(s) that users will use when querying the agent
@@ -806,6 +881,7 @@ GRANT USAGE ON PROCEDURE GET_PREVIOUS_FORECAST_DATE(VARCHAR, VARCHAR, VARCHAR) T
 GRANT USAGE ON PROCEDURE GET_ALL_WIND_THRESHOLDS_ANALYSIS(VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE GET_ADMIN_LEVEL_BREAKDOWN(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE GET_ADMIN_LEVEL_TREND_COMPARISON(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE GET_COUNTRY_ISO3_CODE(VARCHAR) TO ROLE SYSADMIN;
 
 GRANT USAGE ON SCHEMA TC_ECMWF TO ROLE SYSADMIN;
 GRANT USAGE ON DATABASE AOTS TO ROLE SYSADMIN;

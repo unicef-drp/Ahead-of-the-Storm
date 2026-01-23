@@ -27,3 +27,6 @@ __pycache__/
 geodb/
 project_results/
 gigaspatial/
+snowflake_intelligence/06_create_aots_agent_role.sql
+snowflake_intelligence/07_track_agent_costs.sql
+snowflake_intelligence/99_create_materialized_tables.sql
