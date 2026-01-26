@@ -385,6 +385,15 @@ $$
         AND wind_threshold = ?
       GROUP BY zone_id
       HAVING SUM(COALESCE(severity_population, 0)) > 0
+    ),
+    worst_case_value AS (
+      SELECT MAX(member_population) AS worst_case_population
+      FROM member_impacts
+    ),
+    members_within_20_percent AS (
+      SELECT COUNT(*)::INT AS count_within_20_percent
+      FROM member_impacts, worst_case_value
+      WHERE member_population >= (worst_case_value.worst_case_population * 0.8)
     )
     SELECT 
       COUNT(*)::INT AS total_members,
@@ -408,7 +417,8 @@ $$
       MIN(member_hcs) AS min_hcs,
       APPROX_PERCENTILE(member_hcs, 0.50) AS p50_hcs,
       MAX(member_hcs) AS max_hcs,
-      AVG(member_hcs) AS mean_hcs
+      AVG(member_hcs) AS mean_hcs,
+      (SELECT count_within_20_percent FROM members_within_20_percent) AS members_within_20_percent_of_worst_case
     FROM member_impacts
   `;
   
@@ -420,16 +430,27 @@ $$
   var result = stmt.execute();
   result.next();
   
+  var total_members = result.getColumnValue(1);
+  var members_within_20_percent = result.getColumnValue(23);
+  var median_population = result.getColumnValue(5);
+  var max_population = result.getColumnValue(8);
+  
+  // Calculate percentage near worst-case
+  var percentage_near_worst = total_members > 0 ? (members_within_20_percent / total_members) * 100 : 0;
+  
+  // Calculate worst-case to median ratio
+  var worst_to_median_ratio = median_population > 0 ? max_population / median_population : 0;
+  
   return {
-    total_members: result.getColumnValue(1),
+    total_members: total_members,
     population: {
       min: result.getColumnValue(2),
       p10: result.getColumnValue(3),
       p25: result.getColumnValue(4),
-      p50: result.getColumnValue(5),
+      p50: median_population,
       p75: result.getColumnValue(6),
       p90: result.getColumnValue(7),
-      max: result.getColumnValue(8),
+      max: max_population,
       mean: result.getColumnValue(9),
       stddev: result.getColumnValue(10)
     },
@@ -450,7 +471,10 @@ $$
       p50: result.getColumnValue(20),
       max: result.getColumnValue(21),
       mean: result.getColumnValue(22)
-    }
+    },
+    members_within_20_percent_of_worst_case: members_within_20_percent,
+    percentage_near_worst_case: Math.round(percentage_near_worst * 10) / 10, // Round to 1 decimal place
+    worst_to_median_ratio: Math.round(worst_to_median_ratio * 10) / 10 // Round to 1 decimal place
   };
 $$;
 
@@ -549,16 +573,43 @@ $$
   
   var result = stmt.execute();
   var thresholds = [];
+  var population_34kt = null;
   
+  // First pass: collect all thresholds and find 34kt population
   while (result.next()) {
+    var threshold = result.getColumnValue(1);
+    var population = result.getColumnValue(3);
+    
+    if (threshold === 34) {
+      population_34kt = population;
+    }
+    
     thresholds.push({
-      wind_threshold: result.getColumnValue(1),
+      wind_threshold: threshold,
       row_count: result.getColumnValue(2),
-      total_population: result.getColumnValue(3),
+      total_population: population,
       total_schools: result.getColumnValue(4),
       total_hcs: result.getColumnValue(5),
       total_children: result.getColumnValue(6)
     });
+  }
+  
+  // Calculate percentage reduction from 34kt for each threshold
+  if (population_34kt && population_34kt > 0) {
+    for (var i = 0; i < thresholds.length; i++) {
+      var threshold = thresholds[i];
+      if (threshold.wind_threshold !== 34) {
+        var reduction = ((population_34kt - threshold.total_population) / population_34kt) * 100;
+        threshold.percentage_reduction_from_34kt = Math.round(reduction * 10) / 10; // Round to 1 decimal place
+      } else {
+        threshold.percentage_reduction_from_34kt = 0;
+      }
+    }
+  } else {
+    // If no 34kt threshold found, set percentage_reduction_from_34kt to null for all
+    for (var i = 0; i < thresholds.length; i++) {
+      thresholds[i].percentage_reduction_from_34kt = null;
+    }
   }
   
   return {
@@ -777,11 +828,27 @@ $$
   var admin_trends = [];
   
   while (result.next()) {
+    var current_pop = result.getColumnValue(2);
+    var previous_pop = result.getColumnValue(3);
+    var change = result.getColumnValue(4);
+    
+    // Calculate percentage change
+    var percentage_change = null;
+    if (previous_pop > 0) {
+      percentage_change = (change / previous_pop) * 100;
+      percentage_change = Math.round(percentage_change * 10) / 10; // Round to 1 decimal place
+    } else if (change > 0) {
+      percentage_change = null; // Cannot calculate percentage change from zero
+    } else {
+      percentage_change = 0; // No change
+    }
+    
     admin_trends.push({
       administrative_area: result.getColumnValue(1),
-      current_population: result.getColumnValue(2),
-      previous_population: result.getColumnValue(3),
-      change: result.getColumnValue(4)
+      current_population: current_pop,
+      previous_population: previous_pop,
+      change: change,
+      percentage_change: percentage_change
     });
   }
   
@@ -790,6 +857,125 @@ $$
     count: admin_trends.length
   };
 $$;
+
+
+-- ============================================================================
+-- Stored Procedure: Get Risk Classification
+-- ============================================================================
+-- Classifies worst-case scenario risk level based on percentage of members
+-- within 20% of worst-case and worst-case to median ratio.
+-- Returns: JSON object with classification, description, and reasoning.
+--
+-- Classification Logic:
+-- - SPECIAL CASE: percentage <10% AND ratio >5x
+-- - PLAUSIBLE: (percentage 10-30%) OR (ratio 3-5x)
+-- - REAL THREAT: (percentage >30%) OR (ratio <3x)
+
+CREATE OR REPLACE PROCEDURE GET_RISK_CLASSIFICATION(
+    percentage_near_worst FLOAT,
+    worst_to_median_ratio FLOAT
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+  var pct = PERCENTAGE_NEAR_WORST;
+  var ratio = WORST_TO_MEDIAN_RATIO;
+  
+  var classification = '';
+  var description = '';
+  var reasoning = '';
+  
+  // CONDITION 1: SPECIAL CASE (BOTH must be true)
+  if (pct < 10.0 && ratio > 5.0) {
+    classification = 'SPECIAL CASE';
+    description = 'a highly unlikely outlier';
+    reasoning = 'Only ' + pct.toFixed(1) + '% of forecast scenarios cluster near this severity level, and worst-case impacts are ' + ratio.toFixed(1) + ' times higher than the median. This indicates worst-case is a LOW-PROBABILITY TAIL RISK rather than a realistic threat.';
+  }
+  // CONDITION 2: PLAUSIBLE (EITHER can be true)
+  else if ((pct >= 10.0 && pct <= 30.0) || (ratio >= 3.0 && ratio <= 5.0)) {
+    classification = 'PLAUSIBLE';
+    description = 'but NOT MOST LIKELY';
+    reasoning = pct.toFixed(1) + '% of ensemble members project impacts within 20% of worst-case, and worst-case is ' + ratio.toFixed(1) + ' times higher than median. While most scenarios cluster around moderate impacts, a meaningful minority (' + pct.toFixed(1) + '%) project severe outcomes. This suggests worst-case represents a CREDIBLE ESCALATION RISK that should be monitored, but primary planning should focus on expected scenarios with contingency buffers for escalation.';
+  }
+  // CONDITION 3: REAL THREAT (EITHER can be true)
+  else if (pct > 30.0 || ratio < 3.0) {
+    classification = 'REAL THREAT';
+    description = '';
+    reasoning = pct.toFixed(1) + '% of ensemble members project impacts within 20% of worst-case, indicating many scenarios cluster near severe outcomes. Worst-case is ' + ratio.toFixed(1) + ' times higher than median, but the high concentration of scenarios near worst-case suggests this severity level is PLAUSIBLE and should be prepared for.';
+  }
+  // Fallback (should not happen with proper logic)
+  else {
+    classification = 'PLAUSIBLE';
+    description = 'but NOT MOST LIKELY';
+    reasoning = 'Risk assessment indicates moderate escalation potential.';
+  }
+  
+  return {
+    classification: classification,
+    description: description,
+    reasoning: reasoning,
+    percentage_near_worst: pct,
+    worst_to_median_ratio: ratio
+  };
+$$;
+
+GRANT USAGE ON PROCEDURE GET_RISK_CLASSIFICATION(FLOAT, FLOAT) TO ROLE SYSADMIN;
+
+
+-- ============================================================================
+-- Stored Procedure: Get Threshold Probabilities
+-- ============================================================================
+-- Returns probability values by wind threshold for a specific country, storm, and forecast date.
+-- Used for populating the Probability column in Section 3 scenario analysis table.
+-- Returns: JSON object with probabilities array (each containing wind_threshold and probability), count, and has_data (boolean).
+
+CREATE OR REPLACE PROCEDURE GET_THRESHOLD_PROBABILITIES(
+    country_code VARCHAR,
+    storm_name VARCHAR,
+    forecast_date_str VARCHAR
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+  var sql_command = `
+    SELECT DISTINCT
+        wind_threshold,
+        AVG(probability) AS probability
+    FROM AOTS.TC_ECMWF.ADMIN_IMPACT_VIEWS_RAW
+    WHERE country = ?
+      AND UPPER(storm) = UPPER(?)
+      AND forecast_date = ?
+      AND probability IS NOT NULL
+    GROUP BY wind_threshold
+    ORDER BY wind_threshold ASC
+  `;
+  
+  var stmt = snowflake.createStatement({
+    sqlText: sql_command,
+    binds: [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR]
+  });
+  
+  var result = stmt.execute();
+  var probabilities = [];
+  
+  while (result.next()) {
+    probabilities.push({
+      wind_threshold: result.getColumnValue(1),
+      probability: result.getColumnValue(2)
+    });
+  }
+  
+  return {
+    probabilities: probabilities,
+    count: probabilities.length,
+    has_data: probabilities.length > 0
+  };
+$$;
+
 
 -- ============================================================================
 -- Stored Procedure: Get Country ISO3 Code from Country Name
@@ -882,6 +1068,8 @@ GRANT USAGE ON PROCEDURE GET_ALL_WIND_THRESHOLDS_ANALYSIS(VARCHAR, VARCHAR, VARC
 GRANT USAGE ON PROCEDURE GET_ADMIN_LEVEL_BREAKDOWN(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE GET_ADMIN_LEVEL_TREND_COMPARISON(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE GET_COUNTRY_ISO3_CODE(VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE GET_RISK_CLASSIFICATION(FLOAT, FLOAT) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE GET_THRESHOLD_PROBABILITIES(VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 
 GRANT USAGE ON SCHEMA TC_ECMWF TO ROLE SYSADMIN;
 GRANT USAGE ON DATABASE AOTS TO ROLE SYSADMIN;
