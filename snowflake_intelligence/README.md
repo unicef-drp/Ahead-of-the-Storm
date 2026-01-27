@@ -130,7 +130,7 @@ Creates the AI agent that generates intelligence reports.
 - **Risk classification**: Classifies worst-case scenarios as SPECIAL CASE, PLAUSIBLE, or REAL THREAT
 
 **Agent Configuration:**
-- Orchestration budget: 120 seconds, 20,000 tokens
+- Orchestration budget: 120 seconds, 25,000 tokens
 - Uses 13 stored procedure tools
 - Executes on `AOTS_WH` warehouse
 - Requires SYSADMIN role for usage

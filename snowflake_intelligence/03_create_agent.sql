@@ -47,7 +47,7 @@ models:
 orchestration:
   budget:
     seconds: 120
-    tokens: 20000
+    tokens: 25000
 
 tools:
   - tool_spec:
