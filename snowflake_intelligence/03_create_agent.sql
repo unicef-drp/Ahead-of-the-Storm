@@ -21,7 +21,7 @@
 -- Configuration:
 -- - Database: AOTS
 -- - Schema: TC_ECMWF
--- - Warehouse: AOTS_WH
+-- - Warehouse: SF_AI_WH (for agent queries - separate from setup warehouse for cost monitoring)
 -- ============================================================================
 
 USE DATABASE AOTS;
@@ -362,91 +362,91 @@ tool_resources:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_EXPECTED_IMPACT_VALUES
 
   discover_available_storms:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.DISCOVER_AVAILABLE_STORMS
 
   get_latest_forecast_date:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_LATEST_FORECAST_DATE
 
   get_latest_data_overall:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_LATEST_DATA_OVERALL
 
   get_worst_case_scenario:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_WORST_CASE_SCENARIO
 
   get_scenario_distribution:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_SCENARIO_DISTRIBUTION
 
   get_previous_forecast_date:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_PREVIOUS_FORECAST_DATE
 
   get_all_wind_thresholds_analysis:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_ALL_WIND_THRESHOLDS_ANALYSIS
 
   get_admin_level_breakdown:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_ADMIN_LEVEL_BREAKDOWN
 
   get_admin_level_trend_comparison:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_ADMIN_LEVEL_TREND_COMPARISON
 
   get_country_iso3_code:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_COUNTRY_ISO3_CODE
 
   get_risk_classification:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_RISK_CLASSIFICATION
 
   get_threshold_probabilities:
     type: procedure
     execution_environment:
       type: warehouse
-      warehouse: AOTS_WH
+      warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_THRESHOLD_PROBABILITIES
 
 instructions:
@@ -1440,9 +1440,9 @@ $$;
 GRANT USAGE ON AGENT HURRICANE_SITUATION_INTELLIGENCE TO ROLE SYSADMIN;
 
 -- CRITICAL: Grant USAGE on the warehouse to roles that will use the agent
--- The agent's custom tool (get_expected_impact_values) executes on AOTS_WH warehouse
+-- The agent's custom tools execute on SF_AI_WH warehouse (separate warehouse for cost monitoring)
 -- Agents need warehouse access to execute custom tools
-GRANT USAGE ON WAREHOUSE AOTS_WH TO ROLE SYSADMIN;
+GRANT USAGE ON WAREHOUSE SF_AI_WH TO ROLE SYSADMIN;
 
 -- Grant SELECT privileges on all raw data views
 -- Note: The stored procedure uses EXECUTE AS OWNER, so it executes with owner's (SYSADMIN) permissions

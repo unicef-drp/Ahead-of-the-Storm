@@ -26,14 +26,14 @@ The system follows a simplified architecture where the AI agent computes all int
 - Snowflake account with ACCOUNTADMIN role (or CREATE SNOWFLAKE INTELLIGENCE ON ACCOUNT privilege)
 - Impact analysis CSV/Parquet files in Snowflake stage: `AOTS.TC_ECMWF.AOTS_ANALYSIS`
 - Base admin Parquet files in stage
-- Warehouse: `AOTS_WH` (must exist)
+- Warehouse: `SF_AI_WH` (must exist - used for agent queries to enable separate cost monitoring)
 
 ## Configuration
 
 - **Database**: `AOTS`
 - **Schema**: `TC_ECMWF`
 - **Stage**: `AOTS.TC_ECMWF.AOTS_ANALYSIS`
-- **Warehouse**: `AOTS_WH`
+- **Warehouse**: `SF_AI_WH` (for agent queries - separate from setup warehouse for cost monitoring)
 
 ## Setup Instructions
 
@@ -132,7 +132,7 @@ Creates the AI agent that generates intelligence reports.
 **Agent Configuration:**
 - Orchestration budget: 120 seconds, 25,000 tokens
 - Uses 13 stored procedure tools
-- Executes on `AOTS_WH` warehouse
+- Executes on `SF_AI_WH` warehouse (separate warehouse for cost monitoring)
 - Requires SYSADMIN role for usage
 
 **Granted Privileges:**

@@ -1,13 +1,17 @@
 -- ============================================================================
--- AGENT COST TRACKING
+-- AGENT COST TRACKING (Warehouse-Based Approach)
 -- ============================================================================
--- 1. Gets TOTAL costs from METERING_HISTORY (AI Services + Warehouse)
--- 2. Counts SUCCESSFUL agent calls from QUERY_HISTORY  
--- 3. Divides total cost by successful calls = accurate cost per call
+-- Uses warehouse-based filtering for accurate cost tracking
+-- Works regardless of whether Cortex Analyst tables are available
+-- Combines AI costs and warehouse costs from SF_AI_WH warehouse
+-- Calculates cost per agent call for monitoring
 --
--- USAGE:
--- 1. Adjust DAYS_TO_ANALYZE
--- 2. Run to see accurate cost breakdown
+-- APPROACH:
+-- 1. Get AI costs from METERING_HISTORY filtered by SF_AI_WH warehouse
+--    (This captures all AI service costs on the agent warehouse)
+-- 2. Get warehouse costs from WAREHOUSE_METERING_HISTORY (SF_AI_WH only)
+-- 3. Count successful agent calls from QUERY_HISTORY
+-- 4. Calculate cost per call (total cost / call count)
 --
 -- REQUIRES: ACCOUNTADMIN or access to SNOWFLAKE.ACCOUNT_USAGE
 -- ============================================================================
@@ -19,84 +23,142 @@ SET DAYS_TO_ANALYZE = 1;
 
 WITH
 -- ============================================================================
--- STEP 1: Get TOTAL costs for the period (all services)
+-- STEP 1: Get AI costs from Metering History
 -- ============================================================================
-total_costs_by_day AS (
+-- Get AI service costs from METERING_HISTORY
+-- NOTE: AI_SERVICES costs may not be directly filterable by warehouse in METERING_HISTORY
+-- If SF_AI_WH is dedicated ONLY to agent queries, we can use all AI_SERVICES costs
+-- OR filter by time period and assume they're agent-related if warehouse is dedicated
+--
+-- Alternative: If CORTEX_ANALYST_USAGE_HISTORY exists and has data, use that instead
+-- (uncomment the alternative CTE below if Cortex Analyst tables are available)
+ai_costs_by_day AS (
     SELECT 
-        DATE(mh.start_time) AS date,
-        SUM(CASE WHEN mh.service_type = 'AI_SERVICES' THEN mh.credits_used ELSE 0 END) AS ai_credits,
-        SUM(CASE WHEN mh.service_type = 'WAREHOUSE_METERING' AND mh.name = 'AOTS_WH' THEN mh.credits_used ELSE 0 END) AS warehouse_credits,
-        SUM(CASE 
-            WHEN mh.service_type = 'AI_SERVICES' THEN mh.credits_used
-            WHEN mh.service_type = 'WAREHOUSE_METERING' AND mh.name = 'AOTS_WH' THEN mh.credits_used
-            ELSE 0
-        END) AS total_credits
-    FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_HISTORY mh
-    WHERE mh.start_time >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_TIMESTAMP())
-        AND (
-            mh.service_type = 'AI_SERVICES'
-            OR (mh.service_type = 'WAREHOUSE_METERING' AND mh.name = 'AOTS_WH')
-        )
-    GROUP BY DATE(mh.start_time)
+        DATE(start_time) AS date,
+        SUM(credits_used) AS ai_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_HISTORY
+    WHERE start_time >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_DATE())
+        AND service_type = 'AI_SERVICES'
+        -- NOTE: If AI_SERVICES can't be filtered by warehouse, this includes ALL AI costs
+        -- Only accurate if SF_AI_WH is the ONLY source of AI service usage in your account
+        -- OR if you can filter by warehouse (check your METERING_HISTORY structure)
+    GROUP BY DATE(start_time)
+),
+-- ALTERNATIVE: Use Cortex Analyst Usage History if available (uncomment if needed)
+-- ai_costs_by_day AS (
+--     SELECT 
+--         DATE_TRUNC('day', start_time) AS date,
+--         SUM(credits) AS ai_credits
+--     FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_ANALYST_USAGE_HISTORY
+--     WHERE start_time >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_DATE())
+--     GROUP BY DATE_TRUNC('day', start_time)
+-- ),
+
+-- ============================================================================
+-- STEP 2: Get warehouse costs from Warehouse Metering History
+-- ============================================================================
+-- Filter by SF_AI_WH warehouse to get only agent-related warehouse costs
+warehouse_costs_by_day AS (
+    SELECT 
+        DATE_TRUNC('day', start_time) AS date,
+        SUM(credits_used) AS warehouse_credits
+    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+    WHERE start_time >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_DATE())
+        AND warehouse_name = 'SF_AI_WH'
+    GROUP BY DATE_TRUNC('day', start_time)
 ),
 
 -- ============================================================================
--- STEP 2: Count SUCCESSFUL agent calls (real calls only)
+-- STEP 3: Count successful agent calls from Query History
 -- ============================================================================
+-- Count actual agent invocations by searching for:
+-- 1. SNOWFLAKE.CORTEX.COMPLETE function calls (the function used to call agents)
+-- 2. Agent identifier: AOTS.TC_ECMWF.HURRICANE_SITUATION_INTELLIGENCE
+-- 3. Filter by execution time > 5 seconds to exclude quick checks/metadata queries
+-- 4. Filter by warehouse = SF_AI_WH to ensure we only count agent-related queries
+--
+-- NOTE: This approach counts queries that call the agent, but each agent call
+-- may generate multiple internal queries (tool calls). For cost per "user call",
+-- this is the correct count. For cost per "tool invocation", you'd need to
+-- look at the stored procedure calls separately.
 successful_calls_by_day AS (
     SELECT 
-        DATE(qh.START_TIME) AS date,
+        DATE(start_time) AS date,
         COUNT(*) AS call_count,
-        ROUND(AVG(qh.TOTAL_ELAPSED_TIME / 1000), 1) AS avg_execution_seconds,
-        ROUND(MIN(qh.TOTAL_ELAPSED_TIME / 1000), 1) AS min_execution_seconds,
-        ROUND(MAX(qh.TOTAL_ELAPSED_TIME / 1000), 1) AS max_execution_seconds
-    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY qh
-    WHERE qh.QUERY_TEXT ILIKE '%SELECT%HURRICANE_SITUATION_INTELLIGENCE%'
-        AND qh.EXECUTION_STATUS = 'SUCCESS'
-        AND qh.TOTAL_ELAPSED_TIME > 5000  -- More than 5 seconds (filters out quick checks)
-        AND qh.START_TIME >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_TIMESTAMP())
-    GROUP BY DATE(qh.START_TIME)
+        ROUND(AVG(total_elapsed_time / 1000), 1) AS avg_execution_seconds,
+        ROUND(MIN(total_elapsed_time / 1000), 1) AS min_execution_seconds,
+        ROUND(MAX(total_elapsed_time / 1000), 1) AS max_execution_seconds
+    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+    WHERE (
+        -- Look for SNOWFLAKE.CORTEX.COMPLETE function calls with agent name
+        (query_text ILIKE '%SNOWFLAKE.CORTEX.COMPLETE%' 
+         AND query_text ILIKE '%HURRICANE_SITUATION_INTELLIGENCE%')
+        -- OR look for the full agent identifier
+        OR query_text ILIKE '%AOTS.TC_ECMWF.HURRICANE_SITUATION_INTELLIGENCE%'
+    )
+        AND execution_status = 'SUCCESS'
+        AND total_elapsed_time > 5000  -- More than 5 seconds (filters out quick checks)
+        AND warehouse_name = 'SF_AI_WH'  -- Only count queries on agent warehouse
+        AND start_time >= DATEADD('days', -$DAYS_TO_ANALYZE, CURRENT_DATE())
+    GROUP BY DATE(start_time)
 ),
 
 -- ============================================================================
--- STEP 3: Join costs with call counts and calculate cost per call
+-- STEP 4: Combine costs and calculate daily totals
+-- ============================================================================
+daily_costs AS (
+    SELECT 
+        COALESCE(ac.date, wc.date) AS date,
+        COALESCE(ac.ai_credits, 0) AS ai_credits,
+        COALESCE(wc.warehouse_credits, 0) AS warehouse_credits,
+        COALESCE(ac.ai_credits, 0) + COALESCE(wc.warehouse_credits, 0) AS total_credits,
+        COALESCE(ac.ai_credits, 0) * 3.0 AS ai_cost_usd,
+        COALESCE(wc.warehouse_credits, 0) * 3.0 AS warehouse_cost_usd,
+        (COALESCE(ac.ai_credits, 0) + COALESCE(wc.warehouse_credits, 0)) * 3.0 AS total_cost_usd
+    FROM ai_costs_by_day ac
+    FULL OUTER JOIN warehouse_costs_by_day wc
+        ON ac.date = wc.date
+),
+
+-- ============================================================================
+-- STEP 5: Join costs with call counts and calculate cost per call
 -- ============================================================================
 daily_summary AS (
     SELECT 
-        COALESCE(tc.date, sc.date) AS date,
+        COALESCE(dc.date, sc.date) AS date,
         COALESCE(sc.call_count, 0) AS successful_calls,
         sc.avg_execution_seconds,
         sc.min_execution_seconds,
         sc.max_execution_seconds,
-        COALESCE(tc.ai_credits, 0) AS ai_credits,
-        COALESCE(tc.warehouse_credits, 0) AS warehouse_credits,
-        COALESCE(tc.total_credits, 0) AS total_credits,
-        COALESCE(tc.ai_credits, 0) * 3.0 AS ai_cost_usd,
-        COALESCE(tc.warehouse_credits, 0) * 3.0 AS warehouse_cost_usd,
-        COALESCE(tc.total_credits, 0) * 3.0 AS total_cost_usd,
+        COALESCE(dc.ai_credits, 0) AS ai_credits,
+        COALESCE(dc.warehouse_credits, 0) AS warehouse_credits,
+        COALESCE(dc.total_credits, 0) AS total_credits,
+        COALESCE(dc.ai_cost_usd, 0) AS ai_cost_usd,
+        COALESCE(dc.warehouse_cost_usd, 0) AS warehouse_cost_usd,
+        COALESCE(dc.total_cost_usd, 0) AS total_cost_usd,
         CASE 
             WHEN COALESCE(sc.call_count, 0) > 0 
-            THEN COALESCE(tc.total_credits, 0) * 3.0 / sc.call_count
+            THEN COALESCE(dc.total_cost_usd, 0) / sc.call_count
             ELSE 0
         END AS cost_per_call_usd,
         CASE 
-            WHEN COALESCE(tc.total_credits, 0) > 0
-            THEN ROUND(COALESCE(tc.ai_credits, 0) / tc.total_credits * 100, 1)
+            WHEN COALESCE(dc.total_credits, 0) > 0
+            THEN ROUND(COALESCE(dc.ai_credits, 0) / dc.total_credits * 100, 1)
             ELSE 0
         END AS ai_pct,
         CASE 
-            WHEN COALESCE(tc.total_credits, 0) > 0
-            THEN ROUND(COALESCE(tc.warehouse_credits, 0) / tc.total_credits * 100, 1)
+            WHEN COALESCE(dc.total_credits, 0) > 0
+            THEN ROUND(COALESCE(dc.warehouse_credits, 0) / dc.total_credits * 100, 1)
             ELSE 0
         END AS warehouse_pct
-    FROM total_costs_by_day tc
+    FROM daily_costs dc
     FULL OUTER JOIN successful_calls_by_day sc
-        ON tc.date = sc.date
-    WHERE COALESCE(tc.total_credits, 0) > 0 OR COALESCE(sc.call_count, 0) > 0
+        ON dc.date = sc.date
+    WHERE COALESCE(dc.total_credits, 0) > 0 OR COALESCE(sc.call_count, 0) > 0
 ),
 
 -- ============================================================================
--- STEP 4: Calculate period totals
+-- STEP 6: Calculate period totals
 -- ============================================================================
 period_totals AS (
     SELECT 
@@ -129,7 +191,7 @@ period_totals AS (
 )
 
 -- ============================================================================
--- OUTPUT: Daily breakdown + Period summary only
+-- OUTPUT: Daily breakdown + Period summary
 -- ============================================================================
 
 -- SECTION 1: Daily breakdown
@@ -155,8 +217,8 @@ UNION ALL
 
 -- SECTION 2: Period summary
 SELECT 
-    'SUMMARY',
-    'TOTAL (' || $DAYS_TO_ANALYZE || ' days)',
+    'SUMMARY' AS section,
+    'TOTAL (' || $DAYS_TO_ANALYZE || ' days)' AS date,
     total_calls,
     avg_execution_seconds,
     min_execution_seconds,
