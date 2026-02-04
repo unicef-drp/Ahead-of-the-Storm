@@ -29,3 +29,6 @@ project_results/
 gigaspatial/
 snowflake_intelligence/07_create_aots_agent_role.sql
 snowflake_intelligence/99_create_materialized_tables.sql
+extract_jamaica_data.py
+jamaica_data/
+testing/
