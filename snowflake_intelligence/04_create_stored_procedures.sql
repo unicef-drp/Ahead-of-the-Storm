@@ -26,7 +26,7 @@ USE SCHEMA TC_ECMWF;
 --   country_code       — ISO3 country code (e.g. 'JAM')
 --   storm_name         — Storm name (e.g. 'MELISSA')
 --   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
 --   row_count                 — number of tiles matched
@@ -346,7 +346,7 @@ $$;
 --   country_code       — ISO3 country code (e.g. 'JAM')
 --   storm_name         — Storm name (e.g. 'MELISSA')
 --   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
 --   ensemble_member     — zone_id of the worst-case ensemble member
@@ -457,7 +457,7 @@ $$;
 --   country_code       — ISO3 country code (e.g. 'JAM')
 --   storm_name         — Storm name (e.g. 'MELISSA')
 --   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
 --   total_members                         — count of ensemble members with population > 0
@@ -808,7 +808,7 @@ $$;
 --   country_code       — ISO3 country code (e.g. 'JAM')
 --   storm_name         — Storm name (e.g. 'MELISSA')
 --   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
 --   admin_areas[] — array sorted by population DESC; each entry:
@@ -919,7 +919,7 @@ $$;
 --   storm_name                 — Storm name (e.g. 'MELISSA')
 --   current_forecast_date_str  — Most recent forecast date (e.g. '20251028000000')
 --   previous_forecast_date_str — Earlier forecast date (e.g. '20251027180000')
---   wind_threshold_val         — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val         — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
 --   admin_trends[] — array sorted by |change| DESC; each entry:
@@ -1250,7 +1250,7 @@ $$;
 --   country_code       — ISO3 country code (e.g. 'PHL')
 --   storm_name         — Storm name (e.g. 'NOKAEN')
 --   forecast_date_str  — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold_val — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --   metric_name        — One of (case-insensitive):
 --                          expected_population     — total expected population at risk
 --                          expected_children       — expected children at risk (school-age + infants)
@@ -1530,7 +1530,7 @@ $$;
 --   country_code    — ISO3 country code (e.g. 'PHL')
 --   storm_name      — Storm name (e.g. 'NOKAEN')
 --   forecast_date   — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold  — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold  — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --   min_probability — Minimum probability to include (0–1). Pass '' to use default 0.0.
 --
 -- Returns:
@@ -1646,7 +1646,7 @@ $$;
 --   country_code    — ISO3 country code (e.g. 'PHL')
 --   storm_name      — Storm name (e.g. 'NOKAEN')
 --   forecast_date   — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold  — Wind threshold in knots: '34', '50', '64', '96', or '137'
+--   wind_threshold  — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --   min_probability — Minimum probability to include (0–1). Pass '' to use default 0.0.
 --
 -- Returns:
