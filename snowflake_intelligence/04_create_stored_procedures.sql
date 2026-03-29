@@ -67,7 +67,7 @@ $$
     FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
-      AND forecast_date = ?
+      AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND wind_threshold = ?
       AND zoom_level = 14
   `;
@@ -132,7 +132,7 @@ $$
         SUM(COALESCE(E_population, 0)) AS total_population
     FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
     WHERE country = ?
-      AND forecast_date = ?
+      AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND zoom_level = 14
     GROUP BY storm, forecast_date, wind_threshold
     ORDER BY row_count DESC, storm
@@ -388,7 +388,7 @@ $$
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
       GROUP BY zone_id
       HAVING SUM(COALESCE(severity_population, 0)) > 0
@@ -499,7 +499,7 @@ $$
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
       GROUP BY zone_id
       HAVING SUM(COALESCE(severity_population, 0)) > 0
@@ -663,7 +663,7 @@ $$
   var r50 = snowflake.createStatement({
     sqlText: `SELECT forecast_date, COUNT(*)::INT AS row_count
               FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
-              WHERE country = ? AND UPPER(storm) = UPPER(?) AND forecast_date < ?
+              WHERE country = ? AND UPPER(storm) = UPPER(?) AND forecast_date < RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
                 AND zoom_level = 14 AND wind_threshold = 50
               GROUP BY forecast_date ORDER BY forecast_date DESC LIMIT 1`,
     binds: binds
@@ -677,7 +677,7 @@ $$
   var rAny = snowflake.createStatement({
     sqlText: `SELECT forecast_date, COUNT(*)::INT AS row_count
               FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
-              WHERE country = ? AND UPPER(storm) = UPPER(?) AND forecast_date < ?
+              WHERE country = ? AND UPPER(storm) = UPPER(?) AND forecast_date < RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
                 AND zoom_level = 14
               GROUP BY forecast_date ORDER BY forecast_date DESC LIMIT 1`,
     binds: binds
@@ -738,7 +738,7 @@ $$
     FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
-      AND forecast_date = ?
+      AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND zoom_level = 14
     GROUP BY wind_threshold
     ORDER BY wind_threshold ASC
@@ -843,7 +843,7 @@ $$
       FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
       GROUP BY a.name
     ),
@@ -857,7 +857,7 @@ $$
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
     ),
     admin_with_names AS (
@@ -955,7 +955,7 @@ $$
       FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
       GROUP BY a.name
     ),
@@ -969,7 +969,7 @@ $$
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
     ),
     current_with_names AS (
@@ -986,7 +986,7 @@ $$
       FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
       GROUP BY a.name
     ),
@@ -1000,7 +1000,7 @@ $$
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
-        AND a.forecast_date = ?
+        AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
     ),
     previous_with_names AS (
@@ -1111,7 +1111,7 @@ $$
     FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
-      AND forecast_date = ?
+      AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND probability IS NOT NULL
     GROUP BY wind_threshold
     ORDER BY wind_threshold ASC
@@ -1322,7 +1322,7 @@ $$
       FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
         AND zoom_level = 14
     `;
@@ -1344,7 +1344,7 @@ $$
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
       ORDER BY severity_population DESC
       LIMIT 1
@@ -1367,7 +1367,7 @@ $$
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
     `;
     var stmt = snowflake.createStatement({
@@ -1385,13 +1385,13 @@ $$
       SELECT SUM(COALESCE(E_population, 0))
       FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
       WHERE country = ? AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ? AND wind_threshold = ? AND zoom_level = 14
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0') AND wind_threshold = ? AND zoom_level = 14
     `;
     var sql_wc = `
       SELECT severity_population
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ? AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ? AND wind_threshold = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0') AND wind_threshold = ?
       ORDER BY severity_population DESC LIMIT 1
     `;
     var binds = [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR, wind_threshold_num];
@@ -1574,7 +1574,7 @@ $$
       FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
         AND all_data:probability::FLOAT > 0
     )
@@ -1591,12 +1591,12 @@ $$
       FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
         AND all_data:probability::FLOAT > 0
         AND all_data:probability::FLOAT >= ?
       ORDER BY all_data:probability::FLOAT DESC
-      LIMIT 50
+      LIMIT 20
     ) s, all_exposed_cte c
   `;
 
@@ -1691,7 +1691,7 @@ $$
       FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
         AND all_data:probability::FLOAT > 0
     )
@@ -1712,12 +1712,12 @@ $$
       FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
-        AND forecast_date = ?
+        AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND wind_threshold = ?
         AND all_data:probability::FLOAT > 0
         AND all_data:probability::FLOAT >= ?
       ORDER BY all_data:probability::FLOAT DESC
-      LIMIT 50
+      LIMIT 20
     ) h, all_exposed_cte c
   `;
 
@@ -1813,7 +1813,7 @@ $$
               FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
               WHERE country = ?
                 AND UPPER(storm) = UPPER(?)
-                AND forecast_date = ?
+                AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
                 AND wind_threshold = ?`,
     binds: [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR, wt]
   }).execute();
@@ -1826,7 +1826,7 @@ $$
               FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
               WHERE country = ?
                 AND UPPER(storm) = UPPER(?)
-                AND forecast_date = ?
+                AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
                 AND wind_threshold = ?
                 AND zoom_level = 14`,
     binds: [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR, wt]

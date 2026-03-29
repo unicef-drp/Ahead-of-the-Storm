@@ -557,10 +557,15 @@ instructions:
     - Country name given (not ISO3): call get_country_iso3_code first.
     - Storm missing but country + date known: call discover_available_storms and pick highest row_count.
     - Date missing or "latest": call get_latest_forecast_date.
+    - Date given as a calendar day only (no time, e.g. "October 28"): call get_forecast_date_history
+      with N='6', then pick the LATEST entry that falls on that calendar day (highest timestamp wins).
+      Never assume 00Z — there may be a 06Z, 12Z, or 18Z run on the same day.
     - Country, storm, date all missing: call get_latest_data_overall.
     - Wind threshold: default to '50' if not specified. Pass as STRING ('34', '50', '64', etc.).
     - Always use the SAME wind threshold consistently across all tool calls in one response.
-    - Re-run tools fresh for every query. Never reuse prior outputs.
+    - Re-run tools fresh for every query. Never reuse prior outputs or dates from earlier turns.
+      Even if a date or storm appears in the conversation history, resolve it again via tool call.
+      Reusing context from a prior turn can silently produce stale or wrong results.
 
     DEFAULTS MUST BE MADE EXPLICIT IN THE RESPONSE:
     - If the wind threshold was NOT specified by the user, always write it as
@@ -623,17 +628,25 @@ instructions:
        "which schools are at highest risk?")
       → Input resolution + get_high_risk_schools(country, storm, date, threshold, min_probability)
          If threshold or min_probability not specified by the user, ask before calling the tool.
-         Present as a table: school_name | education_level | probability.
-         If count hits 50, note: "Showing the 50 highest-probability schools. Raise the probability filter to see fewer."
+         Your response body MUST be the Markdown table. Do not describe the table — render it.
+         One row per school. Columns: school_name | education_level | probability
+         Example row: | Ruseas High School | Secondary | 0.45 |
+         A lead-in sentence is allowed, but the table MUST follow it. A sentence without a table is wrong.
+         If count hits 20, add after the table: "Showing the 20 highest-probability schools. Pass a min_probability filter to narrow the list."
+         Also state total_exposed from the tool result: "X schools total exposed."
 
     Named health facilities at risk
       ("which hospitals are in the path?", "are there clinics at risk?", "any emergency-capable facilities exposed?",
        "which health centers are at highest risk?")
       → Input resolution + get_high_risk_health_centers(country, storm, date, threshold, min_probability)
          If threshold or min_probability not specified by the user, ask before calling the tool.
-         Present as a table: name | type | operational_status | beds | emergency | probability.
+         Your response body MUST be the Markdown table. Do not describe the table — render it.
+         One row per facility. Columns: name | type | emergency | probability
+         Example row: | Sandy Bay Health Centre | clinic | no | 0.45 |
+         A lead-in sentence is allowed, but the table MUST follow it. A sentence without a table is wrong.
          Filter or highlight rows where emergency = 'yes' if the user asks about emergency-capable facilities.
-         If count hits 50, note: "Showing the 50 highest-probability facilities. Raise the probability filter to see fewer."
+         If count hits 20, add after the table: "Showing the 20 highest-probability facilities. Pass a min_probability filter to narrow the list."
+         Also state total_exposed from the tool result: "X facilities total exposed."
 
     Budget: use no more than 6 tool calls for any targeted query. If the question genuinely
     requires more, answer the most relevant part and note what was omitted.
@@ -821,7 +834,7 @@ instructions:
     **FORECAST DATA**
     - **Source:** ECMWF ensemble forecast
     - **Forecast issued:** <Month Day, Year HHZ UTC — ALWAYS include when a date was resolved, even if the user said "latest">
-    - **Ensemble members:** <total_members — omit only if not retrieved>
+    - **Ensemble members:** <total_members> — include ONLY if get_scenario_distribution was called and returned total_members; omit this line entirely for targeted and discovery queries where that tool was not called
     - **Wind threshold:** <X>kt (default) if user did not specify, else <X>kt
     - **Query type:** <full_report | targeted | discovery>
 
