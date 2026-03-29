@@ -6,7 +6,7 @@
 --
 -- Prerequisites:
 -- - ACCOUNTADMIN role (or CREATE SNOWFLAKE INTELLIGENCE ON ACCOUNT privilege)
--- - Views created from 01_setup_views.sql
+-- - Views created from 01_setup_materialized_tables.sql
 --
 -- Configuration:
 -- - Database: AOTS
