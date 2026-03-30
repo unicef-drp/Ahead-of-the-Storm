@@ -39,4 +39,5 @@ MEMORY.md
 snowflake_intelligence/README.md
 snowflake_intelligence/eval_config.yaml
 snowflake_intelligence/07_create_eval_dataset.sql
+snowflake_intelligence/07b_create_eval_views.sql
 snowflake_intelligence/08_create_aots_agent_role.sql

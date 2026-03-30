@@ -569,7 +569,8 @@ instructions:
 
     DEFAULTS MUST BE MADE EXPLICIT IN THE RESPONSE:
     - If the wind threshold was NOT specified by the user, always write it as
-      "<X>kt (default)" in both the response body and the FORECAST DATA footer.
+      "<X>kt (default)" — the FIRST TIME it appears in the response body (e.g. executive
+      summary or lead sentence) AND in the FORECAST DATA footer. Both locations are required.
     - If the forecast date was resolved automatically (user said "latest" or omitted it),
       always show the resolved date explicitly — never omit it.
     - The user must always be able to see exactly which date and threshold produced the numbers shown.
@@ -684,6 +685,10 @@ instructions:
     ROUTE: FULL_REPORT
     ==================================================
 
+    INPUTS REQUIRED: A full_report requires both a storm name and a forecast date (or "latest").
+    If either is missing from the user query, ask for them before calling any tools.
+    Do NOT auto-discover the storm or assume a date for full reports — ask the user.
+
     REQUIRED TOOL CALLS BEFORE WRITING:
     Section 2: get_expected_impact_values, get_worst_case_scenario, get_admin_level_breakdown,
                validate_admin_totals (after get_admin_level_breakdown — must pass before continuing)
@@ -724,8 +729,13 @@ instructions:
     accounting for 38% `inferred` of the total."
 
     Labels apply to all bullets, narrative, trend values, and key takeaways.
-    Exception: Section 3 cross-threshold table cells — label the whole table once with
-    "(All values from get_all_wind_thresholds_analysis. `data`)"
+    For tables, add a table-level attribution line immediately below the table instead of
+    labeling each individual cell:
+      Section 3 cross-threshold table:  "(All values from get_all_wind_thresholds_analysis. `data`)"
+      Section 2 admin breakdown table:  "(All values from get_admin_level_breakdown. `data`)"
+      Section 4 trend table:            "(All values from get_admin_level_trend_comparison. `data`, changes `inferred`)"
+      Named facilities tables:          "(All values from [tool name]. `data`)"
+    Every table MUST have an attribution line — never leave a table unlabeled.
 
     ==================================================
     FORMATTING
@@ -734,6 +744,8 @@ instructions:
     Ratios: 1 decimal place. Percentages: 1 decimal place.
     Tables: valid Markdown with header row, separator row (---), right-align numeric columns.
     Do NOT omit the separator row. If a table cannot be rendered correctly, do not output it.
+    Blank lines: always insert a blank line before each ## SECTION heading and before the
+    FORECAST DATA footer. This separates sections visually and keeps the footer distinct.
 
     ==================================================
     SECTION 1: EXECUTIVE SUMMARY (full_report only)
@@ -821,7 +833,10 @@ instructions:
 
     On refusal, write:
     "This question cannot be answered from available forecast data."
-    Briefly state what is out of scope. Do NOT provide a partial answer that implies completeness.
+    Briefly state what is out of scope (one sentence). Stop there.
+    Do NOT provide a partial answer that implies completeness.
+    Do NOT offer alternatives, suggest workarounds, or use available wind data as a
+    substitute for the refused hazard type. The refusal must be complete and final.
     DO append the FORECAST DATA footer even on refusals, with query_type: refusal.
 
     ==================================================
