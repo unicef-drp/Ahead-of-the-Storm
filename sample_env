@@ -55,6 +55,20 @@ export IMPACT_DATA_STORE='LOCAL'
 #export IMPACT_DATA_STORE='SNOWFLAKE'
 
 ################################################################################
+# IMPACT_DATA_SOURCE: HOW impact data is loaded (independent of IMPACT_DATA_STORE)
+################################################################################
+# Controls whether impact data is loaded from files (STAGE) or MAT tables (SQL).
+#   - 'STAGE': Download pre-processed Parquet/CSV files from IMPACT_DATA_STORE (default)
+#   - 'SQL':   Query *_MAT tables directly in Snowflake (faster, no file downloads)
+#
+# IMPORTANT: IMPACT_DATA_SOURCE=SQL connects directly to Snowflake MAT tables and
+# bypasses the file store entirely. It works with ANY IMPACT_DATA_STORE setting
+# (LOCAL, BLOB, or SNOWFLAKE) as long as Snowflake credentials are configured —
+# which the app always requires anyway for TC_TRACKS and PIPELINE_COUNTRIES.
+#export IMPACT_DATA_SOURCE='STAGE'
+export IMPACT_DATA_SOURCE='SQL'
+
+################################################################################
 # OPTIONAL: Azure Blob Storage (only if IMPACT_DATA_STORE='BLOB')
 ################################################################################
 # Required only if using Azure Blob Storage for impact views

@@ -476,3 +476,297 @@ def get_snowflake_data():
     except Exception as e:
         print(f"Error getting Snowflake data: {str(e)}")
         return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
+
+
+# ---------------------------------------------------------------------------
+# Impact data queries — *_MAT tables
+# ---------------------------------------------------------------------------
+
+def get_school_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query SCHOOL_IMPACT_MAT for school-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY,
+        ZONE_ID, LATITUDE, LONGITUDE, COUNTRY_ISO3_CODE
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            SCHOOL_NAME,
+            EDUCATION_LEVEL,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE,
+            COUNTRY_ISO3_CODE
+        FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} school impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying SCHOOL_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query HC_IMPACT_MAT for health centre impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, HEALTH_AMENITY_TYPE, AMENITY,
+        OPERATIONAL_STATUS, BEDS, EMERGENCY, ELECTRICITY, OPERATOR_TYPE,
+        PROBABILITY, ZONE_ID
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            HEALTH_AMENITY_TYPE,
+            AMENITY,
+            OPERATIONAL_STATUS,
+            BEDS,
+            EMERGENCY,
+            ELECTRICITY,
+            OPERATOR_TYPE,
+            PROBABILITY,
+            ZONE_ID,
+            ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
+            ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} health centre impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying HC_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
+    """
+    Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+        zoom_level: Mercator tile zoom level (default 14)
+
+    Returns:
+        pandas.DataFrame with columns: ZONE_ID, ADMIN_ID, PROBABILITY,
+        E_POPULATION, E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_SCHOOL_AGE_POPULATION,
+        E_INFANT_POPULATION, E_NUM_HCS, E_RWI, E_SMOD_CLASS
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            ZONE_ID,
+            ADMIN_ID,
+            PROBABILITY,
+            E_POPULATION,
+            E_BUILT_SURFACE_M2,
+            E_NUM_SCHOOLS,
+            E_SCHOOL_AGE_POPULATION,
+            E_INFANT_POPULATION,
+            E_NUM_HCS,
+            E_RWI,
+            E_SMOD_CLASS
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold, zoom_level])
+        print(f"✓ Loaded {len(df)} tile impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt zoom={zoom_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying MERCATOR_TILE_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
+    """
+    Query ADMIN_ALL_IMPACT_MAT for administrative-unit-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+        admin_level: Administrative level to query (default 1)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, E_POPULATION, E_NUM_SCHOOLS,
+        E_NUM_HCS, PROBABILITY, ZONE_ID
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            TILE_ID,
+            NAME,
+            ADMIN_LEVEL,
+            PROBABILITY,
+            E_POPULATION,
+            E_SCHOOL_AGE_POPULATION,
+            E_INFANT_POPULATION,
+            E_BUILT_SURFACE_M2,
+            E_NUM_SCHOOLS,
+            E_NUM_HCS,
+            E_SMOD_CLASS,
+            E_RWI
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold, admin_level])
+        print(f"✓ Loaded {len(df)} admin impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt admin_level={admin_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying ADMIN_ALL_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
+    """
+    Query ADMIN_ALL_CCI_MAT for Child Cyclone Index data at administrative level.
+
+    No wind_threshold parameter — CCI data is threshold-independent.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        admin_level: Administrative level to query (default 1)
+
+    Returns:
+        pandas.DataFrame with all CCI columns plus ZONE_ID
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT *
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, admin_level])
+        print(f"✓ Loaded {len(df)} admin CCI rows from SQL ({country}/{storm}/{forecast_date} admin_level={admin_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying ADMIN_ALL_CCI_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_available_admin_levels(country: str) -> list:
+    """
+    Return the admin levels available in ADMIN_ALL_IMPACT_MAT for a given country.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+
+    Returns:
+        Sorted list of integer admin levels, e.g. [1, 2, 3]
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT DISTINCT ADMIN_LEVEL
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
+        WHERE COUNTRY = %s
+        ORDER BY 1
+        """
+        df = pd.read_sql(query, conn, params=[country])
+        return df['ADMIN_LEVEL'].tolist()
+    except Exception as e:
+        print(f"Error querying available admin levels: {str(e)}")
+
+
+def get_track_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> gpd.GeoDataFrame:
+    """
+    Query TRACK_MAT and return a GeoDataFrame matching the structure of track_views parquet files.
+
+    One row per ensemble member (ZONE_ID = member number 1–51), with severity columns
+    and the wind-envelope geometry in EPSG:4326.
+
+    Args:
+        country: Country code (e.g. 'PNG')
+        storm: Storm identifier (e.g. 'MAILA')
+        forecast_date: Forecast date string in YYYYMMDDHHMMSS format (e.g. '20260405120000')
+        wind_threshold: Wind threshold in knots (e.g. 50)
+
+    Returns:
+        geopandas.GeoDataFrame with columns matching track_views parquet files
+    """
+    try:
+        from shapely import wkb as shapely_wkb
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            ZONE_ID                        AS zone_id,
+            WIND_THRESHOLD                 AS wind_threshold,
+            SEVERITY_POPULATION            AS severity_population,
+            SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
+            SEVERITY_INFANT_POPULATION     AS severity_infant_population,
+            SEVERITY_SCHOOLS               AS severity_schools,
+            SEVERITY_HCS                   AS severity_hcs,
+            SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
+            GEOMETRY
+        FROM AOTS.TC_ECMWF.TRACK_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        ORDER BY ZONE_ID
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+
+        def _parse_wkb(g):
+            if g is None:
+                return None
+            # Snowflake returns VARIANT binary as a JSON-quoted hex string
+            hex_str = g.strip('"') if isinstance(g, str) else g.hex()
+            return shapely_wkb.loads(bytes.fromhex(hex_str))
+
+        df['geometry'] = df['GEOMETRY'].apply(_parse_wkb)
+        df = df.drop(columns=['GEOMETRY'])
+        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+        print(f"✓ Loaded {len(gdf)} track rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return gdf
+    except Exception as e:
+        print(f"Error querying TRACK_MAT: {str(e)}")
+        return gpd.GeoDataFrame()
+        return []

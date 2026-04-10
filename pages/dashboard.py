@@ -92,7 +92,7 @@ from components.data.snowflake_utils import get_available_wind_thresholds, get_l
 #### Metadata 
 from gigaspatial.core.io.readers import read_dataset
 from gigaspatial.processing.geo import convert_to_geodataframe
-from components.data.data_store_utils import get_data_store
+from components.data.data_store_utils import get_data_store, get_impact_data
 
 ##### env variables #####
 RESULTS_DIR = config.RESULTS_DIR or "project_results/climate/lacro_project"
@@ -1028,20 +1028,20 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         
         filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
-        
+
         print(f"Impact metrics: Looking for file {filename}")
         print(f"Impact metrics: Full path = {filepath}")
         print(f"Impact metrics: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
-        
+
         # Initialize all scenario results
         low_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
         high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        
+
         # Initialize member badge (deterministic is always #51, doesn't need updating)
         high_member_badge = "N/A"
-        
-        if giga_store.file_exists(filepath):
+
+        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(filepath):
             # Retry logic for reading tiles CSV file
             df = None
             max_retries = 3
@@ -1054,9 +1054,12 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         print(f"Impact metrics: Retry attempt {attempt + 1}/{max_retries} after {delay:.1f}s delay...")
                         time.sleep(delay)
                     
-                    df = read_dataset(giga_store, filepath)
+                    df = get_impact_data('tile', giga_store, filepath,
+                                         country=country, storm=storm,
+                                         forecast_date=forecast_datetime,
+                                         wind_threshold=int(wind_threshold))
                     break  # Success, exit retry loop
-                    
+
                 except Exception as e:
                     error_msg = str(e)
                     is_retryable = (
@@ -1102,10 +1105,13 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
                     tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                     tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
-                    
-                    if giga_store.file_exists(tracks_filepath):
+
+                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                         try:
-                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                          country=country, storm=storm,
+                                                          forecast_date=forecast_datetime,
+                                                          wind_threshold=int(wind_threshold))
                         except Exception as e:
                             print(f"Error reading track file {tracks_filepath}: {e}")
                             gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
@@ -1241,13 +1247,16 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if giga_store.file_exists(tracks_filepath):
+        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
             try:
-                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                              country=country, storm=storm,
+                                              forecast_date=forecast_datetime_str,
+                                              wind_threshold=int(wind_threshold))
             except Exception as e:
                 print(f"Error reading track file {tracks_filepath}: {e}")
                 gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
-            
+
             if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                 # Sort ensemble members by total impacted population (descending)
                 member_totals = (
@@ -1766,9 +1775,12 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                     tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
                                     tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                                     
-                                    if giga_store.file_exists(tracks_filepath):
+                                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                                         try:
-                                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                                          country=country, storm=storm,
+                                                                          forecast_date=forecast_datetime_str,
+                                                                          wind_threshold=int(thresh))
                                             if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
                                                 tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == thresh]
                                                 if not tracks_thresh.empty:
@@ -1844,7 +1856,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         date_str = forecast_date.replace('-', '')
         time_str = forecast_time.replace(':', '')
         forecast_datetime_str = f"{date_str}{time_str}00"
-        
+
         print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
         print(f"DEBUG: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
         print(f"DEBUG: VIEWS_DIR = {VIEWS_DIR}")
@@ -2100,51 +2112,87 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
             
-            # Load schools and health in parallel with staggered start to avoid connection pool exhaustion
+            # Load schools and health
             schools_data = {}
             health_data = {}
-            
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = {}
-                
-                # Submit with small delay between submissions to avoid overwhelming connection pool
-                if giga_store.file_exists(schools_path):
-                    futures['schools'] = executor.submit(load_dataset, schools_path, 'schools')
-                    time.sleep(0.1)  # Small delay to stagger connection requests
-                
-                if giga_store.file_exists(health_path):
-                    futures['health'] = executor.submit(load_dataset, health_path, 'health')
-                
-                # Collect results with timeout and better error handling
-                for name, future in futures.items():
-                    try:
-                        # Add timeout to prevent hanging (30 seconds per file)
-                        result = future.result(timeout=30)
-                        if result and isinstance(result, dict) and len(result) > 0:
-                            if name == 'schools':
-                                schools_data = result
-                            elif name == 'health':
-                                health_data = result
-                        else:
-                            print(f"Warning: {name} loaded but returned empty result")
-                    except TimeoutError:
-                        print(f"Error: Timeout loading {name} file (exceeded 30s)")
-                    except Exception as e:
-                        error_msg = str(e)
-                        print(f"Error in parallel load for {name}: {error_msg[:300]}")
-                        # Try to get more details if it's a connection-related error
-                        if "connection" in error_msg.lower() or "253002" in error_msg:
-                            print(f"  This appears to be a connection/network issue. The file may exist but be temporarily unavailable.")
+
+            if config.IMPACT_DATA_SOURCE == 'SQL':
+                # SQL path: load directly from MAT tables, build GeoDataFrame from lat/lon
+                try:
+                    df_schools = get_impact_data('school', giga_store, schools_path,
+                                                  country=country, storm=storm,
+                                                  forecast_date=forecast_datetime_str,
+                                                  wind_threshold=int(wind_threshold))
+                    if not df_schools.empty and 'latitude' in df_schools.columns:
+                        gdf_schools = gpd.GeoDataFrame(
+                            df_schools,
+                            geometry=gpd.points_from_xy(df_schools['longitude'], df_schools['latitude']),
+                            crs='EPSG:4326'
+                        )
+                        schools_data = gdf_schools.__geo_interface__
+                except Exception as e:
+                    print(f"Error loading schools from SQL: {e}")
+
+                try:
+                    df_hc = get_impact_data('hc', giga_store, health_path,
+                                             country=country, storm=storm,
+                                             forecast_date=forecast_datetime_str,
+                                             wind_threshold=int(wind_threshold))
+                    if not df_hc.empty and 'latitude' in df_hc.columns:
+                        gdf_hc = gpd.GeoDataFrame(
+                            df_hc,
+                            geometry=gpd.points_from_xy(df_hc['longitude'], df_hc['latitude']),
+                            crs='EPSG:4326'
+                        )
+                        health_data = gdf_hc.__geo_interface__
+                except Exception as e:
+                    print(f"Error loading health centres from SQL: {e}")
+            else:
+                # STAGE path: load from files in parallel
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {}
+
+                    # Submit with small delay between submissions to avoid overwhelming connection pool
+                    if giga_store.file_exists(schools_path):
+                        futures['schools'] = executor.submit(load_dataset, schools_path, 'schools')
+                        time.sleep(0.1)  # Small delay to stagger connection requests
+
+                    if giga_store.file_exists(health_path):
+                        futures['health'] = executor.submit(load_dataset, health_path, 'health')
+
+                    # Collect results with timeout and better error handling
+                    for name, future in futures.items():
+                        try:
+                            # Add timeout to prevent hanging (30 seconds per file)
+                            result = future.result(timeout=30)
+                            if result and isinstance(result, dict) and len(result) > 0:
+                                if name == 'schools':
+                                    schools_data = result
+                                elif name == 'health':
+                                    health_data = result
+                            else:
+                                print(f"Warning: {name} loaded but returned empty result")
+                        except TimeoutError:
+                            print(f"Error: Timeout loading {name} file (exceeded 30s)")
+                        except Exception as e:
+                            error_msg = str(e)
+                            print(f"Error in parallel load for {name}: {error_msg[:300]}")
+                            # Try to get more details if it's a connection-related error
+                            if "connection" in error_msg.lower() or "253002" in error_msg:
+                                print(f"  This appears to be a connection/network issue. The file may exist but be temporarily unavailable.")
             
             # Tiles
             tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
             tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
-            if giga_store.file_exists(tiles_path):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tiles_path):
                 base_tiles_file = f"{country}_{ZOOM_LEVEL}.parquet"
                 base_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', base_tiles_file)
                 if giga_store.file_exists(base_tiles_path):
                     try:
-                        df_tiles = read_dataset(giga_store, tiles_path)
+                        df_tiles = get_impact_data('tile', giga_store, tiles_path,
+                                                    country=country, storm=storm,
+                                                    forecast_date=forecast_datetime_str,
+                                                    wind_threshold=int(wind_threshold))
                         df_tiles = df_tiles.rename(columns={'zone_id':'tile_id'})
                         gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
                         # Ensure both tile_id columns have the same type before merging
@@ -2186,12 +2234,18 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             # Admin
             admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
             admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
-            if giga_store.file_exists(admin_path):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(admin_path):
                 base_admin_file = f"{country}_admin1.parquet"
                 base_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', base_admin_file)
                 if giga_store.file_exists(base_admin_path):
                     try:
-                        df_admin = read_dataset(giga_store, admin_path)
+                        df_admin = get_impact_data('admin_impact', giga_store, admin_path,
+                                                    country=country, storm=storm,
+                                                    forecast_date=forecast_datetime_str,
+                                                    wind_threshold=int(wind_threshold))
+                        if df_admin.empty:
+                            print(f'No admin impact data for {country}/{storm}/{forecast_datetime_str}')
+                            raise ValueError('empty admin data')
                         df_admin = df_admin.rename(columns={'zone_id':'tile_id'})
                         gdf_base_admin = read_dataset(giga_store, base_admin_path)
                         # Ensure both tile_id columns have the same type before merging
@@ -2204,9 +2258,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         #cci
                         cci_admin_file = f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv"
                         cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', cci_admin_file)
-                        if giga_store.file_exists(cci_admin_path):
+                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_admin_path):
                             try:
-                                df_cci_admin = read_dataset(giga_store, cci_admin_path)
+                                df_cci_admin = get_impact_data('admin_cci', giga_store, cci_admin_path,
+                                                                country=country, storm=storm,
+                                                                forecast_date=forecast_datetime_str)
                                 df_cci_admin = df_cci_admin.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_admin.columns:
                                     df_cci_admin.drop(columns=['Unnamed: 0'])
@@ -2290,7 +2346,7 @@ def warn_on_selector_change(country, storm, forecast_date, forecast_time, wind_t
     [Input("hurricane-tracks-toggle", "checked"),
      Input("specific-track-select", "value")],
     State("tracks-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_tracks_layer(checked, selected_track, tracks_data_in):
     """Toggle hurricane tracks layer visibility with optional specific track filtering"""
@@ -2324,7 +2380,7 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
      State("storm-select", "value"),
      State("forecast-date", "value"),
      State("forecast-time", "value")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope_data_in, wind_threshold, country, storm, forecast_date, forecast_time):
     """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
@@ -2458,9 +2514,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
                             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                             
-                            if giga_store.file_exists(tracks_filepath):
+                            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                                 try:
-                                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                    gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                                  country=country, storm=storm,
+                                                                  forecast_date=forecast_datetime_str,
+                                                                  wind_threshold=int(thresh))
                                     track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
                                 except Exception as e:
                                     print(f"Error reading track file {tracks_filepath}: {e}")
@@ -2538,9 +2597,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
-            if giga_store.file_exists(tracks_filepath):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                 try:
-                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                  country=country, storm=storm,
+                                                  forecast_date=forecast_datetime_str,
+                                                  wind_threshold=int(wind_threshold))
                     specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
                 except Exception as e:
                     print(f"Error reading track file {tracks_filepath}: {e}")
@@ -2673,13 +2735,16 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                 tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
-                if giga_store.file_exists(tracks_filepath):
+                if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                     try:
-                        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                        gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                      country=country, storm=storm,
+                                                      forecast_date=forecast_datetime_str,
+                                                      wind_threshold=int(wind_threshold))
                     except Exception as e:
                         print(f"Error reading track file {tracks_filepath}: {e}")
                         gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
-                    
+
                     if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
                         # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
                         # Filter by wind threshold
@@ -2753,7 +2818,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
     Output("schools-json-test","key"),
     [Input("schools-layer", "checked")],
     State("schools-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_schools_layer(checked, schools_data_in):
     """Toggle schools layer visibility with probability-based coloring and variable radius"""
@@ -2837,7 +2902,7 @@ def toggle_schools_layer(checked, schools_data_in):
     Output("health-json-test","key"),
     [Input("health-layer", "checked")],
     State("health-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_health_layer(checked, health_data_in):
     """Toggle health centers layer visibility with probability-based coloring and variable radius"""
@@ -3244,16 +3309,19 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if not giga_store.file_exists(tracks_filepath):
+        if config.IMPACT_DATA_SOURCE != 'SQL' and not giga_store.file_exists(tracks_filepath):
             return "Track data not found"
-        
+
         # Load track data
         try:
-            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                          country=country, storm=storm,
+                                          forecast_date=forecast_datetime_str,
+                                          wind_threshold=int(wind_threshold))
         except Exception as e:
             print(f"Error reading track file {tracks_filepath}: {e}")
             return f"Error loading track data: {str(e)}"
-        
+
         # Filter for specific track
         specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
         
@@ -3376,23 +3444,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
         tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        # Check if file exists - for Snowflake stages, file_exists() might check directories
-        # So we also verify by trying to list files in the directory
-        file_exists_check = giga_store.file_exists(tracks_filepath)
-        
-        # Additional verification: check if file is in list_files() results
-        # This helps catch cases where file_exists() returns True but file doesn't actually exist
-        file_actually_exists = False
-        if file_exists_check:
-            try:
-                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
-                files_in_dir = giga_store.list_files(track_views_dir)
-                file_actually_exists = tracks_filepath in files_in_dir or tracks_filename in [os.path.basename(f) for f in files_in_dir]
-            except:
-                # If list_files fails, fall back to file_exists() result
-                file_actually_exists = file_exists_check
-        
-        if not file_exists_check or not file_actually_exists:
+        if config.IMPACT_DATA_SOURCE != 'SQL' and not giga_store.file_exists(tracks_filepath):
             empty_fig.add_annotation(
                 text="Track data file not found. Please ensure the storm data has been processed.",
                 xref="paper", yref="paper",
@@ -3400,34 +3452,21 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                 font=dict(size=12, color="orange")
             )
             return empty_fig, "Track data not found for the selected storm and wind threshold.", empty_legend
-        
-        # Load track data - wrap in try-except to handle Snowflake stage read errors gracefully
+
+        # Load track data
         try:
-            gdf_tracks = read_dataset(giga_store, tracks_filepath)
-        except (IOError, ValueError, FileNotFoundError, Exception) as e:
-            # If file_exists() returned True but read fails, it might be a path/permission issue
-            print(f"Warning: file_exists() returned True but read failed for {tracks_filepath}: {e}")
-            # Try to find the actual file name if path doesn't match exactly
-            try:
-                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
-                files_in_dir = giga_store.list_files(track_views_dir)
-                matching_files = [f for f in files_in_dir if tracks_filename in f or f.endswith(tracks_filename)]
-                if matching_files:
-                    print(f"Found similar files: {matching_files[:3]}")
-                    # Try the first matching file
-                    actual_path = matching_files[0]
-                    print(f"Trying alternative path: {actual_path}")
-                    gdf_tracks = read_dataset(giga_store, actual_path)
-                else:
-                    raise e  # Re-raise original error if no matches found
-            except Exception as e2:
-                empty_fig.add_annotation(
-                    text="Track data file exists but could not be read. This may be a temporary issue.",
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5, showarrow=False,
-                    font=dict(size=12, color="orange")
-                )
-                return empty_fig, f"Track data file could not be read: {str(e)}", empty_legend
+            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                          country=country, storm=storm,
+                                          forecast_date=forecast_datetime,
+                                          wind_threshold=int(wind_threshold))
+        except Exception as e:
+            empty_fig.add_annotation(
+                text="Track data could not be read. This may be a temporary issue.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=12, color="orange")
+            )
+            return empty_fig, f"Track data could not be read: {str(e)}", empty_legend
         
         if 'zone_id' not in gdf_tracks.columns or 'severity_population' not in gdf_tracks.columns:
             empty_fig.add_annotation(
@@ -3473,9 +3512,12 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                     higher_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{higher_thresh}.parquet"
                     higher_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', higher_tracks_filename)
                     
-                    if giga_store.file_exists(higher_tracks_filepath):
-                        higher_gdf_tracks = read_dataset(giga_store, higher_tracks_filepath)
-                        
+                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(higher_tracks_filepath):
+                        higher_gdf_tracks = get_impact_data('track', giga_store, higher_tracks_filepath,
+                                                             country=country, storm=storm,
+                                                             forecast_date=forecast_datetime,
+                                                             wind_threshold=int(higher_thresh))
+
                         if 'zone_id' in higher_gdf_tracks.columns and len(higher_gdf_tracks) > 0:
                             higher_member_data = []
                             for member_id in higher_gdf_tracks['zone_id'].unique():
@@ -3696,7 +3738,7 @@ def toggle_layer_mode(selected_mode):
 @callback(
     Output("schools-legend", "style"),
     [Input("schools-layer", "checked")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_schools_legend(checked):
     """Show/hide schools legend based on checkbox state"""
@@ -3705,7 +3747,7 @@ def toggle_schools_legend(checked):
 @callback(
     Output("health-legend", "style"),
     [Input("health-layer", "checked")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_health_legend(checked):
     """Show/hide health centers legend based on checkbox state"""
@@ -3733,7 +3775,7 @@ def toggle_health_legend(checked):
     [Input("tiles-layer-group", "value"),
      Input("probability-tiles-layer", "checked")],
     State("population-tiles-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
@@ -3853,7 +3895,7 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
     [Input("admin-layer-group", "value"),
      Input("probability-admin-layer", "checked")],
     State("population-admin-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_admin_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
