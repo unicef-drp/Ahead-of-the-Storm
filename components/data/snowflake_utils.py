@@ -18,6 +18,7 @@ Usage:
 """
 
 import os
+import threading
 from functools import lru_cache
 import pandas as pd
 import numpy as np
@@ -32,9 +33,8 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 # Import centralized configuration
 from components.config import config
 
-# Connection caching
-_connection_cache = None
-_connection_created = False
+# Per-thread connection storage — each Gunicorn worker thread gets its own connection
+_thread_local = threading.local()
 _connection_verbose = True  # Set to False to suppress connection messages
 
 def _is_connection_alive(conn):
@@ -50,48 +50,43 @@ def _is_connection_alive(conn):
 
 def get_snowflake_connection():
     """
-    Get or create a Snowflake connection from centralized configuration.
-    
-    Reuses a cached connection if it's still alive, otherwise creates a new one.
-    This improves efficiency by avoiding unnecessary reconnections.
-    
+    Get or create a Snowflake connection for the current thread.
+
+    Uses threading.local() so each Gunicorn worker thread has its own
+    independent connection — avoids race conditions when multiple threads
+    run queries simultaneously.
+
     Supports two authentication methods:
     1. SPCS OAuth (for Snowflake Container Services):
        - Set SPCS_RUN=true
        - Token read from SPCS_TOKEN_PATH (default: /snowflake/session/token)
-       - Requires SNOWFLAKE_HOST and SNOWFLAKE_PORT for internal network
-       
-    2. Password Authentication (traditional):
+    2. Password Authentication (default):
        - Requires SNOWFLAKE_USER and SNOWFLAKE_PASSWORD
     """
-    global _connection_cache, _connection_created, _connection_verbose
+    global _connection_verbose
     config.validate_snowflake_config()
-    
-    # Check if we have a cached connection that's still alive
-    if _connection_cache is not None:
-        if _is_connection_alive(_connection_cache):
-            return _connection_cache
-        else:
-            # Connection is dead, clear cache
-            try:
-                _connection_cache.close()
-            except:
-                pass
-            _connection_cache = None
-    
-    # Need to create a new connection
-    should_print = _connection_verbose and not _connection_created
-    
+
+    # Return existing thread-local connection if still alive
+    conn = getattr(_thread_local, 'connection', None)
+    if conn is not None:
+        if _is_connection_alive(conn):
+            return conn
+        # Connection is dead — close and recreate
+        try:
+            conn.close()
+        except:
+            pass
+        _thread_local.connection = None
+
+    # Print once per thread
+    should_print = _connection_verbose and not getattr(_thread_local, 'connection_created', False)
+
     if config.SPCS_RUN:
-        # SPCS OAuth authentication using session token
         if should_print:
             print("Connecting to Snowflake with SPCS OAuth authentication...")
-        
         try:
             with open(config.SPCS_TOKEN_PATH, 'r') as f:
                 token = f.read().strip()
-            
-            # SPCS requires specific connection parameters for internal network
             conn_params = {
                 'host': config.SNOWFLAKE_HOST,
                 'port': config.SNOWFLAKE_PORT,
@@ -110,7 +105,6 @@ def get_snowflake_connection():
         except Exception as e:
             raise ValueError(f"Failed to load OAuth token from {config.SPCS_TOKEN_PATH}: {str(e)}")
     else:
-        # Non-SPCS mode: use standard connection parameters with password
         if should_print:
             print("Connecting to Snowflake with password authentication...")
         conn_params = {
@@ -121,14 +115,13 @@ def get_snowflake_connection():
             'database': config.SNOWFLAKE_DATABASE,
             'schema': config.SNOWFLAKE_SCHEMA
         }
-    
+
     try:
         conn = snowflake.connector.connect(**conn_params)
         if should_print:
-            print("✓ Connected to Snowflake (connection will be reused)")
-        # Cache the connection for reuse
-        _connection_cache = conn
-        _connection_created = True
+            print("✓ Connected to Snowflake (connection will be reused per thread)")
+        _thread_local.connection = conn
+        _thread_local.connection_created = True
         return conn
     except Exception as e:
         print(f"✗ Failed to connect to Snowflake: {str(e)}")
@@ -373,6 +366,7 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         return pd.DataFrame()
     
 
+@lru_cache(maxsize=1)
 def get_active_countries():
     """
     Get active countries from PIPELINE_COUNTRIES table in Snowflake
@@ -452,6 +446,7 @@ def get_lat_lons(row):
         print(f"Error getting lat/lon from Snowflake: {str(e)}")
         return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
 
+@lru_cache(maxsize=1)
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
     try:
@@ -482,6 +477,7 @@ def get_snowflake_data():
 # Impact data queries — *_MAT tables
 # ---------------------------------------------------------------------------
 
+@lru_cache(maxsize=64)
 def get_school_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query SCHOOL_IMPACT_MAT for school-level impact data.
@@ -521,6 +517,7 @@ def get_school_impacts(country: str, storm: str, forecast_date: str, wind_thresh
         return pd.DataFrame()
 
 
+@lru_cache(maxsize=64)
 def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query HC_IMPACT_MAT for health centre impact data.
@@ -566,6 +563,7 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
         return pd.DataFrame()
 
 
+@lru_cache(maxsize=64)
 def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
     """
     Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
@@ -612,6 +610,7 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         return pd.DataFrame()
 
 
+@lru_cache(maxsize=64)
 def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
     """
     Query ADMIN_ALL_IMPACT_MAT for administrative-unit-level impact data.
@@ -658,6 +657,7 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         return pd.DataFrame()
 
 
+@lru_cache(maxsize=64)
 def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
     """
     Query ADMIN_ALL_CCI_MAT for Child Cyclone Index data at administrative level.
@@ -715,6 +715,7 @@ def get_available_admin_levels(country: str) -> list:
         print(f"Error querying available admin levels: {str(e)}")
 
 
+@lru_cache(maxsize=64)
 def get_track_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> gpd.GeoDataFrame:
     """
     Query TRACK_MAT and return a GeoDataFrame matching the structure of track_views parquet files.
