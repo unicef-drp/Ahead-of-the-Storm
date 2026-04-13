@@ -411,40 +411,67 @@ def get_active_countries():
 def get_lat_lons(row):
     """
     Get latitude and longitude for a hurricane track from Snowflake
-    
+
     Args:
         row: pandas Series or dict with 'TRACK_ID' and 'FORECAST_TIME' keys
-    
+
     Returns:
         pandas.Series: Series with 'latitude' and 'longitude' values
     """
     try:
         conn = get_snowflake_connection()
-        
+
         # Get any available track data at lead time 0
         query = '''
         SELECT LATITUDE, LONGITUDE
         FROM TC_TRACKS
-        WHERE TRACK_ID = %s AND FORECAST_TIME = %s 
+        WHERE TRACK_ID = %s AND FORECAST_TIME = %s
         AND LEAD_TIME = 0
         LIMIT 1
         '''
-        
+
         df_latlon = pd.read_sql(query, conn, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
         # Don't close connection - it's cached and will be reused
-        
+
         if len(df_latlon) > 0:
             lat = df_latlon.iloc[0]['LATITUDE']
             lon = df_latlon.iloc[0]['LONGITUDE']
         else:
             lat = np.nan
             lon = np.nan
-            
+
         return pd.Series([lat, lon], index=["latitude", "longitude"])
-            
+
     except Exception as e:
         print(f"Error getting lat/lon from Snowflake: {str(e)}")
         return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
+
+
+@lru_cache(maxsize=1)
+def get_lat_lons_bulk() -> pd.DataFrame:
+    """
+    Fetch LATITUDE/LONGITUDE at LEAD_TIME=0 for every storm in TC_TRACKS.
+
+    Single query replaces the N-per-storm loop used at dashboard startup.
+    Cached so repeated calls (e.g. hot-reload) hit memory instead of Snowflake.
+
+    Returns:
+        pandas.DataFrame with columns: TRACK_ID, FORECAST_TIME, latitude, longitude
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT DISTINCT TRACK_ID, FORECAST_TIME, LATITUDE, LONGITUDE
+        FROM TC_TRACKS
+        WHERE LEAD_TIME = 0
+        """
+        df = pd.read_sql(query, conn)
+        df = df.rename(columns={'LATITUDE': 'latitude', 'LONGITUDE': 'longitude'})
+        print(f"✓ Loaded lat/lons for {len(df)} storm/forecast combinations in one query")
+        return df
+    except Exception as e:
+        print(f"Error in get_lat_lons_bulk: {str(e)}")
+        return pd.DataFrame(columns=['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude'])
 
 @lru_cache(maxsize=1)
 def get_snowflake_data():

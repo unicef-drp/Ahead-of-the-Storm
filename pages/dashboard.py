@@ -87,7 +87,7 @@ from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
 import geopandas as gpd
 from components.map.home_map import make_empty_map
-from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data, get_lat_lons
+from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data, get_lat_lons, get_lat_lons_bulk
 
 #### Metadata 
 from gigaspatial.core.io.readers import read_dataset
@@ -123,7 +123,9 @@ latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) +
             .sort_values(["TRACK_ID","dt"])
             .drop_duplicates("TRACK_ID", keep="last"))
 
-latest[["latitude","longitude"]] = latest.apply(get_lat_lons, axis=1)
+_latlon_bulk = get_lat_lons_bulk()
+latest = latest.merge(_latlon_bulk[['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude']],
+                      on=['TRACK_ID', 'FORECAST_TIME'], how='left')
 
 # Convert timestamp columns to strings for JSON serialization
 latest_clean = latest.dropna().copy()
