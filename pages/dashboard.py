@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pandas as pd
 import dash
@@ -381,7 +382,7 @@ tiles_legends = dmc.Box([
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('CCI'),
+                            create_legend_divs(config.CCI_COL),
                             style={"display": "flex", "width": "100%"}
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-max", children="Max", size="xs", c="dimmed")]),
@@ -1170,9 +1171,9 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         else:
             print(f"Impact metrics: File not found {filename}")
         
-        # Format results
+        # Format results — always round up (ceiling) so counts are never understated
         def format_value(value):
-            return str(value) if isinstance(value, str) else f"{value:,.0f}"
+            return str(value) if isinstance(value, str) else f"{math.ceil(value):,}"
         
         return (
             # Population count
@@ -3199,14 +3200,14 @@ def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
                 min_val_num = min(clean_values)
                 max_val_num = max(clean_values)
                 
-                # Format numbers with k, M suffixes
+                # Format numbers with k, M suffixes — always round up
                 def format_number(val):
                     if val >= 1000000:
                         return f"{val / 1000000:.1f}M".replace('.0M', 'M')
                     elif val >= 1000:
                         return f"{val / 1000:.1f}k".replace('.0k', 'k')
                     else:
-                        return f"{val:,.0f}"
+                        return f"{math.ceil(val):,}"
                 
                 min_val = "0"
                 max_val = format_number(max_val_num)
@@ -3270,14 +3271,14 @@ def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
                 min_val_num = min(clean_values)
                 max_val_num = max(clean_values)
                 
-                # Format numbers with k, M suffixes
+                # Format numbers with k, M suffixes — always round up
                 def format_number(val):
                     if val >= 1000000:
                         return f"{val / 1000000:.1f}M".replace('.0M', 'M')
                     elif val >= 1000:
                         return f"{val / 1000:.1f}k".replace('.0k', 'k')
                     else:
-                        return f"{val:,.0f}"
+                        return f"{math.ceil(val):,}"
                 
                 min_val = "0"
                 max_val = format_number(max_val_num)
@@ -3789,8 +3790,6 @@ def toggle_health_legend(checked):
 )
 def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
-    import math
-    
     # Helper function to format numbers with k, M and commas
     def format_number(val):
         if val >= 1000000:
@@ -3909,8 +3908,6 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
 )
 def toggle_admin_legend(selected_value, prob_checked, tiles_data):
     """Show/hide tile legends based on radio button selection and update legend labels"""
-    import math
-    
     # Helper function to format numbers with k, M and commas
     def format_number(val):
         if val >= 1000000:
