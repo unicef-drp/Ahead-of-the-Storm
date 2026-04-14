@@ -38,16 +38,32 @@ pip install -r requirements.txt
 - `ROOT_DATA_DIR` (e.g., `geodb`)
 - `VIEWS_DIR` (e.g., `aos_views`)
 
-#### Optional: Impact Data Storage
-- `IMPACT_DATA_STORE` (`LOCAL` by default; use `BLOB` for Azure or `SNOWFLAKE` for Snowflake stage)
-  - Controls where pre-processed impact views are stored (CSV/Parquet files in `geodb/aos_views/`)
-  - Options:
-    - `LOCAL`: Local filesystem
-      - **For SPCS deployment**: Uses mounted volume at `/datastore` (persistent Snowflake storage)
-      - **For local development**: Uses local filesystem
-    - `BLOB`: Azure Blob Storage (read-only, this app only reads data)
-    - `SNOWFLAKE`: Snowflake internal stage (read-only, this app only reads data)
-  - Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
+#### Optional: Impact Data Source and Storage
+
+Two independent variables control how the app loads impact data:
+
+**`IMPACT_DATA_SOURCE`** — controls *which* data source is used for impact views:
+- `STAGE` (default): downloads CSV/Parquet files from the file store (see `IMPACT_DATA_STORE` below)
+- `SQL`: queries Snowflake materialized tables (`*_MAT`) directly via SQL — faster, no file downloads, works regardless of `IMPACT_DATA_STORE` as long as Snowflake credentials are present
+
+  When `IMPACT_DATA_SOURCE=SQL` the app queries:
+  - `MERCATOR_TILE_IMPACT_MAT` — tile-level probabilistic impact
+  - `ADMIN_ALL_IMPACT_MAT` — admin-region impact with probability
+  - `MERCATOR_TILE_CCI_MAT` / `ADMIN_ALL_CCI_MAT` — Child Climate Index overlays
+  - `SCHOOL_IMPACT_MAT` / `HC_IMPACT_MAT` — point data for schools and health centres
+  - `TRACK_MAT` — per-ensemble-member severity and envelope geometry
+
+  These tables must be set up first — see `snowflake_intelligence/README.md`.
+
+**`IMPACT_DATA_STORE`** — controls *where* stage files are stored (only relevant when `IMPACT_DATA_SOURCE=STAGE`):
+- `LOCAL` (default): local filesystem
+  - **For SPCS deployment**: uses mounted volume at `/datastore`
+  - **For local development**: uses local filesystem
+- `BLOB`: Azure Blob Storage (read-only)
+- `SNOWFLAKE`: Snowflake internal stage (read-only)
+
+Note: Snowflake is used for BOTH raw hurricane forecast data (TC_TRACKS / TC_ENVELOPES_COMBINED tables) AND impact data. `IMPACT_DATA_SOURCE=SQL` uses the Snowflake connection that is already required for forecast data.
+
 - If using Azure Blob Storage: `ADLS_ACCOUNT_URL`, `ADLS_SAS_TOKEN`, `ADLS_CONTAINER_NAME`
 - If using Snowflake stage: `SNOWFLAKE_STAGE_NAME` (name of the Snowflake internal stage)
 
@@ -162,7 +178,8 @@ The application expects data in the following structure:
 
 - **Frontend**: Dash with Mantine Components, Dash Leaflet for maps, Plotly for charts
 - **Backend**: Python with GeoPandas for geospatial processing
-- **Data Sources**: 
-  - Snowflake (hurricane track and envelope data)
-  - Pre-processed impact views using [giga-spatial](https://github.com/unicef/giga-spatial) (local filesystem or Azure Blob Storage)
-- **Deployment**: Gunicorn for production (Azure App Service compatible)
+- **Data Sources**:
+  - Snowflake — hurricane track/envelope data (`TC_TRACKS`, `TC_ENVELOPES_COMBINED`) and, when `IMPACT_DATA_SOURCE=SQL`, impact data via materialized tables (`*_MAT`)
+  - Pre-processed impact views via [giga-spatial](https://github.com/unicef/giga-spatial) — used when `IMPACT_DATA_SOURCE=STAGE` (local filesystem, Azure Blob, or Snowflake stage)
+- **AI Agent**: `HURRICANE_SITUATION_INTELLIGENCE` Snowflake Cortex agent — generates situation reports from the same MAT tables (see `snowflake_intelligence/`)
+- **Deployment**: Gunicorn for production (Azure App Service or Snowflake Container Services)
