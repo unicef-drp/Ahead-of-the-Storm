@@ -685,25 +685,42 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
 
 
 @lru_cache(maxsize=64)
-def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
+def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:
     """
-    Query ADMIN_ALL_CCI_MAT for Child Cyclone Index data at administrative level.
-
-    No wind_threshold parameter — CCI data is threshold-independent.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        admin_level: Administrative level to query (default 1)
-
-    Returns:
-        pandas.DataFrame with all CCI columns plus ZONE_ID
+    Query MERCATOR_TILE_CCI_MAT for tile-level CCI data.
+    Returns only zone_id + the two display columns to avoid merge conflicts.
     """
     try:
         conn = get_snowflake_connection()
         query = """
-        SELECT *
+        SELECT ZONE_ID, CCI_CHILDREN, E_CCI_CHILDREN
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, zoom_level])
+        df.columns = [c.lower() for c in df.columns]   # zone_id, cci_children, E_cci_children
+        # Normalise E_ prefix (E_cci_children stays as-is after lower)
+        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
+        print(f"✓ Loaded {len(df)} tile CCI rows from SQL ({country}/{storm}/{forecast_date} zoom={zoom_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying MERCATOR_TILE_CCI_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
+    """
+    Query ADMIN_ALL_CCI_MAT for admin-level CCI data.
+    Returns only tile_id + the two display columns to avoid merge conflicts.
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT TILE_ID, CCI_CHILDREN, E_CCI_CHILDREN
         FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT
         WHERE COUNTRY = %s
           AND STORM = %s
@@ -711,6 +728,8 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
           AND ADMIN_LEVEL = %s
         """
         df = pd.read_sql(query, conn, params=[country, storm, forecast_date, admin_level])
+        df.columns = [c.lower() for c in df.columns]   # tile_id, cci_children, e_cci_children
+        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
         print(f"✓ Loaded {len(df)} admin CCI rows from SQL ({country}/{storm}/{forecast_date} admin_level={admin_level})")
         return df
     except Exception as e:

@@ -221,22 +221,12 @@ def update_tile_features(tiles_data_in, property):
         
         # Debug output
         if values:
-            print(f"{property} tiles debug - Total tiles: {len(values)}")
-            print(f"Zero values: {zero_count}, NaN values: {nan_count}")
-            print(f"Min {property}: {min(clean_values)}, Max {property}: {max(clean_values)}")
-            print(f"Sample values: {sorted(set(clean_values))[:10]}")
-        
-        # Debug: Check data structure
-        if tiles_data:
-            print(f"Tiles data type: {type(tiles_data)}")
-            if isinstance(tiles_data, dict):
-                print(f"Tiles data keys: {list(tiles_data.keys())}")
-                if 'features' in tiles_data:
-                    print(f"Features count: {len(tiles_data['features'])}")
-                else:
-                    print("ERROR: No 'features' key in tiles_data!")
+            print(f"{property} tiles debug - Total tiles: {len(values)}, Zero: {zero_count}, NaN: {nan_count}")
+            if clean_values:
+                print(f"Min {property}: {min(clean_values)}, Max {property}: {max(clean_values)}")
+                print(f"Sample values: {sorted(set(clean_values))[:10]}")
             else:
-                print(f"ERROR: tiles_data is not a dict, it's {type(tiles_data)}")
+                print(f"All {property} values are NaN — nothing to display")
         
         return tiles_data, False, key
     except Exception as e:

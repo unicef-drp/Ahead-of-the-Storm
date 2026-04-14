@@ -2211,20 +2211,23 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         #cci
                         cci_tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv"
                         cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', cci_tiles_file)
-                        if giga_store.file_exists(cci_tiles_path):
+                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_tiles_path):
                             try:
-                                df_cci_tiles = read_dataset(giga_store, cci_tiles_path)
+                                df_cci_tiles = get_impact_data('tile_cci', giga_store, cci_tiles_path,
+                                                                country=country, storm=storm,
+                                                                forecast_date=forecast_datetime_str,
+                                                                zoom_level=ZOOM_LEVEL)
                                 df_cci_tiles = df_cci_tiles.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_tiles.columns:
                                     df_cci_tiles.drop(columns=['Unnamed: 0'])
-                                # Ensure tile_id type matches tmp (which is int from line 2048)
+                                # Ensure tile_id type matches tmp (which is int)
                                 if 'tile_id' in df_cci_tiles.columns:
                                     df_cci_tiles['tile_id'] = df_cci_tiles['tile_id'].astype(int)
                                 tmp = pd.merge(tmp, df_cci_tiles, on="tile_id", how="left")
-                            except:
-                                print('Cannot merge CCI file')
+                            except Exception as e:
+                                print(f'Cannot merge tile CCI: {e}')
                         else:
-                            print('CCI file not found')
+                            print('CCI tile file not found')
 
                         gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
                         tiles_data = gdf_tiles.__geo_interface__
@@ -2255,7 +2258,12 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                             # Convert both to string to avoid type mismatch issues
                             gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
                             df_admin['tile_id'] = df_admin['tile_id'].astype(str)
+                        print(f'DEBUG admin merge: MAT tile_ids={df_admin["tile_id"].tolist()[:5]}, base parquet tile_ids={gdf_base_admin["tile_id"].tolist()[:5]}')
+                        print(f'DEBUG admin probability col: {df_admin["probability"].tolist()[:5] if "probability" in df_admin.columns else "MISSING"}')
                         tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+                        nan_after_merge = tmp['probability'].isna().sum() if 'probability' in tmp.columns else len(tmp)
+                        if nan_after_merge == len(tmp):
+                            print(f'WARNING: Admin merge produced all-NaN probability for {country}/{storm} — possible tile_id format mismatch between MAT table and base parquet')
 
                         #cci
                         cci_admin_file = f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv"
@@ -2272,10 +2280,10 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                 if 'tile_id' in df_cci_admin.columns:
                                     df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
                                 tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
-                            except:
-                                print('Cannot merge CCI file')
+                            except Exception as e:
+                                print(f'Cannot merge admin CCI: {e}')
                         else:
-                            print('CCI file not found')
+                            print('CCI admin file not found')
 
                         gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
                         admin_data = gdf_admin.__geo_interface__

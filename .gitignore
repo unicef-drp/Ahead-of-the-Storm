@@ -40,6 +40,7 @@ MEMORY.md
 docs/
 
 snowflake_intelligence/README.md
+snowflake_intelligence/MAT_TABLE_FIX.md
 snowflake_intelligence/eval_config.yaml
 snowflake_intelligence/07_create_eval_dataset.sql
 snowflake_intelligence/07b_create_eval_views.sql

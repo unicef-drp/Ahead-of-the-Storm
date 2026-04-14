@@ -97,6 +97,7 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
             get_tile_impacts,
             get_admin_impacts,
             get_admin_cci,
+            get_tile_cci,
             get_track_impacts,
         )
 
@@ -116,6 +117,8 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
                                        sql_params.get('admin_level', 1))
         elif data_type == 'admin_cci':
             result = get_admin_cci(country, storm, forecast_date, sql_params.get('admin_level', 1))
+        elif data_type == 'tile_cci':
+            result = get_tile_cci(country, storm, forecast_date, sql_params.get('zoom_level', 14))
         elif data_type == 'track':
             result = get_track_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
         else:
@@ -133,6 +136,14 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         # STAGE path — original behaviour
         result = read_dataset(giga_store, filepath)
         source_label = f"STAGE/{filepath}"
+        # CCI stage files use mixed-case column names (CCI_children, E_CCI_children).
+        # Normalize them to match the SQL path convention (cci_children, E_cci_children).
+        if data_type in ('tile_cci', 'admin_cci') and not result.empty:
+            def _norm(col):
+                if col.upper().startswith('E_'):
+                    return 'E_' + col[2:].lower()
+                return col.lower()
+            result.columns = [_norm(c) for c in result.columns]
 
     _elapsed = time.perf_counter() - _t0
     print(f"[perf] {source_label} → {len(result)} rows in {_elapsed:.2f}s")
