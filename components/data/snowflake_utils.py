@@ -794,8 +794,11 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
             SEVERITY_POPULATION            AS severity_population,
             SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
             SEVERITY_INFANT_POPULATION     AS severity_infant_population,
+            SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
             SEVERITY_SCHOOLS               AS severity_schools,
             SEVERITY_HCS                   AS severity_hcs,
+            SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
+            SEVERITY_NUM_WASH              AS severity_num_wash,
             SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
             GEOMETRY
         FROM AOTS.TC_ECMWF.TRACK_MAT

@@ -1190,33 +1190,38 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                             hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
                             hc_data_available = giga_store.file_exists(hc_filepath)
                             
+                            def _col(df, col):
+                                return df[col].sum() if col in df.columns and not df[col].isna().all() else "N/A"
+
                             # DETERMINISTIC scenario (member 51)
                             if not low_scenario_data.empty:
-                                low_results["children"] = low_scenario_data[
-                                    'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                                low_results["infant"] = low_scenario_data[
-                                    'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
-                                _low_child_parts = [v for v in [low_results["infant"], low_results["children"]] if v != "N/A"]
+                                low_results["children"]  = _col(low_scenario_data, 'severity_school_age_population')
+                                low_results["infant"]    = _col(low_scenario_data, 'severity_infant_population')
+                                low_results["adolescent"] = _col(low_scenario_data, 'severity_adolescent_population')
+                                _low_child_parts = [v for v in [low_results["infant"], low_results["children"], low_results["adolescent"]] if v != "N/A"]
                                 low_results["children_total"] = sum(_low_child_parts) if _low_child_parts else "N/A"
-                                low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
-                                low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
-                                low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                                low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                                low_results["schools"]   = _col(low_scenario_data, 'severity_schools')
+                                low_results["population"] = _col(low_scenario_data, 'severity_population')
+                                low_results["health"]    = _col(low_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                                low_results["shelters"]  = _col(low_scenario_data, 'severity_num_shelters')
+                                low_results["wash"]      = _col(low_scenario_data, 'severity_num_wash')
+                                low_results["built_surface_m2"] = _col(low_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                             else:
                                 # Member 51 not found in data (badge will still show #51 as static value)
                                 pass
 
                             # HIGH scenario
-                            high_results["children"] = high_scenario_data[
-                                'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
-                            high_results["infant"] = high_scenario_data[
-                                'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
-                            _high_child_parts = [v for v in [high_results["infant"], high_results["children"]] if v != "N/A"]
+                            high_results["children"]  = _col(high_scenario_data, 'severity_school_age_population')
+                            high_results["infant"]    = _col(high_scenario_data, 'severity_infant_population')
+                            high_results["adolescent"] = _col(high_scenario_data, 'severity_adolescent_population')
+                            _high_child_parts = [v for v in [high_results["infant"], high_results["children"], high_results["adolescent"]] if v != "N/A"]
                             high_results["children_total"] = sum(_high_child_parts) if _high_child_parts else "N/A"
-                            high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
-                            high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
-                            high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
-                            high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
+                            high_results["schools"]   = _col(high_scenario_data, 'severity_schools')
+                            high_results["population"] = _col(high_scenario_data, 'severity_population')
+                            high_results["health"]    = _col(high_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                            high_results["shelters"]  = _col(high_scenario_data, 'severity_num_shelters')
+                            high_results["wash"]      = _col(high_scenario_data, 'severity_num_wash')
+                            high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                     
                     print(f"Impact metrics: Successfully loaded {len(df)} features")
                 except Exception as e:

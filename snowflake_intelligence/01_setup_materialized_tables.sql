@@ -256,14 +256,17 @@ SELECT
     SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 2) AS storm,
     SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 3) AS forecast_date,
     TRY_CAST(REPLACE(SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 4), '.parquet', '') AS INT) AS wind_threshold,
-    parquet_variant:zone_id::INT                           AS zone_id,
-    parquet_variant:severity_population::NUMBER            AS severity_population,
-    parquet_variant:severity_school_age_population::NUMBER AS severity_school_age_population,
-    parquet_variant:severity_infant_population::NUMBER     AS severity_infant_population,
-    parquet_variant:severity_schools::NUMBER               AS severity_schools,
-    parquet_variant:severity_hcs::NUMBER                   AS severity_hcs,
-    parquet_variant:severity_built_surface_m2::NUMBER      AS severity_built_surface_m2,
-    parquet_variant:geometry                               AS geometry
+    parquet_variant:zone_id::INT                                   AS zone_id,
+    parquet_variant:severity_population::NUMBER                    AS severity_population,
+    parquet_variant:severity_school_age_population::NUMBER         AS severity_school_age_population,
+    parquet_variant:severity_infant_population::NUMBER             AS severity_infant_population,
+    parquet_variant:severity_adolescent_population::NUMBER         AS severity_adolescent_population,
+    parquet_variant:severity_schools::NUMBER                       AS severity_schools,
+    parquet_variant:severity_hcs::NUMBER                           AS severity_hcs,
+    parquet_variant:severity_num_shelters::NUMBER                  AS severity_num_shelters,
+    parquet_variant:severity_num_wash::NUMBER                      AS severity_num_wash,
+    parquet_variant:severity_built_surface_m2::NUMBER              AS severity_built_surface_m2,
+    parquet_variant:geometry                                       AS geometry
 FROM parquet_data;
 
 -- ----------------------------------------------------------------------------
@@ -524,8 +527,9 @@ $$
         INSERT OVERWRITE INTO AOTS.TC_ECMWF.TRACK_MAT
             (FILE_PATH, COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD,
              ZONE_ID, SEVERITY_POPULATION, SEVERITY_SCHOOL_AGE_POPULATION,
-             SEVERITY_INFANT_POPULATION, SEVERITY_SCHOOLS, SEVERITY_HCS,
-             SEVERITY_BUILT_SURFACE_M2, GEOMETRY)
+             SEVERITY_INFANT_POPULATION, SEVERITY_ADOLESCENT_POPULATION,
+             SEVERITY_SCHOOLS, SEVERITY_HCS, SEVERITY_NUM_SHELTERS,
+             SEVERITY_NUM_WASH, SEVERITY_BUILT_SURFACE_M2, GEOMETRY)
         WITH parquet_data AS (
             SELECT METADATA$FILENAME AS file_path, $1 AS parquet_variant
             FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/track_views/
@@ -541,8 +545,11 @@ $$
             parquet_variant:severity_population::NUMBER,
             parquet_variant:severity_school_age_population::NUMBER,
             parquet_variant:severity_infant_population::NUMBER,
+            parquet_variant:severity_adolescent_population::NUMBER,
             parquet_variant:severity_schools::NUMBER,
             parquet_variant:severity_hcs::NUMBER,
+            parquet_variant:severity_num_shelters::NUMBER,
+            parquet_variant:severity_num_wash::NUMBER,
             parquet_variant:severity_built_surface_m2::NUMBER,
             parquet_variant:geometry
         FROM parquet_data
