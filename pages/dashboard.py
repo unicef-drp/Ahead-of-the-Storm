@@ -1872,21 +1872,25 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                                 if not tracks_thresh.empty:
                                                     ensemble_col = 'ENSEMBLE_MEMBER' if 'ENSEMBLE_MEMBER' in gdf.columns else 'ensemble_member'
                                                     if ensemble_col in gdf.columns:
-                                                        impact_summary = tracks_thresh.groupby('zone_id').agg({
-                                                            'severity_population': 'sum',
-                                                            'severity_school_age_population': 'sum',
-                                                            'severity_infant_population': 'sum',
-                                                            'severity_schools': 'sum',
-                                                            'severity_hcs': 'sum',
-                                                            'severity_built_surface_m2': 'sum'
-                                                        }).reset_index()
+                                                        agg_cols = {c: 'sum' for c in [
+                                                            'severity_population',
+                                                            'severity_school_age_population',
+                                                            'severity_infant_population',
+                                                            'severity_adolescent_population',
+                                                            'severity_schools',
+                                                            'severity_hcs',
+                                                            'severity_num_shelters',
+                                                            'severity_num_wash',
+                                                            'severity_built_surface_m2',
+                                                        ] if c in tracks_thresh.columns}
+                                                        impact_summary = tracks_thresh.groupby('zone_id').agg(agg_cols).reset_index()
                                                         impact_summary.columns = ['ensemble_member'] + [col for col in impact_summary.columns if col != 'zone_id']
-                                                        
+
                                                         if ensemble_col != 'ensemble_member':
                                                             gdf['ensemble_member'] = gdf[ensemble_col].astype(int)
-                                                        
+
                                                         gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
-                                                        impact_cols = ['severity_population', 'severity_school_age_population', 'severity_infant_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                                                        impact_cols = [c for c in impact_summary.columns if c != 'ensemble_member']
                                                         for col in impact_cols:
                                                             if col in gdf.columns:
                                                                 gdf[col] = gdf[col].fillna(0)

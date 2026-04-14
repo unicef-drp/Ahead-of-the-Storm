@@ -145,9 +145,12 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
                 const severity_school_age_population = props.severity_school_age_population || 0;
                 const severity_infant_population = props.severity_infant_population || 0;
+                const severity_adolescent_population = props.severity_adolescent_population || 0;
                 const severity_population = props.severity_population || 0;
                 const severity_schools = props.severity_schools || 0;
                 const severity_hcs = props.severity_hcs || 0;
+                const severity_num_shelters = props.severity_num_shelters || 0;
+                const severity_num_wash = props.severity_num_wash || 0;
                 const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
 
 
@@ -171,6 +174,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         </div>
     `;
 
+                // Children total (sum of available age groups)
+                const sev_child_parts = [severity_infant_population, severity_school_age_population, severity_adolescent_population].filter(v => v > 0);
+                const sev_children_total = sev_child_parts.length > 0 ? sev_child_parts.reduce((a, b) => a + b, 0) : null;
+
                 // Always show impact section
                 content += `
         <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
@@ -180,17 +187,29 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         <div style="font-size: 11px; color: #555;">
             Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
         </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        <div style="font-size: 11px; color: #555;">
+            Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? formatNumber(sev_children_total) : 'N/A'}
+        </div>
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+            Age 0-5: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+        </div>
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
             Age 5-15: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
         </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Age 0-5: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+            Age 15-24: ${severity_adolescent_population > 0 ? formatNumber(severity_adolescent_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Shelters: ${severity_num_shelters > 0 ? formatNumber(severity_num_shelters) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            WASH Facilities: ${severity_num_wash > 0 ? formatNumber(severity_num_wash) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
@@ -330,8 +349,16 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 };
 
                 const formatDecimal = (val) => {
-                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '' || val === 0) return 'N/A';
                     return val.toFixed(2);
+                };
+
+                // Expected value inline annotation: base * probability, shown in red
+                const fmtExp = (base, prob) => {
+                    if (!prob || prob <= 0 || typeof base !== 'number' || base <= 0) return '';
+                    const exp = base * prob;
+                    const expStr = exp >= 1 ? formatNumber(Math.round(exp)) : exp.toFixed(1);
+                    return ` <span style="color: #dc143c; font-size: 0.88em;">(~${expStr})</span>`;
                 };
 
                 // Show expected impact if available
@@ -347,37 +374,44 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         `;
                 }
 
+                // Children total: always show the sum (0 is valid); N/A only if no tile data at all
+                const has_tile_data = props.population !== undefined;
+                const children_total = has_tile_data ? infant_pop + school_age_pop + E_adolescent_population : null;
+
                 // Show tile data - always show all fields
                 content += `
     <div style="font-size: 11px; color: #777; margin-top: 5px;">
         <strong>Tile Base Data:</strong>
     </div>
     <div style="font-size: 11px; color: #555;">
-        Population: ${formatValue(population)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 0-5: ${formatValue(infant_pop)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 5-15: ${formatValue(school_age_pop)}
-    </div>
-    ${E_adolescent_population > 0 ? `<div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 15-24: ${formatValue(E_adolescent_population)}
-    </div>` : ''}
-    <div style="font-size: 11px; color: #555;">
-        Schools: ${formatValue(num_schools)}
+        Population: ${formatValue(population)}${fmtExp(population, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Health Centers: ${formatValue(num_hcs)}
+        Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}
     </div>
-    ${E_num_shelters > 0 ? `<div style="font-size: 11px; color: #555;">
-        Shelters: ${formatValue(E_num_shelters)}
-    </div>` : ''}
-    ${E_num_wash > 0 ? `<div style="font-size: 11px; color: #555;">
-        WASH Facilities: ${formatValue(E_num_wash)}
-    </div>` : ''}
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 0-5: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}
+    </div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 5-15: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}
+    </div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 15-24: ${formatValue(E_adolescent_population)}${fmtExp(E_adolescent_population, probability)}
+    </div>
     <div style="font-size: 11px; color: #555;">
-        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
+        Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Shelters: ${formatValue(E_num_shelters)}${fmtExp(E_num_shelters, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        WASH Facilities: ${formatValue(E_num_wash)}${fmtExp(E_num_wash, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}
     </div>
     <div style="font-size: 11px; color: #555;">
         CCI: ${formatDecimal(cci)}
