@@ -13,7 +13,7 @@ USE SCHEMA TC_ECMWF;
 
 
 -- ============================================================================
--- Test 1: ADMIN_IMPACT_MAT
+-- Test 1: ADMIN_ALL_IMPACT_MAT
 -- ============================================================================
 
 SELECT 
@@ -25,7 +25,7 @@ SELECT
     SUM(E_population) AS total_population,
     SUM(E_num_schools) AS total_schools,
     SUM(E_num_hcs) AS total_hcs
-FROM ADMIN_IMPACT_MAT
+FROM ADMIN_ALL_IMPACT_MAT
 WHERE country = 'JAM' AND wind_threshold = 34
 GROUP BY country, storm, forecast_date, wind_threshold
 ORDER BY forecast_date DESC

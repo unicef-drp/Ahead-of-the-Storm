@@ -801,7 +801,7 @@ $$;
 -- Stored Procedure: Get Admin-Level Breakdown
 -- ============================================================================
 -- Returns expected impact by administrative area (admin-1 level), joining
--- ADMIN_IMPACT_MAT with BASE_ADMIN_MAT to resolve human-readable names.
+-- ADMIN_ALL_IMPACT_MAT with BASE_ADMIN_MAT to resolve human-readable names.
 -- Sorted by population descending. Used in all report sections.
 --
 -- Parameters:
@@ -840,25 +840,27 @@ $$
         SUM(COALESCE(a.E_school_age_population, 0) + COALESCE(a.E_infant_population, 0)) AS children,
         SUM(COALESCE(a.E_num_schools, 0)) AS schools,
         SUM(COALESCE(a.E_num_hcs, 0)) AS health_centers
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     admin_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     admin_with_names AS (
       SELECT 
@@ -911,7 +913,7 @@ $$;
 -- Stored Procedure: Get Admin-Level Trend Comparison
 -- ============================================================================
 -- Returns admin-area population delta between two forecast runs, sorted by
--- absolute change descending. Joins ADMIN_IMPACT_MAT with BASE_ADMIN_MAT for
+-- absolute change descending. Joins ADMIN_ALL_IMPACT_MAT with BASE_ADMIN_MAT for
 -- human-readable names. Used in Section 4 trend analysis.
 --
 -- Parameters:
@@ -949,28 +951,30 @@ $$
   
   var sql_command = `
     WITH current_aggregated AS (
-      SELECT 
+      SELECT
         a.name AS admin_id,
         SUM(COALESCE(a.E_population, 0)) AS pop
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     current_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     current_with_names AS (
       SELECT 
@@ -980,28 +984,30 @@ $$
       LEFT JOIN current_name_mapping mapping ON curr.admin_id = mapping.admin_id
     ),
     previous_aggregated AS (
-      SELECT 
+      SELECT
         a.name AS admin_id,
         SUM(COALESCE(a.E_population, 0)) AS pop
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     previous_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     previous_with_names AS (
       SELECT 
@@ -1108,11 +1114,12 @@ $$
     SELECT DISTINCT
         wind_threshold,
         AVG(probability) AS probability
-    FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
+    FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
       AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND probability IS NOT NULL
+      AND admin_level = 1
     GROUP BY wind_threshold
     ORDER BY wind_threshold ASC
   `;
@@ -1779,7 +1786,7 @@ $$;
 --
 -- Returns:
 --   match          — true if difference is within 1% tolerance
---   admin_total    — sum of E_population from ADMIN_IMPACT_MAT
+--   admin_total    — sum of E_population from ADMIN_ALL_IMPACT_MAT
 --   tile_total     — sum of E_population from MERCATOR_TILE_IMPACT_MAT
 --   pct_diff       — absolute percentage difference between the two totals
 --   tolerance_pct  — tolerance threshold used (1.0)
@@ -1807,14 +1814,15 @@ $$
              error: 'Invalid wind_threshold_val: ' + WIND_THRESHOLD_VAL };
   }
 
-  // --- Admin total from ADMIN_IMPACT_MAT ---
+  // --- Admin total from ADMIN_ALL_IMPACT_MAT (admin_level=1 to avoid double-counting) ---
   var r_admin = snowflake.createStatement({
     sqlText: `SELECT SUM(COALESCE(E_population, 0)) AS admin_total
-              FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
+              FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
               WHERE country = ?
                 AND UPPER(storm) = UPPER(?)
                 AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
-                AND wind_threshold = ?`,
+                AND wind_threshold = ?
+                AND admin_level = 1`,
     binds: [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR, wt]
   }).execute();
   r_admin.next();

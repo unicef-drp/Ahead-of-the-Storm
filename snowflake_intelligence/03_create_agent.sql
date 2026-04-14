@@ -35,7 +35,7 @@ models:
 orchestration:
   budget:
     seconds: 120
-    tokens: 15000
+    tokens: 25000
 
 tools:
   - tool_spec:
@@ -528,6 +528,11 @@ instructions:
     ==================================================
     CORE RULES (apply to all query types)
     ==================================================
+    CRITICAL: Do NOT output any text, section headings, bullets, tables, or placeholder
+    content of ANY kind before ALL required tool calls have been made and their results
+    received. Writing a report skeleton with [value] placeholders before tools return is
+    INCORRECT — it triggers a framework error. Call all tools first. Write only after.
+
     - Use ONLY values returned by tools. Never invent numbers, geography, or impacts.
     - Interpretation is required but must be grounded in numbers tools returned.
       Allowed: numeric comparison, ranking, ratios, shares, direction of change.
@@ -868,7 +873,7 @@ $$;
 GRANT USAGE ON AGENT HURRICANE_INTELLIGENCE TO ROLE SYSADMIN;
 GRANT USAGE ON WAREHOUSE SF_AI_WH TO ROLE SYSADMIN;
 
-GRANT SELECT ON TABLE ADMIN_IMPACT_MAT TO ROLE SYSADMIN;
+GRANT SELECT ON TABLE ADMIN_ALL_IMPACT_MAT TO ROLE SYSADMIN;
 GRANT SELECT ON TABLE BASE_ADMIN_MAT TO ROLE SYSADMIN;
 GRANT SELECT ON TABLE SCHOOL_IMPACT_MAT TO ROLE SYSADMIN;
 GRANT SELECT ON TABLE HC_IMPACT_MAT TO ROLE SYSADMIN;
