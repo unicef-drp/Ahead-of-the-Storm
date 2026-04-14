@@ -603,6 +603,7 @@ left_panel = dmc.GridCol(
 
 
 # Center Panel - Map (Dash Leaflet with all layers)
+
 center_panel = dmc.GridCol(
                 html.Div([
                     dcc.Store(id="map-state-store", data={}),
@@ -743,6 +744,7 @@ impact_summary = dmc.Paper([
                     dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
                     
                     # Impact Summary Table
+                    html.Div(style={"overflowX": "auto"}, children=[
                     dmc.Table(
                         [
                             dmc.TableThead([
@@ -750,68 +752,95 @@ impact_summary = dmc.Paper([
                                     dmc.TableTh([
                                         dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
-                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px", "width": "auto"}),
+                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                     dmc.TableTh([
                                         dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("#51", id="deterministic-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"}),
-                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top", "width": "110px"}),
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", }),
+                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top", }),
                                     dmc.TableTh([
                                         dmc.Text("Worst", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"})
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", })
                                 ])
                             ]),
                             dmc.TableTbody([
                                 dmc.TableTr([
-                                    dmc.TableTd("Population", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Population"),
+                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd([
+                                        html.Span("Children"),
+                                        html.Span(" (total)", style={"fontSize": "0.8em", "color": "#888", "marginLeft": "3px"})
+                                    ]),
+                                    dmc.TableTd("N/A", id="children-total-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="children-total-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="children-total-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="infant-affected-low",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="infant-affected-probabilistic",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="infant-affected-high",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="infant-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="infant-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="infant-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 15-24", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Schools"),
+                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Health Centers"),
+                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Shelters"),
+                                    dmc.TableTd("N/A", id="shelters-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="shelters-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="shelters-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("WASH Facilities"),
+                                    dmc.TableTd("N/A", id="wash-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="wash-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="wash-count-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
                                         html.Span("Built Surface m"),
                                         html.Sup("2"),
-                                    ], style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    ]),
+                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", })
                                 ])
                             ])
                         ],
                         striped=True,
                         highlightOnHover=True,
                         withTableBorder=True,
-                        withColumnBorders=True
+                        withColumnBorders=True,
+                        horizontalSpacing="xs",
+                        style={"tableLayout": "fixed", "width": "100%"}
                     )
+                    ]),
                 ],
                 p="md",
                 shadow="xs",
@@ -888,7 +917,7 @@ exceedance_chart = dmc.Paper([
                     
                     dmc.Text("Probability of exceeding different impact thresholds", size="xs", c="dimmed", mb="md"),
                     
-                    dcc.Graph(id="exceedance-probability-chart", style={"height": "400px"}),
+                    dcc.Graph(id="exceedance-probability-chart", style={"height": "400px", "width": "100%"}, responsive=True),
                     
                     # Custom 3-column legend
                     html.Div(id="exceedance-legend", style={"marginTop": "10px", "marginBottom": "10px"}),
@@ -921,7 +950,7 @@ right_panel = dmc.GridCol(
                     )
                 ],
                 span=3,
-                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto", "minWidth": "300px"}
+                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
             )
 
 # Create the three-panel dashboard layout (left controls, center map, right metrics)
@@ -986,18 +1015,30 @@ layout = make_single_page_appshell()
     [Output("population-count-low", "children"),
      Output("population-count-probabilistic", "children"),
      Output("population-count-high", "children"),
-     Output("children-affected-low", "children"),
-     Output("children-affected-probabilistic", "children"),
-     Output("children-affected-high", "children"),
+     Output("children-total-low", "children"),
+     Output("children-total-probabilistic", "children"),
+     Output("children-total-high", "children"),
      Output("infant-affected-low", "children"),
      Output("infant-affected-probabilistic", "children"),
      Output("infant-affected-high", "children"),
+     Output("children-affected-low", "children"),
+     Output("children-affected-probabilistic", "children"),
+     Output("children-affected-high", "children"),
+     Output("adolescent-affected-low", "children"),
+     Output("adolescent-affected-probabilistic", "children"),
+     Output("adolescent-affected-high", "children"),
      Output("schools-count-low", "children"),
      Output("schools-count-probabilistic", "children"),
      Output("schools-count-high", "children"),
      Output("health-count-low", "children"),
      Output("health-count-probabilistic", "children"),
      Output("health-count-high", "children"),
+     Output("shelters-count-low", "children"),
+     Output("shelters-count-probabilistic", "children"),
+     Output("shelters-count-high", "children"),
+     Output("wash-count-low", "children"),
+     Output("wash-count-probabilistic", "children"),
+     Output("wash-count-high", "children"),
      Output("bsm2-count-low", "children"),
      Output("bsm2-count-probabilistic", "children"),
      Output("bsm2-count-high", "children"),
@@ -1015,11 +1056,11 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     
     # Only compute after user has loaded layers to avoid startup churn
     if not layers_loaded:
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         # Return all scenarios with default values (population, children, infants, schools, health, built surface, badge)
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     # Calculate probabilistic impact metrics
     
@@ -1037,9 +1078,9 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         print(f"Impact metrics: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
 
         # Initialize all scenario results
-        low_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
+        low_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        probabilistic_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        high_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
 
         # Initialize member badge (deterministic is always #51, doesn't need updating)
         high_member_badge = "N/A"
@@ -1096,12 +1137,23 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         probabilistic_results["children"] = "N/A"
 
                     if 'E_infant_population' in df.columns and not df['E_infant_population'].isna().all():
-                        probabilistic_results["infant"] = df['E_infant_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
+                        probabilistic_results["infant"] = df['E_infant_population'].sum()
                     else:
                         probabilistic_results["infant"] = "N/A"
-                    
+
+                    if 'E_adolescent_population' in df.columns and not df['E_adolescent_population'].isna().all():
+                        probabilistic_results["adolescent"] = df['E_adolescent_population'].sum()
+                    else:
+                        probabilistic_results["adolescent"] = "N/A"
+
+                    # Children total = sum of all non-N/A age sub-groups
+                    _child_parts = [v for v in [probabilistic_results["infant"], probabilistic_results["children"], probabilistic_results["adolescent"]] if v != "N/A"]
+                    probabilistic_results["children_total"] = sum(_child_parts) if _child_parts else "N/A"
+
                     probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
                     probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                    probabilistic_results["shelters"] = df['E_num_shelters'].sum() if ('E_num_shelters' in df.columns and not df['E_num_shelters'].isna().all()) else "N/A"
+                    probabilistic_results["wash"] = df['E_num_wash'].sum() if ('E_num_wash' in df.columns and not df['E_num_wash'].isna().all()) else "N/A"
                     probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
                     probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
                     
@@ -1144,6 +1196,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                                     'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
                                 low_results["infant"] = low_scenario_data[
                                     'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
+                                _low_child_parts = [v for v in [low_results["infant"], low_results["children"]] if v != "N/A"]
+                                low_results["children_total"] = sum(_low_child_parts) if _low_child_parts else "N/A"
                                 low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
                                 low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
                                 low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
@@ -1157,6 +1211,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                                 'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
                             high_results["infant"] = high_scenario_data[
                                 'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
+                            _high_child_parts = [v for v in [high_results["infant"], high_results["children"]] if v != "N/A"]
+                            high_results["children_total"] = sum(_high_child_parts) if _high_child_parts else "N/A"
                             high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
                             high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
                             high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
@@ -1173,21 +1229,35 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         
         # Format results — always round up (ceiling) so counts are never understated
         def format_value(value):
-            return str(value) if isinstance(value, str) else f"{math.ceil(value):,}"
+            if isinstance(value, str):
+                return value
+            ceiled = math.ceil(value)
+            formatted = f"{ceiled:,}"
+            if ceiled >= 100_000_000:  # 9+ digits
+                return html.Span(formatted, style={"fontSize": "0.85em"})
+            return formatted
         
         return (
             # Population count
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
             format_value(high_results["population"]),
-            # Children affected (part of population)
-            format_value(low_results["children"]),
-            format_value(probabilistic_results["children"]),
-            format_value(high_results["children"]),
-            # Infants affected (part of population)
+            # Children total (all age groups combined)
+            format_value(low_results["children_total"]),
+            format_value(probabilistic_results["children_total"]),
+            format_value(high_results["children_total"]),
+            # Infants Age 0-5
             format_value(low_results["infant"]),
             format_value(probabilistic_results["infant"]),
             format_value(high_results["infant"]),
+            # Children Age 5-15
+            format_value(low_results["children"]),
+            format_value(probabilistic_results["children"]),
+            format_value(high_results["children"]),
+            # Adolescents Age 15-24
+            format_value(low_results["adolescent"]),
+            format_value(probabilistic_results["adolescent"]),
+            format_value(high_results["adolescent"]),
             # Schools count
             format_value(low_results["schools"]),
             format_value(probabilistic_results["schools"]),
@@ -1196,17 +1266,25 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["health"]),
             format_value(probabilistic_results["health"]),
             format_value(high_results["health"]),
+            # Shelters count
+            format_value(low_results["shelters"]),
+            format_value(probabilistic_results["shelters"]),
+            format_value(high_results["shelters"]),
+            # WASH Facilities count
+            format_value(low_results["wash"]),
+            format_value(probabilistic_results["wash"]),
+            format_value(high_results["wash"]),
             # Built Surface m2
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
             format_value(high_results["built_surface_m2"]),
-            # Member badge (deterministic badge is static #51, doesn't need updating)
+            # Member badge
             high_member_badge
         )
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 
 

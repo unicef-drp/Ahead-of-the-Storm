@@ -278,7 +278,10 @@ function(feature, layer) {
     const E_num_schools = props.E_num_schools || 0;
     const E_school_age_population = props.E_school_age_population || 0;
     const E_infant_population = props.E_infant_population || 0;
+    const E_adolescent_population = props.E_adolescent_population || 0;
     const E_num_hcs = props.E_num_hcs || 0;
+    const E_num_shelters = props.E_num_shelters || 0;
+    const E_num_wash = props.E_num_wash || 0;
     const E_rwi = props.E_rwi || 0;
     const E_cci = props.E_cci_children || 0;
     const probability = props.probability || 0;
@@ -346,17 +349,26 @@ function(feature, layer) {
         Population: ${formatValue(population)}
     </div>
     <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 5-15: ${formatValue(school_age_pop)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
         Age 0-5: ${formatValue(infant_pop)}
     </div>
+    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Age 5-15: ${formatValue(school_age_pop)}
+    </div>
+    ${E_adolescent_population > 0 ? `<div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
+        Age 15-24: ${formatValue(E_adolescent_population)}
+    </div>` : ''}
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Health Centers: ${formatValue(num_hcs)}
     </div>
+    ${E_num_shelters > 0 ? `<div style="font-size: 11px; color: #555;">
+        Shelters: ${formatValue(E_num_shelters)}
+    </div>` : ''}
+    ${E_num_wash > 0 ? `<div style="font-size: 11px; color: #555;">
+        WASH Facilities: ${formatValue(E_num_wash)}
+    </div>` : ''}
     <div style="font-size: 11px; color: #555;">
         Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
     </div>

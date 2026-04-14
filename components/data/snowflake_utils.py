@@ -619,7 +619,10 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
             E_NUM_SCHOOLS,
             E_SCHOOL_AGE_POPULATION,
             E_INFANT_POPULATION,
+            E_ADOLESCENT_POPULATION,
             E_NUM_HCS,
+            E_NUM_SHELTERS,
+            E_NUM_WASH,
             E_RWI,
             E_SMOD_CLASS
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
@@ -664,9 +667,12 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
             E_POPULATION,
             E_SCHOOL_AGE_POPULATION,
             E_INFANT_POPULATION,
+            E_ADOLESCENT_POPULATION,
             E_BUILT_SURFACE_M2,
             E_NUM_SCHOOLS,
             E_NUM_HCS,
+            E_NUM_SHELTERS,
+            E_NUM_WASH,
             E_SMOD_CLASS,
             E_RWI
         FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
