@@ -331,6 +331,68 @@ SELECT
 FROM parquet_data;
 
 -- ----------------------------------------------------------------------------
+-- SHELTER_IMPACT_MAT
+-- Point-level shelter impact data (one row per shelter per storm/threshold)
+-- File name pattern: {COUNTRY}_{STORM}_{FORECAST_DATE}_{WIND_THRESHOLD}.parquet
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE SHELTER_IMPACT_MAT
+CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
+AS
+WITH parquet_data AS (
+    SELECT
+        METADATA$FILENAME AS file_path,
+        $1 AS parquet_variant
+    FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/shelter_views/
+        (FILE_FORMAT => PARQUET_ADMIN_FORMAT, PATTERN => '.*_[0-9]+\\.parquet')
+)
+SELECT
+    file_path,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 1)                        AS country,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 2)                        AS storm,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 3)                        AS forecast_date,
+    TRY_CAST(REPLACE(SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 4), '.parquet', '') AS INT) AS wind_threshold,
+    parquet_variant:name::VARCHAR          AS name,
+    parquet_variant:shelter_type::VARCHAR  AS shelter_type,
+    parquet_variant:category::VARCHAR      AS category,
+    parquet_variant:probability::FLOAT     AS probability,
+    parquet_variant:zone_id::VARCHAR       AS zone_id,
+    parquet_variant:latitude::FLOAT        AS latitude,
+    parquet_variant:longitude::FLOAT       AS longitude,
+    parquet_variant                        AS all_data
+FROM parquet_data;
+
+-- ----------------------------------------------------------------------------
+-- WASH_IMPACT_MAT
+-- Point-level WASH facility impact data (one row per facility per storm/threshold)
+-- File name pattern: {COUNTRY}_{STORM}_{FORECAST_DATE}_{WIND_THRESHOLD}.parquet
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE WASH_IMPACT_MAT
+CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
+AS
+WITH parquet_data AS (
+    SELECT
+        METADATA$FILENAME AS file_path,
+        $1 AS parquet_variant
+    FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/wash_views/
+        (FILE_FORMAT => PARQUET_ADMIN_FORMAT, PATTERN => '.*_[0-9]+\\.parquet')
+)
+SELECT
+    file_path,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 1)                        AS country,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 2)                        AS storm,
+    SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 3)                        AS forecast_date,
+    TRY_CAST(REPLACE(SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 4), '.parquet', '') AS INT) AS wind_threshold,
+    parquet_variant:name::VARCHAR        AS name,
+    parquet_variant:wash_type::VARCHAR   AS wash_type,
+    parquet_variant:category::VARCHAR    AS category,
+    parquet_variant:probability::FLOAT   AS probability,
+    parquet_variant:zone_id::VARCHAR     AS zone_id,
+    parquet_variant:latitude::FLOAT      AS latitude,
+    parquet_variant:longitude::FLOAT     AS longitude,
+    parquet_variant                      AS all_data
+FROM parquet_data;
+
+-- ----------------------------------------------------------------------------
 -- BASE_ADMIN_MAT
 -- Admin ID -> human-readable name lookup
 -- ----------------------------------------------------------------------------
@@ -613,6 +675,62 @@ $$
             parquet_variant:operator_type::VARCHAR,
             parquet_variant:probability::FLOAT,
             parquet_variant:zone_id::VARCHAR,
+            parquet_variant
+        FROM parquet_data
+      `
+    },
+    {
+      name: 'SHELTER_IMPACT_MAT',
+      sql: `
+        INSERT OVERWRITE INTO AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
+            (FILE_PATH, COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD,
+             NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE, ALL_DATA)
+        WITH parquet_data AS (
+            SELECT METADATA$FILENAME AS file_path, $1 AS parquet_variant
+            FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/shelter_views/
+                (FILE_FORMAT => AOTS.TC_ECMWF.PARQUET_ADMIN_FORMAT, PATTERN => '.*_[0-9]+\\\\.parquet')
+        )
+        SELECT
+            file_path,
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 1),
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 2),
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 3),
+            TRY_CAST(REPLACE(SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 4), '.parquet', '') AS INT),
+            parquet_variant:name::VARCHAR,
+            parquet_variant:shelter_type::VARCHAR,
+            parquet_variant:category::VARCHAR,
+            parquet_variant:probability::FLOAT,
+            parquet_variant:zone_id::VARCHAR,
+            parquet_variant:latitude::FLOAT,
+            parquet_variant:longitude::FLOAT,
+            parquet_variant
+        FROM parquet_data
+      `
+    },
+    {
+      name: 'WASH_IMPACT_MAT',
+      sql: `
+        INSERT OVERWRITE INTO AOTS.TC_ECMWF.WASH_IMPACT_MAT
+            (FILE_PATH, COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD,
+             NAME, WASH_TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE, ALL_DATA)
+        WITH parquet_data AS (
+            SELECT METADATA$FILENAME AS file_path, $1 AS parquet_variant
+            FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/wash_views/
+                (FILE_FORMAT => AOTS.TC_ECMWF.PARQUET_ADMIN_FORMAT, PATTERN => '.*_[0-9]+\\\\.parquet')
+        )
+        SELECT
+            file_path,
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 1),
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 2),
+            SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 3),
+            TRY_CAST(REPLACE(SPLIT_PART(SPLIT_PART(file_path, '/', -1), '_', 4), '.parquet', '') AS INT),
+            parquet_variant:name::VARCHAR,
+            parquet_variant:wash_type::VARCHAR,
+            parquet_variant:category::VARCHAR,
+            parquet_variant:probability::FLOAT,
+            parquet_variant:zone_id::VARCHAR,
+            parquet_variant:latitude::FLOAT,
+            parquet_variant:longitude::FLOAT,
             parquet_variant
         FROM parquet_data
       `

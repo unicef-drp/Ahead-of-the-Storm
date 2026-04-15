@@ -595,9 +595,6 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
     """
     Query SHELTER_IMPACT_MAT for shelter-level impact data.
 
-    Note: SHELTER_IMPACT_MAT does not yet exist; returns empty DataFrame.
-    When the table is created, add the SELECT query here.
-
     Args:
         country: Country code (e.g. 'JAM')
         storm: Storm identifier (e.g. 'BERYL')
@@ -605,11 +602,31 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
         wind_threshold: Wind speed threshold in knots (e.g. 34)
 
     Returns:
-        pandas.DataFrame with columns: NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
     """
-    # SHELTER_IMPACT_MAT not yet created — return empty DataFrame
-    print("SHELTER_IMPACT_MAT not yet available — no shelter data loaded from SQL")
-    return pd.DataFrame()
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            SHELTER_TYPE,
+            CATEGORY,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE
+        FROM AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} shelter impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying SHELTER_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
 
 
 @lru_cache(maxsize=64)
@@ -617,9 +634,6 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
     """
     Query WASH_IMPACT_MAT for WASH facility impact data.
 
-    Note: WASH_IMPACT_MAT does not yet exist; returns empty DataFrame.
-    When the table is created, add the SELECT query here.
-
     Args:
         country: Country code (e.g. 'JAM')
         storm: Storm identifier (e.g. 'BERYL')
@@ -627,11 +641,31 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         wind_threshold: Wind speed threshold in knots (e.g. 34)
 
     Returns:
-        pandas.DataFrame with columns: NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
     """
-    # WASH_IMPACT_MAT not yet created — return empty DataFrame
-    print("WASH_IMPACT_MAT not yet available — no WASH data loaded from SQL")
-    return pd.DataFrame()
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            WASH_TYPE,
+            CATEGORY,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE
+        FROM AOTS.TC_ECMWF.WASH_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} WASH facility impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying WASH_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
 
 
 @lru_cache(maxsize=64)

@@ -42,12 +42,16 @@ Creates real Snowflake tables loaded from stage CSV/Parquet files. These tables 
 
 **What it does:**
 - Creates file formats (`CSV_ADMIN_VIEWS_FORMAT` with `ERROR_ON_COLUMN_COUNT_MISMATCH=FALSE`)
-- Creates and populates five materialized tables from stage files:
+- Creates and populates materialized tables from stage files:
   - `MERCATOR_TILE_IMPACT_MAT` — tile-level probabilistic impact data, clustered by `(COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD, ZOOM_LEVEL)`
   - `ADMIN_ALL_IMPACT_MAT` — admin-region impact with probability and admin level, clustered by `(COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD, ADMIN_LEVEL)`
   - `MERCATOR_TILE_CCI_MAT` — tile-level Child Climate Index data
   - `ADMIN_ALL_CCI_MAT` — admin-level Child Climate Index data
   - `TRACK_MAT` — per-ensemble-member severity and wind-envelope geometry
+  - `SCHOOL_IMPACT_MAT` — point-level school impact data (one row per school per storm/threshold)
+  - `HC_IMPACT_MAT` — point-level health centre impact data
+  - `SHELTER_IMPACT_MAT` — point-level shelter impact data
+  - `WASH_IMPACT_MAT` — point-level WASH facility impact data
 - Creates `REFRESH_MATERIALIZED_VIEWS()` stored procedure to reload all tables
 - Creates a scheduled task (`REFRESH_MATERIALIZED_VIEWS_TASK`) that calls the refresh hourly
 
@@ -212,6 +216,8 @@ All data is served from materialized tables in `AOTS.TC_ECMWF`, loaded from stag
 | `TRACK_MAT` | `track_views/*.parquet` | Worst-case scenario, scenario distribution |
 | `SCHOOL_IMPACT_MAT` | `school_views/*.parquet` | Named schools at risk |
 | `HC_IMPACT_MAT` | `hc_views/*.parquet` | Named health facilities at risk |
+| `SHELTER_IMPACT_MAT` | `shelter_views/*.parquet` | Named shelters at risk |
+| `WASH_IMPACT_MAT` | `wash_views/*.parquet` | Named WASH facilities at risk |
 | `BASE_ADMIN_MAT` | `admin_views/*_admin1.parquet` | Admin name lookups |
 
 ### Expected Impact Calculation

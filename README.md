@@ -77,8 +77,10 @@ Before running the application, you need to have pre-processed data available. T
 1. **Bounding box** file: `project_results/climate/lacro_project/bbox.parquet`
 2. **Base views**: Mercator tiles with demographic and infrastructure data in `geodb/aos_views/mercator_views/`
 3. **Impact views**: Processed storm impact data in:
-   - `geodb/aos_views/hc_views/` (health centers)
    - `geodb/aos_views/school_views/` (schools)
+   - `geodb/aos_views/hc_views/` (health centers)
+   - `geodb/aos_views/shelter_views/` (shelters)
+   - `geodb/aos_views/wash_views/` (WASH facilities)
    - `geodb/aos_views/track_views/` (hurricane tracks)
    - `geodb/aos_views/mercator_views/` (tile impact data)
 
@@ -123,7 +125,7 @@ The application provides three main views:
 1. **Dashboard** (`/`): Interactive map showing:
    - Hurricane tracks (ensemble members and deterministic track)
    - Impact envelopes at different wind thresholds
-   - Schools and health centers at risk
+   - Schools, health centers, shelters, and WASH facilities at risk
    - Population impact tiles
    - Impact metrics (deterministic, probabilistic, worst-case scenarios)
 
@@ -169,8 +171,10 @@ The application expects data in the following structure:
 - **Bounding box:** `{RESULTS_DIR}/{BBOX_FILE}` (typically `project_results/climate/lacro_project/bbox.parquet`)
 - **Base views:** `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/` (e.g., `geodb/aos_views/mercator_views/`)
 - **Impact views:** 
-  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` (health centers)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` (schools)
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` (health centers)
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/shelter_views/` (shelters)
+  - `{ROOT_DATA_DIR}/{VIEWS_DIR}/wash_views/` (WASH facilities)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` (hurricane tracks)
 - **Processed storms metadata:** `{RESULTS_DIR}/{STORMS_FILE}` (typically `project_results/climate/lacro_project/storms.json`)
 

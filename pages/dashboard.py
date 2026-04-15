@@ -730,7 +730,7 @@ center_panel = dmc.GridCol(
                             ),
                             # Schools Impact Layer
                             dl.GeoJSON(
-                                id="schools-json-test",
+                                id="schools-overlay-json",
                                 data={},
                                 zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
@@ -738,7 +738,7 @@ center_panel = dmc.GridCol(
                             ),
                             # Health Centers Impact Layer
                             dl.GeoJSON(
-                                id="health-json-test",
+                                id="health-overlay-json",
                                 data={},
                                 zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
@@ -3049,14 +3049,14 @@ def _style_point_layer(geo_data, base_color):
 
 
 @callback(
-    Output("schools-json-test", "data"),
-    Output("schools-json-test", "zoomToBounds"),
-    Output("schools-json-test","key"),
+    Output("schools-overlay-json", "data"),
+    Output("schools-overlay-json", "zoomToBounds"),
+    Output("schools-overlay-json","key"),
     [Input("schools-layer", "checked")],
     State("schools-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_schools_layer(checked, schools_data_in):
+def toggle_schools_overlay(checked, schools_data_in):
     """Toggle schools layer visibility with probability-based coloring and variable radius"""
     if not checked or not schools_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
@@ -3070,14 +3070,14 @@ def toggle_schools_layer(checked, schools_data_in):
         return schools_data, False, key
 
 @callback(
-    Output("health-json-test", "data"),
-    Output("health-json-test", "zoomToBounds"),
-    Output("health-json-test","key"),
+    Output("health-overlay-json", "data"),
+    Output("health-overlay-json", "zoomToBounds"),
+    Output("health-overlay-json","key"),
     [Input("health-layer", "checked")],
     State("health-data-store", "data"),
     prevent_initial_call=True
 )
-def toggle_health_layer(checked, health_data_in):
+def toggle_health_overlay(checked, health_data_in):
     """Toggle health centers layer visibility with probability-based coloring and variable radius"""
     if not checked or not health_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
