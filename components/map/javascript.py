@@ -274,6 +274,64 @@ function(feature, layer) {
 }
 """)
 
+tooltip_shelters = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const name = props.name || props.name_en || null;
+    const shelter_type = props.shelter_type || props.type || null;
+    const category = props.category || null;
+    const probability = props.probability;
+
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') return (prob * 100).toFixed(1) + '%';
+        return 'N/A';
+    };
+
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #FF8C00; margin-bottom: 5px;">
+            Shelter
+        </div>
+    `;
+    if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
+    if (shelter_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${shelter_type}</div>`;
+    if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+    if (probability !== undefined && probability !== null) {
+        content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+    } else {
+        content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+    }
+
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+tooltip_wash = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+    const name = props.name || props.name_en || null;
+    const wash_type = props.wash_type || props.type || null;
+    const category = props.category || null;
+    const probability = props.probability || 0;
+
+    const formatPercent = (prob) => {
+        if (typeof prob === 'number') return (prob * 100).toFixed(1) + '%';
+        return 'N/A';
+    };
+
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #008B8B; margin-bottom: 5px;">
+            WASH Facility
+        </div>
+    `;
+    if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
+    if (wash_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${wash_type}</div>`;
+    if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
 tooltip_tiles = assign("""
 function(feature, layer) {
     const props = feature.properties || {};
@@ -311,6 +369,7 @@ function(feature, layer) {
     const num_schools = props.num_schools || 0;
     const school_age_pop = props.school_age_population || 0;
     const infant_pop = props.infant_population || 0;
+    const adolescent_pop = props.adolescent_population || 0;
     const num_hcs = props.num_hcs || 0;
     const rwi = props.rwi || 0;
     const cci = props.cci_children || 0;
@@ -369,7 +428,7 @@ function(feature, layer) {
 
     // Children total: always show the sum (0 is valid); N/A only if no tile data at all
     const has_tile_data = props.population !== undefined;
-    const children_total = has_tile_data ? infant_pop + school_age_pop + E_adolescent_population : null;
+    const children_total = has_tile_data ? infant_pop + school_age_pop + adolescent_pop : null;
 
     // Show tile data - always show all fields
     content += `
@@ -389,7 +448,7 @@ function(feature, layer) {
         Age 5-15: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}
     </div>
     <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-        Age 15-24: ${formatValue(E_adolescent_population)}${fmtExp(E_adolescent_population, probability)}
+        Age 15-24: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}

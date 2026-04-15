@@ -17,16 +17,18 @@ all_colors = {
     'probability': ['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    # Layer order matches UI radio group: population → children-total → infant → school-age → adolescent → built-surface → cci → settlement → rwi
+    # Each base layer is immediately followed by its E_ (impact-weighted) counterpart.
     'population': ['transparent',
                     '#add8e6', '#8cc5d3', '#6bb2c0', '#4a9bad', '#33849a',
                     '#216d87', '#165674', '#0d3f51', '#06283d', '#011129'],
     'E_population': ['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'school_age_population': ['transparent',
-                    '#a8e6cf', '#7ed3b8', '#5ec0a1', '#40ad8a', '#2d9a73',
-                    '#228759', '#177440', '#0f5127', '#083310', '#001107'],
-    'E_school_age_population':['transparent',
+    'children_total': ['transparent',
+                    '#e8d5f5', '#d0a8ed', '#b87de5', '#9e52dd', '#8429d4',
+                    '#6b1fb0', '#53178c', '#3c1068', '#260844', '#110022'],
+    'E_children_total': ['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
     'infant_population': ['transparent',
@@ -35,22 +37,42 @@ all_colors = {
     'E_infant_population': ['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'school_age_population': ['transparent',
+                    '#a8e6cf', '#7ed3b8', '#5ec0a1', '#40ad8a', '#2d9a73',
+                    '#228759', '#177440', '#0f5127', '#083310', '#001107'],
+    'E_school_age_population': ['transparent',
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'adolescent_population': ['transparent',
+                    '#cce0ff', '#99c2ff', '#66a3ff', '#3385ff', '#0066ff',
+                    '#0052cc', '#003d99', '#002b66', '#001a33', '#000d1a'],
+    'E_adolescent_population': ['transparent',
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
     'built_surface_m2': ['transparent',
                     '#f6e6d1', '#e8d4b8', '#dac29f', '#ccb086', '#be9e6d',
                     '#b08854', '#a2723b', '#945c22', '#864609', '#783000'],
-    'E_built_surface_m2':['transparent',
+    'E_built_surface_m2': ['transparent',
                     '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
                     '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
-    'smod_class': ['transparent','#dda0dd','#9370db', '#4b0082'],
+    config.CCI_COL: ['transparent',
+                    '#ffcccb', '#ff9999', '#ff6666', '#ff3333', '#ff0000',
+                    '#cc0000', '#990000', '#660000', '#330000', '#1a0000'],
+    config.E_CCI_COL: ['transparent',
+                    '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+                    '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    # Context data layers (no E_ counterpart in the radio group)
+    'smod_class': ['transparent', '#dda0dd', '#9370db', '#4b0082'],
     # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
     # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
-    'rwi':['transparent','#d73027','#f46d43','#fdae61','#fee08b','#808080','#d9ef8b','#a6d96a','#66bd63','#1a9850'],
-    config.CCI_COL: ['transparent',
-            '#ffcccb', '#ff9999', '#ff6666', '#ff3333', '#ff0000',
-            '#cc0000', '#990000', '#660000', '#330000', '#1a0000'],
-    config.E_CCI_COL: ['transparent',
-            '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-            '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026'],
+    'rwi': ['transparent', '#d73027', '#f46d43', '#fdae61', '#fee08b', '#808080', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850'],
+    # Tile-level impact counts (no base layer equivalent in the radio group)
+    'E_num_shelters': ['transparent',
+                    '#fde0dd', '#fcc5c0', '#fa9fb5', '#f768a1', '#dd3497',
+                    '#ae017e', '#7a0177', '#49006a', '#2d0040', '#1a0026'],
+    'E_num_wash': ['transparent',
+                    '#e5f5e0', '#c7e9c0', '#a1d99b', '#74c476', '#41ab5d',
+                    '#238b45', '#006d2c', '#00441b', '#002d12', '#001a09'],
 }
 
 
@@ -112,8 +134,7 @@ def update_tile_features(tiles_data_in, property):
     import copy
     import json
     import hashlib
-    from dash_extensions.javascript import assign
-    
+
     if not tiles_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
@@ -127,7 +148,6 @@ def update_tile_features(tiles_data_in, property):
 
     try:
         colors = all_colors[property]
-        buckets = len(colors)
         if property=='smod_class':
             # Settlement classification: discrete categories (0=no data, 10=rural, 20=urban cluster, 30=urban center)
             # Divide by 10 to get category (10->1, 20->2, 30->3)
@@ -180,9 +200,17 @@ def update_tile_features(tiles_data_in, property):
                     else:
                         color_prop.append(colors[0])  # transparent for unknown values
             else:
-                # Use log scale for population, school_age_population, infant_population, built_surface_m2, cci, and their E_ equivalents; linear for others
-                if property in ['population', 'school_age_population', 'infant_population', 'built_surface_m2', config.CCI_COL,
-                                'E_population', 'E_school_age_population', 'E_infant_population', 'E_built_surface_m2',config.E_CCI_COL]:
+                # Use log scale for all count/area properties and their E_ equivalents; linear for probability
+                if property in [
+                    'population',            'E_population',
+                    'children_total',        'E_children_total',
+                    'infant_population',     'E_infant_population',
+                    'school_age_population', 'E_school_age_population',
+                    'adolescent_population', 'E_adolescent_population',
+                    'built_surface_m2',      'E_built_surface_m2',
+                    config.CCI_COL,          config.E_CCI_COL,
+                    'E_num_shelters',        'E_num_wash',
+                ]:
                     # Log scale: transform values using log10
                     import math
                     clean_positive_values = [v for v in clean_values if v > 0]

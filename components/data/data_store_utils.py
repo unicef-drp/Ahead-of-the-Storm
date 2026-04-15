@@ -77,7 +77,7 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
     always requires for TC_TRACKS and PIPELINE_COUNTRIES anyway.
 
     Args:
-        data_type: One of 'school', 'hc', 'tile', 'admin_impact', 'admin_cci', 'track'.
+        data_type: One of 'school', 'hc', 'shelter', 'wash', 'tile', 'admin_impact', 'admin_cci', 'tile_cci', 'track'.
         giga_store: Configured data store instance (used for STAGE path only).
         filepath: Path to the file on the data store (used for STAGE path only).
         **sql_params: Keyword args passed to the SQL function when IMPACT_DATA_SOURCE='SQL'.
@@ -90,10 +90,18 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
     import time
     _t0 = time.perf_counter()
 
+    def _norm(col):
+        """Normalize column names: keep E_ prefix uppercase, lowercase everything else."""
+        if col.upper().startswith('E_'):
+            return 'E_' + col[2:].lower()
+        return col.lower()
+
     if app_config.IMPACT_DATA_SOURCE == 'SQL':
         from components.data.snowflake_utils import (
             get_school_impacts,
             get_hc_impacts,
+            get_shelter_impacts,
+            get_wash_impacts,
             get_tile_impacts,
             get_admin_impacts,
             get_admin_cci,
@@ -109,6 +117,10 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
             result = get_school_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
         elif data_type == 'hc':
             result = get_hc_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
+        elif data_type == 'shelter':
+            result = get_shelter_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
+        elif data_type == 'wash':
+            result = get_wash_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
         elif data_type == 'tile':
             result = get_tile_impacts(country, storm, forecast_date, sql_params['wind_threshold'],
                                       sql_params.get('zoom_level', 14))
@@ -126,10 +138,6 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         if not result.empty:
             # Normalize: keep E_ prefix uppercase, lowercase everything else
             # Matches the convention in STAGE Parquet/CSV files (e.g. E_population, zone_id)
-            def _norm(col):
-                if col.upper().startswith('E_'):
-                    return 'E_' + col[2:].lower()
-                return col.lower()
             result.columns = [_norm(c) for c in result.columns]
         source_label = f"SQL/{data_type}"
     else:
@@ -139,10 +147,6 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         # CCI stage files use mixed-case column names (CCI_children, E_CCI_children).
         # Normalize them to match the SQL path convention (cci_children, E_cci_children).
         if data_type in ('tile_cci', 'admin_cci') and not result.empty:
-            def _norm(col):
-                if col.upper().startswith('E_'):
-                    return 'E_' + col[2:].lower()
-                return col.lower()
             result.columns = [_norm(c) for c in result.columns]
 
     _elapsed = time.perf_counter() - _t0

@@ -591,6 +591,50 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
 
 
 @lru_cache(maxsize=64)
+def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query SHELTER_IMPACT_MAT for shelter-level impact data.
+
+    Note: SHELTER_IMPACT_MAT does not yet exist; returns empty DataFrame.
+    When the table is created, add the SELECT query here.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+    """
+    # SHELTER_IMPACT_MAT not yet created — return empty DataFrame
+    print("SHELTER_IMPACT_MAT not yet available — no shelter data loaded from SQL")
+    return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query WASH_IMPACT_MAT for WASH facility impact data.
+
+    Note: WASH_IMPACT_MAT does not yet exist; returns empty DataFrame.
+    When the table is created, add the SELECT query here.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+    """
+    # WASH_IMPACT_MAT not yet created — return empty DataFrame
+    print("WASH_IMPACT_MAT not yet available — no WASH data loaded from SQL")
+    return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
 def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
     """
     Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
@@ -615,16 +659,16 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
             ADMIN_ID,
             PROBABILITY,
             E_POPULATION,
+            E_INFANT_POPULATION,
+            E_SCHOOL_AGE_POPULATION,
+            E_ADOLESCENT_POPULATION,
             E_BUILT_SURFACE_M2,
             E_NUM_SCHOOLS,
-            E_SCHOOL_AGE_POPULATION,
-            E_INFANT_POPULATION,
-            E_ADOLESCENT_POPULATION,
             E_NUM_HCS,
             E_NUM_SHELTERS,
             E_NUM_WASH,
-            E_RWI,
-            E_SMOD_CLASS
+            E_SMOD_CLASS,
+            E_RWI
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
         WHERE COUNTRY = %s
           AND STORM = %s
@@ -665,8 +709,8 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
             ADMIN_LEVEL,
             PROBABILITY,
             E_POPULATION,
-            E_SCHOOL_AGE_POPULATION,
             E_INFANT_POPULATION,
+            E_SCHOOL_AGE_POPULATION,
             E_ADOLESCENT_POPULATION,
             E_BUILT_SURFACE_M2,
             E_NUM_SCHOOLS,
@@ -825,4 +869,3 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     except Exception as e:
         print(f"Error querying TRACK_MAT: {str(e)}")
         return gpd.GeoDataFrame()
-        return []
