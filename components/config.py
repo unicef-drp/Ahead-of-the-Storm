@@ -55,9 +55,7 @@ class Config:
     IMPACT_DATA_SOURCE = os.getenv('IMPACT_DATA_SOURCE', 'STAGE')
     
     # Application Configuration
-    RESULTS_DIR = os.getenv('RESULTS_DIR')
-    BBOX_FILE = os.getenv('BBOX_FILE')
-    STORMS_FILE = os.getenv('STORMS_FILE')
+    RESULTS_DIR = os.getenv('RESULTS_DIR', 'results')
     VIEWS_DIR = os.getenv('VIEWS_DIR')
     ROOT_DATA_DIR = os.getenv('ROOT_DATA_DIR')
     

@@ -33,11 +33,8 @@ export SNOWFLAKE_PORT=''
 # For local: Use relative or absolute paths
 export ROOT_DATA_DIR="geodb"
 export VIEWS_DIR="aos_views"
-export RESULTS_DIR="project_results/climate/lacro_project"
-export BBOX_FILE="bbox.parquet"
-export STORMS_FILE="storms.json"
-export REPORT_FILE="impact-report-current.html"
-export REPORT_TEMPLATE_FILE="impact-report.html"
+export RESULTS_DIR="results"
+export REPORT_TEMPLATE_FILE="impact-report-template.html"
 
 ################################################################################
 # REQUIRED: Impact Data Storage
@@ -76,8 +73,6 @@ export IMPACT_DATA_SOURCE='SQL'
 export ADLS_ACCOUNT_URL=""
 export ADLS_SAS_TOKEN=""
 export ADLS_CONTAINER_NAME=""
-export ADLS_CONNECTION_STRING=""
-
 ################################################################################
 # OPTIONAL: Snowflake Stage (only if IMPACT_DATA_STORE='SNOWFLAKE')
 ################################################################################
@@ -92,11 +87,3 @@ export SNOWFLAKE_STAGE_NAME=""
 # If not set, the app will use OpenStreetMap tiles as fallback
 export MAPBOX_ACCESS_TOKEN=""
 
-################################################################################
-# OPTIONAL: Giga-Spatial Library Configuration
-################################################################################
-# Additional giga-spatial library configuration (if needed)
-export BRONZE_DIR="bronze"
-export SILVER_DIR="silver"
-export GOLD_DIR="gold"
-export CACHE_DIR=""

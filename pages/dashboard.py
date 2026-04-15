@@ -97,8 +97,7 @@ from gigaspatial.processing.geo import convert_to_geodataframe
 from components.data.data_store_utils import get_data_store, get_impact_data
 
 ##### env variables #####
-RESULTS_DIR = config.RESULTS_DIR or "project_results/climate/lacro_project"
-BBOX_FILE = config.BBOX_FILE or "bbox.parquet"
+RESULTS_DIR = config.RESULTS_DIR or "results"
 VIEWS_DIR = config.VIEWS_DIR or "aos_views"
 ROOT_DATA_DIR = config.ROOT_DATA_DIR or "geodb"
 #########################
