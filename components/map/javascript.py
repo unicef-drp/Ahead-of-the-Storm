@@ -187,13 +187,13 @@ function(feature, layer) {
             Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? formatNumber(sev_children_total) : 'N/A'}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 0-5: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+            Age 0–4: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 5-15: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+            Age 5–14: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 15-24: ${severity_adolescent_population > 0 ? formatNumber(severity_adolescent_population) : 'N/A'}
+            Age 15–19: ${severity_adolescent_population > 0 ? formatNumber(severity_adolescent_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
@@ -442,13 +442,13 @@ function(feature, layer) {
         Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}
     </div>
     <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-        Age 0-5: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}
+        Age 0–4: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}
     </div>
     <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-        Age 5-15: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}
+        Age 5–14: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}
     </div>
     <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-        Age 15-24: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}
+        Age 15–19: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}

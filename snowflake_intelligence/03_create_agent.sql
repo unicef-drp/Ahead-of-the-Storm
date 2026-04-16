@@ -766,7 +766,7 @@ instructions:
     Bullets:
     - Forecast date: <human-readable UTC>
     - Expected population at risk: <integer> `data`
-    - Expected children at risk: <integer> `data` (<school-age 5–15> `data`, <infants 0–4> `data`)
+    - Expected children at risk: <integer> `data` (0–4: <infants> `data`, 5–14: <school-age> `data`, 15–19: <adolescents> `data`)
     - Expected schools at risk: <integer> `data`
     - Expected health centers at risk: <integer> `data`
 

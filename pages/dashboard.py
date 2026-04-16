@@ -356,9 +356,9 @@ tiles_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
                         dmc.Radio(id="population-tiles-layer", label="Population", value="population", mb="xs"),
                         dmc.Radio(id="children-total-tiles-layer", label="Children (total)", value="children-total", mb="xs"),
-                        dmc.Radio(id="infant-tiles-layer", label=html.Span("Age 0-5", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
-                        dmc.Radio(id="school-age-tiles-layer", label=html.Span("Age 5-15", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
-                        dmc.Radio(id="adolescent-tiles-layer", label=html.Span("Age 15-24", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
+                        dmc.Radio(id="infant-tiles-layer", label=html.Span("Age 0–4", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
+                        dmc.Radio(id="school-age-tiles-layer", label=html.Span("Age 5–14", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
+                        dmc.Radio(id="adolescent-tiles-layer", label=html.Span("Age 15–19", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
                         dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Radio(id="cci-tiles-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
@@ -470,9 +470,9 @@ admin_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-admin-layer", label="No Region Layer (just Probability)", value="none", mb="xs"),
                         dmc.Radio(id="population-admin-layer", label="Population", value="population", mb="xs"),
                         dmc.Radio(id="children-total-admin-layer", label="Children (total)", value="children-total", mb="xs"),
-                        dmc.Radio(id="infant-admin-layer", label=html.Span("Age 0-5", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
-                        dmc.Radio(id="school-age-admin-layer", label=html.Span("Age 5-15", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
-                        dmc.Radio(id="adolescent-admin-layer", label=html.Span("Age 15-24", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
+                        dmc.Radio(id="infant-admin-layer", label=html.Span("Age 0–4", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
+                        dmc.Radio(id="school-age-admin-layer", label=html.Span("Age 5–14", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
+                        dmc.Radio(id="adolescent-admin-layer", label=html.Span("Age 15–19", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
                         dmc.Radio(id="built-surface-admin-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Radio(id="cci-admin-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
@@ -863,19 +863,19 @@ impact_summary = dmc.Paper([
                                     dmc.TableTd("N/A", id="children-total-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("Age 0–4", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
                                     dmc.TableTd("N/A", id="infant-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="infant-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="infant-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
                                     dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Age 15-24", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("Age 15–19", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
                                     dmc.TableTd("N/A", id="adolescent-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="adolescent-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
                                     dmc.TableTd("N/A", id="adolescent-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
@@ -1333,15 +1333,15 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["children_total"]),
             format_value(probabilistic_results["children_total"]),
             format_value(high_results["children_total"]),
-            # Infants Age 0-5
+            # Infants Age 0–4
             format_value(low_results["infant"]),
             format_value(probabilistic_results["infant"]),
             format_value(high_results["infant"]),
-            # Children Age 5-15
+            # Children Age 5–14
             format_value(low_results["children"]),
             format_value(probabilistic_results["children"]),
             format_value(high_results["children"]),
-            # Adolescents Age 15-24
+            # Adolescents Age 15–19
             format_value(low_results["adolescent"]),
             format_value(probabilistic_results["adolescent"]),
             format_value(high_results["adolescent"]),
