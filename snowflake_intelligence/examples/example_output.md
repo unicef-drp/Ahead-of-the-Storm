@@ -10,7 +10,7 @@ At the 50kt wind threshold, the situation demands close monitoring and preparati
 
 - **Forecast date:** October 28, 2025 00Z UTC
 - **Expected population at risk:** 260,194
-- **Expected children at risk:** 71,968 children (52,691 school-age children ages 5-15, 19,277 infants ages 0-4)
+- **Expected children at risk:** 71,968 children (0–4: 19,277, 5–14: 52,691)
 - **Expected schools at risk:** 31
 - **Expected health centers at risk:** 30
 
@@ -38,7 +38,7 @@ The forecast suggests concentrated risk primarily in Saint James, Saint Elizabet
 **Worst-Case Scenario**
 
 - **Ensemble Member #8** worst-case: 980,352 population at risk
-- **Children at risk:** 266,620 (196,817 school-age children ages 5-15, 69,803 infants ages 0-4)
+- **Children at risk:** 266,620 (196,817 school-age children ages 5–14, 69,803 infants ages 0-4)
 - **Schools at risk:** 113
 - **Health centers at risk:** 84
 

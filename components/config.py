@@ -51,19 +51,19 @@ class Config:
     # Snowflake stage name for impact views (only needed if IMPACT_DATA_STORE='SNOWFLAKE')
     SNOWFLAKE_STAGE_NAME = os.getenv('SNOWFLAKE_STAGE_NAME')
     IMPACT_DATA_STORE = os.getenv('IMPACT_DATA_STORE', 'LOCAL')
+    # Controls how impact data is loaded: 'STAGE' (file download) or 'SQL' (direct MAT table query)
+    IMPACT_DATA_SOURCE = os.getenv('IMPACT_DATA_SOURCE', 'STAGE')
     
     # Application Configuration
-    RESULTS_DIR = os.getenv('RESULTS_DIR')
-    BBOX_FILE = os.getenv('BBOX_FILE')
-    STORMS_FILE = os.getenv('STORMS_FILE')
+    RESULTS_DIR = os.getenv('RESULTS_DIR', 'results')
     VIEWS_DIR = os.getenv('VIEWS_DIR')
     ROOT_DATA_DIR = os.getenv('ROOT_DATA_DIR')
     
     # Mapbox Configuration
     MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN')
 
-    CCI_COL = 'CCI_children' 
-    E_CCI_COL = 'E_CCI_children' 
+    CCI_COL = 'cci_children'
+    E_CCI_COL = 'E_cci_children'
     
     CHANGES_POP = [(100,500),(500,1000),(1000,math.inf)]
     CHANGES_FACILITIES = [(3,10),(10,20),(20,math.inf)]

@@ -18,6 +18,8 @@ Usage:
 """
 
 import os
+import time
+import threading
 from functools import lru_cache
 import pandas as pd
 import numpy as np
@@ -32,15 +34,14 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 # Import centralized configuration
 from components.config import config
 
-# Connection caching
-_connection_cache = None
-_connection_created = False
+# Per-thread connection storage — each Gunicorn worker thread gets its own connection
+_thread_local = threading.local()
 _connection_verbose = True  # Set to False to suppress connection messages
+_HEALTH_CHECK_INTERVAL = 300  # seconds — recheck liveness at most once every 5 min
 
 def _is_connection_alive(conn):
-    """Check if a Snowflake connection is still alive"""
+    """Check if a Snowflake connection is still alive via a lightweight SELECT 1."""
     try:
-        # Try a simple query to check if connection is alive
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.close()
@@ -48,50 +49,71 @@ def _is_connection_alive(conn):
     except:
         return False
 
+
+def _run_query(sql: str, params=None) -> pd.DataFrame:
+    """
+    Execute a SQL query against the thread-local Snowflake connection.
+    On a connection-closed error (08003), resets the connection and retries once.
+    """
+    for attempt in range(2):
+        try:
+            conn = get_snowflake_connection()
+            return pd.read_sql(sql, conn, params=params)
+        except Exception as e:
+            if attempt == 0 and ('08003' in str(e) or 'Connection is closed' in str(e)):
+                _thread_local.connection = None
+                _thread_local.last_health_check = 0.0
+                continue
+            raise
+
 def get_snowflake_connection():
     """
-    Get or create a Snowflake connection from centralized configuration.
-    
-    Reuses a cached connection if it's still alive, otherwise creates a new one.
-    This improves efficiency by avoiding unnecessary reconnections.
-    
+    Get or create a Snowflake connection for the current thread.
+
+    Uses threading.local() so each Gunicorn worker thread has its own
+    independent connection — avoids race conditions when multiple threads
+    run queries simultaneously.
+
+    The liveness check (SELECT 1) is rate-limited to at most once every 5
+    minutes per thread, rather than on every call, to avoid an extra
+    Snowflake round-trip before each query.
+
     Supports two authentication methods:
     1. SPCS OAuth (for Snowflake Container Services):
        - Set SPCS_RUN=true
        - Token read from SPCS_TOKEN_PATH (default: /snowflake/session/token)
-       - Requires SNOWFLAKE_HOST and SNOWFLAKE_PORT for internal network
-       
-    2. Password Authentication (traditional):
+    2. Password Authentication (default):
        - Requires SNOWFLAKE_USER and SNOWFLAKE_PASSWORD
     """
-    global _connection_cache, _connection_created, _connection_verbose
+    global _connection_verbose
     config.validate_snowflake_config()
-    
-    # Check if we have a cached connection that's still alive
-    if _connection_cache is not None:
-        if _is_connection_alive(_connection_cache):
-            return _connection_cache
-        else:
-            # Connection is dead, clear cache
-            try:
-                _connection_cache.close()
-            except:
-                pass
-            _connection_cache = None
-    
-    # Need to create a new connection
-    should_print = _connection_verbose and not _connection_created
-    
+
+    conn = getattr(_thread_local, 'connection', None)
+    if conn is not None:
+        last_check = getattr(_thread_local, 'last_health_check', 0.0)
+        if time.monotonic() - last_check < _HEALTH_CHECK_INTERVAL:
+            # Recent check passed — trust the connection
+            return conn
+        # Time for a periodic liveness check
+        if _is_connection_alive(conn):
+            _thread_local.last_health_check = time.monotonic()
+            return conn
+        # Connection is dead — close and fall through to reconnect
+        try:
+            conn.close()
+        except:
+            pass
+        _thread_local.connection = None
+
+    # Print once per thread
+    should_print = _connection_verbose and not getattr(_thread_local, 'connection_created', False)
+
     if config.SPCS_RUN:
-        # SPCS OAuth authentication using session token
         if should_print:
             print("Connecting to Snowflake with SPCS OAuth authentication...")
-        
         try:
             with open(config.SPCS_TOKEN_PATH, 'r') as f:
                 token = f.read().strip()
-            
-            # SPCS requires specific connection parameters for internal network
             conn_params = {
                 'host': config.SNOWFLAKE_HOST,
                 'port': config.SNOWFLAKE_PORT,
@@ -110,7 +132,6 @@ def get_snowflake_connection():
         except Exception as e:
             raise ValueError(f"Failed to load OAuth token from {config.SPCS_TOKEN_PATH}: {str(e)}")
     else:
-        # Non-SPCS mode: use standard connection parameters with password
         if should_print:
             print("Connecting to Snowflake with password authentication...")
         conn_params = {
@@ -121,14 +142,14 @@ def get_snowflake_connection():
             'database': config.SNOWFLAKE_DATABASE,
             'schema': config.SNOWFLAKE_SCHEMA
         }
-    
+
     try:
         conn = snowflake.connector.connect(**conn_params)
         if should_print:
-            print("✓ Connected to Snowflake (connection will be reused)")
-        # Cache the connection for reuse
-        _connection_cache = conn
-        _connection_created = True
+            print("✓ Connected to Snowflake (connection will be reused per thread)")
+        _thread_local.connection = conn
+        _thread_local.connection_created = True
+        _thread_local.last_health_check = time.monotonic()
         return conn
     except Exception as e:
         print(f"✗ Failed to connect to Snowflake: {str(e)}")
@@ -171,15 +192,15 @@ def get_hurricane_data_from_snowflake(track_id, forecast_time):
         RADIUS_64_KNOT_WINDS_SE_KM,
         RADIUS_64_KNOT_WINDS_SW_KM,
         RADIUS_64_KNOT_WINDS_NW_KM,
-        ST_ASWKT(WIND_FIELD_POLYGON_34KT) AS WIND_FIELD_POLYGON_34KT,
-        ST_ASWKT(WIND_FIELD_POLYGON_50KT) AS WIND_FIELD_POLYGON_50KT,
-        ST_ASWKT(WIND_FIELD_POLYGON_64KT) AS WIND_FIELD_POLYGON_64KT
+        WIND_FIELD_POLYGON_34KT,
+        WIND_FIELD_POLYGON_50KT,
+        WIND_FIELD_POLYGON_64KT
     FROM TC_TRACKS
     WHERE TRACK_ID = %s AND FORECAST_TIME = %s
     ORDER BY ENSEMBLE_MEMBER, LEAD_TIME
     """
     
-    df = pd.read_sql(query, conn, params=[track_id, forecast_time])
+    df = _run_query(query, params=[track_id, forecast_time])
     # Don't close connection - it's cached and will be reused
     
     return df
@@ -211,7 +232,7 @@ def get_envelopes_from_snowflake(track_id, forecast_time):
     ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
     """
     
-    df = pd.read_sql(query, conn, params=[track_id, forecast_time])
+    df = _run_query(query, params=[track_id, forecast_time])
     # Don't close connection - it's cached and will be reused
     
     return df
@@ -280,7 +301,7 @@ def get_available_wind_thresholds(storm, forecast_time):
         ORDER BY WIND_THRESHOLD
         """
         
-        df = pd.read_sql(query, conn, params=[storm, forecast_time])
+        df = _run_query(query, params=[storm, forecast_time])
         # Don't close connection - it's cached and will be reused
         
         if not df.empty:
@@ -316,7 +337,7 @@ def get_latest_forecast_time_overall():
         FROM TC_TRACKS
         """
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
@@ -346,7 +367,7 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
         '''
         
-        df = pd.read_sql(query, conn, params=[track_id, str(forecast_time)])
+        df = _run_query(query, params=[track_id, str(forecast_time)])
         # Don't close connection - reuse it for better performance
         # conn.close()
         
@@ -373,6 +394,7 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         return pd.DataFrame()
     
 
+@lru_cache(maxsize=1)
 def get_active_countries():
     """
     Get active countries from PIPELINE_COUNTRIES table in Snowflake
@@ -398,7 +420,7 @@ def get_active_countries():
         ORDER BY COUNTRY_CODE
         '''
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         if not df.empty:
@@ -417,41 +439,69 @@ def get_active_countries():
 def get_lat_lons(row):
     """
     Get latitude and longitude for a hurricane track from Snowflake
-    
+
     Args:
         row: pandas Series or dict with 'TRACK_ID' and 'FORECAST_TIME' keys
-    
+
     Returns:
         pandas.Series: Series with 'latitude' and 'longitude' values
     """
     try:
         conn = get_snowflake_connection()
-        
+
         # Get any available track data at lead time 0
         query = '''
         SELECT LATITUDE, LONGITUDE
         FROM TC_TRACKS
-        WHERE TRACK_ID = %s AND FORECAST_TIME = %s 
+        WHERE TRACK_ID = %s AND FORECAST_TIME = %s
         AND LEAD_TIME = 0
         LIMIT 1
         '''
-        
-        df_latlon = pd.read_sql(query, conn, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
+
+        df_latlon = _run_query(query, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
         # Don't close connection - it's cached and will be reused
-        
+
         if len(df_latlon) > 0:
             lat = df_latlon.iloc[0]['LATITUDE']
             lon = df_latlon.iloc[0]['LONGITUDE']
         else:
             lat = np.nan
             lon = np.nan
-            
+
         return pd.Series([lat, lon], index=["latitude", "longitude"])
-            
+
     except Exception as e:
         print(f"Error getting lat/lon from Snowflake: {str(e)}")
         return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
 
+
+@lru_cache(maxsize=1)
+def get_lat_lons_bulk() -> pd.DataFrame:
+    """
+    Fetch LATITUDE/LONGITUDE at LEAD_TIME=0 for every storm in TC_TRACKS.
+
+    Single query replaces the N-per-storm loop used at dashboard startup.
+    Cached so repeated calls (e.g. hot-reload) hit memory instead of Snowflake.
+
+    Returns:
+        pandas.DataFrame with columns: TRACK_ID, FORECAST_TIME, latitude, longitude
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT DISTINCT TRACK_ID, FORECAST_TIME, LATITUDE, LONGITUDE
+        FROM TC_TRACKS
+        WHERE LEAD_TIME = 0
+        """
+        df = _run_query(query)
+        df = df.rename(columns={'LATITUDE': 'latitude', 'LONGITUDE': 'longitude'})
+        print(f"✓ Loaded lat/lons for {len(df)} storm/forecast combinations in one query")
+        return df
+    except Exception as e:
+        print(f"Error in get_lat_lons_bulk: {str(e)}")
+        return pd.DataFrame(columns=['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude'])
+
+@lru_cache(maxsize=1)
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
     try:
@@ -468,7 +518,7 @@ def get_snowflake_data():
         ORDER BY FORECAST_TIME DESC, TRACK_ID
         '''
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         return df
@@ -476,3 +526,408 @@ def get_snowflake_data():
     except Exception as e:
         print(f"Error getting Snowflake data: {str(e)}")
         return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
+
+
+# ---------------------------------------------------------------------------
+# Impact data queries — *_MAT tables
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=64)
+def get_school_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query SCHOOL_IMPACT_MAT for school-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY,
+        ZONE_ID, LATITUDE, LONGITUDE, COUNTRY_ISO3_CODE
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            SCHOOL_NAME,
+            EDUCATION_LEVEL,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE,
+            COUNTRY_ISO3_CODE
+        FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} school impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying SCHOOL_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query HC_IMPACT_MAT for health centre impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, HEALTH_AMENITY_TYPE, AMENITY,
+        OPERATIONAL_STATUS, BEDS, EMERGENCY, ELECTRICITY, OPERATOR_TYPE,
+        PROBABILITY, ZONE_ID
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            HEALTH_AMENITY_TYPE,
+            AMENITY,
+            OPERATIONAL_STATUS,
+            BEDS,
+            EMERGENCY,
+            ELECTRICITY,
+            OPERATOR_TYPE,
+            PROBABILITY,
+            ZONE_ID,
+            ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
+            ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} health centre impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying HC_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query SHELTER_IMPACT_MAT for shelter-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            TYPE AS SHELTER_TYPE,
+            CATEGORY,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE
+        FROM AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} shelter impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying SHELTER_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+    """
+    Query WASH_IMPACT_MAT for WASH facility impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME,
+            WASH_TYPE,
+            CATEGORY,
+            PROBABILITY,
+            ZONE_ID,
+            LATITUDE,
+            LONGITUDE
+        FROM AOTS.TC_ECMWF.WASH_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
+        print(f"✓ Loaded {len(df)} WASH facility impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return df
+    except Exception as e:
+        print(f"Error querying WASH_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
+    """
+    Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+        zoom_level: Mercator tile zoom level (default 14)
+
+    Returns:
+        pandas.DataFrame with columns: ZONE_ID, ADMIN_ID, PROBABILITY,
+        E_POPULATION, E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_SCHOOL_AGE_POPULATION,
+        E_INFANT_POPULATION, E_NUM_HCS, E_RWI, E_SMOD_CLASS
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            ZONE_ID,
+            ADMIN_ID,
+            PROBABILITY,
+            E_POPULATION,
+            E_INFANT_POPULATION,
+            E_SCHOOL_AGE_POPULATION,
+            E_ADOLESCENT_POPULATION,
+            E_BUILT_SURFACE_M2,
+            E_NUM_SCHOOLS,
+            E_NUM_HCS,
+            E_NUM_SHELTERS,
+            E_NUM_WASH,
+            E_SMOD_CLASS,
+            E_RWI
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, zoom_level])
+        print(f"✓ Loaded {len(df)} tile impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt zoom={zoom_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying MERCATOR_TILE_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
+    """
+    Query ADMIN_ALL_IMPACT_MAT for administrative-unit-level impact data.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+        storm: Storm identifier (e.g. 'BERYL')
+        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
+        wind_threshold: Wind speed threshold in knots (e.g. 34)
+        admin_level: Administrative level to query (default 1)
+
+    Returns:
+        pandas.DataFrame with columns: NAME, E_POPULATION, E_NUM_SCHOOLS,
+        E_NUM_HCS, PROBABILITY, ZONE_ID
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            TILE_ID,
+            NAME,
+            ADMIN_LEVEL,
+            PROBABILITY,
+            E_POPULATION,
+            E_INFANT_POPULATION,
+            E_SCHOOL_AGE_POPULATION,
+            E_ADOLESCENT_POPULATION,
+            E_BUILT_SURFACE_M2,
+            E_NUM_SCHOOLS,
+            E_NUM_HCS,
+            E_NUM_SHELTERS,
+            E_NUM_WASH,
+            E_SMOD_CLASS,
+            E_RWI
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, admin_level])
+        print(f"✓ Loaded {len(df)} admin impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt admin_level={admin_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying ADMIN_ALL_IMPACT_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:
+    """
+    Query MERCATOR_TILE_CCI_MAT for tile-level CCI data.
+    Returns only zone_id + the two display columns to avoid merge conflicts.
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT ZONE_ID, CCI_CHILDREN, E_CCI_CHILDREN
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, zoom_level])
+        df.columns = [c.lower() for c in df.columns]   # zone_id, cci_children, E_cci_children
+        # Normalise E_ prefix (E_cci_children stays as-is after lower)
+        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
+        print(f"✓ Loaded {len(df)} tile CCI rows from SQL ({country}/{storm}/{forecast_date} zoom={zoom_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying MERCATOR_TILE_CCI_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=64)
+def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
+    """
+    Query ADMIN_ALL_CCI_MAT for admin-level CCI data.
+    Returns only tile_id + the two display columns to avoid merge conflicts.
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT TILE_ID, CCI_CHILDREN, E_CCI_CHILDREN
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, admin_level])
+        df.columns = [c.lower() for c in df.columns]   # tile_id, cci_children, e_cci_children
+        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
+        print(f"✓ Loaded {len(df)} admin CCI rows from SQL ({country}/{storm}/{forecast_date} admin_level={admin_level})")
+        return df
+    except Exception as e:
+        print(f"Error querying ADMIN_ALL_CCI_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_available_admin_levels(country: str) -> list:
+    """
+    Return the admin levels available in ADMIN_ALL_IMPACT_MAT for a given country.
+
+    Args:
+        country: Country code (e.g. 'JAM')
+
+    Returns:
+        Sorted list of integer admin levels, e.g. [1, 2, 3]
+    """
+    try:
+        conn = get_snowflake_connection()
+        query = """
+        SELECT DISTINCT ADMIN_LEVEL
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
+        WHERE COUNTRY = %s
+        ORDER BY 1
+        """
+        df = _run_query(query, params=[country])
+        return df['ADMIN_LEVEL'].tolist()
+    except Exception as e:
+        print(f"Error querying available admin levels: {str(e)}")
+
+
+@lru_cache(maxsize=64)
+def get_track_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> gpd.GeoDataFrame:
+    """
+    Query TRACK_MAT and return a GeoDataFrame matching the structure of track_views parquet files.
+
+    One row per ensemble member (ZONE_ID = member number 1–51), with severity columns
+    and the wind-envelope geometry in EPSG:4326.
+
+    Args:
+        country: Country code (e.g. 'PNG')
+        storm: Storm identifier (e.g. 'MAILA')
+        forecast_date: Forecast date string in YYYYMMDDHHMMSS format (e.g. '20260405120000')
+        wind_threshold: Wind threshold in knots (e.g. 50)
+
+    Returns:
+        geopandas.GeoDataFrame with columns matching track_views parquet files
+    """
+    try:
+        from shapely import wkb as shapely_wkb
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            ZONE_ID                        AS zone_id,
+            WIND_THRESHOLD                 AS wind_threshold,
+            SEVERITY_POPULATION            AS severity_population,
+            SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
+            SEVERITY_INFANT_POPULATION     AS severity_infant_population,
+            SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
+            SEVERITY_SCHOOLS               AS severity_schools,
+            SEVERITY_HCS                   AS severity_hcs,
+            SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
+            SEVERITY_NUM_WASH              AS severity_num_wash,
+            SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
+            GEOMETRY
+        FROM AOTS.TC_ECMWF.TRACK_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND WIND_THRESHOLD = %s
+        ORDER BY ZONE_ID
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
+
+        def _parse_wkb(g):
+            if g is None:
+                return None
+            # Snowflake returns VARIANT binary as a JSON-quoted hex string
+            hex_str = g.strip('"') if isinstance(g, str) else g.hex()
+            return shapely_wkb.loads(bytes.fromhex(hex_str))
+
+        df['geometry'] = df['GEOMETRY'].apply(_parse_wkb)
+        df = df.drop(columns=['GEOMETRY'])
+        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+        print(f"✓ Loaded {len(gdf)} track rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        return gdf
+    except Exception as e:
+        print(f"Error querying TRACK_MAT: {str(e)}")
+        return gpd.GeoDataFrame()

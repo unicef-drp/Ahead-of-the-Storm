@@ -1,8 +1,8 @@
 import dash
 import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State, dcc
-from flask_caching import Cache
 from dotenv import load_dotenv
+from flask_compress import Compress
 import pandas as pd
 
 load_dotenv()
@@ -22,6 +22,7 @@ app.config["suppress_callback_exceptions"] = True
 app.title = "AoS Hurricane Impact"
 app._favicon = "img/aots_icon.png"
 server = app.server
+Compress(server)
 
 
 app.layout = dmc.MantineProvider(

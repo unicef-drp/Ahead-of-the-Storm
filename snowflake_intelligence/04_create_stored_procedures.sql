@@ -33,9 +33,11 @@ USE SCHEMA TC_ECMWF;
 --   total_population          — expected population at risk
 --   total_schools             — expected schools at risk (float; fractional counts are normal)
 --   total_hcs                 — expected health centers at risk
---   total_school_age_children — expected school-age children (5–15) at risk
+--   total_shelters            — expected shelters at risk
+--   total_wash                — expected WASH facilities at risk
+--   total_school_age_children — expected school-age children (5–14) at risk
 --   total_infant_children     — expected infant children (0–4) at risk
---   total_children            — total expected children at risk (school-age + infants)
+--   total_children            — total expected children at risk (0–19: infants + school-age + adolescents)
 --
 -- Example:
 --   GET_EXPECTED_IMPACT_VALUES('JAM', 'MELISSA', '20251028000000', '50')
@@ -61,9 +63,11 @@ $$
         SUM(COALESCE(E_population, 0)) AS total_population,
         SUM(COALESCE(E_num_schools, 0)) AS total_schools,
         SUM(COALESCE(E_num_hcs, 0)) AS total_hcs,
+        SUM(COALESCE(E_num_shelters, 0)) AS total_shelters,
+        SUM(COALESCE(E_num_wash, 0)) AS total_wash,
         SUM(COALESCE(E_school_age_population, 0)) AS total_school_age_children,
         SUM(COALESCE(E_infant_population, 0)) AS total_infant_children,
-        SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0)) AS total_children
+        SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0) + COALESCE(E_adolescent_population, 0)) AS total_children
     FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
@@ -86,9 +90,11 @@ $$
     total_population: result.getColumnValue(2),
     total_schools: result.getColumnValue(3),
     total_hcs: result.getColumnValue(4),
-    total_school_age_children: result.getColumnValue(5),
-    total_infant_children: result.getColumnValue(6),
-    total_children: result.getColumnValue(7)
+    total_shelters: result.getColumnValue(5),
+    total_wash: result.getColumnValue(6),
+    total_school_age_children: result.getColumnValue(7),
+    total_infant_children: result.getColumnValue(8),
+    total_children: result.getColumnValue(9)
   };
 $$;
 
@@ -351,11 +357,13 @@ $$;
 -- Returns: JSON object with
 --   ensemble_member     — zone_id of the worst-case ensemble member
 --   population          — worst-case total population at risk
---   school_age_children — worst-case school-age children (5–15)
+--   school_age_children — worst-case school-age children (5–14)
 --   infants             — worst-case infant children (0–4)
---   children            — worst-case total children (school-age + infants)
+--   children            — worst-case total children (0–19: infants + school-age + adolescents)
 --   schools             — worst-case schools at risk
 --   health_centers      — worst-case health centers at risk
+--   shelters            — worst-case shelters at risk
+--   wash_facilities     — worst-case WASH facilities at risk
 --   (all numeric fields are 0 and ensemble_member is null if no data found)
 --
 -- Example:
@@ -382,9 +390,11 @@ $$
         SUM(COALESCE(severity_population, 0)) AS member_population,
         SUM(COALESCE(severity_school_age_population, 0)) AS member_school_age_children,
         SUM(COALESCE(severity_infant_population, 0)) AS member_infants,
-        SUM(COALESCE(severity_school_age_population, 0) + COALESCE(severity_infant_population, 0)) AS member_children,
+        SUM(COALESCE(severity_school_age_population, 0) + COALESCE(severity_infant_population, 0) + COALESCE(severity_adolescent_population, 0)) AS member_children,
         SUM(COALESCE(severity_schools, 0)) AS member_schools,
-        SUM(COALESCE(severity_hcs, 0)) AS member_hcs
+        SUM(COALESCE(severity_hcs, 0)) AS member_hcs,
+        SUM(COALESCE(severity_num_shelters, 0)) AS member_shelters,
+        SUM(COALESCE(severity_num_wash, 0)) AS member_wash
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
@@ -425,7 +435,9 @@ $$
       infants: result.getColumnValue(4),
       children: result.getColumnValue(5),
       schools: result.getColumnValue(6),
-      health_centers: result.getColumnValue(7)
+      health_centers: result.getColumnValue(7),
+      shelters: result.getColumnValue(8),
+      wash_facilities: result.getColumnValue(9)
     };
   } else {
     return {
@@ -435,7 +447,9 @@ $$
       infants: 0,
       children: 0,
       schools: 0,
-      health_centers: 0
+      health_centers: 0,
+      shelters: 0,
+      wash_facilities: 0
     };
   }
 $$;
@@ -493,9 +507,11 @@ $$
       SELECT 
         zone_id AS ensemble_member,
         SUM(COALESCE(severity_population, 0)) AS member_population,
-        SUM(COALESCE(severity_school_age_population, 0) + COALESCE(severity_infant_population, 0)) AS member_children,
+        SUM(COALESCE(severity_school_age_population, 0) + COALESCE(severity_infant_population, 0) + COALESCE(severity_adolescent_population, 0)) AS member_children,
         SUM(COALESCE(severity_schools, 0)) AS member_schools,
-        SUM(COALESCE(severity_hcs, 0)) AS member_hcs
+        SUM(COALESCE(severity_hcs, 0)) AS member_hcs,
+        SUM(COALESCE(severity_num_shelters, 0)) AS member_shelters,
+        SUM(COALESCE(severity_num_wash, 0)) AS member_wash
       FROM AOTS.TC_ECMWF.TRACK_MAT
       WHERE country = ?
         AND UPPER(storm) = UPPER(?)
@@ -536,6 +552,14 @@ $$
       APPROX_PERCENTILE(member_hcs, 0.50) AS p50_hcs,
       MAX(member_hcs) AS max_hcs,
       AVG(member_hcs) AS mean_hcs,
+      MIN(member_shelters) AS min_shelters,
+      APPROX_PERCENTILE(member_shelters, 0.50) AS p50_shelters,
+      MAX(member_shelters) AS max_shelters,
+      AVG(member_shelters) AS mean_shelters,
+      MIN(member_wash) AS min_wash,
+      APPROX_PERCENTILE(member_wash, 0.50) AS p50_wash,
+      MAX(member_wash) AS max_wash,
+      AVG(member_wash) AS mean_wash,
       (SELECT count_within_20_percent FROM members_within_20_percent) AS members_within_20_percent_of_worst_case
     FROM member_impacts
   `;
@@ -609,6 +633,18 @@ $$
       p50: result.getColumnValue(20),
       max: result.getColumnValue(21),
       mean: result.getColumnValue(22)
+    },
+    shelters: {
+      min: result.getColumnValue(23),
+      p50: result.getColumnValue(24),
+      max: result.getColumnValue(25),
+      mean: result.getColumnValue(26)
+    },
+    wash_facilities: {
+      min: result.getColumnValue(27),
+      p50: result.getColumnValue(28),
+      max: result.getColumnValue(29),
+      mean: result.getColumnValue(30)
     },
     members_within_20_percent_of_worst_case: members_within_20_percent,
     percentage_near_worst_case: pct,
@@ -734,7 +770,9 @@ $$
       SUM(COALESCE(E_population, 0)) AS total_population,
       SUM(COALESCE(E_num_schools, 0)) AS total_schools,
       SUM(COALESCE(E_num_hcs, 0)) AS total_hcs,
-      SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0)) AS total_children
+      SUM(COALESCE(E_num_shelters, 0)) AS total_shelters,
+      SUM(COALESCE(E_num_wash, 0)) AS total_wash,
+      SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0) + COALESCE(E_adolescent_population, 0)) AS total_children
     FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
@@ -768,7 +806,9 @@ $$
       total_population: population,
       total_schools: result.getColumnValue(4),
       total_hcs: result.getColumnValue(5),
-      total_children: result.getColumnValue(6)
+      total_shelters: result.getColumnValue(6),
+      total_wash: result.getColumnValue(7),
+      total_children: result.getColumnValue(8)
     });
   }
   
@@ -801,7 +841,7 @@ $$;
 -- Stored Procedure: Get Admin-Level Breakdown
 -- ============================================================================
 -- Returns expected impact by administrative area (admin-1 level), joining
--- ADMIN_IMPACT_MAT with BASE_ADMIN_MAT to resolve human-readable names.
+-- ADMIN_ALL_IMPACT_MAT with BASE_ADMIN_MAT to resolve human-readable names.
 -- Sorted by population descending. Used in all report sections.
 --
 -- Parameters:
@@ -837,28 +877,32 @@ $$
       SELECT 
         a.name AS admin_id,
         SUM(COALESCE(a.E_population, 0)) AS population,
-        SUM(COALESCE(a.E_school_age_population, 0) + COALESCE(a.E_infant_population, 0)) AS children,
+        SUM(COALESCE(a.E_school_age_population, 0) + COALESCE(a.E_infant_population, 0) + COALESCE(a.E_adolescent_population, 0)) AS children,
         SUM(COALESCE(a.E_num_schools, 0)) AS schools,
-        SUM(COALESCE(a.E_num_hcs, 0)) AS health_centers
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+        SUM(COALESCE(a.E_num_hcs, 0)) AS health_centers,
+        SUM(COALESCE(a.E_num_shelters, 0)) AS shelters,
+        SUM(COALESCE(a.E_num_wash, 0)) AS wash_facilities
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     admin_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     admin_with_names AS (
       SELECT 
@@ -867,16 +911,20 @@ $$
         agg.population,
         agg.children,
         agg.schools,
-        agg.health_centers
+        agg.health_centers,
+        agg.shelters,
+        agg.wash_facilities
       FROM admin_impacts_aggregated agg
       LEFT JOIN admin_name_mapping mapping ON agg.admin_id = mapping.admin_id
     )
-    SELECT 
+    SELECT
       administrative_area,
       population,
       children,
       schools,
-      health_centers
+      health_centers,
+      shelters,
+      wash_facilities
     FROM admin_with_names
     ORDER BY population DESC
   `;
@@ -896,7 +944,9 @@ $$
       population: result.getColumnValue(2),
       children: result.getColumnValue(3),
       schools: result.getColumnValue(4),
-      health_centers: result.getColumnValue(5)
+      health_centers: result.getColumnValue(5),
+      shelters: result.getColumnValue(6),
+      wash_facilities: result.getColumnValue(7)
     });
   }
   
@@ -911,7 +961,7 @@ $$;
 -- Stored Procedure: Get Admin-Level Trend Comparison
 -- ============================================================================
 -- Returns admin-area population delta between two forecast runs, sorted by
--- absolute change descending. Joins ADMIN_IMPACT_MAT with BASE_ADMIN_MAT for
+-- absolute change descending. Joins ADMIN_ALL_IMPACT_MAT with BASE_ADMIN_MAT for
 -- human-readable names. Used in Section 4 trend analysis.
 --
 -- Parameters:
@@ -949,28 +999,30 @@ $$
   
   var sql_command = `
     WITH current_aggregated AS (
-      SELECT 
+      SELECT
         a.name AS admin_id,
         SUM(COALESCE(a.E_population, 0)) AS pop
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     current_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     current_with_names AS (
       SELECT 
@@ -980,28 +1032,30 @@ $$
       LEFT JOIN current_name_mapping mapping ON curr.admin_id = mapping.admin_id
     ),
     previous_aggregated AS (
-      SELECT 
+      SELECT
         a.name AS admin_id,
         SUM(COALESCE(a.E_population, 0)) AS pop
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
       GROUP BY a.name
     ),
     previous_name_mapping AS (
       SELECT DISTINCT
         a.name AS admin_id,
         COALESCE(b.admin_name, b.name) AS admin_name
-      FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT a
-      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b 
-        ON a.name = b.tile_id 
+      FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
+      LEFT JOIN AOTS.TC_ECMWF.BASE_ADMIN_MAT b
+        ON a.name = b.tile_id
         AND b.country = ?
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
         AND a.forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
         AND a.wind_threshold = ?
+        AND a.admin_level = 1
     ),
     previous_with_names AS (
       SELECT 
@@ -1108,11 +1162,12 @@ $$
     SELECT DISTINCT
         wind_threshold,
         AVG(probability) AS probability
-    FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
+    FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
     WHERE country = ?
       AND UPPER(storm) = UPPER(?)
       AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
       AND probability IS NOT NULL
+      AND admin_level = 1
     GROUP BY wind_threshold
     ORDER BY wind_threshold ASC
   `;
@@ -1253,9 +1308,10 @@ $$;
 --   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --   metric_name        — One of (case-insensitive):
 --                          expected_population     — total expected population at risk
---                          expected_children       — expected children at risk (school-age + infants)
---                          expected_school_age     — expected school-age children (5–15)
+--                          expected_children       — expected children at risk (0–19: infants + school-age + adolescents)
+--                          expected_school_age     — expected school-age children (5–14)
 --                          expected_infants        — expected infant children (0–4)
+--                          expected_adolescents    — expected adolescents (15–19)
 --                          expected_schools        — expected schools at risk
 --                          expected_health_centers — expected health centers at risk
 --                          worst_case_population   — worst-case ensemble member population
@@ -1293,7 +1349,8 @@ $$
   // ---- Expected impact metrics (from MERCATOR_TILE_IMPACT_MAT) ----
   var expected_metrics = [
     'expected_population', 'expected_children', 'expected_school_age',
-    'expected_infants', 'expected_schools', 'expected_health_centers'
+    'expected_infants', 'expected_adolescents', 'expected_schools', 'expected_health_centers',
+    'expected_shelters', 'expected_wash'
   ];
 
   // ---- Worst-case metrics (from TRACK_MAT) ----
@@ -1311,11 +1368,14 @@ $$
   if (expected_metrics.indexOf(metric) !== -1) {
     var col_map = {
       'expected_population':    'SUM(COALESCE(E_population, 0))',
-      'expected_children':      'SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0))',
+      'expected_children':      'SUM(COALESCE(E_school_age_population, 0) + COALESCE(E_infant_population, 0) + COALESCE(E_adolescent_population, 0))',
       'expected_school_age':    'SUM(COALESCE(E_school_age_population, 0))',
       'expected_infants':       'SUM(COALESCE(E_infant_population, 0))',
+      'expected_adolescents':   'SUM(COALESCE(E_adolescent_population, 0))',
       'expected_schools':       'SUM(COALESCE(E_num_schools, 0))',
-      'expected_health_centers':'SUM(COALESCE(E_num_hcs, 0))'
+      'expected_health_centers':'SUM(COALESCE(E_num_hcs, 0))',
+      'expected_shelters':      'SUM(COALESCE(E_num_shelters, 0))',
+      'expected_wash':          'SUM(COALESCE(E_num_wash, 0))'
     };
     var sql = `
       SELECT ${col_map[metric]}
@@ -1338,7 +1398,7 @@ $$
   } else if (worst_case_metrics.indexOf(metric) !== -1) {
     var wc_col = (metric === 'worst_case_population')
       ? 'severity_population'
-      : '(severity_school_age_population + severity_infant_population)';
+      : '(severity_school_age_population + severity_infant_population + severity_adolescent_population)';
     var sql = `
       SELECT ${wc_col}
       FROM AOTS.TC_ECMWF.TRACK_MAT
@@ -1406,7 +1466,8 @@ $$
   } else {
     error = 'Unknown metric_name: ' + METRIC_NAME +
             '. Valid values: expected_population, expected_children, expected_school_age, ' +
-            'expected_infants, expected_schools, expected_health_centers, ' +
+            'expected_infants, expected_adolescents, expected_schools, expected_health_centers, ' +
+            'expected_shelters, expected_wash, ' +
             'worst_case_population, worst_case_children, worst_to_expected_ratio, ensemble_count.';
   }
 
@@ -1779,7 +1840,7 @@ $$;
 --
 -- Returns:
 --   match          — true if difference is within 1% tolerance
---   admin_total    — sum of E_population from ADMIN_IMPACT_MAT
+--   admin_total    — sum of E_population from ADMIN_ALL_IMPACT_MAT
 --   tile_total     — sum of E_population from MERCATOR_TILE_IMPACT_MAT
 --   pct_diff       — absolute percentage difference between the two totals
 --   tolerance_pct  — tolerance threshold used (1.0)
@@ -1807,14 +1868,15 @@ $$
              error: 'Invalid wind_threshold_val: ' + WIND_THRESHOLD_VAL };
   }
 
-  // --- Admin total from ADMIN_IMPACT_MAT ---
+  // --- Admin total from ADMIN_ALL_IMPACT_MAT (admin_level=1 to avoid double-counting) ---
   var r_admin = snowflake.createStatement({
     sqlText: `SELECT SUM(COALESCE(E_population, 0)) AS admin_total
-              FROM AOTS.TC_ECMWF.ADMIN_IMPACT_MAT
+              FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
               WHERE country = ?
                 AND UPPER(storm) = UPPER(?)
                 AND forecast_date = RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
-                AND wind_threshold = ?`,
+                AND wind_threshold = ?
+                AND admin_level = 1`,
     binds: [COUNTRY_CODE, STORM_NAME, FORECAST_DATE_STR, wt]
   }).execute();
   r_admin.next();

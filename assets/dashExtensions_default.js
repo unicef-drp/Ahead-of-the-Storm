@@ -20,15 +20,23 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             ,
         function1: function(feature, context) {
                 const props = feature.properties || {};
-                const color = props._color || '#808080';
-                const fillOpacity = props._fillOpacity || 0.7;
-                const weight = props._weight || 1;
-                const opacity = props._opacity || 0.8;
-
+                const hideout = context.hideout || {};
+                if (hideout.hidden) {
+                    return {
+                        fillColor: 'transparent',
+                        fillOpacity: 0,
+                        color: 'transparent',
+                        weight: 0,
+                        opacity: 0
+                    };
+                }
+                const prop = hideout.prop || 'probability';
+                const color = props['_color_' + prop] || 'transparent';
+                const fillOpacity = props['_fillOpacity_' + prop] != null ? props['_fillOpacity_' + prop] : 0.0;
                 return {
                     color: color,
-                    weight: weight,
-                    opacity: opacity,
+                    weight: props._weight || 1,
+                    opacity: props._opacity || 0.8,
                     fillColor: color,
                     fillOpacity: fillOpacity
                 };
@@ -145,9 +153,12 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
                 const severity_school_age_population = props.severity_school_age_population || 0;
                 const severity_infant_population = props.severity_infant_population || 0;
+                const severity_adolescent_population = props.severity_adolescent_population || 0;
                 const severity_population = props.severity_population || 0;
                 const severity_schools = props.severity_schools || 0;
                 const severity_hcs = props.severity_hcs || 0;
+                const severity_num_shelters = props.severity_num_shelters || 0;
+                const severity_num_wash = props.severity_num_wash || 0;
                 const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
 
 
@@ -171,6 +182,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         </div>
     `;
 
+                // Children total (sum of available age groups)
+                const sev_child_parts = [severity_infant_population, severity_school_age_population, severity_adolescent_population].filter(v => v > 0);
+                const sev_children_total = sev_child_parts.length > 0 ? sev_child_parts.reduce((a, b) => a + b, 0) : null;
+
                 // Always show impact section
                 content += `
         <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
@@ -180,17 +195,29 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         <div style="font-size: 11px; color: #555;">
             Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
         </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Age 5-15: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+        <div style="font-size: 11px; color: #555;">
+            Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? formatNumber(sev_children_total) : 'N/A'}
         </div>
-        <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-            Age 0-5: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+            Age 0–4: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+        </div>
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+            Age 5–14: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+        </div>
+        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+            Age 15–19: ${severity_adolescent_population > 0 ? formatNumber(severity_adolescent_population) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Shelters: ${severity_num_shelters > 0 ? formatNumber(severity_num_shelters) : 'N/A'}
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            WASH Facilities: ${severity_num_wash > 0 ? formatNumber(severity_num_wash) : 'N/A'}
         </div>
         <div style="font-size: 11px; color: #555;">
             Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
@@ -265,6 +292,66 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             ,
         function8: function(feature, layer) {
                 const props = feature.properties || {};
+                const name = props.name || props.name_en || null;
+                const shelter_type = props.shelter_type || props.type || null;
+                const category = props.category || null;
+                const probability = props.probability;
+
+                const formatPercent = (prob) => {
+                    if (typeof prob === 'number') return (prob * 100).toFixed(1) + '%';
+                    return 'N/A';
+                };
+
+                let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #FF8C00; margin-bottom: 5px;">
+            Shelter
+        </div>
+    `;
+                if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
+                if (shelter_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${shelter_type}</div>`;
+                if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+                if (probability !== undefined && probability !== null) {
+                    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                } else {
+                    content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                }
+
+                layer.bindTooltip(content, {
+                    sticky: true
+                });
+            }
+
+            ,
+        function9: function(feature, layer) {
+                const props = feature.properties || {};
+                const name = props.name || props.name_en || null;
+                const wash_type = props.wash_type || props.type || null;
+                const category = props.category || null;
+                const probability = props.probability || 0;
+
+                const formatPercent = (prob) => {
+                    if (typeof prob === 'number') return (prob * 100).toFixed(1) + '%';
+                    return 'N/A';
+                };
+
+                let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #008B8B; margin-bottom: 5px;">
+            WASH Facility
+        </div>
+    `;
+                if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
+                if (wash_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${wash_type}</div>`;
+                if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+                content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+
+                layer.bindTooltip(content, {
+                    sticky: true
+                });
+            }
+
+            ,
+        function10: function(feature, layer) {
+                const props = feature.properties || {};
 
                 const formatNumber = (num) => {
                     if (typeof num === 'number') {
@@ -285,9 +372,12 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const E_num_schools = props.E_num_schools || 0;
                 const E_school_age_population = props.E_school_age_population || 0;
                 const E_infant_population = props.E_infant_population || 0;
+                const E_adolescent_population = props.E_adolescent_population || 0;
                 const E_num_hcs = props.E_num_hcs || 0;
+                const E_num_shelters = props.E_num_shelters || 0;
+                const E_num_wash = props.E_num_wash || 0;
                 const E_rwi = props.E_rwi || 0;
-                const E_cci = props.E_CCI || 0;
+                const E_cci = props.E_cci_children || 0;
                 const probability = props.probability || 0;
 
                 // Base infrastructure values
@@ -296,9 +386,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const num_schools = props.num_schools || 0;
                 const school_age_pop = props.school_age_population || 0;
                 const infant_pop = props.infant_population || 0;
+                const adolescent_pop = props.adolescent_population || 0;
                 const num_hcs = props.num_hcs || 0;
                 const rwi = props.rwi || 0;
-                const cci = props.CCI || 0;
+                const cci = props.cci_children || 0;
                 const smod_class = props.smod_class || 'N/A';
 
                 // Settlement classification mapping (values are 0, 10, 20, 30)
@@ -327,8 +418,16 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 };
 
                 const formatDecimal = (val) => {
-                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+                    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '' || val === 0) return 'N/A';
                     return val.toFixed(2);
+                };
+
+                // Expected value inline annotation: base * probability, shown in red
+                const fmtExp = (base, prob) => {
+                    if (!prob || prob <= 0 || typeof base !== 'number' || base <= 0) return '';
+                    const exp = base * prob;
+                    const expStr = exp >= 1 ? formatNumber(Math.round(exp)) : exp.toFixed(1);
+                    return ` <span style="color: #dc143c; font-size: 0.88em;">(~${expStr})</span>`;
                 };
 
                 // Show expected impact if available
@@ -344,28 +443,44 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         `;
                 }
 
+                // Children total: always show the sum (0 is valid); N/A only if no tile data at all
+                const has_tile_data = props.population !== undefined;
+                const children_total = has_tile_data ? infant_pop + school_age_pop + adolescent_pop : null;
+
                 // Show tile data - always show all fields
                 content += `
     <div style="font-size: 11px; color: #777; margin-top: 5px;">
         <strong>Tile Base Data:</strong>
     </div>
     <div style="font-size: 11px; color: #555;">
-        Population: ${formatValue(population)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 5-15: ${formatValue(school_age_pop)}
-    </div>
-    <div style="font-size: 11px; color: #555; padding-left: 10px; font-style: italic;">
-        Age 0-5: ${formatValue(infant_pop)}
+        Population: ${formatValue(population)}${fmtExp(population, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Schools: ${formatValue(num_schools)}
+        Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}
+    </div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 0–4: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}
+    </div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 5–14: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}
+    </div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
+        Age 15–19: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Health Centers: ${formatValue(num_hcs)}
+        Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' : 'N/A'}
+        Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Shelters: ${formatValue(E_num_shelters)}${fmtExp(E_num_shelters, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        WASH Facilities: ${formatValue(E_num_wash)}${fmtExp(E_num_wash, probability)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}
     </div>
     <div style="font-size: 11px; color: #555;">
         CCI: ${formatDecimal(cci)}
@@ -384,13 +499,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             }
 
             ,
-        function9: function() {
+        function11: function() {
             return {
                 weight: 3,
                 color: '#e53935'
             };
         },
-        function10: function(feature, layer) {
+        function12: function(feature, layer) {
             const props = feature.properties || {};
             const rows = Object.keys(props).map(k =>
                 `<tr><th style="text-align:left;padding-right:6px;">${k}</th><td>${props[k]}</td></tr>`

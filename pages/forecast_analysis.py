@@ -240,19 +240,31 @@ def create_impact_summary(tab_suffix=""):
                                     dmc.TableTd("N/A", id=f"analysis-population-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Children (0–19)", style={"fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
+                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0–4", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
                                     dmc.TableTd("N/A", id=f"analysis-infant-affected-low{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500}),
                                     dmc.TableTd("N/A", id=f"analysis-infant-affected-probabilistic{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500}),
                                     dmc.TableTd("N/A", id=f"analysis-infant-affected-high{suffix}",
                                                 style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-children-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 15–19", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
+                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd("Schools", style={"fontWeight": 500}),
@@ -265,6 +277,18 @@ def create_impact_summary(tab_suffix=""):
                                     dmc.TableTd("N/A", id=f"analysis-health-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
                                     dmc.TableTd("N/A", id=f"analysis-health-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
                                     dmc.TableTd("N/A", id=f"analysis-health-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Shelters", style={"fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("WASH Facilities", style={"fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
@@ -324,10 +348,13 @@ def make_single_page_layout():
                             dmc.TabsList(
                                 [
                                     dmc.TabsTab("Population", value="population"),
-                                    dmc.TabsTab("Age 5-15", value="children"),
-                                    dmc.TabsTab("Age 0-5", value="infants"),
+                                    dmc.TabsTab("Age 0–4", value="infants"),
+                                    dmc.TabsTab("Age 5–14", value="children"),
+                                    dmc.TabsTab("Age 15–19", value="adolescents"),
                                     dmc.TabsTab("Schools", value="schools"),
                                     dmc.TabsTab("Health Centers", value="health"),
+                                    dmc.TabsTab("Shelters", value="shelters"),
+                                    dmc.TabsTab("WASH", value="wash"),
                                     dmc.TabsTab("Built Surface", value="built_surface"),
                                 ]
                             ),
@@ -336,15 +363,20 @@ def make_single_page_layout():
                                 create_wind_threshold_tabs_content("population", "Population"),
                                 value="population"
                             ),
-                            # Children Tab
-                            dmc.TabsPanel(
-                                create_wind_threshold_tabs_content("children", "Age 5-15"),
-                                value="children"
-                            ),
                             # Infants Tab
                             dmc.TabsPanel(
-                                create_wind_threshold_tabs_content("infants", "Age 0-5"),
+                                create_wind_threshold_tabs_content("infants", "Age 0–4"),
                                 value="infants"
+                            ),
+                            # Children Tab
+                            dmc.TabsPanel(
+                                create_wind_threshold_tabs_content("children", "Age 5–14"),
+                                value="children"
+                            ),
+                            # Adolescents Tab
+                            dmc.TabsPanel(
+                                create_wind_threshold_tabs_content("adolescents", "Age 15–19"),
+                                value="adolescents"
                             ),
                             # Schools Tab
                             dmc.TabsPanel(
@@ -355,6 +387,16 @@ def make_single_page_layout():
                             dmc.TabsPanel(
                                 create_wind_threshold_tabs_content("health", "Health Centers"),
                                 value="health"
+                            ),
+                            # Shelters Tab
+                            dmc.TabsPanel(
+                                create_wind_threshold_tabs_content("shelters", "Shelters"),
+                                value="shelters"
+                            ),
+                            # WASH Tab
+                            dmc.TabsPanel(
+                                create_wind_threshold_tabs_content("wash", "WASH Facilities"),
+                                value="wash"
                             ),
                             # Built Surface Tab
                             dmc.TabsPanel(
@@ -481,12 +523,15 @@ def update_storm_options(country, forecast_date, forecast_time):
     [Input("analysis-population-threshold-selector", "value"),
      Input("analysis-children-threshold-selector", "value"),
      Input("analysis-infants-threshold-selector", "value"),
+     Input("analysis-adolescents-threshold-selector", "value"),
      Input("analysis-schools-threshold-selector", "value"),
      Input("analysis-health-threshold-selector", "value"),
+     Input("analysis-shelters-threshold-selector", "value"),
+     Input("analysis-wash-threshold-selector", "value"),
      Input("analysis-built-surface-threshold-selector", "value")],
     prevent_initial_call=False
 )
-def update_wind_threshold_store(pop_val, children_val, infants_val, schools_val, health_val, built_surface_val):
+def update_wind_threshold_store(pop_val, children_val, infants_val, adolescents_val, schools_val, health_val, shelters_val, wash_val, built_surface_val):
     """Update store when any threshold selector changes"""
     # Get the active input (triggered one)
     ctx = dash.callback_context
@@ -511,10 +556,16 @@ def update_wind_threshold_store(pop_val, children_val, infants_val, schools_val,
      Output("analysis-children-threshold-selector", "value", allow_duplicate=True),
      Output("analysis-infants-threshold-selector", "data"),
      Output("analysis-infants-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-adolescents-threshold-selector", "data"),
+     Output("analysis-adolescents-threshold-selector", "value", allow_duplicate=True),
      Output("analysis-schools-threshold-selector", "data"),
      Output("analysis-schools-threshold-selector", "value", allow_duplicate=True),
      Output("analysis-health-threshold-selector", "data"),
      Output("analysis-health-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-shelters-threshold-selector", "data"),
+     Output("analysis-shelters-threshold-selector", "value", allow_duplicate=True),
+     Output("analysis-wash-threshold-selector", "data"),
+     Output("analysis-wash-threshold-selector", "value", allow_duplicate=True),
      Output("analysis-built-surface-threshold-selector", "data"),
      Output("analysis-built-surface-threshold-selector", "value", allow_duplicate=True)],
     [Input("analysis-storm-select", "value"),
@@ -525,26 +576,29 @@ def update_wind_threshold_store(pop_val, children_val, infants_val, schools_val,
 )
 def update_threshold_selectors(storm, date, time, current_threshold):
     """Update all threshold SegmentedControls based on available thresholds from Snowflake"""
-    
+
     if not all([storm, date, time]):
         # Return all thresholds enabled if no storm selected
         return (
             THRESHOLD_OPTIONS, "34",  # population
             THRESHOLD_OPTIONS, "34",  # children
             THRESHOLD_OPTIONS, "34",  # infants
+            THRESHOLD_OPTIONS, "34",  # adolescents
             THRESHOLD_OPTIONS, "34",  # schools
             THRESHOLD_OPTIONS, "34",  # health
+            THRESHOLD_OPTIONS, "34",  # shelters
+            THRESHOLD_OPTIONS, "34",  # wash
             THRESHOLD_OPTIONS, "34"   # built-surface
         )
-    
+
     try:
         # Get available wind thresholds from Snowflake
         forecast_datetime = f"{date} {time}:00"
         available_thresholds = get_available_wind_thresholds(storm, forecast_datetime)
-        
+
         # Filter options to only include available thresholds
         filtered_options = [opt for opt in THRESHOLD_OPTIONS if opt["value"] in available_thresholds]
-        
+
         # Set default threshold - preserve user selection if still available, otherwise prefer 50kt or first available
         if not filtered_options:
             filtered_options = THRESHOLD_OPTIONS
@@ -555,25 +609,31 @@ def update_threshold_selectors(storm, date, time, current_threshold):
             default_threshold = "50"
         else:
             default_threshold = str(sorted([int(t) for t in available_thresholds])[0])
-        
+
         # Return same options and default for all selectors (they should stay in sync)
         return (
             filtered_options, default_threshold,  # population
             filtered_options, default_threshold,  # children
             filtered_options, default_threshold,  # infants
+            filtered_options, default_threshold,  # adolescents
             filtered_options, default_threshold,  # schools
             filtered_options, default_threshold,  # health
+            filtered_options, default_threshold,  # shelters
+            filtered_options, default_threshold,  # wash
             filtered_options, default_threshold   # built-surface
         )
-        
+
     except Exception as e:
         print(f"Analysis: Error getting wind threshold options: {e}")
         return (
             THRESHOLD_OPTIONS, "34",  # population
             THRESHOLD_OPTIONS, "34",  # children
             THRESHOLD_OPTIONS, "34",  # infants
+            THRESHOLD_OPTIONS, "34",  # adolescents
             THRESHOLD_OPTIONS, "34",  # schools
             THRESHOLD_OPTIONS, "34",  # health
+            THRESHOLD_OPTIONS, "34",  # shelters
+            THRESHOLD_OPTIONS, "34",  # wash
             THRESHOLD_OPTIONS, "34"   # built-surface
         )
 
@@ -586,18 +646,30 @@ def update_threshold_selectors(storm, date, time, current_threshold):
     [Output("analysis-population-count-low-population", "children"),
      Output("analysis-population-count-probabilistic-population", "children"),
      Output("analysis-population-count-high-population", "children"),
+     Output("analysis-total-children-count-low-population", "children"),
+     Output("analysis-total-children-count-probabilistic-population", "children"),
+     Output("analysis-total-children-count-high-population", "children"),
      Output("analysis-children-affected-low-population", "children"),
      Output("analysis-children-affected-probabilistic-population", "children"),
      Output("analysis-children-affected-high-population", "children"),
      Output("analysis-infant-affected-low-population", "children"),
      Output("analysis-infant-affected-probabilistic-population", "children"),
      Output("analysis-infant-affected-high-population", "children"),
+     Output("analysis-adolescent-affected-low-population", "children"),
+     Output("analysis-adolescent-affected-probabilistic-population", "children"),
+     Output("analysis-adolescent-affected-high-population", "children"),
      Output("analysis-schools-count-low-population", "children"),
      Output("analysis-schools-count-probabilistic-population", "children"),
      Output("analysis-schools-count-high-population", "children"),
      Output("analysis-health-count-low-population", "children"),
      Output("analysis-health-count-probabilistic-population", "children"),
      Output("analysis-health-count-high-population", "children"),
+     Output("analysis-shelters-count-low-population", "children"),
+     Output("analysis-shelters-count-probabilistic-population", "children"),
+     Output("analysis-shelters-count-high-population", "children"),
+     Output("analysis-wash-count-low-population", "children"),
+     Output("analysis-wash-count-probabilistic-population", "children"),
+     Output("analysis-wash-count-high-population", "children"),
      Output("analysis-bsm2-count-low-population", "children"),
      Output("analysis-bsm2-count-probabilistic-population", "children"),
      Output("analysis-bsm2-count-high-population", "children"),
@@ -606,18 +678,30 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-population-count-low-children", "children"),
      Output("analysis-population-count-probabilistic-children", "children"),
      Output("analysis-population-count-high-children", "children"),
+     Output("analysis-total-children-count-low-children", "children"),
+     Output("analysis-total-children-count-probabilistic-children", "children"),
+     Output("analysis-total-children-count-high-children", "children"),
      Output("analysis-children-affected-low-children", "children"),
      Output("analysis-children-affected-probabilistic-children", "children"),
      Output("analysis-children-affected-high-children", "children"),
      Output("analysis-infant-affected-low-children", "children"),
      Output("analysis-infant-affected-probabilistic-children", "children"),
      Output("analysis-infant-affected-high-children", "children"),
+     Output("analysis-adolescent-affected-low-children", "children"),
+     Output("analysis-adolescent-affected-probabilistic-children", "children"),
+     Output("analysis-adolescent-affected-high-children", "children"),
      Output("analysis-schools-count-low-children", "children"),
      Output("analysis-schools-count-probabilistic-children", "children"),
      Output("analysis-schools-count-high-children", "children"),
      Output("analysis-health-count-low-children", "children"),
      Output("analysis-health-count-probabilistic-children", "children"),
      Output("analysis-health-count-high-children", "children"),
+     Output("analysis-shelters-count-low-children", "children"),
+     Output("analysis-shelters-count-probabilistic-children", "children"),
+     Output("analysis-shelters-count-high-children", "children"),
+     Output("analysis-wash-count-low-children", "children"),
+     Output("analysis-wash-count-probabilistic-children", "children"),
+     Output("analysis-wash-count-high-children", "children"),
      Output("analysis-bsm2-count-low-children", "children"),
      Output("analysis-bsm2-count-probabilistic-children", "children"),
      Output("analysis-bsm2-count-high-children", "children"),
@@ -626,38 +710,94 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-population-count-low-infants", "children"),
      Output("analysis-population-count-probabilistic-infants", "children"),
      Output("analysis-population-count-high-infants", "children"),
+     Output("analysis-total-children-count-low-infants", "children"),
+     Output("analysis-total-children-count-probabilistic-infants", "children"),
+     Output("analysis-total-children-count-high-infants", "children"),
      Output("analysis-children-affected-low-infants", "children"),
      Output("analysis-children-affected-probabilistic-infants", "children"),
      Output("analysis-children-affected-high-infants", "children"),
      Output("analysis-infant-affected-low-infants", "children"),
      Output("analysis-infant-affected-probabilistic-infants", "children"),
      Output("analysis-infant-affected-high-infants", "children"),
+     Output("analysis-adolescent-affected-low-infants", "children"),
+     Output("analysis-adolescent-affected-probabilistic-infants", "children"),
+     Output("analysis-adolescent-affected-high-infants", "children"),
      Output("analysis-schools-count-low-infants", "children"),
      Output("analysis-schools-count-probabilistic-infants", "children"),
      Output("analysis-schools-count-high-infants", "children"),
      Output("analysis-health-count-low-infants", "children"),
      Output("analysis-health-count-probabilistic-infants", "children"),
      Output("analysis-health-count-high-infants", "children"),
+     Output("analysis-shelters-count-low-infants", "children"),
+     Output("analysis-shelters-count-probabilistic-infants", "children"),
+     Output("analysis-shelters-count-high-infants", "children"),
+     Output("analysis-wash-count-low-infants", "children"),
+     Output("analysis-wash-count-probabilistic-infants", "children"),
+     Output("analysis-wash-count-high-infants", "children"),
      Output("analysis-bsm2-count-low-infants", "children"),
      Output("analysis-bsm2-count-probabilistic-infants", "children"),
      Output("analysis-bsm2-count-high-infants", "children"),
      Output("analysis-high-impact-badge-infants", "children"),
+     # Outputs for adolescents tab
+     Output("analysis-population-count-low-adolescents", "children"),
+     Output("analysis-population-count-probabilistic-adolescents", "children"),
+     Output("analysis-population-count-high-adolescents", "children"),
+     Output("analysis-total-children-count-low-adolescents", "children"),
+     Output("analysis-total-children-count-probabilistic-adolescents", "children"),
+     Output("analysis-total-children-count-high-adolescents", "children"),
+     Output("analysis-children-affected-low-adolescents", "children"),
+     Output("analysis-children-affected-probabilistic-adolescents", "children"),
+     Output("analysis-children-affected-high-adolescents", "children"),
+     Output("analysis-infant-affected-low-adolescents", "children"),
+     Output("analysis-infant-affected-probabilistic-adolescents", "children"),
+     Output("analysis-infant-affected-high-adolescents", "children"),
+     Output("analysis-adolescent-affected-low-adolescents", "children"),
+     Output("analysis-adolescent-affected-probabilistic-adolescents", "children"),
+     Output("analysis-adolescent-affected-high-adolescents", "children"),
+     Output("analysis-schools-count-low-adolescents", "children"),
+     Output("analysis-schools-count-probabilistic-adolescents", "children"),
+     Output("analysis-schools-count-high-adolescents", "children"),
+     Output("analysis-health-count-low-adolescents", "children"),
+     Output("analysis-health-count-probabilistic-adolescents", "children"),
+     Output("analysis-health-count-high-adolescents", "children"),
+     Output("analysis-shelters-count-low-adolescents", "children"),
+     Output("analysis-shelters-count-probabilistic-adolescents", "children"),
+     Output("analysis-shelters-count-high-adolescents", "children"),
+     Output("analysis-wash-count-low-adolescents", "children"),
+     Output("analysis-wash-count-probabilistic-adolescents", "children"),
+     Output("analysis-wash-count-high-adolescents", "children"),
+     Output("analysis-bsm2-count-low-adolescents", "children"),
+     Output("analysis-bsm2-count-probabilistic-adolescents", "children"),
+     Output("analysis-bsm2-count-high-adolescents", "children"),
+     Output("analysis-high-impact-badge-adolescents", "children"),
      # Outputs for schools tab
      Output("analysis-population-count-low-schools", "children"),
      Output("analysis-population-count-probabilistic-schools", "children"),
      Output("analysis-population-count-high-schools", "children"),
+     Output("analysis-total-children-count-low-schools", "children"),
+     Output("analysis-total-children-count-probabilistic-schools", "children"),
+     Output("analysis-total-children-count-high-schools", "children"),
      Output("analysis-children-affected-low-schools", "children"),
      Output("analysis-children-affected-probabilistic-schools", "children"),
      Output("analysis-children-affected-high-schools", "children"),
      Output("analysis-infant-affected-low-schools", "children"),
      Output("analysis-infant-affected-probabilistic-schools", "children"),
      Output("analysis-infant-affected-high-schools", "children"),
+     Output("analysis-adolescent-affected-low-schools", "children"),
+     Output("analysis-adolescent-affected-probabilistic-schools", "children"),
+     Output("analysis-adolescent-affected-high-schools", "children"),
      Output("analysis-schools-count-low-schools", "children"),
      Output("analysis-schools-count-probabilistic-schools", "children"),
      Output("analysis-schools-count-high-schools", "children"),
      Output("analysis-health-count-low-schools", "children"),
      Output("analysis-health-count-probabilistic-schools", "children"),
      Output("analysis-health-count-high-schools", "children"),
+     Output("analysis-shelters-count-low-schools", "children"),
+     Output("analysis-shelters-count-probabilistic-schools", "children"),
+     Output("analysis-shelters-count-high-schools", "children"),
+     Output("analysis-wash-count-low-schools", "children"),
+     Output("analysis-wash-count-probabilistic-schools", "children"),
+     Output("analysis-wash-count-high-schools", "children"),
      Output("analysis-bsm2-count-low-schools", "children"),
      Output("analysis-bsm2-count-probabilistic-schools", "children"),
      Output("analysis-bsm2-count-high-schools", "children"),
@@ -666,38 +806,126 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-population-count-low-health", "children"),
      Output("analysis-population-count-probabilistic-health", "children"),
      Output("analysis-population-count-high-health", "children"),
+     Output("analysis-total-children-count-low-health", "children"),
+     Output("analysis-total-children-count-probabilistic-health", "children"),
+     Output("analysis-total-children-count-high-health", "children"),
      Output("analysis-children-affected-low-health", "children"),
      Output("analysis-children-affected-probabilistic-health", "children"),
      Output("analysis-children-affected-high-health", "children"),
      Output("analysis-infant-affected-low-health", "children"),
      Output("analysis-infant-affected-probabilistic-health", "children"),
      Output("analysis-infant-affected-high-health", "children"),
+     Output("analysis-adolescent-affected-low-health", "children"),
+     Output("analysis-adolescent-affected-probabilistic-health", "children"),
+     Output("analysis-adolescent-affected-high-health", "children"),
      Output("analysis-schools-count-low-health", "children"),
      Output("analysis-schools-count-probabilistic-health", "children"),
      Output("analysis-schools-count-high-health", "children"),
      Output("analysis-health-count-low-health", "children"),
      Output("analysis-health-count-probabilistic-health", "children"),
      Output("analysis-health-count-high-health", "children"),
+     Output("analysis-shelters-count-low-health", "children"),
+     Output("analysis-shelters-count-probabilistic-health", "children"),
+     Output("analysis-shelters-count-high-health", "children"),
+     Output("analysis-wash-count-low-health", "children"),
+     Output("analysis-wash-count-probabilistic-health", "children"),
+     Output("analysis-wash-count-high-health", "children"),
      Output("analysis-bsm2-count-low-health", "children"),
      Output("analysis-bsm2-count-probabilistic-health", "children"),
      Output("analysis-bsm2-count-high-health", "children"),
      Output("analysis-high-impact-badge-health", "children"),
+     # Outputs for shelters tab
+     Output("analysis-population-count-low-shelters", "children"),
+     Output("analysis-population-count-probabilistic-shelters", "children"),
+     Output("analysis-population-count-high-shelters", "children"),
+     Output("analysis-total-children-count-low-shelters", "children"),
+     Output("analysis-total-children-count-probabilistic-shelters", "children"),
+     Output("analysis-total-children-count-high-shelters", "children"),
+     Output("analysis-children-affected-low-shelters", "children"),
+     Output("analysis-children-affected-probabilistic-shelters", "children"),
+     Output("analysis-children-affected-high-shelters", "children"),
+     Output("analysis-infant-affected-low-shelters", "children"),
+     Output("analysis-infant-affected-probabilistic-shelters", "children"),
+     Output("analysis-infant-affected-high-shelters", "children"),
+     Output("analysis-adolescent-affected-low-shelters", "children"),
+     Output("analysis-adolescent-affected-probabilistic-shelters", "children"),
+     Output("analysis-adolescent-affected-high-shelters", "children"),
+     Output("analysis-schools-count-low-shelters", "children"),
+     Output("analysis-schools-count-probabilistic-shelters", "children"),
+     Output("analysis-schools-count-high-shelters", "children"),
+     Output("analysis-health-count-low-shelters", "children"),
+     Output("analysis-health-count-probabilistic-shelters", "children"),
+     Output("analysis-health-count-high-shelters", "children"),
+     Output("analysis-shelters-count-low-shelters", "children"),
+     Output("analysis-shelters-count-probabilistic-shelters", "children"),
+     Output("analysis-shelters-count-high-shelters", "children"),
+     Output("analysis-wash-count-low-shelters", "children"),
+     Output("analysis-wash-count-probabilistic-shelters", "children"),
+     Output("analysis-wash-count-high-shelters", "children"),
+     Output("analysis-bsm2-count-low-shelters", "children"),
+     Output("analysis-bsm2-count-probabilistic-shelters", "children"),
+     Output("analysis-bsm2-count-high-shelters", "children"),
+     Output("analysis-high-impact-badge-shelters", "children"),
+     # Outputs for wash tab
+     Output("analysis-population-count-low-wash", "children"),
+     Output("analysis-population-count-probabilistic-wash", "children"),
+     Output("analysis-population-count-high-wash", "children"),
+     Output("analysis-total-children-count-low-wash", "children"),
+     Output("analysis-total-children-count-probabilistic-wash", "children"),
+     Output("analysis-total-children-count-high-wash", "children"),
+     Output("analysis-children-affected-low-wash", "children"),
+     Output("analysis-children-affected-probabilistic-wash", "children"),
+     Output("analysis-children-affected-high-wash", "children"),
+     Output("analysis-infant-affected-low-wash", "children"),
+     Output("analysis-infant-affected-probabilistic-wash", "children"),
+     Output("analysis-infant-affected-high-wash", "children"),
+     Output("analysis-adolescent-affected-low-wash", "children"),
+     Output("analysis-adolescent-affected-probabilistic-wash", "children"),
+     Output("analysis-adolescent-affected-high-wash", "children"),
+     Output("analysis-schools-count-low-wash", "children"),
+     Output("analysis-schools-count-probabilistic-wash", "children"),
+     Output("analysis-schools-count-high-wash", "children"),
+     Output("analysis-health-count-low-wash", "children"),
+     Output("analysis-health-count-probabilistic-wash", "children"),
+     Output("analysis-health-count-high-wash", "children"),
+     Output("analysis-shelters-count-low-wash", "children"),
+     Output("analysis-shelters-count-probabilistic-wash", "children"),
+     Output("analysis-shelters-count-high-wash", "children"),
+     Output("analysis-wash-count-low-wash", "children"),
+     Output("analysis-wash-count-probabilistic-wash", "children"),
+     Output("analysis-wash-count-high-wash", "children"),
+     Output("analysis-bsm2-count-low-wash", "children"),
+     Output("analysis-bsm2-count-probabilistic-wash", "children"),
+     Output("analysis-bsm2-count-high-wash", "children"),
+     Output("analysis-high-impact-badge-wash", "children"),
      # Outputs for built-surface tab
      Output("analysis-population-count-low-built-surface", "children"),
      Output("analysis-population-count-probabilistic-built-surface", "children"),
      Output("analysis-population-count-high-built-surface", "children"),
+     Output("analysis-total-children-count-low-built-surface", "children"),
+     Output("analysis-total-children-count-probabilistic-built-surface", "children"),
+     Output("analysis-total-children-count-high-built-surface", "children"),
      Output("analysis-children-affected-low-built-surface", "children"),
      Output("analysis-children-affected-probabilistic-built-surface", "children"),
      Output("analysis-children-affected-high-built-surface", "children"),
      Output("analysis-infant-affected-low-built-surface", "children"),
      Output("analysis-infant-affected-probabilistic-built-surface", "children"),
      Output("analysis-infant-affected-high-built-surface", "children"),
+     Output("analysis-adolescent-affected-low-built-surface", "children"),
+     Output("analysis-adolescent-affected-probabilistic-built-surface", "children"),
+     Output("analysis-adolescent-affected-high-built-surface", "children"),
      Output("analysis-schools-count-low-built-surface", "children"),
      Output("analysis-schools-count-probabilistic-built-surface", "children"),
      Output("analysis-schools-count-high-built-surface", "children"),
      Output("analysis-health-count-low-built-surface", "children"),
      Output("analysis-health-count-probabilistic-built-surface", "children"),
      Output("analysis-health-count-high-built-surface", "children"),
+     Output("analysis-shelters-count-low-built-surface", "children"),
+     Output("analysis-shelters-count-probabilistic-built-surface", "children"),
+     Output("analysis-shelters-count-high-built-surface", "children"),
+     Output("analysis-wash-count-low-built-surface", "children"),
+     Output("analysis-wash-count-probabilistic-built-surface", "children"),
+     Output("analysis-wash-count-high-built-surface", "children"),
      Output("analysis-bsm2-count-low-built-surface", "children"),
      Output("analysis-bsm2-count-probabilistic-built-surface", "children"),
      Output("analysis-bsm2-count-high-built-surface", "children"),
@@ -707,8 +935,11 @@ def update_threshold_selectors(storm, date, time, current_threshold):
     Input("analysis-population-threshold-selector", "value"),
     Input("analysis-children-threshold-selector", "value"),
     Input("analysis-infants-threshold-selector", "value"),
+    Input("analysis-adolescents-threshold-selector", "value"),
     Input("analysis-schools-threshold-selector", "value"),
     Input("analysis-health-threshold-selector", "value"),
+    Input("analysis-shelters-threshold-selector", "value"),
+    Input("analysis-wash-threshold-selector", "value"),
     Input("analysis-built-surface-threshold-selector", "value"),
     Input("analysis-country-select", "value"),
     Input("analysis-forecast-date", "value"),
@@ -716,15 +947,15 @@ def update_threshold_selectors(storm, date, time, current_threshold):
     Input("analysis-metrics-tabs", "value")],  # Trigger on tab switch to force update
     prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thresh, infants_thresh, schools_thresh, health_thresh, built_surface_thresh, country, forecast_date, forecast_time, active_tab):
+def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thresh, infants_thresh, adolescents_thresh, schools_thresh, health_thresh, shelters_thresh, wash_thresh, built_surface_thresh, country, forecast_date, forecast_time, active_tab):
     """Update impact metrics for all three scenarios when Load Impact Summary button is clicked"""
-    
+
     # Use the store value as primary
-    wind_threshold = wind_threshold_store or pop_thresh or children_thresh or infants_thresh or schools_thresh or health_thresh or built_surface_thresh or "34"
-    
+    wind_threshold = wind_threshold_store or pop_thresh or children_thresh or infants_thresh or adolescents_thresh or schools_thresh or health_thresh or shelters_thresh or wash_thresh or built_surface_thresh or "34"
+
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        na_values = ("N/A",) * 19  # 18 metrics + 1 badge = 19 outputs per tab
-        return na_values * 6  # Return for all 6 tabs
+        na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
+        return na_values * 9  # Return for all 9 tabs
     
     # Calculate probabilistic impact metrics
     try:
@@ -739,9 +970,9 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         print(f"Analysis Impact metrics: Looking for file {filename}")
         
         # Initialize all scenario results
-        low_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
+        low_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        probabilistic_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        high_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
         
         # Initialize member badge
         high_member_badge = "N/A"
@@ -760,9 +991,16 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                     probabilistic_results["infant"] = df['E_infant_population'].sum()
                 else:
                     probabilistic_results["infant"] = "N/A"
-                
+
+                if 'E_adolescent_population' in df.columns and not df['E_adolescent_population'].isna().all():
+                    probabilistic_results["adolescent"] = df['E_adolescent_population'].sum()
+                else:
+                    probabilistic_results["adolescent"] = "N/A"
+
                 probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
                 probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                probabilistic_results["shelters"] = df['E_num_shelters'].sum() if 'E_num_shelters' in df.columns else "N/A"
+                probabilistic_results["wash"] = df['E_num_wash'].sum() if 'E_num_wash' in df.columns else "N/A"
                 probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
                 probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
                 
@@ -794,26 +1032,28 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                         
                         # DETERMINISTIC scenario (member 51)
                         if not low_scenario_data.empty:
-                            low_results["children"] = low_scenario_data[
-                                'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                            low_results["infant"] = low_scenario_data[
-                                'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
+                            low_results["children"] = low_scenario_data['severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
+                            low_results["infant"] = low_scenario_data['severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
+                            low_results["adolescent"] = low_scenario_data['severity_adolescent_population'].sum() if 'severity_adolescent_population' in low_scenario_data.columns else "N/A"
                             low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
                             low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
                             low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
+                            low_results["shelters"] = low_scenario_data['severity_num_shelters'].sum() if 'severity_num_shelters' in low_scenario_data.columns else "N/A"
+                            low_results["wash"] = low_scenario_data['severity_num_wash'].sum() if 'severity_num_wash' in low_scenario_data.columns else "N/A"
                             low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
                         else:
                             # Member 51 not found in data (badge will still show #51 as static value)
                             pass
 
                         # HIGH scenario
-                        high_results["children"] = high_scenario_data[
-                            'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
-                        high_results["infant"] = high_scenario_data[
-                            'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
+                        high_results["children"] = high_scenario_data['severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
+                        high_results["infant"] = high_scenario_data['severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
+                        high_results["adolescent"] = high_scenario_data['severity_adolescent_population'].sum() if 'severity_adolescent_population' in high_scenario_data.columns else "N/A"
                         high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
                         high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
                         high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
+                        high_results["shelters"] = high_scenario_data['severity_num_shelters'].sum() if 'severity_num_shelters' in high_scenario_data.columns else "N/A"
+                        high_results["wash"] = high_scenario_data['severity_num_wash'].sum() if 'severity_num_wash' in high_scenario_data.columns else "N/A"
                         high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
                 
             except Exception as e:
@@ -825,20 +1065,35 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         def format_value(value):
             return str(value) if isinstance(value, str) else f"{value:,.0f}"
         
-        # Create the single set of values (19 outputs per tab)
+        # Compute total children (0-19) = infants + school-age + adolescents
+        def total_children(r):
+            vals = [r["infant"], r["children"], r["adolescent"]]
+            if all(isinstance(v, (int, float)) for v in vals):
+                return sum(vals)
+            return "N/A"
+
+        # Create the single set of values (31 outputs per tab)
         tab_values = (
             # Population count
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
             format_value(high_results["population"]),
-            # Children affected (part of population)
+            # Total children (0-19)
+            format_value(total_children(low_results)),
+            format_value(total_children(probabilistic_results)),
+            format_value(total_children(high_results)),
+            # Children affected (Age 5-14)
             format_value(low_results["children"]),
             format_value(probabilistic_results["children"]),
             format_value(high_results["children"]),
-            # Infants affected (part of population)
+            # Infants affected (Age 0-4)
             format_value(low_results["infant"]),
             format_value(probabilistic_results["infant"]),
             format_value(high_results["infant"]),
+            # Adolescents affected (Age 15-19)
+            format_value(low_results["adolescent"]),
+            format_value(probabilistic_results["adolescent"]),
+            format_value(high_results["adolescent"]),
             # Schools count
             format_value(low_results["schools"]),
             format_value(probabilistic_results["schools"]),
@@ -847,6 +1102,14 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
             format_value(low_results["health"]),
             format_value(probabilistic_results["health"]),
             format_value(high_results["health"]),
+            # Shelters count
+            format_value(low_results["shelters"]),
+            format_value(probabilistic_results["shelters"]),
+            format_value(high_results["shelters"]),
+            # WASH count
+            format_value(low_results["wash"]),
+            format_value(probabilistic_results["wash"]),
+            format_value(high_results["wash"]),
             # Built Surface m2
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
@@ -854,14 +1117,14 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
             # Member badge (deterministic badge is static #51, doesn't need updating)
             high_member_badge
         )
-        
-        # Return the same values for all 6 tabs (6 * 19 = 114 outputs)
-        return tab_values * 6
-            
+
+        # Return the same values for all 9 tabs (9 * 31 = 279 outputs)
+        return tab_values * 9
+
     except Exception as e:
         print(f"Analysis Impact metrics: Error updating metrics: {e}")
-        na_values = ("N/A",) * 19  # 18 metrics + 1 badge = 19 outputs per tab
-        return na_values * 6  # Return for all 6 tabs
+        na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
+        return na_values * 9  # Return for all 9 tabs
 
 
 # =============================================================================
@@ -878,12 +1141,21 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
      Output("analysis-infants-plot", "figure"),
      Output("analysis-infants-exceedance", "figure"),
      Output("analysis-infants-percentiles", "children"),
+     Output("analysis-adolescents-plot", "figure"),
+     Output("analysis-adolescents-exceedance", "figure"),
+     Output("analysis-adolescents-percentiles", "children"),
      Output("analysis-schools-plot", "figure"),
      Output("analysis-schools-exceedance", "figure"),
      Output("analysis-schools-percentiles", "children"),
      Output("analysis-health-plot", "figure"),
      Output("analysis-health-exceedance", "figure"),
      Output("analysis-health-percentiles", "children"),
+     Output("analysis-shelters-plot", "figure"),
+     Output("analysis-shelters-exceedance", "figure"),
+     Output("analysis-shelters-percentiles", "children"),
+     Output("analysis-wash-plot", "figure"),
+     Output("analysis-wash-exceedance", "figure"),
+     Output("analysis-wash-percentiles", "children"),
      Output("analysis-built-surface-plot", "figure"),
      Output("analysis-built-surface-exceedance", "figure"),
      Output("analysis-built-surface-percentiles", "children"),
@@ -923,14 +1195,17 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             color="orange",
             variant="light"
         )
-        # Return: 6 metrics * (2 figures + 1 children) = 18 outputs
+        # Return: 9 metrics * (2 figures + 1 children) = 27 outputs + 1 status
         # Pattern: box, exceedance (figures), percentiles (children)
         return (
             empty_fig, empty_fig, empty_children,  # population
             empty_fig, empty_fig, empty_children,  # children
             empty_fig, empty_fig, empty_children,  # infants
+            empty_fig, empty_fig, empty_children,  # adolescents
             empty_fig, empty_fig, empty_children,  # schools
             empty_fig, empty_fig, empty_children,  # health
+            empty_fig, empty_fig, empty_children,  # shelters
+            empty_fig, empty_fig, empty_children,  # wash
             empty_fig, empty_fig, empty_children,  # built_surface
             status_msg
         )
@@ -958,8 +1233,11 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 empty_fig, empty_fig, empty_children,  # population
                 empty_fig, empty_fig, empty_children,  # children
                 empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # adolescents
                 empty_fig, empty_fig, empty_children,  # schools
                 empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # shelters
+                empty_fig, empty_fig, empty_children,  # wash
                 empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
@@ -978,8 +1256,11 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 empty_fig, empty_fig, empty_children,  # population
                 empty_fig, empty_fig, empty_children,  # children
                 empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # adolescents
                 empty_fig, empty_fig, empty_children,  # schools
                 empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # shelters
+                empty_fig, empty_fig, empty_children,  # wash
                 empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
@@ -1009,10 +1290,13 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_row['population'] = member_data_subset['severity_population'].sum() if 'severity_population' in member_data_subset.columns else 0
             member_row['children'] = member_data_subset['severity_school_age_population'].sum() if 'severity_school_age_population' in member_data_subset.columns else 0
             member_row['infants'] = member_data_subset['severity_infant_population'].sum() if 'severity_infant_population' in member_data_subset.columns else 0
-            
+            member_row['adolescents'] = member_data_subset['severity_adolescent_population'].sum() if 'severity_adolescent_population' in member_data_subset.columns else 0
+
             # Infrastructure metrics
             member_row['schools'] = member_data_subset['severity_schools'].sum() if 'severity_schools' in member_data_subset.columns else 0
             member_row['health'] = member_data_subset['severity_hcs'].sum() if ('severity_hcs' in member_data_subset.columns and hc_data_available) else 0
+            member_row['shelters'] = member_data_subset['severity_num_shelters'].sum() if 'severity_num_shelters' in member_data_subset.columns else 0
+            member_row['wash'] = member_data_subset['severity_num_wash'].sum() if 'severity_num_wash' in member_data_subset.columns else 0
             member_row['built_surface'] = member_data_subset['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in member_data_subset.columns and hc_data_available) else 0
             
             member_data.append(member_row)
@@ -1043,8 +1327,11 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                                 higher_member_row['population'] = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else 0
                                 higher_member_row['children'] = higher_member_subset['severity_school_age_population'].sum() if 'severity_school_age_population' in higher_member_subset.columns else 0
                                 higher_member_row['infants'] = higher_member_subset['severity_infant_population'].sum() if 'severity_infant_population' in higher_member_subset.columns else 0
+                                higher_member_row['adolescents'] = higher_member_subset['severity_adolescent_population'].sum() if 'severity_adolescent_population' in higher_member_subset.columns else 0
                                 higher_member_row['schools'] = higher_member_subset['severity_schools'].sum() if 'severity_schools' in higher_member_subset.columns else 0
                                 higher_member_row['health'] = higher_member_subset['severity_hcs'].sum() if ('severity_hcs' in higher_member_subset.columns and hc_data_available) else 0
+                                higher_member_row['shelters'] = higher_member_subset['severity_num_shelters'].sum() if 'severity_num_shelters' in higher_member_subset.columns else 0
+                                higher_member_row['wash'] = higher_member_subset['severity_num_wash'].sum() if 'severity_num_wash' in higher_member_subset.columns else 0
                                 higher_member_row['built_surface'] = higher_member_subset['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in higher_member_subset.columns and hc_data_available) else 0
                                 
                                 higher_member_data.append(higher_member_row)
@@ -1052,7 +1339,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                             higher_member_df = pd.DataFrame(higher_member_data)
                             
                             # Store values for each metric
-                            metric_names = ['population', 'children', 'infants', 'schools', 'health', 'built_surface']
+                            metric_names = ['population', 'children', 'infants', 'adolescents', 'schools', 'health', 'shelters', 'wash', 'built_surface']
                             for metric in metric_names:
                                 if metric not in higher_threshold_data:
                                     higher_threshold_data[metric] = {}
@@ -1075,8 +1362,11 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 empty_fig, empty_fig, empty_children,  # population
                 empty_fig, empty_fig, empty_children,  # children
                 empty_fig, empty_fig, empty_children,  # infants
+                empty_fig, empty_fig, empty_children,  # adolescents
                 empty_fig, empty_fig, empty_children,  # schools
                 empty_fig, empty_fig, empty_children,  # health
+                empty_fig, empty_fig, empty_children,  # shelters
+                empty_fig, empty_fig, empty_children,  # wash
                 empty_fig, empty_fig, empty_children,  # built_surface
                 status_msg
             )
@@ -1188,10 +1478,13 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         # Define metrics with their colors and labels
         metrics_config = {
             'population': {'color': '#1cabe2', 'label': 'Population Affected', 'x_label': 'Affected Population'},
-            'children': {'color': '#3498db', 'label': 'Children Affected', 'x_label': 'Affected Children'},
-            'infants': {'color': '#2980b9', 'label': 'Infants Affected', 'x_label': 'Affected Infants'},
+            'children': {'color': '#3498db', 'label': 'Age 5–14 Affected', 'x_label': 'Affected Children (5–14)'},
+            'infants': {'color': '#2980b9', 'label': 'Age 0–4 Affected', 'x_label': 'Affected Infants (0–4)'},
+            'adolescents': {'color': '#1a6fa8', 'label': 'Age 15–19 Affected', 'x_label': 'Affected Adolescents (15–19)'},
             'schools': {'color': '#27ae60', 'label': 'Schools Affected', 'x_label': 'Number of Schools'},
             'health': {'color': '#e74c3c', 'label': 'Health Centers Affected', 'x_label': 'Number of Health Centers'},
+            'shelters': {'color': '#8e44ad', 'label': 'Shelters Affected', 'x_label': 'Number of Shelters'},
+            'wash': {'color': '#16a085', 'label': 'WASH Facilities Affected', 'x_label': 'Number of WASH Facilities'},
             'built_surface': {'color': '#f39c12', 'label': 'Built Surface Affected', 'x_label': 'Built Surface (m²)'}
         }
         
@@ -1215,11 +1508,19 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         infants_box = create_box_plot(
             member_df['infants'].values,
             member_df['member'].values,
-            'Infants Affected',
+            'Age 0–4 Affected',
             metrics_config['infants']['color'],
             metrics_config['infants']['x_label']
         )
-        
+
+        adolescents_box = create_box_plot(
+            member_df['adolescents'].values,
+            member_df['member'].values,
+            'Age 15–19 Affected',
+            metrics_config['adolescents']['color'],
+            metrics_config['adolescents']['x_label']
+        )
+
         schools_box = create_box_plot(
             member_df['schools'].values,
             member_df['member'].values,
@@ -1235,7 +1536,23 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['health']['color'],
             metrics_config['health']['x_label']
         )
-        
+
+        shelters_box = create_box_plot(
+            member_df['shelters'].values,
+            member_df['member'].values,
+            'Shelters Affected',
+            metrics_config['shelters']['color'],
+            metrics_config['shelters']['x_label']
+        )
+
+        wash_box = create_box_plot(
+            member_df['wash'].values,
+            member_df['member'].values,
+            'WASH Facilities Affected',
+            metrics_config['wash']['color'],
+            metrics_config['wash']['x_label']
+        )
+
         built_surface_box = create_box_plot(
             member_df['built_surface'].values,
             member_df['member'].values,
@@ -1439,7 +1756,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         
         infants_exceedance = create_exceedance_plot(
             member_df['infants'].values,
-            'Infants',
+            'Age 0–4',
             metrics_config['infants']['color'],
             metrics_config['infants']['x_label'],
             wind_threshold=wind_threshold,
@@ -1450,7 +1767,21 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['infants'].values,
             metrics_config['infants']['color']
         )
-        
+
+        adolescents_exceedance = create_exceedance_plot(
+            member_df['adolescents'].values,
+            'Age 15–19',
+            metrics_config['adolescents']['color'],
+            metrics_config['adolescents']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('adolescents', {})
+        )
+        adolescents_percentiles = create_percentiles_display(
+            member_df['adolescents'].values,
+            metrics_config['adolescents']['color']
+        )
+
         schools_exceedance = create_exceedance_plot(
             member_df['schools'].values,
             'Schools',
@@ -1478,7 +1809,35 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_df['health'].values,
             metrics_config['health']['color']
         )
-        
+
+        shelters_exceedance = create_exceedance_plot(
+            member_df['shelters'].values,
+            'Shelters',
+            metrics_config['shelters']['color'],
+            metrics_config['shelters']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('shelters', {})
+        )
+        shelters_percentiles = create_percentiles_display(
+            member_df['shelters'].values,
+            metrics_config['shelters']['color']
+        )
+
+        wash_exceedance = create_exceedance_plot(
+            member_df['wash'].values,
+            'WASH Facilities',
+            metrics_config['wash']['color'],
+            metrics_config['wash']['x_label'],
+            wind_threshold=wind_threshold,
+            available_thresholds=available_wind_thresholds,
+            higher_threshold_data=higher_threshold_data.get('wash', {})
+        )
+        wash_percentiles = create_percentiles_display(
+            member_df['wash'].values,
+            metrics_config['wash']['color']
+        )
+
         built_surface_exceedance = create_exceedance_plot(
             member_df['built_surface'].values,
             'Built Surface',
@@ -1504,8 +1863,11 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             pop_box, pop_exceedance, pop_percentiles,
             children_box, children_exceedance, children_percentiles,
             infants_box, infants_exceedance, infants_percentiles,
+            adolescents_box, adolescents_exceedance, adolescents_percentiles,
             schools_box, schools_exceedance, schools_percentiles,
             health_box, health_exceedance, health_percentiles,
+            shelters_box, shelters_exceedance, shelters_percentiles,
+            wash_box, wash_exceedance, wash_percentiles,
             built_surface_box, built_surface_exceedance, built_surface_percentiles,
             status_msg
         )
@@ -1530,12 +1892,15 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         )
         empty_children = html.Div("No data available", style={"padding": "10px", "color": "gray", "fontSize": "12px"})
         return (
-            empty_fig, empty_fig, empty_fig, empty_children,  # population
-            empty_fig, empty_fig, empty_fig, empty_children,  # children
-            empty_fig, empty_fig, empty_fig, empty_children,  # infants
-            empty_fig, empty_fig, empty_fig, empty_children,  # schools
-            empty_fig, empty_fig, empty_fig, empty_children,  # health
-            empty_fig, empty_fig, empty_fig, empty_children,  # built_surface
+            empty_fig, empty_fig, empty_children,  # population
+            empty_fig, empty_fig, empty_children,  # children
+            empty_fig, empty_fig, empty_children,  # infants
+            empty_fig, empty_fig, empty_children,  # adolescents
+            empty_fig, empty_fig, empty_children,  # schools
+            empty_fig, empty_fig, empty_children,  # health
+            empty_fig, empty_fig, empty_children,  # shelters
+            empty_fig, empty_fig, empty_children,  # wash
+            empty_fig, empty_fig, empty_children,  # built_surface
             status_msg
         )
 

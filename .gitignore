@@ -21,10 +21,12 @@ __pycache__/
 *.log
 .DS_Store
 .idea/
+.claude/
 
 *.share
 
 geodb/
+datastore/
 project_results/
 gigaspatial/
 extract_jamaica_data.py
@@ -35,9 +37,12 @@ snowflake_intelligence/technical_writeup_images
 LLM-testing/
 CLAUDE.md
 MEMORY.md
+docs/
 
 snowflake_intelligence/README.md
+snowflake_intelligence/MAT_TABLE_FIX.md
 snowflake_intelligence/eval_config.yaml
 snowflake_intelligence/07_create_eval_dataset.sql
 snowflake_intelligence/07b_create_eval_views.sql
 snowflake_intelligence/08_create_aots_agent_role.sql
+snowflake_spcs/

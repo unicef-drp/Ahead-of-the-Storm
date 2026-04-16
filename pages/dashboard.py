@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pandas as pd
 import dash
@@ -21,11 +22,12 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 
 # Import centralized configuration
 from components.config import config
-from components.ui.styling import all_colors, create_legend_divs, update_tile_features
+from components.ui.styling import all_colors, create_legend_divs, update_tile_features, precompute_all_colors, compute_layer_stats
 from components.map.javascript import (
-    style_tracks, style_tiles, point_to_layer_schools_health, 
-    style_envelopes, tooltip_tracks, tooltip_envelopes, 
-    tooltip_schools, tooltip_health, tooltip_tiles
+    style_tracks, style_tiles, point_to_layer_schools_health,
+    style_envelopes, tooltip_tracks, tooltip_envelopes,
+    tooltip_schools, tooltip_health, tooltip_tiles,
+    tooltip_shelters, tooltip_wash
 )
 
 from dash_extensions.javascript import assign
@@ -34,13 +36,24 @@ from dash_extensions.javascript import assign
 from components.map.map_config import map_config, mapbox_token, get_tile_layer_url
 
 # Import Snowflake utilities for country loading
-from components.data.snowflake_utils import get_active_countries
+from components.data.snowflake_utils import (
+    get_active_countries, get_available_wind_thresholds, get_latest_forecast_time_overall,
+    get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data,
+    get_lat_lons, get_lat_lons_bulk,
+)
 
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
 
-# Load active countries from Snowflake and build country map config
-countries_df = get_active_countries()
+# Run the three independent startup queries in parallel — reduces cold-start time
+# from ~3× a single query to ~1× (they hit different tables and use separate connections).
+with ThreadPoolExecutor(max_workers=3) as _startup_pool:
+    _f_countries = _startup_pool.submit(get_active_countries)
+    _f_metadata  = _startup_pool.submit(get_snowflake_data)
+    _f_latlons   = _startup_pool.submit(get_lat_lons_bulk)
+    countries_df = _f_countries.result()
+    metadata_df  = _f_metadata.result()
+    _latlon_bulk = _f_latlons.result()
 
 # Build country-specific map centers and zoom levels from Snowflake data
 COUNTRY_MAP_CONFIG = {}
@@ -87,16 +100,14 @@ from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
 import geopandas as gpd
 from components.map.home_map import make_empty_map
-from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data, get_lat_lons
 
 #### Metadata 
 from gigaspatial.core.io.readers import read_dataset
 from gigaspatial.processing.geo import convert_to_geodataframe
-from components.data.data_store_utils import get_data_store
+from components.data.data_store_utils import get_data_store, get_impact_data
 
 ##### env variables #####
-RESULTS_DIR = config.RESULTS_DIR or "project_results/climate/lacro_project"
-BBOX_FILE = config.BBOX_FILE or "bbox.parquet"
+RESULTS_DIR = config.RESULTS_DIR or "results"
 VIEWS_DIR = config.VIEWS_DIR or "aos_views"
 ROOT_DATA_DIR = config.ROOT_DATA_DIR or "geodb"
 #########################
@@ -108,8 +119,7 @@ giga_store = data_store
 
 ###########################################
 
-###### Load initial metadata
-metadata_df = get_snowflake_data()
+###### Process metadata loaded during parallel startup
 # Parse dates and times from metadata
 metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
 metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
@@ -123,7 +133,8 @@ latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) +
             .sort_values(["TRACK_ID","dt"])
             .drop_duplicates("TRACK_ID", keep="last"))
 
-latest[["latitude","longitude"]] = latest.apply(get_lat_lons, axis=1)
+latest = latest.merge(_latlon_bulk[['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude']],
+                      on=['TRACK_ID', 'FORECAST_TIME'], how='left')
 
 # Convert timestamp columns to strings for JSON serialization
 latest_clean = latest.dropna().copy()
@@ -254,10 +265,11 @@ hurricane_selection = dmc.Box([
                         dmc.Checkbox(id="hurricane-tracks-toggle", label="Hurricane Tracks", checked=False, mb="xs", disabled=True),
                         dmc.Checkbox(id="hurricane-envelopes-toggle", label="Hurricane Envelopes", checked=False, mb="xs", disabled=True),
                     ],id='hurrican_selection_box')
-# infrastructure/poi selection
+
+# Infrastructure/poi selection
 infrastructure_impact = dmc.Box([
                             dmc.Text("Infrastructure Impact", size="sm", fw=600, mb="xs", mt="md"),
-                            dmc.Checkbox(id="schools-layer", label="Schools Impact", checked=False, mb="xs", disabled=True),
+                            dmc.Checkbox(id="schools-layer", label="Schools", checked=False, mb="xs", disabled=True),
                             dmc.Grid([
                                 dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
                                 dmc.GridCol(span=8, children=[
@@ -271,7 +283,7 @@ infrastructure_impact = dmc.Box([
                                 ]),
                                 dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
                             ], id="schools-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                            dmc.Checkbox(id="health-layer", label="Health Centers Impact", checked=False, mb="xs", disabled=True),
+                            dmc.Checkbox(id="health-layer", label="Health Centers", checked=False, mb="xs", disabled=True),
                             dmc.Grid([
                                 dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
                                 dmc.GridCol(span=8, children=[
@@ -285,9 +297,37 @@ infrastructure_impact = dmc.Box([
                                 ]),
                                 dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
                             ], id="health-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                            dmc.Checkbox(id="shelters-layer", label="Shelters", checked=False, mb="xs", disabled=True),
+                            dmc.Grid([
+                                dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=8, children=[
+                                    html.Div(style={
+                                        "width": "100%",
+                                        "height": "10px",
+                                        "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                        "border": "1px solid #ccc",
+                                        "borderRadius": "1px"
+                                    })
+                                ]),
+                                dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], id="shelters-infra-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+                            dmc.Checkbox(id="wash-layer", label="WASH Facilities", checked=False, mb="xs", disabled=True),
+                            dmc.Grid([
+                                dmc.GridCol(span=2, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                                dmc.GridCol(span=8, children=[
+                                    html.Div(style={
+                                        "width": "100%",
+                                        "height": "10px",
+                                        "background": "linear-gradient(to right, #808080, #FFFF00, #FFD700, #FFA500, #FF8C00, #FF4500, #DC143C, #8B0000)",
+                                        "border": "1px solid #ccc",
+                                        "borderRadius": "1px"
+                                    })
+                                ]),
+                                dmc.GridCol(span=2, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                            ], id="wash-infra-legend", style={"display": "none"}, gutter="xs", mb="xs"),
                         ],id='infrastructure_impact_box')
 
-#probability layer for tiles
+# Probability layer for tiles
 probability_layer_tiles = dmc.Box([
                         # Discrete probability legend with buckets
                         dmc.Checkbox(id="probability-tiles-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
@@ -303,7 +343,7 @@ probability_layer_tiles = dmc.Box([
                         ], style={"display": "none"}),
                     ],id='probability_layer_tiles_box')
 
-#probability layer for admin
+# Probability layer for admin
 probability_layer_admin = dmc.Box([
                         # Discrete probability legend with buckets
                         dmc.Checkbox(id="probability-admin-layer", label="Impact Probability", checked=False, mb="xs", disabled=True),
@@ -319,12 +359,14 @@ probability_layer_admin = dmc.Box([
                         ], style={"display": "none"}),
                     ],id='probability_layer_admin_box')
 
-# tiles radiogroup
+# Tiles radiogroup
 tiles_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-tiles-layer", label="No Tile Layer (just Probability)", value="none", mb="xs"),
                         dmc.Radio(id="population-tiles-layer", label="Population", value="population", mb="xs"),
-                        dmc.Radio(id="school-age-tiles-layer", label="Age 5-15", value="school-age", mb="xs"),
-                        dmc.Radio(id="infant-tiles-layer", label="Age 0-5", value="infant", mb="xs"),
+                        dmc.Radio(id="children-total-tiles-layer", label="Children (total)", value="children-total", mb="xs"),
+                        dmc.Radio(id="infant-tiles-layer", label=html.Span("Age 0–4", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
+                        dmc.Radio(id="school-age-tiles-layer", label=html.Span("Age 5–14", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
+                        dmc.Radio(id="adolescent-tiles-layer", label=html.Span("Age 15–19", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
                         dmc.Radio(id="built-surface-tiles-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Radio(id="cci-tiles-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
@@ -344,7 +386,27 @@ tiles_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="population-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="population-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('children_total'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="children-total-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('infant_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="infant-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-legend-min", children="0", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -355,18 +417,14 @@ tiles_legends = dmc.Box([
                     ], id="school-age-legend", style={"display": "none"}, gutter="xs", mb="xs"),
 
                     dmc.Grid([
-                        dmc.GridCol(span=1.5, children=[
-                            dmc.Text(id="infant-legend-min", children="0", size="xs",
-                                        c="dimmed")]),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="adolescent-legend-min", children="0", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('infant_population'),
+                            create_legend_divs('adolescent_population'),
                             style={"display": "flex", "width": "100%"}
                         )),
-                        dmc.GridCol(span=1.5, children=[
-                            dmc.Text(id="infant-legend-max", children="Max", size="xs",
-                                        c="dimmed")]),
-                    ], id="infant-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="adolescent-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="adolescent-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -379,12 +437,12 @@ tiles_legends = dmc.Box([
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('CCI'),
+                            create_legend_divs(config.CCI_COL),
                             style={"display": "flex", "width": "100%"}
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="cci-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
                     dmc.Grid([
                         dmc.GridCol(span=3, children=[
                             html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
@@ -403,7 +461,7 @@ tiles_legends = dmc.Box([
                             dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
                         ]),
                     ], id="settlement-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -412,15 +470,17 @@ tiles_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
                 ], id='tiles_legends_box')
 
-# admin radiogroup
+# Admin radiogroup
 admin_radiogroup = dmc.RadioGroup([
                         dmc.Radio(id="none-admin-layer", label="No Region Layer (just Probability)", value="none", mb="xs"),
                         dmc.Radio(id="population-admin-layer", label="Population", value="population", mb="xs"),
-                        dmc.Radio(id="school-age-admin-layer", label="Age 5-15", value="school-age", mb="xs"),
-                        dmc.Radio(id="infant-admin-layer", label="Age 0-5", value="infant", mb="xs"),
+                        dmc.Radio(id="children-total-admin-layer", label="Children (total)", value="children-total", mb="xs"),
+                        dmc.Radio(id="infant-admin-layer", label=html.Span("Age 0–4", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="infant", mb="xs"),
+                        dmc.Radio(id="school-age-admin-layer", label=html.Span("Age 5–14", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="school-age", mb="xs"),
+                        dmc.Radio(id="adolescent-admin-layer", label=html.Span("Age 15–19", style={"paddingLeft": "12px", "color": "#666", "fontSize": "0.92em"}), value="adolescent", mb="xs"),
                         dmc.Radio(id="built-surface-admin-layer", label="Built Surface Area", value="built-surface", mb="xs"),
                         dmc.Radio(id="cci-admin-layer", label="CCI (Child Cyclone Index)", value="cci", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
@@ -440,7 +500,27 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="population-admin-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="population-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-admin-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('children_total'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="children-total-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-admin-legend-min", children="0", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('infant_population'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[
+                            dmc.Text(id="infant-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="infant-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="school-age-admin-legend-min", children="0", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -451,18 +531,14 @@ admin_legends = dmc.Box([
                     ], id="school-age-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
 
                     dmc.Grid([
-                        dmc.GridCol(span=1.5, children=[
-                            dmc.Text(id="infant-admin-legend-min", children="0", size="xs",
-                                        c="dimmed")]),
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="adolescent-admin-legend-min", children="0", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
-                            create_legend_divs('infant_population'),
+                            create_legend_divs('adolescent_population'),
                             style={"display": "flex", "width": "100%"}
                         )),
-                        dmc.GridCol(span=1.5, children=[
-                            dmc.Text(id="infant-admin-legend-max", children="Max", size="xs",
-                                        c="dimmed")]),
-                    ], id="infant-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+                        dmc.GridCol(span=1.5, children=[dmc.Text(id="adolescent-admin-legend-max", children="Max", size="xs", c="dimmed")]),
+                    ], id="adolescent-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="built-surface-admin-legend-min", children="Min", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -480,7 +556,7 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text(id="cci-admin-legend-max", children="Max", size="xs", c="dimmed")]),
                     ], id="cci-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
                     dmc.Grid([
                         dmc.GridCol(span=3, children=[
                             html.Div(style={"width": "100%", "height": "10px", "backgroundColor": "#d3d3d3", "border": "1px solid #ccc", "borderRadius": "1px"}),
@@ -499,7 +575,7 @@ admin_legends = dmc.Box([
                             dmc.Text("Urban Centers", size="xs", c="dimmed", ta="center")
                         ]),
                     ], id="settlement-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
+
                     dmc.Grid([
                         dmc.GridCol(span=1.5, children=[dmc.Text("-1", size="xs", c="dimmed")]),
                         dmc.GridCol(span=9, children=html.Div(
@@ -508,8 +584,7 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
-                    
-                    
+
                 ], id='admin_legends_box')
 
 # Unified Population & Infrastructure section with mode selector
@@ -600,14 +675,19 @@ left_panel = dmc.GridCol(
 
 
 # Center Panel - Map (Dash Leaflet with all layers)
+
 center_panel = dmc.GridCol(
                 html.Div([
                     dcc.Store(id="map-state-store", data={}),
                     dcc.Store(id="envelope-data-store", data={}),
                     dcc.Store(id="schools-data-store", data={}),
                     dcc.Store(id="health-data-store", data={}),
+                    dcc.Store(id="shelters-data-store", data={}),
+                    dcc.Store(id="wash-data-store", data={}),
                     dcc.Store(id="population-tiles-data-store", data={}),
                     dcc.Store(id="population-admin-data-store", data={}),
+                    dcc.Store(id="tiles-stats-store", data={}),
+                    dcc.Store(id="admin-stats-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
                     dl.Map(
@@ -659,7 +739,7 @@ center_panel = dmc.GridCol(
                             ),
                             # Schools Impact Layer
                             dl.GeoJSON(
-                                id="schools-json-test",
+                                id="schools-overlay-json",
                                 data={},
                                 zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
@@ -667,11 +747,27 @@ center_panel = dmc.GridCol(
                             ),
                             # Health Centers Impact Layer
                             dl.GeoJSON(
-                                id="health-json-test",
+                                id="health-overlay-json",
                                 data={},
                                 zoomToBounds=False,
                                 pointToLayer=point_to_layer_schools_health,
                                 onEachFeature=tooltip_health
+                            ),
+                            # Shelters Overlay Layer
+                            dl.GeoJSON(
+                                id="shelters-overlay-json",
+                                data={},
+                                zoomToBounds=False,
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_shelters
+                            ),
+                            # WASH Overlay Layer
+                            dl.GeoJSON(
+                                id="wash-overlay-json",
+                                data={},
+                                zoomToBounds=False,
+                                pointToLayer=point_to_layer_schools_health,
+                                onEachFeature=tooltip_wash
                             ),
                             # Population Density Tiles Layer
                             dl.GeoJSON(
@@ -679,7 +775,8 @@ center_panel = dmc.GridCol(
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles
+                                onEachFeature=tooltip_tiles,
+                                hideout={"hidden": True}
                             ),
 
                             # Population Density Admin Layer
@@ -688,16 +785,18 @@ center_panel = dmc.GridCol(
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles
+                                onEachFeature=tooltip_tiles,
+                                hideout={"hidden": True}
                             ),
-                            
+
                             # Impact Probability Tiles Layer
                             dl.GeoJSON(
                                 id="probability-tiles-json",
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles
+                                onEachFeature=tooltip_tiles,
+                                hideout={"hidden": True}
                             ),
 
                             # Impact Probability Admin Layer
@@ -706,7 +805,8 @@ center_panel = dmc.GridCol(
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles
+                                onEachFeature=tooltip_tiles,
+                                hideout={"hidden": True}
                             ),
                             
                             dl.FullScreenControl(),
@@ -740,6 +840,7 @@ impact_summary = dmc.Paper([
                     dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
                     
                     # Impact Summary Table
+                    html.Div(style={"overflowX": "auto"}, children=[
                     dmc.Table(
                         [
                             dmc.TableThead([
@@ -747,68 +848,95 @@ impact_summary = dmc.Paper([
                                     dmc.TableTh([
                                         dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
-                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px", "width": "auto"}),
+                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                     dmc.TableTh([
                                         dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("#51", id="deterministic-badge", size="xs", color="blue", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"}),
-                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top", "width": "110px"}),
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", }),
+                                    dmc.TableTh("Expected", style={"fontWeight": 700, "textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "paddingTop": "8px", "height": "60px", "verticalAlign": "top", }),
                                     dmc.TableTh([
                                         dmc.Text("Worst", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("Member", id="high-impact-badge", size="xs", color="red", variant="light", style={"marginTop": "2px"})
-                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", "width": "110px"})
+                                    ], style={"textAlign": "center", "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "verticalAlign": "top", "paddingTop": "8px", "height": "60px", })
                                 ])
                             ]),
                             dmc.TableTbody([
                                 dmc.TableTr([
-                                    dmc.TableTd("Population", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Population"),
+                                    dmc.TableTd("0", id="population-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2,482", id="population-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("59,678", id="population-count-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5-15", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd([
+                                        html.Span("Children"),
+                                        html.Span(" (total)", style={"fontSize": "0.8em", "color": "#888", "marginLeft": "3px"})
+                                    ]),
+                                    dmc.TableTd("N/A", id="children-total-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="children-total-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="children-total-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0-5", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id="infant-affected-low",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="infant-affected-probabilistic",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("N/A", id="infant-affected-high",
-                                                style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 0–4", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="infant-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="infant-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="infant-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="children-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="children-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    dmc.TableTd("Age 15–19", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-low", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd("N/A", id="adolescent-affected-high", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Schools"),
+                                    dmc.TableTd("0", id="schools-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2", id="schools-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("39", id="schools-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Health Centers"),
+                                    dmc.TableTd("0", id="health-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("1", id="health-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("0", id="health-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("Shelters"),
+                                    dmc.TableTd("N/A", id="shelters-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="shelters-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="shelters-count-high", style={"textAlign": "center", })
+                                ]),
+                                dmc.TableTr([
+                                    dmc.TableTd("WASH Facilities"),
+                                    dmc.TableTd("N/A", id="wash-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="wash-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("N/A", id="wash-count-high", style={"textAlign": "center", })
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
                                         html.Span("Built Surface m"),
                                         html.Sup("2"),
-                                    ], style={"fontWeight": 500}),
-                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"}),
-                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", "fontWeight": 500, "fontSize": "0.85em", "whiteSpace": "nowrap"})
+                                    ]),
+                                    dmc.TableTd("0", id="bsm2-count-low", style={"textAlign": "center", }),
+                                    dmc.TableTd("2,482", id="bsm2-count-probabilistic", style={"textAlign": "center", }),
+                                    dmc.TableTd("59,678", id="bsm2-count-high", style={"textAlign": "center", })
                                 ])
                             ])
                         ],
                         striped=True,
                         highlightOnHover=True,
                         withTableBorder=True,
-                        withColumnBorders=True
+                        withColumnBorders=True,
+                        horizontalSpacing="xs",
+                        style={"tableLayout": "fixed", "width": "100%"}
                     )
+                    ]),
                 ],
                 p="md",
                 shadow="xs",
@@ -885,7 +1013,7 @@ exceedance_chart = dmc.Paper([
                     
                     dmc.Text("Probability of exceeding different impact thresholds", size="xs", c="dimmed", mb="md"),
                     
-                    dcc.Graph(id="exceedance-probability-chart", style={"height": "400px"}),
+                    dcc.Graph(id="exceedance-probability-chart", style={"height": "400px", "width": "100%"}, responsive=True),
                     
                     # Custom 3-column legend
                     html.Div(id="exceedance-legend", style={"marginTop": "10px", "marginBottom": "10px"}),
@@ -918,7 +1046,7 @@ right_panel = dmc.GridCol(
                     )
                 ],
                 span=3,
-                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto", "minWidth": "300px"}
+                style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"}
             )
 
 # Create the three-panel dashboard layout (left controls, center map, right metrics)
@@ -983,18 +1111,30 @@ layout = make_single_page_appshell()
     [Output("population-count-low", "children"),
      Output("population-count-probabilistic", "children"),
      Output("population-count-high", "children"),
-     Output("children-affected-low", "children"),
-     Output("children-affected-probabilistic", "children"),
-     Output("children-affected-high", "children"),
+     Output("children-total-low", "children"),
+     Output("children-total-probabilistic", "children"),
+     Output("children-total-high", "children"),
      Output("infant-affected-low", "children"),
      Output("infant-affected-probabilistic", "children"),
      Output("infant-affected-high", "children"),
+     Output("children-affected-low", "children"),
+     Output("children-affected-probabilistic", "children"),
+     Output("children-affected-high", "children"),
+     Output("adolescent-affected-low", "children"),
+     Output("adolescent-affected-probabilistic", "children"),
+     Output("adolescent-affected-high", "children"),
      Output("schools-count-low", "children"),
      Output("schools-count-probabilistic", "children"),
      Output("schools-count-high", "children"),
      Output("health-count-low", "children"),
      Output("health-count-probabilistic", "children"),
      Output("health-count-high", "children"),
+     Output("shelters-count-low", "children"),
+     Output("shelters-count-probabilistic", "children"),
+     Output("shelters-count-high", "children"),
+     Output("wash-count-low", "children"),
+     Output("wash-count-probabilistic", "children"),
+     Output("wash-count-high", "children"),
      Output("bsm2-count-low", "children"),
      Output("bsm2-count-probabilistic", "children"),
      Output("bsm2-count-high", "children"),
@@ -1012,11 +1152,11 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     
     # Only compute after user has loaded layers to avoid startup churn
     if not layers_loaded:
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         # Return all scenarios with default values (population, children, infants, schools, health, built surface, badge)
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
     
     # Calculate probabilistic impact metrics
     
@@ -1028,20 +1168,20 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         
         filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
-        
+
         print(f"Impact metrics: Looking for file {filename}")
         print(f"Impact metrics: Full path = {filepath}")
         print(f"Impact metrics: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
-        
+
         # Initialize all scenario results
-        low_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        probabilistic_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        high_results = {"children": "N/A", "infant": "N/A", "schools": "N/A", "health": "N/A", "population": "N/A", "built_surface_m2":"N/A"}
-        
+        low_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        probabilistic_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+        high_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "children_total": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
+
         # Initialize member badge (deterministic is always #51, doesn't need updating)
         high_member_badge = "N/A"
-        
-        if giga_store.file_exists(filepath):
+
+        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(filepath):
             # Retry logic for reading tiles CSV file
             df = None
             max_retries = 3
@@ -1054,9 +1194,12 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         print(f"Impact metrics: Retry attempt {attempt + 1}/{max_retries} after {delay:.1f}s delay...")
                         time.sleep(delay)
                     
-                    df = read_dataset(giga_store, filepath)
+                    df = get_impact_data('tile', giga_store, filepath,
+                                         country=country, storm=storm,
+                                         forecast_date=forecast_datetime,
+                                         wind_threshold=int(wind_threshold))
                     break  # Success, exit retry loop
-                    
+
                 except Exception as e:
                     error_msg = str(e)
                     is_retryable = (
@@ -1090,22 +1233,36 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                         probabilistic_results["children"] = "N/A"
 
                     if 'E_infant_population' in df.columns and not df['E_infant_population'].isna().all():
-                        probabilistic_results["infant"] = df['E_infant_population'].sum()#(gdf['probability'] * gdf['school_age_population']).sum()
+                        probabilistic_results["infant"] = df['E_infant_population'].sum()
                     else:
                         probabilistic_results["infant"] = "N/A"
-                    
+
+                    if 'E_adolescent_population' in df.columns and not df['E_adolescent_population'].isna().all():
+                        probabilistic_results["adolescent"] = df['E_adolescent_population'].sum()
+                    else:
+                        probabilistic_results["adolescent"] = "N/A"
+
+                    # Children total = sum of all non-N/A age sub-groups
+                    _child_parts = [v for v in [probabilistic_results["infant"], probabilistic_results["children"], probabilistic_results["adolescent"]] if v != "N/A"]
+                    probabilistic_results["children_total"] = sum(_child_parts) if _child_parts else "N/A"
+
                     probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
                     probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                    probabilistic_results["shelters"] = df['E_num_shelters'].sum() if ('E_num_shelters' in df.columns and not df['E_num_shelters'].isna().all()) else "N/A"
+                    probabilistic_results["wash"] = df['E_num_wash'].sum() if ('E_num_wash' in df.columns and not df['E_num_wash'].isna().all()) else "N/A"
                     probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
                     probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
                     
                     # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
                     tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                     tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
-                    
-                    if giga_store.file_exists(tracks_filepath):
+
+                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                         try:
-                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                          country=country, storm=storm,
+                                                          forecast_date=forecast_datetime,
+                                                          wind_threshold=int(wind_threshold))
                         except Exception as e:
                             print(f"Error reading track file {tracks_filepath}: {e}")
                             gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
@@ -1129,29 +1286,38 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                             hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
                             hc_data_available = giga_store.file_exists(hc_filepath)
                             
+                            def _col(df, col):
+                                return df[col].sum() if col in df.columns and not df[col].isna().all() else "N/A"
+
                             # DETERMINISTIC scenario (member 51)
                             if not low_scenario_data.empty:
-                                low_results["children"] = low_scenario_data[
-                                    'severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                                low_results["infant"] = low_scenario_data[
-                                    'severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
-                                low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
-                                low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
-                                low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                                low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                                low_results["children"]  = _col(low_scenario_data, 'severity_school_age_population')
+                                low_results["infant"]    = _col(low_scenario_data, 'severity_infant_population')
+                                low_results["adolescent"] = _col(low_scenario_data, 'severity_adolescent_population')
+                                _low_child_parts = [v for v in [low_results["infant"], low_results["children"], low_results["adolescent"]] if v != "N/A"]
+                                low_results["children_total"] = sum(_low_child_parts) if _low_child_parts else "N/A"
+                                low_results["schools"]   = _col(low_scenario_data, 'severity_schools')
+                                low_results["population"] = _col(low_scenario_data, 'severity_population')
+                                low_results["health"]    = _col(low_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                                low_results["shelters"]  = _col(low_scenario_data, 'severity_num_shelters')
+                                low_results["wash"]      = _col(low_scenario_data, 'severity_num_wash')
+                                low_results["built_surface_m2"] = _col(low_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                             else:
                                 # Member 51 not found in data (badge will still show #51 as static value)
                                 pass
 
                             # HIGH scenario
-                            high_results["children"] = high_scenario_data[
-                                'severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
-                            high_results["infant"] = high_scenario_data[
-                                'severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
-                            high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
-                            high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
-                            high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
-                            high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
+                            high_results["children"]  = _col(high_scenario_data, 'severity_school_age_population')
+                            high_results["infant"]    = _col(high_scenario_data, 'severity_infant_population')
+                            high_results["adolescent"] = _col(high_scenario_data, 'severity_adolescent_population')
+                            _high_child_parts = [v for v in [high_results["infant"], high_results["children"], high_results["adolescent"]] if v != "N/A"]
+                            high_results["children_total"] = sum(_high_child_parts) if _high_child_parts else "N/A"
+                            high_results["schools"]   = _col(high_scenario_data, 'severity_schools')
+                            high_results["population"] = _col(high_scenario_data, 'severity_population')
+                            high_results["health"]    = _col(high_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                            high_results["shelters"]  = _col(high_scenario_data, 'severity_num_shelters')
+                            high_results["wash"]      = _col(high_scenario_data, 'severity_num_wash')
+                            high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                     
                     print(f"Impact metrics: Successfully loaded {len(df)} features")
                 except Exception as e:
@@ -1162,23 +1328,37 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         else:
             print(f"Impact metrics: File not found {filename}")
         
-        # Format results
+        # Format results — always round up (ceiling) so counts are never understated
         def format_value(value):
-            return str(value) if isinstance(value, str) else f"{value:,.0f}"
+            if isinstance(value, str):
+                return value
+            ceiled = math.ceil(value)
+            formatted = f"{ceiled:,}"
+            if ceiled >= 100_000_000:  # 9+ digits
+                return html.Span(formatted, style={"fontSize": "0.85em"})
+            return formatted
         
         return (
             # Population count
             format_value(low_results["population"]),
             format_value(probabilistic_results["population"]),
             format_value(high_results["population"]),
-            # Children affected (part of population)
-            format_value(low_results["children"]),
-            format_value(probabilistic_results["children"]),
-            format_value(high_results["children"]),
-            # Infants affected (part of population)
+            # Children total (all age groups combined)
+            format_value(low_results["children_total"]),
+            format_value(probabilistic_results["children_total"]),
+            format_value(high_results["children_total"]),
+            # Infants Age 0–4
             format_value(low_results["infant"]),
             format_value(probabilistic_results["infant"]),
             format_value(high_results["infant"]),
+            # Children Age 5–14
+            format_value(low_results["children"]),
+            format_value(probabilistic_results["children"]),
+            format_value(high_results["children"]),
+            # Adolescents Age 15–19
+            format_value(low_results["adolescent"]),
+            format_value(probabilistic_results["adolescent"]),
+            format_value(high_results["adolescent"]),
             # Schools count
             format_value(low_results["schools"]),
             format_value(probabilistic_results["schools"]),
@@ -1187,17 +1367,25 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["health"]),
             format_value(probabilistic_results["health"]),
             format_value(high_results["health"]),
+            # Shelters count
+            format_value(low_results["shelters"]),
+            format_value(probabilistic_results["shelters"]),
+            format_value(high_results["shelters"]),
+            # WASH Facilities count
+            format_value(low_results["wash"]),
+            format_value(probabilistic_results["wash"]),
+            format_value(high_results["wash"]),
             # Built Surface m2
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
             format_value(high_results["built_surface_m2"]),
-            # Member badge (deterministic badge is static #51, doesn't need updating)
+            # Member badge
             high_member_badge
         )
             
     except Exception as e:
         print(f"Impact metrics: Error updating metrics: {e}")
-        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        return ("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
 
 
 
@@ -1241,13 +1429,16 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if giga_store.file_exists(tracks_filepath):
+        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
             try:
-                gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                              country=country, storm=storm,
+                                              forecast_date=forecast_datetime_str,
+                                              wind_threshold=int(wind_threshold))
             except Exception as e:
                 print(f"Error reading track file {tracks_filepath}: {e}")
                 gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
-            
+
             if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                 # Sort ensemble members by total impacted population (descending)
                 member_totals = (
@@ -1576,41 +1767,75 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('envelope-data-store', 'data'),
      Output('schools-data-store', 'data'),
      Output('health-data-store', 'data'),
-     Output('population-tiles-data-store', 'data'),
-     Output('population-admin-data-store', 'data'),
+     Output('shelters-data-store', 'data'),
+     Output('wash-data-store', 'data'),
+     Output('tiles-stats-store', 'data'),
+     Output('admin-stats-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
+     # GeoJSON layers — written directly to avoid browser round-trip
+     Output('population-tiles-json', 'data', allow_duplicate=True),
+     Output('population-tiles-json', 'zoomToBounds', allow_duplicate=True),
+     Output('population-tiles-json', 'key', allow_duplicate=True),
+     Output('population-tiles-json', 'hideout', allow_duplicate=True),
+     Output('probability-tiles-json', 'data', allow_duplicate=True),
+     Output('probability-tiles-json', 'zoomToBounds', allow_duplicate=True),
+     Output('probability-tiles-json', 'key', allow_duplicate=True),
+     Output('probability-tiles-json', 'hideout', allow_duplicate=True),
+     Output('population-admin-json', 'data', allow_duplicate=True),
+     Output('population-admin-json', 'zoomToBounds', allow_duplicate=True),
+     Output('population-admin-json', 'key', allow_duplicate=True),
+     Output('population-admin-json', 'hideout', allow_duplicate=True),
+     Output('probability-admin-json', 'data', allow_duplicate=True),
+     Output('probability-admin-json', 'zoomToBounds', allow_duplicate=True),
+     Output('probability-admin-json', 'key', allow_duplicate=True),
+     Output('probability-admin-json', 'hideout', allow_duplicate=True),
+     # Hurricane section
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
      Output('show-all-envelopes-toggle', 'disabled'),
+     # Infrastructure Impact
      Output('schools-layer', 'disabled'),
      Output('health-layer', 'disabled'),
+     Output('shelters-layer', 'disabled'),
+     Output('wash-layer', 'disabled'),
+     # Tile layers
      Output('probability-tiles-layer', 'disabled'),
      Output('population-tiles-layer', 'disabled', allow_duplicate=True),
-     Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('children-total-tiles-layer', 'disabled', allow_duplicate=True),
      Output('infant-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('adolescent-tiles-layer', 'disabled', allow_duplicate=True),
      Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
      Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
      Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
-     Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
+     # Admin layers
      Output('probability-admin-layer', 'disabled'),
      Output('population-admin-layer', 'disabled', allow_duplicate=True),
-     Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+     Output('children-total-admin-layer', 'disabled', allow_duplicate=True),
      Output('infant-admin-layer', 'disabled', allow_duplicate=True),
+     Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+     Output('adolescent-admin-layer', 'disabled', allow_duplicate=True),
      Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
+     Output('cci-admin-layer', 'disabled', allow_duplicate=True),
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
-     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
-     Output('cci-admin-layer', 'disabled', allow_duplicate=True)],
+     Output('rwi-admin-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
     State('country-select', 'value'),
     State('storm-select', 'value'),
     State('forecast-date', 'value'),
     State('forecast-time', 'value'),
     State('wind-threshold-select', 'value'),
+    State('tiles-layer-group', 'value'),
+    State('probability-tiles-layer', 'checked'),
+    State('admin-layer-group', 'value'),
+    State('probability-admin-layer', 'checked'),
     prevent_initial_call=True,
     running=[(Output("load-layers-btn", "loading"), True, False)]
 )
-def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold):
+def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold,
+                    tiles_layer_group, prob_tiles_checked, admin_layer_group, prob_admin_checked):
     """Load all available layers when Load Layers button is clicked"""
     print(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     print(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
@@ -1623,15 +1848,27 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         type="dots"
     )
     
+    _empty_fc = {"type": "FeatureCollection", "features": []}
+    _hidden = {"hidden": True}
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+                dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"),
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True)
     try:
         # Initialize empty data stores
         tracks_data = {}
         envelope_data = {}
         schools_data = {}
         health_data = {}
+        shelters_data = {}
+        wash_data = {}
         tiles_data = {}
         admin_data = {}
         
@@ -1766,29 +2003,36 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                     tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
                                     tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                                     
-                                    if giga_store.file_exists(tracks_filepath):
+                                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                                         try:
-                                            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                                          country=country, storm=storm,
+                                                                          forecast_date=forecast_datetime_str,
+                                                                          wind_threshold=int(thresh))
                                             if 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
                                                 tracks_thresh = gdf_tracks[gdf_tracks['wind_threshold'] == thresh]
                                                 if not tracks_thresh.empty:
                                                     ensemble_col = 'ENSEMBLE_MEMBER' if 'ENSEMBLE_MEMBER' in gdf.columns else 'ensemble_member'
                                                     if ensemble_col in gdf.columns:
-                                                        impact_summary = tracks_thresh.groupby('zone_id').agg({
-                                                            'severity_population': 'sum',
-                                                            'severity_school_age_population': 'sum',
-                                                            'severity_infant_population': 'sum',
-                                                            'severity_schools': 'sum',
-                                                            'severity_hcs': 'sum',
-                                                            'severity_built_surface_m2': 'sum'
-                                                        }).reset_index()
+                                                        agg_cols = {c: 'sum' for c in [
+                                                            'severity_population',
+                                                            'severity_school_age_population',
+                                                            'severity_infant_population',
+                                                            'severity_adolescent_population',
+                                                            'severity_schools',
+                                                            'severity_hcs',
+                                                            'severity_num_shelters',
+                                                            'severity_num_wash',
+                                                            'severity_built_surface_m2',
+                                                        ] if c in tracks_thresh.columns}
+                                                        impact_summary = tracks_thresh.groupby('zone_id').agg(agg_cols).reset_index()
                                                         impact_summary.columns = ['ensemble_member'] + [col for col in impact_summary.columns if col != 'zone_id']
-                                                        
+
                                                         if ensemble_col != 'ensemble_member':
                                                             gdf['ensemble_member'] = gdf[ensemble_col].astype(int)
-                                                        
+
                                                         gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
-                                                        impact_cols = ['severity_population', 'severity_school_age_population', 'severity_infant_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
+                                                        impact_cols = [c for c in impact_summary.columns if c != 'ensemble_member']
                                                         for col in impact_cols:
                                                             if col in gdf.columns:
                                                                 gdf[col] = gdf[col].fillna(0)
@@ -1844,7 +2088,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         date_str = forecast_date.replace('-', '')
         time_str = forecast_time.replace(':', '')
         forecast_datetime_str = f"{date_str}{time_str}00"
-        
+
         print(f"Looking for impact data files with pattern: {country}_{storm}_{forecast_datetime_str}_{wind_threshold}")
         print(f"DEBUG: ROOT_DATA_DIR = {ROOT_DATA_DIR}")
         print(f"DEBUG: VIEWS_DIR = {VIEWS_DIR}")
@@ -2093,58 +2337,87 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     print(f"Failed to load {dataset_name} after {max_retries} attempts. Last error: {last_error}")
                 return {}
             
-            # Load independent files in parallel for better performance
-            schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-            schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+            # Infrastructure point layers — schools, health centres, shelters, WASH
+            impact_fname = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             
-            health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-            health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
-            
-            # Load schools and health in parallel with staggered start to avoid connection pool exhaustion
+            schools_path  = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views',   impact_fname)
+            health_path   = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views',        impact_fname)
+            shelters_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'shelter_views',   impact_fname)
+            wash_path     = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'wash_views',      impact_fname)
+
             schools_data = {}
-            health_data = {}
-            
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = {}
-                
-                # Submit with small delay between submissions to avoid overwhelming connection pool
-                if giga_store.file_exists(schools_path):
-                    futures['schools'] = executor.submit(load_dataset, schools_path, 'schools')
-                    time.sleep(0.1)  # Small delay to stagger connection requests
-                
-                if giga_store.file_exists(health_path):
-                    futures['health'] = executor.submit(load_dataset, health_path, 'health')
-                
-                # Collect results with timeout and better error handling
-                for name, future in futures.items():
+            health_data  = {}
+            shelters_data = {}
+            wash_data    = {}
+
+            if config.IMPACT_DATA_SOURCE == 'SQL':
+                sql_kwargs = dict(country=country, storm=storm,
+                                  forecast_date=forecast_datetime_str,
+                                  wind_threshold=int(wind_threshold))
+                for data_type, path, var_name in [
+                    ('school',   schools_path,  'schools'),
+                    ('hc',       health_path,   'health'),
+                    ('shelter',  shelters_path, 'shelters'),
+                    ('wash',     wash_path,     'wash'),
+                ]:
                     try:
-                        # Add timeout to prevent hanging (30 seconds per file)
-                        result = future.result(timeout=30)
-                        if result and isinstance(result, dict) and len(result) > 0:
-                            if name == 'schools':
-                                schools_data = result
-                            elif name == 'health':
-                                health_data = result
-                        else:
-                            print(f"Warning: {name} loaded but returned empty result")
-                    except TimeoutError:
-                        print(f"Error: Timeout loading {name} file (exceeded 30s)")
+                        df = get_impact_data(data_type, giga_store, path, **sql_kwargs)
+                        if not df.empty and 'latitude' in df.columns:
+                            gdf = gpd.GeoDataFrame(
+                                df,
+                                geometry=gpd.points_from_xy(df['longitude'], df['latitude']),
+                                crs='EPSG:4326'
+                            )
+                            if var_name == 'schools':   schools_data  = gdf.__geo_interface__
+                            elif var_name == 'health':  health_data   = gdf.__geo_interface__
+                            elif var_name == 'shelters': shelters_data = gdf.__geo_interface__
+                            elif var_name == 'wash':    wash_data     = gdf.__geo_interface__
                     except Exception as e:
-                        error_msg = str(e)
-                        print(f"Error in parallel load for {name}: {error_msg[:300]}")
-                        # Try to get more details if it's a connection-related error
-                        if "connection" in error_msg.lower() or "253002" in error_msg:
-                            print(f"  This appears to be a connection/network issue. The file may exist but be temporarily unavailable.")
-            
+                        print(f"Error loading {var_name} from SQL: {e}")
+            else:
+                # STAGE path: load all four in parallel
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = {}
+                    for name, path in [
+                        ('schools',  schools_path),
+                        ('health',   health_path),
+                        ('shelters', shelters_path),
+                        ('wash',     wash_path),
+                    ]:
+                        if giga_store.file_exists(path):
+                            futures[name] = executor.submit(load_dataset, path, name)
+                            time.sleep(0.1)  # stagger to avoid overwhelming connection pool
+
+                    for name, future in futures.items():
+                        try:
+                            result = future.result(timeout=30)
+                            if result and isinstance(result, dict) and len(result) > 0:
+                                if name == 'schools':    schools_data  = result
+                                elif name == 'health':   health_data   = result
+                                elif name == 'shelters': shelters_data = result
+                                elif name == 'wash':     wash_data     = result
+                            else:
+                                print(f"Warning: {name} loaded but returned empty result")
+                        except TimeoutError:
+                            print(f"Error: Timeout loading {name} (exceeded 30s)")
+                        except Exception as e:
+                            error_msg = str(e)
+                            print(f"Error in parallel load for {name}: {error_msg[:300]}")
+                            if "connection" in error_msg.lower() or "253002" in error_msg:
+                                print(f"  This appears to be a connection/network issue.")
+
             # Tiles
             tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
             tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
-            if giga_store.file_exists(tiles_path):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tiles_path):
                 base_tiles_file = f"{country}_{ZOOM_LEVEL}.parquet"
                 base_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', base_tiles_file)
                 if giga_store.file_exists(base_tiles_path):
                     try:
-                        df_tiles = read_dataset(giga_store, tiles_path)
+                        df_tiles = get_impact_data('tile', giga_store, tiles_path,
+                                                    country=country, storm=storm,
+                                                    forecast_date=forecast_datetime_str,
+                                                    wind_threshold=int(wind_threshold))
                         df_tiles = df_tiles.rename(columns={'zone_id':'tile_id'})
                         gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
                         # Ensure both tile_id columns have the same type before merging
@@ -2161,20 +2434,23 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         #cci
                         cci_tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv"
                         cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', cci_tiles_file)
-                        if giga_store.file_exists(cci_tiles_path):
+                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_tiles_path):
                             try:
-                                df_cci_tiles = read_dataset(giga_store, cci_tiles_path)
+                                df_cci_tiles = get_impact_data('tile_cci', giga_store, cci_tiles_path,
+                                                                country=country, storm=storm,
+                                                                forecast_date=forecast_datetime_str,
+                                                                zoom_level=ZOOM_LEVEL)
                                 df_cci_tiles = df_cci_tiles.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_tiles.columns:
                                     df_cci_tiles.drop(columns=['Unnamed: 0'])
-                                # Ensure tile_id type matches tmp (which is int from line 2048)
+                                # Ensure tile_id type matches tmp (which is int)
                                 if 'tile_id' in df_cci_tiles.columns:
                                     df_cci_tiles['tile_id'] = df_cci_tiles['tile_id'].astype(int)
                                 tmp = pd.merge(tmp, df_cci_tiles, on="tile_id", how="left")
-                            except:
-                                print('Cannot merge CCI file')
+                            except Exception as e:
+                                print(f'Cannot merge tile CCI: {e}')
                         else:
-                            print('CCI file not found')
+                            print('CCI tile file not found')
 
                         gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
                         tiles_data = gdf_tiles.__geo_interface__
@@ -2186,12 +2462,18 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             # Admin
             admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
             admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
-            if giga_store.file_exists(admin_path):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(admin_path):
                 base_admin_file = f"{country}_admin1.parquet"
                 base_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', base_admin_file)
                 if giga_store.file_exists(base_admin_path):
                     try:
-                        df_admin = read_dataset(giga_store, admin_path)
+                        df_admin = get_impact_data('admin_impact', giga_store, admin_path,
+                                                    country=country, storm=storm,
+                                                    forecast_date=forecast_datetime_str,
+                                                    wind_threshold=int(wind_threshold))
+                        if df_admin.empty:
+                            print(f'No admin impact data for {country}/{storm}/{forecast_datetime_str}')
+                            raise ValueError('empty admin data')
                         df_admin = df_admin.rename(columns={'zone_id':'tile_id'})
                         gdf_base_admin = read_dataset(giga_store, base_admin_path)
                         # Ensure both tile_id columns have the same type before merging
@@ -2199,14 +2481,21 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                             # Convert both to string to avoid type mismatch issues
                             gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
                             df_admin['tile_id'] = df_admin['tile_id'].astype(str)
+                        print(f'DEBUG admin merge: MAT tile_ids={df_admin["tile_id"].tolist()[:5]}, base parquet tile_ids={gdf_base_admin["tile_id"].tolist()[:5]}')
+                        print(f'DEBUG admin probability col: {df_admin["probability"].tolist()[:5] if "probability" in df_admin.columns else "MISSING"}')
                         tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+                        nan_after_merge = tmp['probability'].isna().sum() if 'probability' in tmp.columns else len(tmp)
+                        if nan_after_merge == len(tmp):
+                            print(f'WARNING: Admin merge produced all-NaN probability for {country}/{storm} — possible tile_id format mismatch between MAT table and base parquet')
 
                         #cci
                         cci_admin_file = f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv"
                         cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', cci_admin_file)
-                        if giga_store.file_exists(cci_admin_path):
+                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_admin_path):
                             try:
-                                df_cci_admin = read_dataset(giga_store, cci_admin_path)
+                                df_cci_admin = get_impact_data('admin_cci', giga_store, cci_admin_path,
+                                                                country=country, storm=storm,
+                                                                forecast_date=forecast_datetime_str)
                                 df_cci_admin = df_cci_admin.rename(columns={'zone_id':'tile_id'})
                                 if 'Unnamed: 0' in df_cci_admin.columns:
                                     df_cci_admin.drop(columns=['Unnamed: 0'])
@@ -2214,10 +2503,10 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                 if 'tile_id' in df_cci_admin.columns:
                                     df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
                                 tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
-                            except:
-                                print('Cannot merge CCI file')
+                            except Exception as e:
+                                print(f'Cannot merge admin CCI: {e}')
                         else:
-                            print('CCI file not found')
+                            print('CCI admin file not found')
 
                         gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
                         admin_data = gdf_admin.__geo_interface__
@@ -2240,17 +2529,66 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
         if not admin_data or not isinstance(admin_data, dict) or not 'features' in admin_data:
             admin_data = {"type": "FeatureCollection", "features": []}
-        
+
+        # Pre-compute all color variants for fast toggle without server round-trip
+        tiles_data = precompute_all_colors(tiles_data)
+        admin_data = precompute_all_colors(admin_data)
+        tiles_stats = compute_layer_stats(tiles_data)
+        admin_stats = compute_layer_stats(admin_data)
+
+        # Compute initial hideouts for GeoJSON layers based on current UI state
+        _layer_to_prop = {
+            "population": "population", "children-total": "children_total",
+            "infant": "infant_population", "school-age": "school_age_population",
+            "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
+            "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+        }
+        _layer_to_e_prop = {
+            "population": "E_population", "children-total": "E_children_total",
+            "infant": "E_infant_population", "school-age": "E_school_age_population",
+            "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
+            "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+            "none": "probability", None: "probability",
+        }
+        def _hideouts(layer_group, prob_checked):
+            pop_hidden = (not layer_group or layer_group == "none") or (
+                prob_checked and layer_group in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
+            )
+            prop = _layer_to_prop.get(layer_group, "population")
+            e_prop = _layer_to_e_prop.get(layer_group, "probability")
+            pop_h = {"hidden": True} if pop_hidden else {"prop": prop}
+            prob_h = {"prop": e_prop} if prob_checked else {"hidden": True}
+            return pop_h, prob_h
+
+        tiles_pop_h, tiles_prob_h = _hideouts(tiles_layer_group, prob_tiles_checked)
+        admin_pop_h, admin_prob_h = _hideouts(admin_layer_group, prob_admin_checked)
+        layer_key = str(time.time())
+
         load_elapsed = time.time() - load_start_time
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY in {load_elapsed:.2f}s ===")
-        return (tracks_data, envelope_data, schools_data, health_data, 
-                tiles_data, admin_data,
-                True, status_alert, 
-                False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False)
-        
+        return (tracks_data, envelope_data, schools_data, health_data,
+                shelters_data, wash_data,
+                tiles_stats, admin_stats,
+                True, status_alert,
+                tiles_data, False, layer_key, tiles_pop_h,
+                tiles_data, False, layer_key, tiles_prob_h,
+                admin_data, False, layer_key, admin_pop_h,
+                admin_data, False, layer_key, admin_prob_h,
+                False, False, False, False, False, False, False,
+                False, False, False, False, False, False, False, False, False, False,
+                False, False, False, False, False, False, False, False, False, False)
+
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+                dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"),
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True)
 
 
 # Callback to warn when selectors change after layers are loaded
@@ -2290,7 +2628,7 @@ def warn_on_selector_change(country, storm, forecast_date, forecast_time, wind_t
     [Input("hurricane-tracks-toggle", "checked"),
      Input("specific-track-select", "value")],
     State("tracks-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_tracks_layer(checked, selected_track, tracks_data_in):
     """Toggle hurricane tracks layer visibility with optional specific track filtering"""
@@ -2324,7 +2662,7 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
      State("storm-select", "value"),
      State("forecast-date", "value"),
      State("forecast-time", "value")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope_data_in, wind_threshold, country, storm, forecast_date, forecast_time):
     """Toggle hurricane envelopes layer visibility with optional specific track filtering"""
@@ -2458,9 +2796,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{thresh}.parquet"
                             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                             
-                            if giga_store.file_exists(tracks_filepath):
+                            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                                 try:
-                                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                                    gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                                  country=country, storm=storm,
+                                                                  forecast_date=forecast_datetime_str,
+                                                                  wind_threshold=int(thresh))
                                     track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
                                 except Exception as e:
                                     print(f"Error reading track file {tracks_filepath}: {e}")
@@ -2538,9 +2879,12 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
             tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
             tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
             
-            if giga_store.file_exists(tracks_filepath):
+            if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                 try:
-                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                    gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                  country=country, storm=storm,
+                                                  forecast_date=forecast_datetime_str,
+                                                  wind_threshold=int(wind_threshold))
                     specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
                 except Exception as e:
                     print(f"Error reading track file {tracks_filepath}: {e}")
@@ -2673,13 +3017,16 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                 tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
-                if giga_store.file_exists(tracks_filepath):
+                if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
                     try:
-                        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+                        gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                      country=country, storm=storm,
+                                                      forecast_date=forecast_datetime_str,
+                                                      wind_threshold=int(wind_threshold))
                     except Exception as e:
                         print(f"Error reading track file {tracks_filepath}: {e}")
                         gdf_tracks = pd.DataFrame()  # Empty dataframe to skip processing
-                    
+
                     if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'wind_threshold' in gdf_tracks.columns:
                         # Sum impact metrics per ensemble member (zone_id is ensemble_member in track data)
                         # Filter by wind threshold
@@ -2747,471 +3094,354 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
         print(f"Error toggling envelopes: {e}")
         return {"type": "FeatureCollection", "features": []}, False, key
 
+def _style_point_layer(geo_data, base_color):
+    """Convert GeoJSON features to styled point markers based on impact probability.
+
+    All four infrastructure layers (schools, HCs, shelters, WASH) share the same
+    yellow→red impact scale; only the base_color (no-impact dot) differs per layer.
+    """
+    from shapely.geometry import shape
+    point_features = []
+    for feature in geo_data.get('features', []):
+        if 'properties' not in feature or 'geometry' not in feature:
+            continue
+        prob = feature['properties'].get('probability', None) or 0
+        if prob == 0:
+            color, radius = base_color, 4
+        elif prob <= 0.15:
+            color, radius = '#FFFF00', 10  # Yellow
+        elif prob <= 0.30:
+            color, radius = '#FFD700', 12  # Gold
+        elif prob <= 0.45:
+            color, radius = '#FFA500', 15  # Orange
+        elif prob <= 0.60:
+            color, radius = '#FF8C00', 18  # Dark orange
+        elif prob <= 0.75:
+            color, radius = '#FF4500', 20  # Orange-red
+        elif prob <= 0.90:
+            color, radius = '#DC143C', 22  # Crimson
+        else:
+            color, radius = '#8B0000', 25  # Dark red
+        try:
+            centroid = shape(feature['geometry']).centroid
+            point_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [centroid.x, centroid.y]},
+                "properties": {
+                    **feature['properties'],
+                    "_color": color,
+                    "_radius": radius,
+                    "_opacity": 0.8,
+                    "_weight": 2,
+                    "_fillOpacity": 0.7
+                }
+            })
+        except Exception as e:
+            print(f"Error converting to point: {e}")
+    return point_features
+
+
 @callback(
-    Output("schools-json-test", "data"),
-    Output("schools-json-test", "zoomToBounds"),
-    Output("schools-json-test","key"),
+    Output("schools-overlay-json", "data"),
+    Output("schools-overlay-json", "zoomToBounds"),
+    Output("schools-overlay-json","key"),
     [Input("schools-layer", "checked")],
     State("schools-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
-def toggle_schools_layer(checked, schools_data_in):
+def toggle_schools_overlay(checked, schools_data_in):
     """Toggle schools layer visibility with probability-based coloring and variable radius"""
     if not checked or not schools_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
     schools_data = copy.deepcopy(schools_data_in)
     key = hashlib.md5(json.dumps(schools_data, sort_keys=True).encode()).hexdigest()
     try:
-        # Convert polygons to point markers
-        if 'features' in schools_data:
-            from shapely.geometry import shape
-            point_features = []
-            
-            for feature in schools_data['features']:
-                if 'properties' in feature and 'geometry' in feature:
-                    prob = feature['properties'].get('probability', 0)
-                    
-                    # Calculate color and radius based on probability
-                    if prob == 0 or prob is None:
-                        color = '#ADD8E6'  # Light blue for schools when not impacted
-                        radius = 4  # Smaller for no impact
-                    elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow
-                        radius = 10
-                    elif prob <= 0.30:
-                        color = '#FFD700'  # Gold
-                        radius = 12
-                    elif prob <= 0.45:
-                        color = '#FFA500'  # Orange
-                        radius = 15
-                    elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange
-                        radius = 18
-                    elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red
-                        radius = 20
-                    elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson
-                        radius = 22
-                    else:
-                        color = '#8B0000'  # Dark red
-                        radius = 25
-                    
-                    # Convert polygon to point (centroid)
-                    try:
-                        geom_shape = shape(feature['geometry'])
-                        centroid = geom_shape.centroid
-                        
-                        # Create point feature with probability-based styling
-                        point_feature = {
-                            "type": "Feature",
-                            "geometry": {
-                                "type": "Point",
-                                "coordinates": [centroid.x, centroid.y]
-                            },
-                            "properties": {
-                                **feature['properties'],
-                                "_color": color,
-                                "_radius": radius,
-                                "_opacity": 0.8,
-                                "_weight": 2,
-                                "_fillOpacity": 0.7
-                            }
-                        }
-                        point_features.append(point_feature)
-                    except Exception as e:
-                        print(f"Error converting to point: {e}")
-                        continue
-            
-            schools_data['features'] = point_features
-        
+        schools_data['features'] = _style_point_layer(schools_data, '#ADD8E6')  # Light blue
         return schools_data, False, key
     except Exception as e:
         print(f"Error styling schools layer: {e}")
         return schools_data, False, key
 
 @callback(
-    Output("health-json-test", "data"),
-    Output("health-json-test", "zoomToBounds"),
-    Output("health-json-test","key"),
+    Output("health-overlay-json", "data"),
+    Output("health-overlay-json", "zoomToBounds"),
+    Output("health-overlay-json","key"),
     [Input("health-layer", "checked")],
     State("health-data-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
-def toggle_health_layer(checked, health_data_in):
+def toggle_health_overlay(checked, health_data_in):
     """Toggle health centers layer visibility with probability-based coloring and variable radius"""
     if not checked or not health_data_in:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
     health_data = copy.deepcopy(health_data_in)
     key = hashlib.md5(json.dumps(health_data, sort_keys=True).encode()).hexdigest()
-    
     try:
-        # Convert polygons to point markers
-        if 'features' in health_data:
-            from shapely.geometry import shape
-            point_features = []
-            
-            for feature in health_data['features']:
-                if 'properties' in feature and 'geometry' in feature:
-                    prob = feature['properties'].get('probability', 0)
-                    
-                    # Calculate color and radius based on probability
-                    if prob == 0 or prob is None:
-                        color = '#90EE90'  # Light green for health centers when not impacted
-                        radius = 4  # Smaller for no impact
-                    elif prob <= 0.15:
-                        color = '#FFFF00'  # Yellow
-                        radius = 10
-                    elif prob <= 0.30:
-                        color = '#FFD700'  # Gold
-                        radius = 12
-                    elif prob <= 0.45:
-                        color = '#FFA500'  # Orange
-                        radius = 15
-                    elif prob <= 0.60:
-                        color = '#FF8C00'  # Dark orange
-                        radius = 18
-                    elif prob <= 0.75:
-                        color = '#FF4500'  # Orange-red
-                        radius = 20
-                    elif prob <= 0.90:
-                        color = '#DC143C'  # Crimson
-                        radius = 22
-                    else:
-                        color = '#8B0000'  # Dark red
-                        radius = 25
-                    
-                    # Convert polygon to point (centroid)
-                    try:
-                        geom_shape = shape(feature['geometry'])
-                        centroid = geom_shape.centroid
-                        
-                        # Create point feature with probability-based styling
-                        point_feature = {
-                            "type": "Feature",
-                            "geometry": {
-                                "type": "Point",
-                                "coordinates": [centroid.x, centroid.y]
-                            },
-                            "properties": {
-                                **feature['properties'],
-                                "_color": color,
-                                "_radius": radius,
-                                "_opacity": 0.8,
-                                "_weight": 2,
-                                "_fillOpacity": 0.7
-                            }
-                        }
-                        point_features.append(point_feature)
-                    except Exception as e:
-                        print(f"Error converting to point: {e}")
-                        continue
-            
-            health_data['features'] = point_features
-        
+        health_data['features'] = _style_point_layer(health_data, '#90EE90')  # Light green
         return health_data, False, key
-        
     except Exception as e:
         print(f"Error styling health layer: {e}")
         return health_data, False, key
 
+@callback(
+    Output("shelters-overlay-json", "data"),
+    Output("shelters-overlay-json", "zoomToBounds"),
+    Output("shelters-overlay-json", "key"),
+    [Input("shelters-layer", "checked")],
+    State("shelters-data-store", "data"),
+    prevent_initial_call=True
+)
+def toggle_shelters_overlay(checked, shelters_data_in):
+    """Toggle shelters layer visibility with probability-based coloring and variable radius"""
+    if not checked or not shelters_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    shelters_data = copy.deepcopy(shelters_data_in)
+    key = hashlib.md5(json.dumps(shelters_data, sort_keys=True).encode()).hexdigest()
+    try:
+        shelters_data['features'] = _style_point_layer(shelters_data, '#FF8C00')  # Orange
+        return shelters_data, False, key
+    except Exception as e:
+        print(f"Error styling shelters layer: {e}")
+        return shelters_data, False, key
+
+@callback(
+    Output("wash-overlay-json", "data"),
+    Output("wash-overlay-json", "zoomToBounds"),
+    Output("wash-overlay-json", "key"),
+    [Input("wash-layer", "checked")],
+    State("wash-data-store", "data"),
+    prevent_initial_call=True
+)
+def toggle_wash_overlay(checked, wash_data_in):
+    """Toggle WASH facilities layer visibility with probability-based coloring and variable radius"""
+    if not checked or not wash_data_in:
+        return {"type": "FeatureCollection", "features": []}, False, dash.no_update
+    wash_data = copy.deepcopy(wash_data_in)
+    key = hashlib.md5(json.dumps(wash_data, sort_keys=True).encode()).hexdigest()
+    try:
+        wash_data['features'] = _style_point_layer(wash_data, '#40E0D0')  # Turquoise
+        return wash_data, False, key
+    except Exception as e:
+        print(f"Error styling WASH layer: {e}")
+        return wash_data, False, key
 
 
 # -----------------------------------------------------------------------------
 # 3.6: CALLBACKS - TILE LAYER STYLING
 # -----------------------------------------------------------------------------
 # Handle tile layer display and styling based on selected property
+# Data is written directly by load_all_layers; these callbacks only update hideout.
 
 @callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
+    Output("population-tiles-json", "hideout", allow_duplicate=True),
+    Output("probability-tiles-json", "hideout", allow_duplicate=True),
     Output('population-tiles-layer', 'disabled', allow_duplicate=True),
-    Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('children-total-tiles-layer', 'disabled', allow_duplicate=True),
     Output('infant-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('school-age-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('adolescent-tiles-layer', 'disabled', allow_duplicate=True),
     Output('built-surface-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
-    Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
-    Input('tiles-layer-group','value'),
-    Input('probability-tiles-layer','checked'),
-    Input('population-tiles-data-store','data'),
-    State('probability-tiles-layer','checked'),
-    prevent_initial_call = True,
+    Input('tiles-layer-group', 'value'),
+    Input('probability-tiles-layer', 'checked'),
+    prevent_initial_call=True,
 )
-def juggle_toggles_tiles_layer(selected_layer, prob_checked_trigger, tiles_data_in, prob_checked_val):
-    """Handle tile layer display based on radio selection"""
-    # Determine which layer is selected
-    active_layer = selected_layer
-    
-    # Context data layers should be disabled when Impact Probability is on
-    # and regular layers should be enabled at all times
-    if prob_checked_val:
-        # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, True, True, False
+def juggle_toggles_tiles_layer(selected_layer, prob_checked):
+    """Update tile layer hideout on radio/checkbox toggle — zero data transfer (no store reference)."""
+    layer_to_prop = {
+        "population": "population", "children-total": "children_total",
+        "infant": "infant_population", "school-age": "school_age_population",
+        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
+        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+    }
+    layer_to_e_prop = {
+        "population": "E_population", "children-total": "E_children_total",
+        "infant": "E_infant_population", "school-age": "E_school_age_population",
+        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
+        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+        "none": "probability", None: "probability",
+    }
+    if prob_checked:
+        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = False
+        set_dis = rwi_dis = True
     else:
-        # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, False, False, False
-    
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled)
-    
-    # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
-    if not active_layer or active_layer == "none":
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
-    
-    # When probability is checked, hide the regular layer (probability layer will show E_* values instead)
-    if prob_checked_val and active_layer in ["population", "school-age", "infant", "built-surface"]:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
-    
-    # Determine what data to show based on active layer (only when probability is not checked)
-    if active_layer == "population":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "school-age":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "infant":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "built-surface":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "settlement":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'smod_class')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "rwi":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "cci":
-        tiles, zoom, key = update_tile_features(tiles_data_in, config.CCI_COL)
-        return tiles, zoom, key, *radios_enabled
-    
-    # Default: return empty data
-    return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
 
-# Handle admin layer display and styling based on selected property
+    pop_hidden = (not selected_layer or selected_layer == "none") or (
+        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
+    )
+    prop = layer_to_prop.get(selected_layer, "population")
+    e_prop = layer_to_e_prop.get(selected_layer, "probability")
+    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
+    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
+    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
+
+# Handle admin layer toggles — data written directly by load_all_layers
 @callback(
-    Output("population-admin-json", "data", allow_duplicate=True),
-    Output("population-admin-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-admin-json", "key", allow_duplicate=True),
+    Output("population-admin-json", "hideout", allow_duplicate=True),
+    Output("probability-admin-json", "hideout", allow_duplicate=True),
     Output('population-admin-layer', 'disabled', allow_duplicate=True),
-    Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+    Output('children-total-admin-layer', 'disabled', allow_duplicate=True),
     Output('infant-admin-layer', 'disabled', allow_duplicate=True),
+    Output('school-age-admin-layer', 'disabled', allow_duplicate=True),
+    Output('adolescent-admin-layer', 'disabled', allow_duplicate=True),
     Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
+    Output('cci-admin-layer', 'disabled', allow_duplicate=True),
     Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
-    Output('cci-admin-layer', 'disabled', allow_duplicate=True),
-    Input('admin-layer-group','value'),
-    Input('probability-admin-layer','checked'),
-    Input('population-admin-data-store','data'),
-    State('probability-admin-layer','checked'),
-    prevent_initial_call = True,
+    Input('admin-layer-group', 'value'),
+    Input('probability-admin-layer', 'checked'),
+    prevent_initial_call=True,
 )
-def juggle_toggles_admin_layer(selected_layer, prob_checked_trigger, tiles_data_in, prob_checked_val):
-    """Handle tile layer display based on radio selection"""
-    # Determine which layer is selected
-    active_layer = selected_layer
-    
-    # Context data layers should be disabled when Impact Probability is on
-    # and regular layers should be enabled at all times
-    if prob_checked_val:
-        # When Impact Probability is on, disable context data radios
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, True, True, False
+def juggle_toggles_admin_layer(selected_layer, prob_checked):
+    """Update admin layer hideout on radio/checkbox toggle — zero data transfer."""
+    layer_to_prop = {
+        "population": "population", "children-total": "children_total",
+        "infant": "infant_population", "school-age": "school_age_population",
+        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
+        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+    }
+    layer_to_e_prop = {
+        "population": "E_population", "children-total": "E_children_total",
+        "infant": "E_infant_population", "school-age": "E_school_age_population",
+        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
+        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+        "none": "probability", None: "probability",
+    }
+    if prob_checked:
+        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = False
+        set_dis = rwi_dis = True
     else:
-        # When Impact Probability is off, all radios are enabled
-        population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled = False, False, False, False, False, False, False
-    
-    radios_enabled = (population_enabled, school_age_enabled, infant_enabled, built_enabled, settlement_enabled, rwi_enabled, cci_enabled)
-    
-    # If no layer is selected or "none" is selected, return empty data (to show only Impact Probability)
-    if not active_layer or active_layer == "none":
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
-    
-    # When probability is checked, hide the regular layer (probability layer will show E_* values instead)
-    if prob_checked_val and active_layer in ["population", "school-age", "infant", "built-surface"]:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
-    
-    # Determine what data to show based on active layer (only when probability is not checked)
-    if active_layer == "population":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "school-age":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'school_age_population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "infant":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'infant_population')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "built-surface":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'built_surface_m2')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "settlement":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'smod_class')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "rwi":
-        tiles, zoom, key = update_tile_features(tiles_data_in, 'rwi')
-        return tiles, zoom, key, *radios_enabled
-    
-    elif active_layer == "cci":
-        tiles, zoom, key = update_tile_features(tiles_data_in, config.CCI_COL)
-        return tiles, zoom, key, *radios_enabled
-    
-    # Default: return empty data
-    return {"type": "FeatureCollection", "features": []}, False, dash.no_update, *radios_enabled
+        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
+
+    pop_hidden = (not selected_layer or selected_layer == "none") or (
+        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
+    )
+    prop = layer_to_prop.get(selected_layer, "population")
+    e_prop = layer_to_e_prop.get(selected_layer, "probability")
+    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
+    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
+    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
 
 # Callback for Impact Probability layer
 @callback(
-    Output("probability-tiles-json", "data", allow_duplicate=True),
-    Output("probability-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("probability-tiles-json", "key", allow_duplicate=True),
+    Output("probability-tiles-json", "hideout", allow_duplicate=True),
     Output("probability-legend", "style", allow_duplicate=True),
     Output("probability-legend-min", "children", allow_duplicate=True),
     Output("probability-legend-max", "children", allow_duplicate=True),
     Input('probability-tiles-layer','checked'),
     Input('tiles-layer-group','value'),
-    State('population-tiles-data-store','data'),
+    State('tiles-stats-store','data'),
     prevent_initial_call = True,
 )
-def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_data_in):
-    """Handle Impact Probability layer display - shows expected impact values when other layers are selected"""
-    # Show probability legend whenever checkbox is on
+def toggle_probability_tiles_layer(prob_checked, selected_layer, tiles_stats):
+    """Handle Impact Probability layer hideout and legend — data pre-loaded by juggle callback"""
     legend_style = {"display": "block"} if prob_checked else {"display": "none"}
-    
-    if not prob_checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style, "0%", "100%"
-    
-    # Determine which property to show based on selected layer
+
+    if not prob_checked:
+        return {"hidden": True}, legend_style, "0%", "100%"
+
     property_map = {
-        "population": "E_population",
-        "school-age": "E_school_age_population",
-        "infant": "E_infant_population",
-        "built-surface": "E_built_surface_m2",
-        "settlement": None,  # Settlement, RWI, and CCI don't have expected values
-        "rwi": None,
-        "cci": config.E_CCI_COL,
-        "none": "probability",
-        None: "probability"
+        "population":     "E_population",
+        "children-total": "E_children_total",
+        "infant":         "E_infant_population",
+        "school-age":     "E_school_age_population",
+        "adolescent":     "E_adolescent_population",
+        "built-surface":  "E_built_surface_m2",
+        "cci":            config.E_CCI_COL,
+        "settlement":     None,
+        "rwi":            None,
+        "none":           "probability",
+        None:             "probability",
     }
-    
+
     property_name = property_map.get(selected_layer, "probability")
-    
-    # If no valid property for selected layer, show probability
     if property_name is None:
         property_name = "probability"
-    
-    # Calculate min/max for legend based on the property
+
+    hideout = {"prop": property_name}
+
+    # Legend min/max from pre-computed stats (no feature iteration)
     min_val = "0"
     max_val = "100%"
-    
-    if property_name != "probability" and tiles_data_in and 'features' in tiles_data_in:
+    if property_name != "probability" and tiles_stats and property_name in tiles_stats:
         try:
-            values = [f["properties"].get(property_name, 0) for f in tiles_data_in["features"] if 'properties' in f]
-            clean_values = [v for v in values if not pd.isna(v) and v > 0]
-            
-            if clean_values:
-                min_val_num = min(clean_values)
-                max_val_num = max(clean_values)
-                
-                # Format numbers with k, M suffixes
-                def format_number(val):
-                    if val >= 1000000:
-                        return f"{val / 1000000:.1f}M".replace('.0M', 'M')
-                    elif val >= 1000:
-                        return f"{val / 1000:.1f}k".replace('.0k', 'k')
-                    else:
-                        return f"{val:,.0f}"
-                
-                min_val = "0"
-                max_val = format_number(max_val_num)
+            max_val_num = tiles_stats[property_name]["max"]
+
+            def format_number(val):
+                if val >= 1000000:
+                    return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+                elif val >= 1000:
+                    return f"{val / 1000:.1f}k".replace('.0k', 'k')
+                else:
+                    return f"{math.ceil(val):,}"
+
+            max_val = format_number(max_val_num)
         except Exception as e:
-            print(f"Error calculating legend range: {e}")
-    
-    # Show the expected impact data (or probability if no layer selected)
-    tiles, zoom, key = update_tile_features(tiles_data_in, property_name)
-    return tiles, zoom, key, legend_style, min_val, max_val
+            print(f"Error reading legend from stats: {e}")
+
+    return hideout, legend_style, min_val, max_val
 
 # Callback for Impact Probability layer for admins
 @callback(
-    Output("probability-admin-json", "data", allow_duplicate=True),
-    Output("probability-admin-json", "zoomToBounds", allow_duplicate=True),
-    Output("probability-admin-json", "key", allow_duplicate=True),
+    Output("probability-admin-json", "hideout", allow_duplicate=True),
     Output("probability-legend-admin", "style", allow_duplicate=True),
     Output("probability-legend-admin-min", "children", allow_duplicate=True),
     Output("probability-legend-admin-max", "children", allow_duplicate=True),
     Input('probability-admin-layer','checked'),
     Input('admin-layer-group','value'),
-    State('population-admin-data-store','data'),
+    State('admin-stats-store','data'),
     prevent_initial_call = True,
 )
-def toggle_probability_admin_layer(prob_checked, selected_layer, tiles_data_in):
-    """Handle Impact Probability layer display - shows expected impact values when other layers are selected"""
-    # Show probability legend whenever checkbox is on
+def toggle_probability_admin_layer(prob_checked, selected_layer, admin_stats):
+    """Handle Impact Probability admin layer hideout and legend — data pre-loaded by juggle callback"""
     legend_style = {"display": "block"} if prob_checked else {"display": "none"}
-    
-    if not prob_checked or not tiles_data_in:
-        return {"type": "FeatureCollection", "features": []}, False, dash.no_update, legend_style, "0%", "100%"
-    
-    # Determine which property to show based on selected layer
+
+    if not prob_checked:
+        return {"hidden": True}, legend_style, "0%", "100%"
+
     property_map = {
-        "population": "E_population",
-        "school-age": "E_school_age_population",
-        "infant": "E_infant_population",
-        "built-surface": "E_built_surface_m2",
-        "settlement": None,  # Settlement, RWI, and CCI don't have expected values
-        "rwi": None,
-        "cci": config.E_CCI_COL,
-        "none": "probability",
-        None: "probability"
+        "population":     "E_population",
+        "children-total": "E_children_total",
+        "infant":         "E_infant_population",
+        "school-age":     "E_school_age_population",
+        "adolescent":     "E_adolescent_population",
+        "built-surface":  "E_built_surface_m2",
+        "cci":            config.E_CCI_COL,
+        "settlement":     None,
+        "rwi":            None,
+        "none":           "probability",
+        None:             "probability",
     }
-    
+
     property_name = property_map.get(selected_layer, "probability")
-    
-    # If no valid property for selected layer, show probability
     if property_name is None:
         property_name = "probability"
-    
-    # Calculate min/max for legend based on the property
+
+    hideout = {"prop": property_name}
+
+    # Legend min/max from pre-computed stats (no feature iteration)
     min_val = "0"
     max_val = "100%"
-    
-    if property_name != "probability" and tiles_data_in and 'features' in tiles_data_in:
+    if property_name != "probability" and admin_stats and property_name in admin_stats:
         try:
-            values = [f["properties"].get(property_name, 0) for f in tiles_data_in["features"] if 'properties' in f]
-            clean_values = [v for v in values if not pd.isna(v) and v > 0]
-            
-            if clean_values:
-                min_val_num = min(clean_values)
-                max_val_num = max(clean_values)
-                
-                # Format numbers with k, M suffixes
-                def format_number(val):
-                    if val >= 1000000:
-                        return f"{val / 1000000:.1f}M".replace('.0M', 'M')
-                    elif val >= 1000:
-                        return f"{val / 1000:.1f}k".replace('.0k', 'k')
-                    else:
-                        return f"{val:,.0f}"
-                
-                min_val = "0"
-                max_val = format_number(max_val_num)
+            max_val_num = admin_stats[property_name]["max"]
+
+            def format_number(val):
+                if val >= 1000000:
+                    return f"{val / 1000000:.1f}M".replace('.0M', 'M')
+                elif val >= 1000:
+                    return f"{val / 1000:.1f}k".replace('.0k', 'k')
+                else:
+                    return f"{math.ceil(val):,}"
+
+            max_val = format_number(max_val_num)
         except Exception as e:
-            print(f"Error calculating legend range: {e}")
-    
-    # Show the expected impact data (or probability if no layer selected)
-    tiles, zoom, key = update_tile_features(tiles_data_in, property_name)
-    return tiles, zoom, key, legend_style, min_val, max_val
+            print(f"Error reading legend from stats: {e}")
+
+    return hideout, legend_style, min_val, max_val
 
 
 
@@ -3244,16 +3474,19 @@ def update_specific_track_info(selected_track, country, storm, forecast_date, fo
         tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        if not giga_store.file_exists(tracks_filepath):
+        if config.IMPACT_DATA_SOURCE != 'SQL' and not giga_store.file_exists(tracks_filepath):
             return "Track data not found"
-        
+
         # Load track data
         try:
-            gdf_tracks = read_dataset(giga_store, tracks_filepath)
+            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                          country=country, storm=storm,
+                                          forecast_date=forecast_datetime_str,
+                                          wind_threshold=int(wind_threshold))
         except Exception as e:
             print(f"Error reading track file {tracks_filepath}: {e}")
             return f"Error loading track data: {str(e)}"
-        
+
         # Filter for specific track
         specific_track_data = gdf_tracks[gdf_tracks['zone_id'] == int(selected_track)]
         
@@ -3376,23 +3609,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
         tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
         tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
         
-        # Check if file exists - for Snowflake stages, file_exists() might check directories
-        # So we also verify by trying to list files in the directory
-        file_exists_check = giga_store.file_exists(tracks_filepath)
-        
-        # Additional verification: check if file is in list_files() results
-        # This helps catch cases where file_exists() returns True but file doesn't actually exist
-        file_actually_exists = False
-        if file_exists_check:
-            try:
-                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
-                files_in_dir = giga_store.list_files(track_views_dir)
-                file_actually_exists = tracks_filepath in files_in_dir or tracks_filename in [os.path.basename(f) for f in files_in_dir]
-            except:
-                # If list_files fails, fall back to file_exists() result
-                file_actually_exists = file_exists_check
-        
-        if not file_exists_check or not file_actually_exists:
+        if config.IMPACT_DATA_SOURCE != 'SQL' and not giga_store.file_exists(tracks_filepath):
             empty_fig.add_annotation(
                 text="Track data file not found. Please ensure the storm data has been processed.",
                 xref="paper", yref="paper",
@@ -3400,34 +3617,21 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                 font=dict(size=12, color="orange")
             )
             return empty_fig, "Track data not found for the selected storm and wind threshold.", empty_legend
-        
-        # Load track data - wrap in try-except to handle Snowflake stage read errors gracefully
+
+        # Load track data
         try:
-            gdf_tracks = read_dataset(giga_store, tracks_filepath)
-        except (IOError, ValueError, FileNotFoundError, Exception) as e:
-            # If file_exists() returned True but read fails, it might be a path/permission issue
-            print(f"Warning: file_exists() returned True but read failed for {tracks_filepath}: {e}")
-            # Try to find the actual file name if path doesn't match exactly
-            try:
-                track_views_dir = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views')
-                files_in_dir = giga_store.list_files(track_views_dir)
-                matching_files = [f for f in files_in_dir if tracks_filename in f or f.endswith(tracks_filename)]
-                if matching_files:
-                    print(f"Found similar files: {matching_files[:3]}")
-                    # Try the first matching file
-                    actual_path = matching_files[0]
-                    print(f"Trying alternative path: {actual_path}")
-                    gdf_tracks = read_dataset(giga_store, actual_path)
-                else:
-                    raise e  # Re-raise original error if no matches found
-            except Exception as e2:
-                empty_fig.add_annotation(
-                    text="Track data file exists but could not be read. This may be a temporary issue.",
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5, showarrow=False,
-                    font=dict(size=12, color="orange")
-                )
-                return empty_fig, f"Track data file could not be read: {str(e)}", empty_legend
+            gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                          country=country, storm=storm,
+                                          forecast_date=forecast_datetime,
+                                          wind_threshold=int(wind_threshold))
+        except Exception as e:
+            empty_fig.add_annotation(
+                text="Track data could not be read. This may be a temporary issue.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=12, color="orange")
+            )
+            return empty_fig, f"Track data could not be read: {str(e)}", empty_legend
         
         if 'zone_id' not in gdf_tracks.columns or 'severity_population' not in gdf_tracks.columns:
             empty_fig.add_annotation(
@@ -3473,9 +3677,12 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                     higher_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{higher_thresh}.parquet"
                     higher_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', higher_tracks_filename)
                     
-                    if giga_store.file_exists(higher_tracks_filepath):
-                        higher_gdf_tracks = read_dataset(giga_store, higher_tracks_filepath)
-                        
+                    if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(higher_tracks_filepath):
+                        higher_gdf_tracks = get_impact_data('track', giga_store, higher_tracks_filepath,
+                                                             country=country, storm=storm,
+                                                             forecast_date=forecast_datetime,
+                                                             wind_threshold=int(higher_thresh))
+
                         if 'zone_id' in higher_gdf_tracks.columns and len(higher_gdf_tracks) > 0:
                             higher_member_data = []
                             for member_id in higher_gdf_tracks['zone_id'].unique():
@@ -3696,7 +3903,7 @@ def toggle_layer_mode(selected_mode):
 @callback(
     Output("schools-legend", "style"),
     [Input("schools-layer", "checked")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_schools_legend(checked):
     """Show/hide schools legend based on checkbox state"""
@@ -3705,41 +3912,62 @@ def toggle_schools_legend(checked):
 @callback(
     Output("health-legend", "style"),
     [Input("health-layer", "checked")],
-    prevent_initial_call=False
+    prevent_initial_call=True
 )
 def toggle_health_legend(checked):
     """Show/hide health centers legend based on checkbox state"""
     return {"display": "block" if checked else "none"}
 
 @callback(
+    Output("shelters-infra-legend", "style"),
+    [Input("shelters-layer", "checked")],
+    prevent_initial_call=True
+)
+def toggle_shelters_infra_legend(checked):
+    """Show/hide shelters legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
+    Output("wash-infra-legend", "style"),
+    [Input("wash-layer", "checked")],
+    prevent_initial_call=True
+)
+def toggle_wash_infra_legend(checked):
+    """Show/hide WASH facilities legend based on checkbox state"""
+    return {"display": "block" if checked else "none"}
+
+@callback(
     [Output("population-legend", "style"),
-     Output("school-age-legend", "style"),
+     Output("children-total-legend", "style"),
      Output("infant-legend", "style"),
+     Output("school-age-legend", "style"),
+     Output("adolescent-legend", "style"),
      Output("built-surface-legend", "style"),
+     Output("cci-legend", "style"),
      Output("settlement-legend", "style"),
      Output("rwi-legend", "style"),
-     Output("cci-legend", "style"),
      Output("population-legend-min", "children"),
      Output("population-legend-max", "children"),
-     Output("school-age-legend-min", "children"),
-     Output("school-age-legend-max", "children"),
+     Output("children-total-legend-min", "children"),
+     Output("children-total-legend-max", "children"),
      Output("infant-legend-min", "children"),
      Output("infant-legend-max", "children"),
+     Output("school-age-legend-min", "children"),
+     Output("school-age-legend-max", "children"),
+     Output("adolescent-legend-min", "children"),
+     Output("adolescent-legend-max", "children"),
      Output("built-surface-legend-min", "children"),
      Output("built-surface-legend-max", "children"),
      Output("cci-legend-min", "children"),
-     Output("cci-legend-max", "children")
+     Output("cci-legend-max", "children"),
      ],
     [Input("tiles-layer-group", "value"),
      Input("probability-tiles-layer", "checked")],
-    State("population-tiles-data-store", "data"),
-    prevent_initial_call=False
+    State("tiles-stats-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
-    """Show/hide tile legends based on radio button selection and update legend labels"""
-    import math
-    
-    # Helper function to format numbers with k, M and commas
+def toggle_tiles_legend(selected_value, prob_checked, tiles_stats):
+    """Show/hide tile legends and update labels from pre-computed stats"""
     def format_number(val):
         if val >= 1000000:
             return f"{val / 1000000:.1f}M".replace('.0M', 'M')
@@ -3747,119 +3975,82 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_data):
             return f"{val / 1000:.1f}k".replace('.0k', 'k')
         else:
             return f"{val:,.0f}"
-    
-    # Default legend labels
-    pop_min = "Min"
-    pop_max = "Max"
-    school_min = "Min"
-    school_max = "Max"
-    infant_min = "Min"
-    infant_max = "Max"
-    built_min = "Min"
-    built_max = "Max"
-    cci_min = "Min"
-    cci_max = "Max"
-    
-    # Calculate log-scale legend labels if data is available
-    if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
-        try:
-            # Population values
-            pop_values = [f["properties"].get('population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_pop = [v for v in pop_values if not pd.isna(v) and v > 0]
-            if clean_pop:
-                pop_min_val = min(clean_pop)
-                pop_max_val = max(clean_pop)
-                pop_min = f"{pop_min_val:,.0f}"
-                pop_max = format_number(pop_max_val)
-            
-            # School-age population values
-            school_values = [f["properties"].get('school_age_population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_school = [v for v in school_values if not pd.isna(v) and v > 0]
-            if clean_school:
-                school_min_val = min(clean_school)
-                school_max_val = max(clean_school)
-                school_min = f"{school_min_val:,.0f}"
-                school_max = format_number(school_max_val)
 
-            # Infant population values
-            infant_values = [f["properties"].get('infant_population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_infant = [v for v in infant_values if not pd.isna(v) and v > 0]
-            if clean_infant:
-                infant_min_val = min(clean_infant)
-                infant_max_val = max(clean_infant)
-                infant_min = f"{infant_min_val:,.0f}"
-                infant_max = format_number(infant_max_val)
-            
-            # Built surface values
-            built_values = [f["properties"].get('built_surface_m2', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_built = [v for v in built_values if not pd.isna(v) and v > 0]
-            if clean_built:
-                built_min_val = min(clean_built)
-                built_max_val = max(clean_built)
-                built_min = f"{built_min_val:,.0f}"
-                built_max = format_number(built_max_val)
+    def get_stats(prop):
+        if tiles_stats and prop in tiles_stats:
+            return f"{tiles_stats[prop]['min']:,.0f}", format_number(tiles_stats[prop]['max'])
+        return "Min", "Max"
 
-            # cci values
-            cci_values = [f["properties"].get(config.CCI_COL, 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
-            if clean_cci:
-                cci_min_val = min(clean_cci)
-                cci_max_val = max(clean_cci)
-                cci_min = f"{cci_min_val:,.0f}"
-                cci_max = format_number(cci_max_val)
-        except Exception as e:
-            print(f"Error calculating legend labels: {e}")
+    pop_min, pop_max                         = get_stats('population')
+    children_total_min, children_total_max   = get_stats('children_total')
+    infant_min, infant_max                   = get_stats('infant_population')
+    school_min, school_max                   = get_stats('school_age_population')
+    adolescent_min, adolescent_max           = get_stats('adolescent_population')
+    built_min, built_max                     = get_stats('built_surface_m2')
+    cci_min, cci_max                         = get_stats(config.CCI_COL)
+
+    _none = {"display": "none"}
+    _show = {"display": "block"}
+    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+    _all_vals = (pop_min, pop_max, children_total_min, children_total_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
-    if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    
+    if prob_checked and selected_value in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]:
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "children-total":
+        return _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "school-age":
+        return _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "adolescent":
+        return _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
     elif selected_value == "cci":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+    elif selected_value == "settlement":
+        return _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+    elif selected_value == "rwi":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
 @callback(
     [Output("population-admin-legend", "style"),
-     Output("school-age-admin-legend", "style"),
+     Output("children-total-admin-legend", "style"),
      Output("infant-admin-legend", "style"),
+     Output("school-age-admin-legend", "style"),
+     Output("adolescent-admin-legend", "style"),
      Output("built-surface-admin-legend", "style"),
+     Output("cci-admin-legend", "style"),
      Output("settlement-admin-legend", "style"),
      Output("rwi-admin-legend", "style"),
-     Output("cci-admin-legend", "style"),
      Output("population-admin-legend-min", "children"),
      Output("population-admin-legend-max", "children"),
-     Output("school-age-admin-legend-min", "children"),
-     Output("school-age-admin-legend-max", "children"),
+     Output("children-total-admin-legend-min", "children"),
+     Output("children-total-admin-legend-max", "children"),
      Output("infant-admin-legend-min", "children"),
      Output("infant-admin-legend-max", "children"),
+     Output("school-age-admin-legend-min", "children"),
+     Output("school-age-admin-legend-max", "children"),
+     Output("adolescent-admin-legend-min", "children"),
+     Output("adolescent-admin-legend-max", "children"),
      Output("built-surface-admin-legend-min", "children"),
      Output("built-surface-admin-legend-max", "children"),
      Output("cci-admin-legend-min", "children"),
-     Output("cci-admin-legend-max", "children")
+     Output("cci-admin-legend-max", "children"),
      ],
     [Input("admin-layer-group", "value"),
      Input("probability-admin-layer", "checked")],
-    State("population-admin-data-store", "data"),
-    prevent_initial_call=False
+    State("admin-stats-store", "data"),
+    prevent_initial_call=True
 )
-def toggle_admin_legend(selected_value, prob_checked, tiles_data):
-    """Show/hide tile legends based on radio button selection and update legend labels"""
-    import math
-    
-    # Helper function to format numbers with k, M and commas
+def toggle_admin_legend(selected_value, prob_checked, admin_stats):
+    """Show/hide admin legends and update labels from pre-computed stats"""
     def format_number(val):
         if val >= 1000000:
             return f"{val / 1000000:.1f}M".replace('.0M', 'M')
@@ -3867,89 +4058,49 @@ def toggle_admin_legend(selected_value, prob_checked, tiles_data):
             return f"{val / 1000:.1f}k".replace('.0k', 'k')
         else:
             return f"{val:,.0f}"
-    
-    # Default legend labels
-    pop_min = "Min"
-    pop_max = "Max"
-    school_min = "Min"
-    school_max = "Max"
-    infant_min = "Min"
-    infant_max = "Max"
-    built_min = "Min"
-    built_max = "Max"
-    cci_min = "Min"
-    cci_max = "Max"
-    
-    # Calculate log-scale legend labels if data is available
-    if tiles_data and isinstance(tiles_data, dict) and 'features' in tiles_data:
-        try:
-            # Population values
-            pop_values = [f["properties"].get('population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_pop = [v for v in pop_values if not pd.isna(v) and v > 0]
-            if clean_pop:
-                pop_min_val = min(clean_pop)
-                pop_max_val = max(clean_pop)
-                pop_min = f"{pop_min_val:,.0f}"
-                pop_max = format_number(pop_max_val)
-            
-            # School-age population values
-            school_values = [f["properties"].get('school_age_population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_school = [v for v in school_values if not pd.isna(v) and v > 0]
-            if clean_school:
-                school_min_val = min(clean_school)
-                school_max_val = max(clean_school)
-                school_min = f"{school_min_val:,.0f}"
-                school_max = format_number(school_max_val)
 
-            # Infant population values
-            infant_values = [f["properties"].get('infant_population', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_infant = [v for v in infant_values if not pd.isna(v) and v > 0]
-            if clean_infant:
-                infant_min_val = min(clean_infant)
-                infant_max_val = max(clean_infant)
-                infant_min = f"{infant_min_val:,.0f}"
-                infant_max = format_number(infant_max_val)
-            
-            # Built surface values
-            built_values = [f["properties"].get('built_surface_m2', 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_built = [v for v in built_values if not pd.isna(v) and v > 0]
-            if clean_built:
-                built_min_val = min(clean_built)
-                built_max_val = max(clean_built)
-                built_min = f"{built_min_val:,.0f}"
-                built_max = format_number(built_max_val)
+    def get_stats(prop):
+        if admin_stats and prop in admin_stats:
+            return f"{admin_stats[prop]['min']:,.0f}", format_number(admin_stats[prop]['max'])
+        return "Min", "Max"
 
-            # cci values
-            cci_values = [f["properties"].get(config.CCI_COL, 0) for f in tiles_data["features"] if 'properties' in f]
-            clean_cci = [v for v in cci_values if not pd.isna(v) and v > 0]
-            if clean_cci:
-                cci_min_val = min(clean_cci)
-                cci_max_val = max(clean_cci)
-                cci_min = f"{cci_min_val:,.0f}"
-                cci_max = format_number(cci_max_val)
-        except Exception as e:
-            print(f"Error calculating legend labels: {e}")
+    pop_min, pop_max                         = get_stats('population')
+    children_total_min, children_total_max   = get_stats('children_total')
+    infant_min, infant_max                   = get_stats('infant_population')
+    school_min, school_max                   = get_stats('school_age_population')
+    adolescent_min, adolescent_max           = get_stats('adolescent_population')
+    built_min, built_max                     = get_stats('built_surface_m2')
+    cci_min, cci_max                         = get_stats(config.CCI_COL)
+
+    _none = {"display": "none"}
+    _show = {"display": "block"}
+    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+    _all_vals = (pop_min, pop_max, children_total_min, children_total_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
-    if prob_checked and selected_value in ["population", "school-age", "infant", "built-surface"]:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    
+    if prob_checked and selected_value in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]:
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+
     if selected_value == "population":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "school-age":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "children-total":
+        return _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "infant":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "school-age":
+        return _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
+    elif selected_value == "adolescent":
+        return _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
     elif selected_value == "built-surface":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "settlement":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
-    elif selected_value == "rwi":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
     elif selected_value == "cci":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+    elif selected_value == "settlement":
+        return _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+    elif selected_value == "rwi":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
     else:
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, pop_min, pop_max, school_min, school_max, infant_min, infant_max, built_min, built_max, cci_min, cci_max
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
 
 
