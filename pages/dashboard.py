@@ -36,13 +36,24 @@ from dash_extensions.javascript import assign
 from components.map.map_config import map_config, mapbox_token, get_tile_layer_url
 
 # Import Snowflake utilities for country loading
-from components.data.snowflake_utils import get_active_countries
+from components.data.snowflake_utils import (
+    get_active_countries, get_available_wind_thresholds, get_latest_forecast_time_overall,
+    get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data,
+    get_lat_lons, get_lat_lons_bulk,
+)
 
 #### Constant - add as selector at some point
 ZOOM_LEVEL = 14
 
-# Load active countries from Snowflake and build country map config
-countries_df = get_active_countries()
+# Run the three independent startup queries in parallel — reduces cold-start time
+# from ~3× a single query to ~1× (they hit different tables and use separate connections).
+with ThreadPoolExecutor(max_workers=3) as _startup_pool:
+    _f_countries = _startup_pool.submit(get_active_countries)
+    _f_metadata  = _startup_pool.submit(get_snowflake_data)
+    _f_latlons   = _startup_pool.submit(get_lat_lons_bulk)
+    countries_df = _f_countries.result()
+    metadata_df  = _f_metadata.result()
+    _latlon_bulk = _f_latlons.result()
 
 # Build country-specific map centers and zoom levels from Snowflake data
 COUNTRY_MAP_CONFIG = {}
@@ -89,7 +100,6 @@ from components.ui.appshell import make_default_appshell
 import dash_leaflet as dl
 import geopandas as gpd
 from components.map.home_map import make_empty_map
-from components.data.snowflake_utils import get_available_wind_thresholds, get_latest_forecast_time_overall, get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data, get_lat_lons, get_lat_lons_bulk
 
 #### Metadata 
 from gigaspatial.core.io.readers import read_dataset
@@ -109,8 +119,7 @@ giga_store = data_store
 
 ###########################################
 
-###### Load initial metadata
-metadata_df = get_snowflake_data()
+###### Process metadata loaded during parallel startup
 # Parse dates and times from metadata
 metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
 metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
@@ -124,7 +133,6 @@ latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) +
             .sort_values(["TRACK_ID","dt"])
             .drop_duplicates("TRACK_ID", keep="last"))
 
-_latlon_bulk = get_lat_lons_bulk()
 latest = latest.merge(_latlon_bulk[['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude']],
                       on=['TRACK_ID', 'FORECAST_TIME'], how='left')
 

@@ -3,6 +3,11 @@ geodb/
 project_results/
 datastore/
 
+# Exclude development/testing directories not needed in production
+LLM-testing/
+testing/
+snowflake_intelligence/
+
 # Exclude Python cache and compiled files
 __pycache__/
 *.py[cod]
@@ -24,16 +29,19 @@ env/
 *~
 .DS_Store
 
-# Exclude Git files
+# Exclude Git and tooling config
 .git/
 .gitignore
 .gitattributes
+.claude/
 
-# Exclude documentation and test files
+# Exclude documentation — not needed at runtime
 *.md
-!README.md
 *.ipynb
-testing.ipynb
+LICENSE
+
+# Exclude one-off / development scripts
+extract_jamaica_data.py
 
 # Exclude logs
 *.log

@@ -18,6 +18,7 @@ Usage:
 """
 
 import os
+import time
 import threading
 from functools import lru_cache
 import pandas as pd
@@ -36,11 +37,11 @@ from components.config import config
 # Per-thread connection storage — each Gunicorn worker thread gets its own connection
 _thread_local = threading.local()
 _connection_verbose = True  # Set to False to suppress connection messages
+_HEALTH_CHECK_INTERVAL = 300  # seconds — recheck liveness at most once every 5 min
 
 def _is_connection_alive(conn):
-    """Check if a Snowflake connection is still alive"""
+    """Check if a Snowflake connection is still alive via a lightweight SELECT 1."""
     try:
-        # Try a simple query to check if connection is alive
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.close()
@@ -56,6 +57,10 @@ def get_snowflake_connection():
     independent connection — avoids race conditions when multiple threads
     run queries simultaneously.
 
+    The liveness check (SELECT 1) is rate-limited to at most once every 5
+    minutes per thread, rather than on every call, to avoid an extra
+    Snowflake round-trip before each query.
+
     Supports two authentication methods:
     1. SPCS OAuth (for Snowflake Container Services):
        - Set SPCS_RUN=true
@@ -66,12 +71,17 @@ def get_snowflake_connection():
     global _connection_verbose
     config.validate_snowflake_config()
 
-    # Return existing thread-local connection if still alive
     conn = getattr(_thread_local, 'connection', None)
     if conn is not None:
-        if _is_connection_alive(conn):
+        last_check = getattr(_thread_local, 'last_health_check', 0.0)
+        if time.monotonic() - last_check < _HEALTH_CHECK_INTERVAL:
+            # Recent check passed — trust the connection
             return conn
-        # Connection is dead — close and recreate
+        # Time for a periodic liveness check
+        if _is_connection_alive(conn):
+            _thread_local.last_health_check = time.monotonic()
+            return conn
+        # Connection is dead — close and fall through to reconnect
         try:
             conn.close()
         except:
@@ -122,6 +132,7 @@ def get_snowflake_connection():
             print("✓ Connected to Snowflake (connection will be reused per thread)")
         _thread_local.connection = conn
         _thread_local.connection_created = True
+        _thread_local.last_health_check = time.monotonic()
         return conn
     except Exception as e:
         print(f"✗ Failed to connect to Snowflake: {str(e)}")
