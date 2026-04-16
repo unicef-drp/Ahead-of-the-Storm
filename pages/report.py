@@ -125,6 +125,7 @@ def refactor_html_str(html_str,d):
     # Detect first forecast: no previous forecast to compare against.
     # When children_change_perc is missing/null/'-', change values equal population values — suppress all indicators.
     is_first_forecast = d.get('children_change_perc', '-') in ('-', '', None, False)
+    d_refactored['is_first_forecast'] = is_first_forecast
 
     # Reformat global change indicators (suppressed on first forecast)
     for key in d.keys():
@@ -209,6 +210,13 @@ def refactor_html_str(html_str,d):
         else:
             d_refactored['pop_change'] = '0'
 
+    # expected_children is now the total of all age groups (0–4 + 5–14 + 15–19)
+    raw_children = d.get('expected_children', 0)
+    if isinstance(raw_children, (int, float)):
+        d_refactored['expected_children_u24'] = _fmt_count(math.ceil(raw_children))
+    else:
+        d_refactored['expected_children_u24'] = d_refactored.get('expected_children', '0')
+
     # Format children_change string (e.g. '+39957' → '+39,957')
     cc = d_refactored.get('children_change', '')
     if isinstance(cc, str) and len(cc) > 1 and cc[0] in ('+', '-'):
@@ -263,7 +271,7 @@ def refactor_html_str(html_str,d):
         rows_hcs_winds.append(row_poi_winds.format(**values))
     d_refactored['rows_hcs_winds'] = "\n".join(rows_hcs_winds)+"\n"
 
-    # Age 15-24 admin rows (no change keys in this list)
+    # Age 15–19 admin rows (no change keys in this list)
     rows_admins_adolescent = []
     for admin_d in d_refactored.get('rows_admins_adolescent', []):
         values = {'admin_name':admin_d['name'],'cci':_fmt_count(admin_d['cci'])}
@@ -385,22 +393,35 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         xs, ys = transformer.transform(lons, lats)
 
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
+        fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
+
+        # Pad bounds before computing marker size so aspect ratio is final
+        pad_x = (max(xs) - min(xs)) * 0.08 or 50000
+        pad_y = (max(ys) - min(ys)) * 0.08 or 50000
+        x_min, x_max = min(xs) - pad_x, max(xs) + pad_x
+        y_min, y_max = min(ys) - pad_y, max(ys) + pad_y
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect('equal')  # preserve geographic proportions
+
+        # Compute marker size to approximately fill each zoom-14 tile (~2445 m/side).
+        # s is in points² where 1 point = dpi/72 screen pixels.
+        tile_m = 2 * math.pi * 6378137 / (2 ** 14)  # ~2445 m per tile side
+        fig_w_px = 8 * 150  # figsize * dpi
+        px_per_m = fig_w_px / (x_max - x_min)
+        tile_px = tile_m * px_per_m
+        pts_per_px = 72 / 150  # matplotlib points per pixel at dpi=150
+        marker_size = max((tile_px * pts_per_px) ** 2, 2.0)
 
         probs_arr = np.array(probs)
-        # Use a yellow-orange-red colormap; normalise over the full 0–1 range so
-        # the colorbar always shows 0–100% with correct colours.
+        # Normalise to the actual probability range so colours use the full YlOrRd ramp.
+        p_max = max(probs_arr.max(), 0.05)  # guard against all-zero
         cmap = plt.cm.YlOrRd
-        norm = mcolors.Normalize(vmin=0, vmax=1.0)
+        norm = mcolors.Normalize(vmin=0, vmax=p_max)
 
-        sc = ax.scatter(xs, ys, c=probs_arr, cmap=cmap, norm=norm,
-                        s=1.5, alpha=0.85, linewidths=0, rasterized=True)
-
-        # Pad bounds slightly
-        pad_x = (max(xs) - min(xs)) * 0.1 or 50000
-        pad_y = (max(ys) - min(ys)) * 0.1 or 50000
-        ax.set_xlim(min(xs) - pad_x, max(xs) + pad_x)
-        ax.set_ylim(min(ys) - pad_y, max(ys) + pad_y)
+        ax.scatter(xs, ys, c=probs_arr, cmap=cmap, norm=norm,
+                   s=marker_size, alpha=0.9, linewidths=0,
+                   marker='s', rasterized=True)
 
         # Use Mapbox light-v11 basemap (same as main dashboard), fall back to CartoDB
         mapbox_token = config.MAPBOX_ACCESS_TOKEN
@@ -417,7 +438,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
             ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False)
 
         ax.set_axis_off()
-        plt.tight_layout(pad=0.5)
+        plt.tight_layout(pad=0)
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
