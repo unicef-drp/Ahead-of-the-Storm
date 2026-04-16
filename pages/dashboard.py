@@ -1769,12 +1769,27 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('health-data-store', 'data'),
      Output('shelters-data-store', 'data'),
      Output('wash-data-store', 'data'),
-     Output('population-tiles-data-store', 'data'),
-     Output('population-admin-data-store', 'data'),
      Output('tiles-stats-store', 'data'),
      Output('admin-stats-store', 'data'),
      Output('layers-loaded-store', 'data'),
      Output('load-status', 'children'),
+     # GeoJSON layers — written directly to avoid browser round-trip
+     Output('population-tiles-json', 'data', allow_duplicate=True),
+     Output('population-tiles-json', 'zoomToBounds', allow_duplicate=True),
+     Output('population-tiles-json', 'key', allow_duplicate=True),
+     Output('population-tiles-json', 'hideout', allow_duplicate=True),
+     Output('probability-tiles-json', 'data', allow_duplicate=True),
+     Output('probability-tiles-json', 'zoomToBounds', allow_duplicate=True),
+     Output('probability-tiles-json', 'key', allow_duplicate=True),
+     Output('probability-tiles-json', 'hideout', allow_duplicate=True),
+     Output('population-admin-json', 'data', allow_duplicate=True),
+     Output('population-admin-json', 'zoomToBounds', allow_duplicate=True),
+     Output('population-admin-json', 'key', allow_duplicate=True),
+     Output('population-admin-json', 'hideout', allow_duplicate=True),
+     Output('probability-admin-json', 'data', allow_duplicate=True),
+     Output('probability-admin-json', 'zoomToBounds', allow_duplicate=True),
+     Output('probability-admin-json', 'key', allow_duplicate=True),
+     Output('probability-admin-json', 'hideout', allow_duplicate=True),
      # Hurricane section
      Output('hurricane-tracks-toggle', 'disabled'),
      Output('hurricane-envelopes-toggle', 'disabled'),
@@ -1812,10 +1827,15 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
     State('forecast-date', 'value'),
     State('forecast-time', 'value'),
     State('wind-threshold-select', 'value'),
+    State('tiles-layer-group', 'value'),
+    State('probability-tiles-layer', 'checked'),
+    State('admin-layer-group', 'value'),
+    State('probability-admin-layer', 'checked'),
     prevent_initial_call=True,
     running=[(Output("load-layers-btn", "loading"), True, False)]
 )
-def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold):
+def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind_threshold,
+                    tiles_layer_group, prob_tiles_checked, admin_layer_group, prob_admin_checked):
     """Load all available layers when Load Layers button is clicked"""
     print(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     print(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
@@ -1828,9 +1848,19 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         type="dots"
     )
     
+    _empty_fc = {"type": "FeatureCollection", "features": []}
+    _hidden = {"hidden": True}
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+                dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"),
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True)
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -2506,18 +2536,59 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         tiles_stats = compute_layer_stats(tiles_data)
         admin_stats = compute_layer_stats(admin_data)
 
+        # Compute initial hideouts for GeoJSON layers based on current UI state
+        _layer_to_prop = {
+            "population": "population", "children-total": "children_total",
+            "infant": "infant_population", "school-age": "school_age_population",
+            "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
+            "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+        }
+        _layer_to_e_prop = {
+            "population": "E_population", "children-total": "E_children_total",
+            "infant": "E_infant_population", "school-age": "E_school_age_population",
+            "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
+            "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+            "none": "probability", None: "probability",
+        }
+        def _hideouts(layer_group, prob_checked):
+            pop_hidden = (not layer_group or layer_group == "none") or (
+                prob_checked and layer_group in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
+            )
+            prop = _layer_to_prop.get(layer_group, "population")
+            e_prop = _layer_to_e_prop.get(layer_group, "probability")
+            pop_h = {"hidden": True} if pop_hidden else {"prop": prop}
+            prob_h = {"prop": e_prop} if prob_checked else {"hidden": True}
+            return pop_h, prob_h
+
+        tiles_pop_h, tiles_prob_h = _hideouts(tiles_layer_group, prob_tiles_checked)
+        admin_pop_h, admin_prob_h = _hideouts(admin_layer_group, prob_admin_checked)
+        layer_key = str(time.time())
+
         load_elapsed = time.time() - load_start_time
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY in {load_elapsed:.2f}s ===")
         return (tracks_data, envelope_data, schools_data, health_data,
                 shelters_data, wash_data,
-                tiles_data, admin_data,
                 tiles_stats, admin_stats,
                 True, status_alert,
-                False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False)
+                tiles_data, False, layer_key, tiles_pop_h,
+                tiles_data, False, layer_key, tiles_prob_h,
+                admin_data, False, layer_key, admin_pop_h,
+                admin_data, False, layer_key, admin_prob_h,
+                False, False, False, False, False, False, False,
+                False, False, False, False, False, False, False, False, False, False,
+                False, False, False, False, False, False, False, False, False, False)
 
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, False, dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"), True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+                dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"),
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                _empty_fc, False, dash.no_update, _hidden,
+                True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True)
 
 
 # Callback to warn when selectors change after layers are loaded
@@ -3159,54 +3230,7 @@ def toggle_wash_overlay(checked, wash_data_in):
 # 3.6: CALLBACKS - TILE LAYER STYLING
 # -----------------------------------------------------------------------------
 # Handle tile layer display and styling based on selected property
-
-# Split into two callbacks so the 9MB data store is NEVER sent to the server on toggles:
-#   1. load_tiles_layer_data  — fires only when the store changes (new storm); forwards data + sets initial hideout
-#   2. juggle_toggles_tiles_layer — fires only on radio/checkbox; sends ~20 bytes, no store reference
-
-@callback(
-    Output("population-tiles-json", "data", allow_duplicate=True),
-    Output("population-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-tiles-json", "key", allow_duplicate=True),
-    Output("population-tiles-json", "hideout", allow_duplicate=True),
-    Output("probability-tiles-json", "data", allow_duplicate=True),
-    Output("probability-tiles-json", "zoomToBounds", allow_duplicate=True),
-    Output("probability-tiles-json", "key", allow_duplicate=True),
-    Output("probability-tiles-json", "hideout", allow_duplicate=True),
-    Input('population-tiles-data-store', 'data'),
-    State('tiles-layer-group', 'value'),
-    State('probability-tiles-layer', 'checked'),
-    prevent_initial_call=True,
-)
-def load_tiles_layer_data(tiles_data, selected_layer, prob_checked):
-    """Forward precomputed tile data to GeoJSON layers when a new storm is loaded."""
-    if not tiles_data or 'features' not in tiles_data:
-        empty = {"type": "FeatureCollection", "features": []}
-        return empty, False, dash.no_update, {"hidden": True}, empty, False, dash.no_update, {"hidden": True}
-
-    layer_to_prop = {
-        "population": "population", "children-total": "children_total",
-        "infant": "infant_population", "school-age": "school_age_population",
-        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
-        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
-    }
-    layer_to_e_prop = {
-        "population": "E_population", "children-total": "E_children_total",
-        "infant": "E_infant_population", "school-age": "E_school_age_population",
-        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
-        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
-        "none": "probability", None: "probability",
-    }
-    pop_hidden = (not selected_layer or selected_layer == "none") or (
-        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
-    )
-    prop = layer_to_prop.get(selected_layer, "population")
-    e_prop = layer_to_e_prop.get(selected_layer, "probability")
-    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
-    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
-    key = str(time.time())
-    return tiles_data, False, key, pop_hideout, tiles_data, False, key, prob_hideout
-
+# Data is written directly by load_all_layers; these callbacks only update hideout.
 
 @callback(
     Output("population-tiles-json", "hideout", allow_duplicate=True),
@@ -3254,51 +3278,7 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked):
     prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
     return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
 
-# Handle admin layer — same split pattern as tiles
-@callback(
-    Output("population-admin-json", "data", allow_duplicate=True),
-    Output("population-admin-json", "zoomToBounds", allow_duplicate=True),
-    Output("population-admin-json", "key", allow_duplicate=True),
-    Output("population-admin-json", "hideout", allow_duplicate=True),
-    Output("probability-admin-json", "data", allow_duplicate=True),
-    Output("probability-admin-json", "zoomToBounds", allow_duplicate=True),
-    Output("probability-admin-json", "key", allow_duplicate=True),
-    Output("probability-admin-json", "hideout", allow_duplicate=True),
-    Input('population-admin-data-store', 'data'),
-    State('admin-layer-group', 'value'),
-    State('probability-admin-layer', 'checked'),
-    prevent_initial_call=True,
-)
-def load_admin_layer_data(admin_data, selected_layer, prob_checked):
-    """Forward precomputed admin data to GeoJSON layers when a new storm is loaded."""
-    if not admin_data or 'features' not in admin_data:
-        empty = {"type": "FeatureCollection", "features": []}
-        return empty, False, dash.no_update, {"hidden": True}, empty, False, dash.no_update, {"hidden": True}
-
-    layer_to_prop = {
-        "population": "population", "children-total": "children_total",
-        "infant": "infant_population", "school-age": "school_age_population",
-        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
-        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
-    }
-    layer_to_e_prop = {
-        "population": "E_population", "children-total": "E_children_total",
-        "infant": "E_infant_population", "school-age": "E_school_age_population",
-        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
-        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
-        "none": "probability", None: "probability",
-    }
-    pop_hidden = (not selected_layer or selected_layer == "none") or (
-        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
-    )
-    prop = layer_to_prop.get(selected_layer, "population")
-    e_prop = layer_to_e_prop.get(selected_layer, "probability")
-    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
-    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
-    key = str(time.time())
-    return admin_data, False, key, pop_hideout, admin_data, False, key, prob_hideout
-
-
+# Handle admin layer toggles — data written directly by load_all_layers
 @callback(
     Output("population-admin-json", "hideout", allow_duplicate=True),
     Output("probability-admin-json", "hideout", allow_duplicate=True),

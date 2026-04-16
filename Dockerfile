@@ -72,21 +72,23 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 # CPU_X64_XS: 2 vCPU, 8 GB RAM
 # Worker class: gthread — Snowflake queries are I/O-bound; threads allow other
 #   requests to proceed while one thread waits on a query response.
-#   2 workers × 4 threads = 8 concurrent requests on 2 vCPU.
-# Memory: ~1.4 GB per worker (libraries + lru_cache) × 2 = ~2.8 GB used,
-#   leaving ~5 GB headroom on 8 GB.
-# max-requests 5000: workers restart periodically to prevent memory creep, but
-#   infrequently enough that the 3-query startup cost amortises well.
-# Override WEB_CONCURRENCY in the service spec env block if needed.
+# Workers: 1 — single process, no fork(). Avoids fork-safety issues with the
+#   snowflake-connector-python native extensions (connections inherited across
+#   fork cause broken-pipe / auth errors) AND eliminates the Dash callback-map
+#   race condition (RuntimeError: dictionary changed size during iteration)
+#   that occurs when multiple workers race to validate callbacks on first request.
+# Threads: 8 — equivalent concurrency to the previous 2×4 configuration on an
+#   I/O-bound workload; all threads share one in-process lru_cache (~1.4 GB).
+# Memory: ~1.4 GB (libraries + lru_cache), leaving ~6.5 GB free on 8 GB.
+# max-requests disabled (single worker restart would drop all connections).
+# Override WEB_CONCURRENCY in the service spec env block if needed (ignored here).
 CMD gunicorn \
     --bind 0.0.0.0:${PORT:-8000} \
-    --workers ${WEB_CONCURRENCY:-2} \
+    --workers 1 \
     --worker-class gthread \
-    --threads 4 \
+    --threads 8 \
     --timeout 300 \
     --keep-alive 5 \
-    --max-requests 5000 \
-    --max-requests-jitter 500 \
     --access-logfile - \
     --error-logfile - \
     --log-level info \
