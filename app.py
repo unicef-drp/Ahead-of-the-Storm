@@ -1,7 +1,6 @@
 import dash
 import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State, dcc
-from flask_caching import Cache
 from dotenv import load_dotenv
 import pandas as pd
 

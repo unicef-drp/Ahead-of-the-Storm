@@ -35,12 +35,17 @@ RUN mkdir -p /datastore && \
 # Define volume mount point
 VOLUME ["/datastore"]
 
-# Copy requirements first (for better layer caching)
-COPY requirements.txt .
+# REQUIREMENTS_FILE selects which dependency set to install:
+#   default (Azure App Service): docker build .
+#   SPCS (no Azure deps):        docker build --build-arg REQUIREMENTS_FILE=requirements.spcs.txt .
+ARG REQUIREMENTS_FILE=requirements.txt
+
+# Copy both requirements files (for better layer caching)
+COPY requirements.txt requirements.spcs.txt ./
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r ${REQUIREMENTS_FILE}
 
 # Copy application code
 COPY . .
