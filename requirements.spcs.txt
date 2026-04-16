@@ -26,9 +26,13 @@ dash-extensions>=1.0.0
 
 # Production web server
 gunicorn>=21.2.0
+flask-compress>=1.14
+brotli>=1.0.9
 
 # Environment management
 python-dotenv>=1.0.0
 
-# GigaSpatial platform integration (Snowflake extra only — no Azure)
-giga-spatial[snowflake]>=0.9.2
+# GigaSpatial platform integration
+# [all] required because giga-spatial unconditionally imports GEE handlers at
+# package level regardless of which extras are installed.
+giga-spatial[all]>=0.9.2

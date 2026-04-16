@@ -49,6 +49,23 @@ def _is_connection_alive(conn):
     except:
         return False
 
+
+def _run_query(sql: str, params=None) -> pd.DataFrame:
+    """
+    Execute a SQL query against the thread-local Snowflake connection.
+    On a connection-closed error (08003), resets the connection and retries once.
+    """
+    for attempt in range(2):
+        try:
+            conn = get_snowflake_connection()
+            return pd.read_sql(sql, conn, params=params)
+        except Exception as e:
+            if attempt == 0 and ('08003' in str(e) or 'Connection is closed' in str(e)):
+                _thread_local.connection = None
+                _thread_local.last_health_check = 0.0
+                continue
+            raise
+
 def get_snowflake_connection():
     """
     Get or create a Snowflake connection for the current thread.
@@ -183,7 +200,7 @@ def get_hurricane_data_from_snowflake(track_id, forecast_time):
     ORDER BY ENSEMBLE_MEMBER, LEAD_TIME
     """
     
-    df = pd.read_sql(query, conn, params=[track_id, forecast_time])
+    df = _run_query(query, params=[track_id, forecast_time])
     # Don't close connection - it's cached and will be reused
     
     return df
@@ -215,7 +232,7 @@ def get_envelopes_from_snowflake(track_id, forecast_time):
     ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
     """
     
-    df = pd.read_sql(query, conn, params=[track_id, forecast_time])
+    df = _run_query(query, params=[track_id, forecast_time])
     # Don't close connection - it's cached and will be reused
     
     return df
@@ -284,7 +301,7 @@ def get_available_wind_thresholds(storm, forecast_time):
         ORDER BY WIND_THRESHOLD
         """
         
-        df = pd.read_sql(query, conn, params=[storm, forecast_time])
+        df = _run_query(query, params=[storm, forecast_time])
         # Don't close connection - it's cached and will be reused
         
         if not df.empty:
@@ -320,7 +337,7 @@ def get_latest_forecast_time_overall():
         FROM TC_TRACKS
         """
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
@@ -350,7 +367,7 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
         '''
         
-        df = pd.read_sql(query, conn, params=[track_id, str(forecast_time)])
+        df = _run_query(query, params=[track_id, str(forecast_time)])
         # Don't close connection - reuse it for better performance
         # conn.close()
         
@@ -403,7 +420,7 @@ def get_active_countries():
         ORDER BY COUNTRY_CODE
         '''
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         if not df.empty:
@@ -441,7 +458,7 @@ def get_lat_lons(row):
         LIMIT 1
         '''
 
-        df_latlon = pd.read_sql(query, conn, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
+        df_latlon = _run_query(query, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
         # Don't close connection - it's cached and will be reused
 
         if len(df_latlon) > 0:
@@ -476,7 +493,7 @@ def get_lat_lons_bulk() -> pd.DataFrame:
         FROM TC_TRACKS
         WHERE LEAD_TIME = 0
         """
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         df = df.rename(columns={'LATITUDE': 'latitude', 'LONGITUDE': 'longitude'})
         print(f"✓ Loaded lat/lons for {len(df)} storm/forecast combinations in one query")
         return df
@@ -501,7 +518,7 @@ def get_snowflake_data():
         ORDER BY FORECAST_TIME DESC, TRACK_ID
         '''
         
-        df = pd.read_sql(query, conn)
+        df = _run_query(query)
         # Don't close connection - it's cached and will be reused
         
         return df
@@ -547,7 +564,7 @@ def get_school_impacts(country: str, storm: str, forecast_date: str, wind_thresh
           AND FORECAST_DATE = %s
           AND WIND_THRESHOLD = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
         print(f"✓ Loaded {len(df)} school impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
         return df
     except Exception as e:
@@ -593,7 +610,7 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
           AND FORECAST_DATE = %s
           AND WIND_THRESHOLD = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
         print(f"✓ Loaded {len(df)} health centre impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
         return df
     except Exception as e:
@@ -620,7 +637,7 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
         query = """
         SELECT
             NAME,
-            SHELTER_TYPE,
+            TYPE AS SHELTER_TYPE,
             CATEGORY,
             PROBABILITY,
             ZONE_ID,
@@ -632,7 +649,7 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
           AND FORECAST_DATE = %s
           AND WIND_THRESHOLD = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
         print(f"✓ Loaded {len(df)} shelter impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
         return df
     except Exception as e:
@@ -671,7 +688,7 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
           AND FORECAST_DATE = %s
           AND WIND_THRESHOLD = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
         print(f"✓ Loaded {len(df)} WASH facility impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
         return df
     except Exception as e:
@@ -721,7 +738,7 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
           AND WIND_THRESHOLD = %s
           AND ZOOM_LEVEL = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold, zoom_level])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, zoom_level])
         print(f"✓ Loaded {len(df)} tile impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt zoom={zoom_level})")
         return df
     except Exception as e:
@@ -771,7 +788,7 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
           AND WIND_THRESHOLD = %s
           AND ADMIN_LEVEL = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold, admin_level])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, admin_level])
         print(f"✓ Loaded {len(df)} admin impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt admin_level={admin_level})")
         return df
     except Exception as e:
@@ -795,7 +812,7 @@ def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int =
           AND FORECAST_DATE = %s
           AND ZOOM_LEVEL = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, zoom_level])
+        df = _run_query(query, params=[country, storm, forecast_date, zoom_level])
         df.columns = [c.lower() for c in df.columns]   # zone_id, cci_children, E_cci_children
         # Normalise E_ prefix (E_cci_children stays as-is after lower)
         df = df.rename(columns={'e_cci_children': 'E_cci_children'})
@@ -822,7 +839,7 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
           AND FORECAST_DATE = %s
           AND ADMIN_LEVEL = %s
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, admin_level])
+        df = _run_query(query, params=[country, storm, forecast_date, admin_level])
         df.columns = [c.lower() for c in df.columns]   # tile_id, cci_children, e_cci_children
         df = df.rename(columns={'e_cci_children': 'E_cci_children'})
         print(f"✓ Loaded {len(df)} admin CCI rows from SQL ({country}/{storm}/{forecast_date} admin_level={admin_level})")
@@ -850,7 +867,7 @@ def get_available_admin_levels(country: str) -> list:
         WHERE COUNTRY = %s
         ORDER BY 1
         """
-        df = pd.read_sql(query, conn, params=[country])
+        df = _run_query(query, params=[country])
         return df['ADMIN_LEVEL'].tolist()
     except Exception as e:
         print(f"Error querying available admin levels: {str(e)}")
@@ -897,7 +914,7 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
           AND WIND_THRESHOLD = %s
         ORDER BY ZONE_ID
         """
-        df = pd.read_sql(query, conn, params=[country, storm, forecast_date, wind_threshold])
+        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
 
         def _parse_wkb(g):
             if g is None:

@@ -20,19 +20,23 @@ function(feature, context) {
 }
 """)
 
-# JavaScript styling for tiles with value-based coloring
+# JavaScript styling for tiles with value-based coloring.
+# Reads context.hideout.prop and looks up pre-computed _color_{prop} / _fillOpacity_{prop}
+# fields that precompute_all_colors() embeds at load time for all 19 display properties.
 style_tiles = assign("""
 function(feature, context) {
     const props = feature.properties || {};
-    const color = props._color || '#808080';
-    const fillOpacity = props._fillOpacity || 0.7;
-    const weight = props._weight || 1;
-    const opacity = props._opacity || 0.8;
-    
+    const hideout = context.hideout || {};
+    if (hideout.hidden) {
+        return {fillColor: 'transparent', fillOpacity: 0, color: 'transparent', weight: 0, opacity: 0};
+    }
+    const prop = hideout.prop || 'probability';
+    const color = props['_color_' + prop] || 'transparent';
+    const fillOpacity = props['_fillOpacity_' + prop] != null ? props['_fillOpacity_' + prop] : 0.0;
     return {
         color: color,
-        weight: weight,
-        opacity: opacity,
+        weight: props._weight || 1,
+        opacity: props._opacity || 0.8,
         fillColor: color,
         fillOpacity: fillOpacity
     };

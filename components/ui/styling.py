@@ -261,3 +261,165 @@ def update_tile_features(tiles_data_in, property):
         print(f"Error styling {property} tiles: {e}")
         return tiles_data, False, key
 
+
+def precompute_all_colors(geojson_data):
+    """
+    Pre-compute color variants for ALL display properties in a single deep-copy pass.
+
+    Embeds ``_color_{prop}`` and ``_fillOpacity_{prop}`` for every property into each
+    feature so that toggle callbacks only need to update a tiny ``hideout`` dict
+    instead of sending the full GeoJSON back and forth on every layer switch.
+
+    Also pre-computes derived fields ``children_total`` and ``E_children_total``.
+    """
+    import copy, math
+
+    if not geojson_data or 'features' not in geojson_data:
+        return geojson_data
+
+    data = copy.deepcopy(geojson_data)
+    features = data['features']
+
+    # Pre-compute derived demographic totals
+    for f in features:
+        props = f.get('properties', {})
+        if 'children_total' not in props:
+            props['children_total'] = (
+                (props.get('infant_population') or 0) +
+                (props.get('school_age_population') or 0) +
+                (props.get('adolescent_population') or 0)
+            )
+        if 'E_children_total' not in props:
+            props['E_children_total'] = (
+                (props.get('E_infant_population') or 0) +
+                (props.get('E_school_age_population') or 0) +
+                (props.get('E_adolescent_population') or 0)
+            )
+
+    all_props = [
+        'probability',
+        'population',            'E_population',
+        'children_total',        'E_children_total',
+        'infant_population',     'E_infant_population',
+        'school_age_population', 'E_school_age_population',
+        'adolescent_population', 'E_adolescent_population',
+        'built_surface_m2',      'E_built_surface_m2',
+        config.CCI_COL,          config.E_CCI_COL,
+        'smod_class',
+        'rwi',
+        'E_num_shelters',        'E_num_wash',
+    ]
+
+    LOG_SCALE_PROPS = {
+        'population', 'E_population', 'children_total', 'E_children_total',
+        'infant_population', 'E_infant_population',
+        'school_age_population', 'E_school_age_population',
+        'adolescent_population', 'E_adolescent_population',
+        'built_surface_m2', 'E_built_surface_m2',
+        config.CCI_COL, config.E_CCI_COL,
+        'E_num_shelters', 'E_num_wash',
+    }
+
+    for prop in all_props:
+        if prop not in all_colors:
+            continue
+        try:
+            colors = all_colors[prop]
+            actual_colors = colors[1:]
+            actual_buckets = len(actual_colors)
+
+            if prop == 'smod_class':
+                raw = [f['properties'].get(prop) for f in features]
+                values = [int(v / 10) if v is not None and not pd.isna(v) else 0 for v in raw]
+            else:
+                values = [f['properties'].get(prop) for f in features]
+
+            clean_values = [v for v in values if v is not None and not pd.isna(v)]
+            max_val = 1.0 if prop == 'probability' else (max(clean_values) if clean_values else 0)
+
+            if not clean_values or (max_val == 0 and prop != 'rwi'):
+                color_list = [colors[0]] * len(values)
+            elif prop == 'rwi':
+                color_list = []
+                for val in values:
+                    if val is None or pd.isna(val):
+                        color_list.append(colors[0])
+                    else:
+                        norm = (float(val) - (-1.0)) / 2.0
+                        idx = int(min(max(round(norm * (actual_buckets - 1)), 0), actual_buckets - 1))
+                        color_list.append(actual_colors[idx])
+            elif prop == 'smod_class':
+                color_list = [
+                    actual_colors[int(v) - 1] if v in [1, 2, 3] else colors[0]
+                    for v in values
+                ]
+            elif prop in LOG_SCALE_PROPS:
+                clean_pos = [v for v in clean_values if v > 0]
+                if clean_pos:
+                    log_min = math.log10(min(clean_pos))
+                    log_max = math.log10(max_val) if max_val > 0 else log_min
+                    log_step = (log_max - log_min) / actual_buckets if log_max != log_min else 1.0
+                    color_list = []
+                    for val in values:
+                        if val is None or pd.isna(val) or val == 0:
+                            color_list.append(colors[0])
+                        else:
+                            idx = min(int((math.log10(val) - log_min) / log_step) if log_step > 0 else 0, actual_buckets - 1)
+                            color_list.append(actual_colors[idx])
+                else:
+                    color_list = [colors[0]] * len(values)
+            else:
+                step = max_val / actual_buckets if actual_buckets > 0 else 1.0
+                color_list = []
+                for val in values:
+                    if val is None or pd.isna(val) or val == 0:
+                        color_list.append(colors[0])
+                    else:
+                        color_list.append(actual_colors[min(int(val / step), actual_buckets - 1)])
+
+            for f, color in zip(features, color_list):
+                f['properties'][f'_color_{prop}'] = color
+                f['properties'][f'_fillOpacity_{prop}'] = 0.0 if color == colors[0] else 0.7
+
+        except Exception:
+            pass  # Property not present in this layer (e.g. CCI missing for admin) — skip
+
+    return data
+
+
+def compute_layer_stats(geojson_data):
+    """
+    Compute min/max for each display property from GeoJSON features.
+
+    Returns a small dict stored in a dcc.Store for legend computation, replacing
+    the previous pattern of iterating over thousands of features on every toggle.
+    """
+    if not geojson_data or 'features' not in geojson_data:
+        return {}
+
+    features = geojson_data['features']
+    stats = {}
+
+    props_to_check = [
+        'population',            'E_population',
+        'children_total',        'E_children_total',
+        'infant_population',     'E_infant_population',
+        'school_age_population', 'E_school_age_population',
+        'adolescent_population', 'E_adolescent_population',
+        'built_surface_m2',      'E_built_surface_m2',
+        config.CCI_COL,          config.E_CCI_COL,
+        'E_num_shelters',        'E_num_wash',
+        'rwi',
+    ]
+
+    for prop in props_to_check:
+        try:
+            vals = [f['properties'].get(prop) for f in features if f.get('properties')]
+            clean = [v for v in vals if v is not None and not pd.isna(v) and v > 0]
+            if clean:
+                stats[prop] = {'min': min(clean), 'max': max(clean)}
+        except Exception:
+            pass
+
+    return stats
+

@@ -57,9 +57,10 @@ ENV PORT=8000 \
     SNOWFLAKE_DATABASE="" \
     SNOWFLAKE_SCHEMA="" \
     IMPACT_DATA_SOURCE=SQL \
-    IMPACT_DATA_STORE=LOCAL \
-    ROOT_DATA_DIR=/DataStore/geodb \
-    RESULTS_DIR=/DataStore/project_results/climate/lacro_project \
+    IMPACT_DATA_STORE=SNOWFLAKE \
+    SNOWFLAKE_STAGE_NAME="" \
+    ROOT_DATA_DIR=geodb \
+    RESULTS_DIR=results \
     VIEWS_DIR=aos_views \
     MAPBOX_ACCESS_TOKEN=""
 
