@@ -393,7 +393,10 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         xs, ys = transformer.transform(lons, lats)
 
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
+        _dpi = 250
+        _fig_w, _fig_h = 14, 9
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        fig, ax = plt.subplots(figsize=(_fig_w, _fig_h), dpi=_dpi)
 
         # Pad bounds before computing marker size so aspect ratio is final
         pad_x = (max(xs) - min(xs)) * 0.08 or 50000
@@ -407,41 +410,67 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         # Compute marker size to approximately fill each zoom-14 tile (~2445 m/side).
         # s is in points² where 1 point = dpi/72 screen pixels.
         tile_m = 2 * math.pi * 6378137 / (2 ** 14)  # ~2445 m per tile side
-        fig_w_px = 8 * 150  # figsize * dpi
+        fig_w_px = _fig_w * _dpi
         px_per_m = fig_w_px / (x_max - x_min)
         tile_px = tile_m * px_per_m
-        pts_per_px = 72 / 150  # matplotlib points per pixel at dpi=150
+        pts_per_px = 72 / _dpi
         marker_size = max((tile_px * pts_per_px) ** 2, 2.0)
 
-        probs_arr = np.array(probs)
-        # Normalise to the actual probability range so colours use the full YlOrRd ramp.
-        p_max = max(probs_arr.max(), 0.05)  # guard against all-zero
-        cmap = plt.cm.YlOrRd
-        norm = mcolors.Normalize(vmin=0, vmax=p_max)
+        # Fixed 0–100% scale — low-probability storms stay yellow, not red.
+        _dashboard_prob_colors = [
+            '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
+            '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026',
+        ]
+        cmap = mcolors.LinearSegmentedColormap.from_list('dashboard_prob', _dashboard_prob_colors)
+        norm = mcolors.Normalize(vmin=0, vmax=1.0)
 
-        ax.scatter(xs, ys, c=probs_arr, cmap=cmap, norm=norm,
-                   s=marker_size, alpha=0.9, linewidths=0,
-                   marker='s', rasterized=True)
-
-        # Use Mapbox light-v11 basemap (same as main dashboard), fall back to CartoDB
+        # Add basemap FIRST so impact tiles render on top of it.
+        # zoom_adjust=1 fetches higher-res tiles for a sharper basemap.
         mapbox_token = config.MAPBOX_ACCESS_TOKEN
         if mapbox_token:
-            # Mapbox Styles API requires tileSize in path: /tiles/256/{z}/{x}/{y}
             tile_url = (f"https://api.mapbox.com/styles/v1/mapbox/light-v11"
                         f"/tiles/256/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}")
             try:
-                ctx.add_basemap(ax, source=tile_url, attribution=False)
+                ctx.add_basemap(ax, source=tile_url, attribution=False, zoom_adjust=1)
             except Exception as e:
                 print(f"Impact report map: Mapbox tiles failed ({e}), falling back to CartoDB")
-                ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False)
+                ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False,
+                                zoom_adjust=1)
         else:
-            ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False)
+            ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False,
+                            zoom_adjust=1)
+
+        probs_arr = np.array(probs)
+        sc = ax.scatter(xs, ys, c=probs_arr, cmap=cmap, norm=norm,
+                        s=marker_size, alpha=0.85, linewidths=0,
+                        marker='s')
 
         ax.set_axis_off()
-        plt.tight_layout(pad=0)
+
+        # Wind threshold label — bottom-right corner of the map
+        ax.text(0.98, 0.02, f'Wind speed threshold: {wind_threshold} kt',
+                transform=ax.transAxes, ha='right', va='bottom',
+                fontsize=9, color='#333333',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85,
+                          edgecolor='#cccccc', linewidth=0.5))
+
+        # Horizontal colorbar below the map — appended via make_axes_locatable
+        # so it never overlaps the map content.
+        divider = make_axes_locatable(ax)
+        cbar_ax = divider.append_axes('bottom', size='4%', pad=0.08)
+        cb = plt.colorbar(sc, cax=cbar_ax, orientation='horizontal')
+        cb.set_label('Probability of wind exceeding threshold', fontsize=9,
+                     color='#333333', labelpad=4)
+        cb.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
+        cb.set_ticklabels(['0%', '25%', '50%', '75%', '100%'])
+        cb.ax.tick_params(labelsize=8, colors='#333333', length=3)
+        cb.outline.set_edgecolor('#cccccc')
+        cb.outline.set_linewidth(0.5)
+
+        plt.tight_layout(pad=0.3)
 
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=_dpi)
         plt.close(fig)
         buf.seek(0)
         return base64.b64encode(buf.read()).decode('utf-8')
