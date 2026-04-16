@@ -74,6 +74,8 @@ Both formats are handled in the same SELECT using `IFF($13 IS NULL, old_pos, new
 
 **Adding new columns when the pipeline changes:** See `MAT_TABLE_FIX.md` for a step-by-step guide.
 
+**Note on column availability:** Countries processed with the old 12-col pipeline format (JAM, VNM) return NULL for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, and `E_SMOD_CLASS_L1`. These columns are only populated for countries reprocessed with the new 16-col format (PNG, SLB — April 2026+). Rerun the pipeline for old countries to populate these fields.
+
 **Refreshing data:** Call `REFRESH_MATERIALIZED_VIEWS()` after new storm data arrives, or wait for the hourly scheduled task. The task is created in SUSPENDED state — resume it once the setup is verified:
 ```sql
 ALTER TASK AOTS.TC_ECMWF.REFRESH_MATERIALIZED_VIEWS_TASK RESUME;
@@ -101,9 +103,9 @@ Creates the 17 stored procedures that serve as tools for the AI agent. All proce
 
 **Stored Procedures:**
 
-1. **GET_EXPECTED_IMPACT_VALUES**: Expected (probabilistic) impact for a country/storm/date/threshold — from `MERCATOR_TILE_IMPACT_MAT` zoom=14
-2. **GET_SINGLE_METRIC**: Returns one named metric efficiently (e.g. `expected_population`, `worst_case_population`)
-3. **GET_WORST_CASE_SCENARIO**: Worst-case ensemble member impact — from `TRACK_MAT`
+1. **GET_EXPECTED_IMPACT_VALUES**: Expected (probabilistic) impact for a country/storm/date/threshold — from `MERCATOR_TILE_IMPACT_MAT` zoom=14. Returns population, children (0–19), school-age (5–14), infants (0–4), adolescents (15–19), schools, health centers, shelters, WASH facilities.
+2. **GET_SINGLE_METRIC**: Returns one named metric efficiently. Supported metrics: `expected_population`, `expected_children` (0–19 total), `expected_school_age` (5–14), `expected_infants` (0–4), `expected_adolescents` (15–19), `expected_schools`, `expected_health_centers`, `expected_shelters`, `expected_wash`, `worst_case_population`, `worst_case_children`, `worst_to_expected_ratio`, `ensemble_count`.
+3. **GET_WORST_CASE_SCENARIO**: Worst-case ensemble member impact — from `TRACK_MAT`. Returns population, children (0–19), school-age, infants, adolescents, schools, health centers, shelters, WASH facilities.
 4. **GET_SCENARIO_DISTRIBUTION**: Distribution statistics across ensemble members, including embedded risk classification (LOW/MODERATE/HIGH) — from `TRACK_MAT`
 5. **GET_ALL_WIND_THRESHOLDS_ANALYSIS**: Expected impact for all wind thresholds in one call — from `MERCATOR_TILE_IMPACT_MAT`
 6. **GET_THRESHOLD_PROBABILITIES**: Average impact probability per wind threshold — from `ADMIN_ALL_IMPACT_MAT`
@@ -242,3 +244,54 @@ Admin-level breakdowns use `ADMIN_ALL_IMPACT_MAT` with `admin_level = 1`:
 
 
 **Execution order:** `01_setup_materialized_tables.sql` → `02_setup_snowflake_intelligence.sql` → `04_create_stored_procedures.sql` → `03_create_agent.sql`
+
+## Evaluations
+
+Agent quality is measured with Snowflake Native Cortex Agent Evaluations. The evaluation dataset and views live in `07_create_eval_dataset.sql` and `07b_create_eval_views.sql`.
+
+### Dataset summary
+
+| Evalset name | View | Cases | Purpose |
+|---|---|---|---|
+| `HURRICANE_INTELLIGENCE_EVALSET` | `EVAL_ALL` | 72 | Full baseline — run after any agent change |
+| `HURRICANE_INTELLIGENCE_MIXED_EVALSET` | `EVAL_MIXED` | 10 | Quick cross-category regression check |
+| `HURRICANE_INTELLIGENCE_SINGLE_METRICS_EVALSET` | `EVAL_SINGLE_METRICS` | 14 | Single-metric precision (all supported metrics) |
+| `HURRICANE_INTELLIGENCE_FULL_REPORTS_EVALSET` | `EVAL_FULL_REPORTS` | 5 | Five-section report quality |
+| `HURRICANE_INTELLIGENCE_NAMED_FACILITIES_EVALSET` | `EVAL_NAMED_FACILITIES` | 5 | Schools and health center name lookups |
+| `HURRICANE_INTELLIGENCE_TREND_EVALSET` | `EVAL_TREND` | — | Forecast-to-forecast trend analysis |
+| `HURRICANE_INTELLIGENCE_ADMIN_BREAKDOWN_EVALSET` | `EVAL_ADMIN_BREAKDOWN` | — | Admin-area disaggregation |
+| `HURRICANE_INTELLIGENCE_REFUSALS_EVALSET` | `EVAL_REFUSALS` | — | Refusal and wrong-hazard cases |
+
+### Single-metric coverage (SM-## cases)
+
+All 13 supported `GET_SINGLE_METRIC` metrics have at least one pinned test case:
+
+| Metric | Case | Storm / Country / Date |
+|---|---|---|
+| `expected_population` | SM-01 | JAM / MELISSA / 20251028 00Z |
+| `expected_children` (0–19 total) | SM-02, SM-14 | JAM / MELISSA; PNG / MAILA |
+| `expected_school_age` (5–14) | SM-10 | JAM / MELISSA / 20251028 00Z |
+| `expected_infants` (0–4) | SM-09 | JAM / MELISSA / 20251028 00Z |
+| `expected_adolescents` (15–19) | SM-11 | PNG / MAILA / 20260406 00Z |
+| `expected_schools` | SM-04 | JAM / MELISSA / 20251028 00Z |
+| `expected_health_centers` | SM-06 | JAM / MELISSA / 20251028 00Z |
+| `expected_shelters` | SM-13 | PNG / MAILA / 20260406 00Z |
+| `expected_wash` | SM-12 | PNG / MAILA / 20260406 00Z |
+| `worst_case_population` | SM-03 | JAM / MELISSA / 20251028 00Z |
+| `worst_case_children` | SM-02 context | — |
+| `worst_to_expected_ratio` | SM-05 | JAM / MELISSA / 20251028 00Z |
+| `ensemble_count` | SM-08 | JAM / MELISSA / 20251028 00Z |
+
+### Running evaluations
+
+```sql
+-- Upload config and run
+PUT file://snowflake_intelligence/eval_config.yaml @AOTS.TC_ECMWF.AGENT_STAGE AUTO_COMPRESS=FALSE;
+CALL EXECUTE_AI_EVALUATION(
+    'START',
+    OBJECT_CONSTRUCT('run_name', 'v3.1_new_metrics'),
+    '@AOTS.TC_ECMWF.AGENT_STAGE/eval_config.yaml'
+);
+```
+
+Set `dataset_name` in `eval_config.yaml` to the evalset you want to run (e.g. `HURRICANE_INTELLIGENCE_SINGLE_METRICS_EVALSET` for a focused check after changing `GET_SINGLE_METRIC`).

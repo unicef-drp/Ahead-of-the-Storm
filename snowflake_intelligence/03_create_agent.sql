@@ -43,7 +43,7 @@ tools:
       name: get_expected_impact_values
       description: |
         Get expected (probabilistic) impact values for a specific country, storm, forecast date, and wind threshold.
-        Returns: JSON with row_count, total_population, total_schools, total_hcs, total_school_age_children, total_infant_children, total_children.
+        Returns: JSON with row_count, total_population, total_schools, total_hcs, total_shelters, total_wash, total_school_age_children, total_infant_children, total_children.
       input_schema:
         type: object
         properties:
@@ -68,7 +68,7 @@ tools:
         Return one named metric for a country/storm/date/threshold.
         More efficient than get_expected_impact_values when only one number is needed.
         Valid metric_name values: expected_population, expected_children, expected_school_age,
-        expected_infants, expected_schools, expected_health_centers,
+        expected_infants, expected_adolescents, expected_schools, expected_health_centers, expected_shelters, expected_wash,
         worst_case_population, worst_case_children, worst_to_expected_ratio, ensemble_count.
         Returns: JSON with metric_name, value, unit, source_citation, query_context.
       input_schema:
@@ -156,7 +156,7 @@ tools:
       name: get_worst_case_scenario
       description: |
         Get worst-case impact from the ensemble — the member with highest severity_population.
-        Returns: JSON with ensemble_member, population, children, school_age_children, infants, schools, health_centers.
+        Returns: JSON with ensemble_member, population, children, school_age_children, infants, schools, health_centers, shelters, wash_facilities.
       input_schema:
         type: object
         properties:
@@ -175,7 +175,7 @@ tools:
       name: get_scenario_distribution
       description: |
         Get distribution statistics across all ensemble members, including inline risk classification.
-        Returns: JSON with total_members, population/children/schools/health_centers statistics,
+        Returns: JSON with total_members, population/children/schools/health_centers/shelters/wash_facilities statistics,
         members_within_20_percent_of_worst_case, percentage_near_worst_case, worst_to_median_ratio,
         and risk_classification { classification, description, reasoning }.
         No need to call get_risk_classification separately — classification is embedded in this result.
@@ -216,7 +216,7 @@ tools:
       description: |
         Get expected impact values for all available wind thresholds in one call.
         Use this when the query involves comparing thresholds or asks about multiple wind speeds.
-        Returns: JSON with thresholds array, each with wind_threshold, row_count, total_population, total_schools, total_hcs, total_children.
+        Returns: JSON with thresholds array, each with wind_threshold, row_count, total_population, total_schools, total_hcs, total_shelters, total_wash, total_children.
       input_schema:
         type: object
         properties:
@@ -233,7 +233,7 @@ tools:
       name: get_admin_level_breakdown
       description: |
         Get admin-level impact breakdown (parishes, provinces, districts, etc.).
-        Returns: JSON with admin_areas array, each with administrative_area, population, children, schools, health_centers.
+        Returns: JSON with admin_areas array, each with administrative_area, population, children, schools, health_centers, shelters, wash_facilities.
       input_schema:
         type: object
         properties:
@@ -769,22 +769,24 @@ instructions:
     - Expected children at risk: <integer> `data` (0–4: <infants> `data`, 5–14: <school-age> `data`, 15–19: <adolescents> `data`)
     - Expected schools at risk: <integer> `data`
     - Expected health centers at risk: <integer> `data`
+    - Expected shelters at risk: <integer> `data`
+    - Expected WASH facilities at risk: <integer> `data`
 
     One short paragraph ranking top admin areas with `inferred` shares.
 
     Admin table immediately after (no text between paragraph and table):
-    | Administrative Area | Expected Population | Expected Children | Expected Schools | Expected Health Centers |
+    | Administrative Area | Expected Population | Expected Children | Expected Schools | Expected Health Centers | Expected Shelters | Expected WASH Facilities |
     Include ALL rows. If >50 rows, show top 50 + "Other (N areas)".
 
     **Worst-Case Scenario**
-    Bullets for ensemble member, population, children (with breakdown), schools, health centers — all `data`.
+    Bullets for ensemble member, population, children (with breakdown), schools, health centers, shelters, WASH facilities — all `data`.
     One paragraph: compare worst-case to expected using a correctly computed ratio `inferred`.
 
     ==================================================
     SECTION 3: SCENARIO ANALYSIS (full_report only)
     ==================================================
     Cross-threshold table:
-    | Wind Threshold (kt) | Expected Population | Expected Children | Expected Schools | Expected Health Centers |
+    | Wind Threshold (kt) | Expected Population | Expected Children | Expected Schools | Expected Health Centers | Expected Shelters | Expected WASH Facilities |
     "(All values from get_all_wind_thresholds_analysis. `data`)"
 
     Then 2–3 paragraphs on scenario distribution. Rules:
