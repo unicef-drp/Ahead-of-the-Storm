@@ -77,13 +77,41 @@ DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lo
 
 # Build country options list for dropdowns
 COUNTRY_OPTIONS = []
+REGION_MEMBERS = {}  # {'ECA': [{'value': 'AIA', 'label': 'Anguilla'}, ...]}
 if not countries_df.empty:
-    COUNTRY_OPTIONS = [
-        {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
-        for _, row in countries_df.iterrows()
-    ]
-    # Set default country to first in list, or JAM if available
-    DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
+    sql_mode = config.IMPACT_DATA_SOURCE == 'SQL'
+
+    regions   = countries_df[countries_df['IS_REGION'] == True]
+    countries = countries_df[countries_df['IS_REGION'] != True]
+
+    # Build region member options for the drill-down selector
+    code_to_name = dict(zip(countries_df['COUNTRY_CODE'], countries_df['COUNTRY_NAME']))
+    if sql_mode:
+        for _, row in regions.iterrows():
+            members = row.get('MEMBER_CODES')
+            if members:
+                if isinstance(members, str):
+                    members = json.loads(members)
+                REGION_MEMBERS[row['COUNTRY_CODE']] = [
+                    {"value": m, "label": code_to_name.get(m, m)} for m in members
+                ]
+
+    # Exclude region member countries from the main dropdown (accessible via drill-down)
+    member_codes = {item['value'] for opts in REGION_MEMBERS.values() for item in opts}
+    standalone = countries[~countries['COUNTRY_CODE'].isin(member_codes)]
+    country_items = [{"value": r['COUNTRY_CODE'], "label": r['COUNTRY_NAME']} for _, r in standalone.iterrows()]
+
+    if sql_mode and not regions.empty:
+        region_items = [{"value": r['COUNTRY_CODE'], "label": r['COUNTRY_NAME']} for _, r in regions.iterrows()]
+        COUNTRY_OPTIONS = [
+            {"group": "Regions",   "items": region_items},
+            {"group": "Countries", "items": country_items},
+        ]
+    else:
+        COUNTRY_OPTIONS = country_items
+
+    all_codes = countries_df['COUNTRY_CODE'].tolist()
+    DEFAULT_COUNTRY = "JAM" if "JAM" in all_codes else (all_codes[0] if all_codes else None)
 else:
     DEFAULT_COUNTRY = None
     print("No country options available - country dropdown will be empty")
@@ -171,7 +199,15 @@ country_selection = dmc.Paper([
                             data=COUNTRY_OPTIONS,
                             value=DEFAULT_COUNTRY,
                             mb="xs"
-                        )
+                        ),
+                        dmc.Select(
+                            id="individual-country-select",
+                            placeholder="Individual country (optional)...",
+                            data=[],
+                            value=None,
+                            clearable=True,
+                            style={"display": "none"},
+                        ),
                     ],
                     p="sm",
                     shadow="xs",
@@ -678,6 +714,7 @@ left_panel = dmc.GridCol(
 
 center_panel = dmc.GridCol(
                 html.Div([
+                    dcc.Store(id="effective-country-store", data=DEFAULT_COUNTRY),
                     dcc.Store(id="map-state-store", data={}),
                     dcc.Store(id="envelope-data-store", data={}),
                     dcc.Store(id="schools-data-store", data={}),
@@ -1141,7 +1178,7 @@ layout = make_single_page_appshell()
      Output("high-impact-badge", "children"),],
    [Input("storm-select", "value"),
     Input("wind-threshold-select", "value"),
-    Input("country-select", "value"),
+    Input("effective-country-store", "data"),
     Input("forecast-date", "value"),
     Input("forecast-time", "value"),
     Input("layers-loaded-store", "data")],
@@ -1408,7 +1445,7 @@ def enable_specific_track_button(layers_loaded):
      Output("specific-track-select", "style"),
      Output("specific-track-order-note", "style")],
     [Input("layers-loaded-store", "data")],
-    [State("country-select", "value"),
+    [State("effective-country-store", "data"),
      State("storm-select", "value"),
      State("forecast-date", "value"),
      State("forecast-time", "value"),
@@ -1502,15 +1539,18 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
 # -----------------------------------------------------------------------------
 # Update dropdown options based on available data
 
-#callback to update country-store
 @callback(
+    Output("effective-country-store", "data"),
     Output("country-store", "data"),
+    Output("country-is-region-store", "data"),
     Input("country-select", "value"),
+    Input("individual-country-select", "value"),
 )
-def update_country_store(country):
-    return country
+def update_effective_country_store(country, individual):
+    effective = individual if individual else country
+    is_region = effective in REGION_MEMBERS and not individual
+    return effective, effective, is_region
 
-#callback to update storm-store
 @callback(
     Output("storm-store", "data"),
     Input("storm-select", "value"),
@@ -1518,8 +1558,6 @@ def update_country_store(country):
 def update_storm_store(storm):
     return storm
 
-
-#callback to update date-store
 @callback(
     Output("date-store", "data"),
     Input("forecast-date", "value"),
@@ -1527,19 +1565,27 @@ def update_storm_store(storm):
     State("forecast-date", "value"),
     State("forecast-time", "value"),
 )
-def update_date_store(i_date,i_time,s_date,s_time):
+def update_date_store(i_date, i_time, s_date, s_time):
     if s_date and s_time:
-        date_str = s_date.replace('-', '')
-        time_str = s_time.replace(':', '')
-        return f"{date_str}{time_str}00"
-
+        return f"{s_date.replace('-', '')}{s_time.replace(':', '')}00"
     return dash.no_update
 
+@callback(
+    Output("individual-country-select", "data"),
+    Output("individual-country-select", "style"),
+    Output("individual-country-select", "value"),
+    Input("country-select", "value"),
+    prevent_initial_call=True,
+)
+def update_individual_country_select(country):
+    if country and country in REGION_MEMBERS:
+        return REGION_MEMBERS[country], {"display": "block"}, None
+    return [], {"display": "none"}, None
 
 # Callback to update map view based on country selection
 @callback(
     Output("main-map", "viewport"),
-    Input("country-select", "value"),
+    Input("effective-country-store", "data"),
     prevent_initial_call=False
 )
 def update_map_view(country):
@@ -1556,7 +1602,7 @@ def update_map_view(country):
 @callback(
     Output("forecast-date", "data"),
     Output("forecast-date", "value"),
-    Input("country-select", "value"),
+    Input("effective-country-store", "data"),
     prevent_initial_call=False
 )
 def update_forecast_dates(country):
@@ -1636,7 +1682,7 @@ def update_forecast_times(selected_date):
 @callback(
     Output("storm-select", "data"),
     Output("storm-select", "value", allow_duplicate=True),
-    [Input("country-select", "value"),
+    [Input("effective-country-store", "data"),
      Input("forecast-date", "value"),
      Input("forecast-time", "value")],
     prevent_initial_call='initial_duplicate'
@@ -1822,7 +1868,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
      Output('rwi-admin-layer', 'disabled', allow_duplicate=True)],
     [Input('load-layers-btn', 'n_clicks')],
-    State('country-select', 'value'),
+    State('effective-country-store', 'data'),
     State('storm-select', 'value'),
     State('forecast-date', 'value'),
     State('forecast-time', 'value'),
@@ -2594,7 +2640,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 # Callback to warn when selectors change after layers are loaded
 @callback(
     Output('load-status', 'children', allow_duplicate=True),
-    [Input('country-select', 'value'),
+    [Input('effective-country-store', 'data'),
      Input('storm-select', 'value'),
      Input('forecast-date', 'value'),
      Input('forecast-time', 'value'),
@@ -2658,7 +2704,7 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
      Input("specific-track-select", "value")],
     [State("envelope-data-store", "data"),
      State("wind-threshold-select", "value"),
-     State("country-select", "value"),
+     State("effective-country-store", "data"),
      State("storm-select", "value"),
      State("forecast-date", "value"),
      State("forecast-time", "value")],
@@ -3453,7 +3499,7 @@ def toggle_probability_admin_layer(prob_checked, selected_layer, admin_stats):
 @callback(
     Output("specific-track-info", "children"),
     [Input("specific-track-select", "value")],
-    [State("country-select", "value"),
+    [State("effective-country-store", "data"),
      State("storm-select", "value"),
      State("forecast-date", "value"),
      State("forecast-time", "value"),
@@ -3568,7 +3614,7 @@ def sync_show_higher_winds_disabled(specific_track_disabled, _layers_loaded):
      Output("exceedance-legend", "children")],
     [Input("storm-select", "value"),
      Input("wind-threshold-select", "value"),
-     Input("country-select", "value"),
+     Input("effective-country-store", "data"),
      Input("forecast-date", "value"),
      Input("forecast-time", "value"),
      Input("layers-loaded-store", "data")],

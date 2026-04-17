@@ -534,17 +534,29 @@ def make_single_page_appshell():
 # Use the single-page appshell
 layout = make_single_page_appshell()
 
+_REGION_WARNING_HTML = """
+<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;color:#333">
+<div style="max-width:480px;margin:4rem auto;padding:1.5rem 2rem;border-left:4px solid #1cabe2;background:#f0f8ff;border-radius:4px">
+  <h3 style="margin-top:0;color:#1cabe2">Report not available for regions</h3>
+  <p>Impact reports can only be generated for individual countries.<br>
+  Please select a specific country from the <strong>Individual country</strong> selector on the dashboard.</p>
+</div></body></html>
+"""
+
 @callback(
     Output("iframe", "srcDoc"),
     Input("country-store","data"),
     Input("storm-store","data"),
     Input("date-store","data"),
+    Input("country-is-region-store","data"),
     State("country-store","data"),
     State("storm-store","data"),
     State("date-store","data"),
     #prevent_initial_call=True
 )
-def update_iframe(i_country,i_storm,i_date,s_country,s_storm,s_date):
+def update_iframe(i_country,i_storm,i_date,i_is_region,s_country,s_storm,s_date):
+    if i_is_region:
+        return _REGION_WARNING_HTML
 
     if s_country and s_storm and s_date:
         file = f"{s_country}_{s_storm}_{s_date}.json"

@@ -408,13 +408,15 @@ def get_active_countries():
         
         # Get active countries from PIPELINE_COUNTRIES table
         query = '''
-        SELECT 
+        SELECT
             COUNTRY_CODE,
             COUNTRY_NAME,
             CENTER_LAT,
             CENTER_LON,
             VIEW_ZOOM,
-            ZOOM_LEVEL
+            ZOOM_LEVEL,
+            COALESCE(IS_REGION, FALSE) AS IS_REGION,
+            MEMBER_CODES
         FROM PIPELINE_COUNTRIES
         WHERE ACTIVE = TRUE
         ORDER BY COUNTRY_CODE
@@ -434,7 +436,7 @@ def get_active_countries():
         print(f"Error getting active countries from Snowflake: {str(e)}")
         import traceback
         traceback.print_exc()
-        return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL'])
+        return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL', 'IS_REGION', 'MEMBER_CODES'])
 
 def get_lat_lons(row):
     """

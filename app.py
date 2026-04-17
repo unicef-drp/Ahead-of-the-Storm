@@ -28,9 +28,10 @@ Compress(server)
 app.layout = dmc.MantineProvider(
     [
         dash.page_container,
-        dcc.Store("country-store",data=""),
-        dcc.Store("storm-store",data=""),
-        dcc.Store("date-store",data=""),
+        dcc.Store("country-store", data=""),
+        dcc.Store("country-is-region-store", data=False),
+        dcc.Store("storm-store", data=""),
+        dcc.Store("date-store", data=""),
     ],
     id="mantine-provider",
     forceColorScheme="light",
