@@ -6,7 +6,7 @@ datastore/
 # Exclude development/testing directories not needed in production
 LLM-testing/
 testing/
-snowflake_intelligence/
+snowflake/
 
 # Exclude Python cache and compiled files
 __pycache__/

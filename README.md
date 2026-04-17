@@ -53,7 +53,7 @@ Two independent variables control how the app loads impact data:
   - `SCHOOL_IMPACT_MAT` / `HC_IMPACT_MAT` — point data for schools and health centres
   - `TRACK_MAT` — per-ensemble-member severity and envelope geometry
 
-  These tables must be set up first — see `snowflake_intelligence/README.md`.
+  These tables must be set up first — see `snowflake/mat_tables/README.md`.
 
 **`IMPACT_DATA_STORE`** — controls *where* stage files are stored (only relevant when `IMPACT_DATA_SOURCE=STAGE`):
 - `LOCAL` (default): local filesystem
@@ -185,5 +185,5 @@ The application expects data in the following structure:
 - **Data Sources**:
   - Snowflake — hurricane track/envelope data (`TC_TRACKS`, `TC_ENVELOPES_COMBINED`) and, when `IMPACT_DATA_SOURCE=SQL`, impact data via materialized tables (`*_MAT`)
   - Pre-processed impact views via [giga-spatial](https://github.com/unicef/giga-spatial) — used when `IMPACT_DATA_SOURCE=STAGE` (local filesystem, Azure Blob, or Snowflake stage)
-- **AI Agent**: `HURRICANE_SITUATION_INTELLIGENCE` Snowflake Cortex agent — generates situation reports from the same MAT tables (see `snowflake_intelligence/`)
+- **AI Agent**: `HURRICANE_INTELLIGENCE` Snowflake Cortex agent — generates situation reports from the same MAT tables (see `snowflake/intelligence/`)
 - **Deployment**: Gunicorn for production (Azure App Service or Snowflake Container Services)

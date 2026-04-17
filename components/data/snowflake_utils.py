@@ -637,7 +637,7 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
         query = """
         SELECT
             NAME,
-            TYPE AS SHELTER_TYPE,
+            SHELTER_TYPE,
             CATEGORY,
             PROBABILITY,
             ZONE_ID,

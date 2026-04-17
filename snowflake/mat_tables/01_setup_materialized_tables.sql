@@ -783,6 +783,15 @@ $$
     }
   }
 
+  // Derive regional group rows (e.g. ECA) from the member-country rows just loaded.
+  // Defined in 01b_setup_regional_groups.sql — must be run before this procedure is called.
+  try {
+    run('CALL AOTS.TC_ECMWF.REFRESH_REGIONAL_GROUPS()');
+    refreshed.push('REGIONAL_GROUPS');
+  } catch (e) {
+    errors.push('REGIONAL_GROUPS: ' + e.message);
+  }
+
   if (errors.length > 0) {
     return 'PARTIAL: refreshed [' + refreshed.join(', ') + '], errors: ' + errors.join(' | ');
   }
