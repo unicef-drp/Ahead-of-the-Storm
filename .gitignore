@@ -32,17 +32,16 @@ gigaspatial/
 extract_jamaica_data.py
 jamaica_data/
 testing/
-snowflake_intelligence/TECHNICAL_WRITEUP.md
-snowflake_intelligence/technical_writeup_images
 LLM-testing/
 CLAUDE.md
 MEMORY.md
 docs/
 
-snowflake_intelligence/README.md
-snowflake_intelligence/MAT_TABLE_FIX.md
-snowflake_intelligence/eval_config.yaml
-snowflake_intelligence/07_create_eval_dataset.sql
-snowflake_intelligence/07b_create_eval_views.sql
-snowflake_intelligence/08_create_aots_agent_role.sql
+snowflake/intelligence/TECHNICAL_WRITEUP.md
+snowflake/intelligence/technical_writeup_images
+snowflake/intelligence/eval_config.yaml
+snowflake/intelligence/07_create_eval_dataset.sql
+snowflake/intelligence/07b_create_eval_views.sql
+snowflake/intelligence/08_create_aots_agent_role.sql
+snowflake/mat_tables/MAT_TABLE_FIX.md
 snowflake_spcs/
