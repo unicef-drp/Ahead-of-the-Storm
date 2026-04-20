@@ -543,20 +543,34 @@ _REGION_WARNING_HTML = """
 </div></body></html>
 """
 
+_BASE_LAYERS_WARNING_HTML = """
+<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;color:#333">
+<div style="max-width:480px;margin:4rem auto;padding:1.5rem 2rem;border-left:4px solid #f59f00;background:#fff9db;border-radius:4px">
+  <h3 style="margin-top:0;color:#e67700">No Impact Data Available</h3>
+  <p>The current layers show <strong>base context data only</strong> — no storm impact has been calculated for this selection.<br>
+  An impact report requires a storm with processed impact data.<br>
+  Please select a storm and forecast time that has impact data available on the dashboard.</p>
+</div></body></html>
+"""
+
 @callback(
     Output("iframe", "srcDoc"),
     Input("country-store","data"),
     Input("storm-store","data"),
     Input("date-store","data"),
     Input("country-is-region-store","data"),
+    Input("using-base-layers-store","data"),
     State("country-store","data"),
     State("storm-store","data"),
     State("date-store","data"),
     #prevent_initial_call=True
 )
-def update_iframe(i_country,i_storm,i_date,i_is_region,s_country,s_storm,s_date):
+def update_iframe(i_country,i_storm,i_date,i_is_region,i_base_layers_only,s_country,s_storm,s_date):
     if i_is_region:
         return _REGION_WARNING_HTML
+
+    if i_base_layers_only:
+        return _BASE_LAYERS_WARNING_HTML
 
     if s_country and s_storm and s_date:
         file = f"{s_country}_{s_storm}_{s_date}.json"

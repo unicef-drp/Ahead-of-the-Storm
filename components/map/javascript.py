@@ -28,7 +28,7 @@ function(feature, context) {
     const props = feature.properties || {};
     const hideout = context.hideout || {};
     if (hideout.hidden) {
-        return {fillColor: 'transparent', fillOpacity: 0, color: 'transparent', weight: 0, opacity: 0};
+        return {fillColor: 'transparent', fillOpacity: 0, color: 'transparent', weight: 0, opacity: 0, interactive: false};
     }
     const prop = hideout.prop || 'probability';
     const color = props['_color_' + prop] || 'transparent';
@@ -339,19 +339,20 @@ function(feature, layer) {
 tooltip_tiles = assign("""
 function(feature, layer) {
     const props = feature.properties || {};
-    
+
     const formatNumber = (num) => {
         if (typeof num === 'number') {
             return new Intl.NumberFormat('en-US').format(Math.round(num));
         }
         return num;
     };
-    
+
     let content = `
         <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
             Tile Statistics
         </div>
     `;
+
     
     // Expected impact values (from hurricane envelopes)
     const E_population = props.E_population || props.expected_population || 0;
@@ -461,10 +462,10 @@ function(feature, layer) {
         Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Shelters: ${formatValue(E_num_shelters)}${fmtExp(E_num_shelters, probability)}
+        Shelters: ${formatValue(props.num_shelters || 0)}${fmtExp(props.num_shelters || 0, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        WASH Facilities: ${formatValue(E_num_wash)}${fmtExp(E_num_wash, probability)}
+        WASH Facilities: ${formatValue(props.num_wash || 0)}${fmtExp(props.num_wash || 0, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
         Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}
@@ -480,6 +481,96 @@ function(feature, layer) {
     </div>
     `;
     
+    layer.bindTooltip(content, {sticky: true});
+}
+""")
+
+
+tooltip_admin = assign("""
+function(feature, layer) {
+    const props = feature.properties || {};
+
+    const formatNumber = (num) => {
+        if (typeof num === 'number') {
+            return new Intl.NumberFormat('en-US').format(Math.round(num));
+        }
+        return num;
+    };
+    const formatValue = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return 'N/A';
+        if (typeof val === 'number') return formatNumber(val);
+        return val === '' ? 'N/A' : val;
+    };
+    const formatDecimal = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '' || val === 0) return 'N/A';
+        return val.toFixed(2);
+    };
+    const getSettlementLabel = (classNum) => {
+        if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
+        const num = Number(classNum);
+        const normalized = parseInt(num >= 10 ? num / 10 : num);
+        if (normalized === 1) return 'Rural';
+        if (normalized === 2) return 'Urban Clusters';
+        if (normalized === 3) return 'Urban Centers';
+        return 'N/A';
+    };
+    const fmtExp = (base, prob) => {
+        if (!prob || prob <= 0 || typeof base !== 'number' || base <= 0) return '';
+        const exp = base * prob;
+        const expStr = exp >= 1 ? formatNumber(Math.round(exp)) : exp.toFixed(1);
+        return ` <span style="color: #dc143c; font-size: 0.88em;">(~${expStr})</span>`;
+    };
+
+    const name = props.name || props.tile_id || '';
+    const probability = props.probability || 0;
+    const population = props.population || 0;
+    const infant_pop = props.infant_population || 0;
+    const school_age_pop = props.school_age_population || 0;
+    const adolescent_pop = props.adolescent_population || 0;
+    const children_total = props.population !== undefined ? infant_pop + school_age_pop + adolescent_pop : null;
+    const num_schools = props.num_schools || 0;
+    const num_hcs = props.num_hcs || 0;
+    const num_shelters = props.num_shelters || 0;
+    const num_wash = props.num_wash || 0;
+    const built_surface = props.built_surface_m2 || 0;
+    const smod_class = props.smod_class;
+    const rwi = props.rwi || 0;
+    const cci = props.cci_children || 0;
+
+    let content = `
+        <div style="font-size: 13px; font-weight: 600; color: #2e7d32; margin-bottom: 3px;">
+            Region Statistics
+        </div>`;
+    if (name) content += `<div style="font-size: 12px; color: #333; font-weight: 500; margin-bottom: 4px;">${name}</div>`;
+
+    if (probability > 0) {
+        content += `
+        <div style="font-size: 11px; color: #dc143c; margin-top: 5px; font-weight: 600;">
+            Expected Impact:
+        </div>
+        <div style="font-size: 11px; color: #555;">
+            Hurricane Impact Probability: ${(probability * 100).toFixed(1)}%
+        </div>
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">`;
+    }
+
+    content += `
+    <div style="font-size: 11px; color: #777; margin-top: 5px;"><strong>Region Base Data:</strong></div>
+    <div style="font-size: 11px; color: #555;">Population: ${formatValue(population)}${fmtExp(population, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 0–4: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 5–14: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 15–19: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Shelters: ${formatValue(num_shelters)}${fmtExp(num_shelters, probability)}</div>
+    <div style="font-size: 11px; color: #555;">WASH Facilities: ${formatValue(num_wash)}${fmtExp(num_wash, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}</div>
+    <div style="font-size: 11px; color: #555;">CCI: ${formatDecimal(cci)}</div>
+    <div style="font-size: 11px; color: #555;">Settlement: ${smod_class !== null && smod_class !== undefined ? getSettlementLabel(smod_class) : 'N/A'}</div>
+    <div style="font-size: 11px; color: #555;">Relative Wealth Index: ${formatDecimal(rwi)}</div>
+    `;
+
     layer.bindTooltip(content, {sticky: true});
 }
 """)

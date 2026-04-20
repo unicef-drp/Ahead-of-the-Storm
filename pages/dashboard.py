@@ -26,7 +26,7 @@ from components.ui.styling import all_colors, create_legend_divs, update_tile_fe
 from components.map.javascript import (
     style_tracks, style_tiles, point_to_layer_schools_health,
     style_envelopes, tooltip_tracks, tooltip_envelopes,
-    tooltip_schools, tooltip_health, tooltip_tiles,
+    tooltip_schools, tooltip_health, tooltip_tiles, tooltip_admin,
     tooltip_shelters, tooltip_wash
 )
 
@@ -40,6 +40,7 @@ from components.data.snowflake_utils import (
     get_active_countries, get_available_wind_thresholds, get_latest_forecast_time_overall,
     get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data,
     get_lat_lons, get_lat_lons_bulk,
+    get_base_tiles, get_base_schools, get_base_hcs, get_base_shelters, get_base_wash, get_base_admin,
 )
 
 #### Constant - add as selector at some point
@@ -822,7 +823,7 @@ center_panel = dmc.GridCol(
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles,
+                                onEachFeature=tooltip_admin,
                                 hideout={"hidden": True}
                             ),
 
@@ -842,7 +843,7 @@ center_panel = dmc.GridCol(
                                 data={},
                                 zoomToBounds=False,
                                 style=style_tiles,
-                                onEachFeature=tooltip_tiles,
+                                onEachFeature=tooltip_admin,
                                 hideout={"hidden": True}
                             ),
                             
@@ -1818,6 +1819,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('tiles-stats-store', 'data'),
      Output('admin-stats-store', 'data'),
      Output('layers-loaded-store', 'data'),
+     Output('using-base-layers-store', 'data'),
      Output('load-status', 'children'),
      # GeoJSON layers — written directly to avoid browser round-trip
      Output('population-tiles-json', 'data', allow_duplicate=True),
@@ -1898,7 +1900,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     _hidden = {"hidden": True}
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         print("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False, False,
                 dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"),
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
@@ -1917,7 +1919,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         wash_data = {}
         tiles_data = {}
         admin_data = {}
-        
+        using_base_layers = False
+
         # Load Hurricane Tracks
         try:
             conn = get_snowflake_connection()
@@ -2170,72 +2173,67 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         else:
             print(f"DEBUG: mercator_views directory does NOT exist!")
         
-        # Check for data file availability
-        data_files_found = []
-        missing_files = []
-        
-        # Check schools file
-        schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-        schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
-        print(f"DEBUG: Checking schools file at: {schools_path}")
-        print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(schools_path)}")
-        print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(schools_path)}")
-        if giga_store.file_exists(schools_path):
-            data_files_found.append("schools")
-        else:
-            missing_files.append("schools")
-        
-        # Check health centers file
-        health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-        health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
-        if giga_store.file_exists(health_path):
-            data_files_found.append("health centers")
-        else:
-            missing_files.append("health centers")
-        
-        # Check tiles file
-        tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
-        tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
-        print(f"DEBUG: Checking tiles file at: {tiles_path}")
-        print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(tiles_path)}")
-        print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(tiles_path)}")
-        if giga_store.file_exists(tiles_path):
-            data_files_found.append("infrastructure tiles")
-        else:
-            missing_files.append("infrastructure tiles")
+        if config.IMPACT_DATA_SOURCE != 'SQL':
+            # Check for data file availability (STAGE/LOCAL/BLOB mode only)
+            data_files_found = []
+            missing_files = []
 
-        # Check admin file
-        admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
-        admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
-        if giga_store.file_exists(admin_path):
-            data_files_found.append("infrastructure admins")
-        else:
-            missing_files.append("infrastructure admins")
-        
-        # Generate status alert based on data availability
-        if not data_files_found:
-            status_alert = dmc.Alert(
-                f"No data files found for {forecast_time}. Please select a different time or generate data for this forecast time.",
-                title="No Data Available",
-                color="orange",
-                variant="light"
-            )
-        elif missing_files:
-            status_alert = dmc.Alert(
-                f"Partial data loaded. Missing: {', '.join(missing_files)}. Available: {', '.join(data_files_found)}.",
-                title="Partial Data Loaded",
-                color="yellow",
-                variant="light"
-            )
-        else:
-            status_alert = dmc.Alert(
-                "All layers loaded successfully",
-                title="Success",
-                color="green",
-                variant="light"
-            )
-        
-        print(f"Data availability: Found={data_files_found}, Missing={missing_files}")
+            schools_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            schools_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views', schools_file)
+            print(f"DEBUG: Checking schools file at: {schools_path}")
+            print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(schools_path)}")
+            print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(schools_path)}")
+            if giga_store.file_exists(schools_path):
+                data_files_found.append("schools")
+            else:
+                missing_files.append("schools")
+
+            health_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
+            health_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', health_file)
+            if giga_store.file_exists(health_path):
+                data_files_found.append("health centers")
+            else:
+                missing_files.append("health centers")
+
+            tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
+            tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
+            print(f"DEBUG: Checking tiles file at: {tiles_path}")
+            print(f"DEBUG: Using giga_store.file_exists() - result: {giga_store.file_exists(tiles_path)}")
+            print(f"DEBUG: Using os.path.exists() - result: {os.path.exists(tiles_path)}")
+            if giga_store.file_exists(tiles_path):
+                data_files_found.append("infrastructure tiles")
+            else:
+                missing_files.append("infrastructure tiles")
+
+            admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
+            admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
+            if giga_store.file_exists(admin_path):
+                data_files_found.append("infrastructure admins")
+            else:
+                missing_files.append("infrastructure admins")
+
+            if not data_files_found:
+                status_alert = dmc.Alert(
+                    f"No data files found for {forecast_time}. Please select a different time or generate data for this forecast time.",
+                    title="No Data Available",
+                    color="orange",
+                    variant="light"
+                )
+            elif missing_files:
+                status_alert = dmc.Alert(
+                    f"Partial data loaded. Missing: {', '.join(missing_files)}. Available: {', '.join(data_files_found)}.",
+                    title="Partial Data Loaded",
+                    color="yellow",
+                    variant="light"
+                )
+            else:
+                status_alert = dmc.Alert(
+                    "All layers loaded successfully",
+                    title="Success",
+                    color="green",
+                    variant="light"
+                )
+            print(f"Data availability: Found={data_files_found}, Missing={missing_files}")
         
         load_start_time = time.time()
         
@@ -2420,6 +2418,33 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                             elif var_name == 'wash':    wash_data     = gdf.__geo_interface__
                     except Exception as e:
                         print(f"Error loading {var_name} from SQL: {e}")
+
+                # Fall back to base layer MAT tables for any facility with no impact data
+                def _fac_empty(store):
+                    return not store or not store.get('features')
+                base_fac_map = [
+                    ('schools',  schools_data,  get_base_schools),
+                    ('health',   health_data,   get_base_hcs),
+                    ('shelters', shelters_data, get_base_shelters),
+                    ('wash',     wash_data,     get_base_wash),
+                ]
+                with ThreadPoolExecutor(max_workers=4) as _pool:
+                    _futures = {vn: _pool.submit(fn, country) for vn, store, fn in base_fac_map if _fac_empty(store)}
+                for var_name, store, fn in base_fac_map:
+                    if not _fac_empty(store):
+                        continue
+                    try:
+                        df_base = _futures[var_name].result()
+                        if not df_base.empty and 'latitude' in df_base.columns:
+                            gdf = gpd.GeoDataFrame(df_base, geometry=gpd.points_from_xy(df_base['longitude'], df_base['latitude']), crs='EPSG:4326')
+                            geojson = gdf.__geo_interface__
+                            if var_name == 'schools':   schools_data  = geojson
+                            elif var_name == 'health':  health_data   = geojson
+                            elif var_name == 'shelters': shelters_data = geojson
+                            elif var_name == 'wash':    wash_data     = geojson
+                            using_base_layers = True
+                    except Exception as e:
+                        print(f"Base {var_name} fallback error: {e}")
             else:
                 # STAGE path: load all four in parallel
                 with ThreadPoolExecutor(max_workers=4) as executor:
@@ -2456,109 +2481,160 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_{ZOOM_LEVEL}.csv"
             tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', tiles_file)
             if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tiles_path):
-                base_tiles_file = f"{country}_{ZOOM_LEVEL}.parquet"
-                base_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', base_tiles_file)
-                if giga_store.file_exists(base_tiles_path):
+                if config.IMPACT_DATA_SOURCE == 'SQL':
+                    # SQL mode: geometry from BASE_MERCATOR_TILE_MAT (lru_cache hit if base fallback
+                    # already ran), impact columns from MERCATOR_TILE_IMPACT_MAT. No parquet read.
                     try:
                         df_tiles = get_impact_data('tile', giga_store, tiles_path,
                                                     country=country, storm=storm,
                                                     forecast_date=forecast_datetime_str,
                                                     wind_threshold=int(wind_threshold))
-                        df_tiles = df_tiles.rename(columns={'zone_id':'tile_id'})
-                        gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
-                        # Ensure both tile_id columns have the same type before merging
-                        if 'tile_id' in gdf_base_tiles.columns and 'tile_id' in df_tiles.columns:
-                            # Convert both to int to match existing behavior
-                            gdf_base_tiles['tile_id'] = gdf_base_tiles['tile_id'].astype(int)
-                            df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
-                        elif 'tile_id' in df_tiles.columns and 'tile_id' not in gdf_base_tiles.columns:
-                            # If base tiles doesn't have tile_id, create it from df_tiles
-                            gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
-                            df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
-                        tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
-
-                        #cci
-                        cci_tiles_file = f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv"
-                        cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views', cci_tiles_file)
-                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_tiles_path):
+                        df_tiles = df_tiles.rename(columns={'zone_id': 'tile_id'})
+                        gdf_base_tiles = get_base_tiles(country, ZOOM_LEVEL)
+                        if not gdf_base_tiles.empty and not df_tiles.empty:
+                            gdf_base_tiles['tile_id'] = gdf_base_tiles['tile_id'].astype(str)
+                            df_tiles['tile_id'] = df_tiles['tile_id'].astype(str)
+                            tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
+                            # CCI
+                            cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views',
+                                f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv")
                             try:
-                                df_cci_tiles = get_impact_data('tile_cci', giga_store, cci_tiles_path,
-                                                                country=country, storm=storm,
-                                                                forecast_date=forecast_datetime_str,
-                                                                zoom_level=ZOOM_LEVEL)
-                                df_cci_tiles = df_cci_tiles.rename(columns={'zone_id':'tile_id'})
-                                if 'Unnamed: 0' in df_cci_tiles.columns:
-                                    df_cci_tiles.drop(columns=['Unnamed: 0'])
-                                # Ensure tile_id type matches tmp (which is int)
-                                if 'tile_id' in df_cci_tiles.columns:
-                                    df_cci_tiles['tile_id'] = df_cci_tiles['tile_id'].astype(int)
-                                tmp = pd.merge(tmp, df_cci_tiles, on="tile_id", how="left")
+                                df_cci = get_impact_data('tile_cci', giga_store, cci_tiles_path,
+                                                         country=country, storm=storm,
+                                                         forecast_date=forecast_datetime_str,
+                                                         zoom_level=ZOOM_LEVEL)
+                                df_cci = df_cci.rename(columns={'zone_id': 'tile_id'})
+                                df_cci['tile_id'] = df_cci['tile_id'].astype(str)
+                                tmp = pd.merge(tmp, df_cci, on="tile_id", how="left")
                             except Exception as e:
                                 print(f'Cannot merge tile CCI: {e}')
-                        else:
-                            print('CCI tile file not found')
-
-                        gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
-                        tiles_data = gdf_tiles.__geo_interface__
+                            gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
+                            tiles_data = gdf_tiles.__geo_interface__
                     except Exception as e:
-                        print(f"Error reading tiles file: {e}")
+                        print(f"Error loading tiles (SQL): {e}")
                         tiles_data = {}
-
+                else:
+                    # STAGE / LOCAL / BLOB mode: read base parquet from file store
+                    base_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views',
+                                                    f"{country}_{ZOOM_LEVEL}.parquet")
+                    if giga_store.file_exists(base_tiles_path):
+                        try:
+                            df_tiles = get_impact_data('tile', giga_store, tiles_path,
+                                                        country=country, storm=storm,
+                                                        forecast_date=forecast_datetime_str,
+                                                        wind_threshold=int(wind_threshold))
+                            df_tiles = df_tiles.rename(columns={'zone_id': 'tile_id'})
+                            gdf_base_tiles = read_dataset(giga_store, base_tiles_path)
+                            if 'tile_id' in gdf_base_tiles.columns and 'tile_id' in df_tiles.columns:
+                                gdf_base_tiles['tile_id'] = gdf_base_tiles['tile_id'].astype(int)
+                                df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                            elif 'tile_id' in df_tiles.columns and 'tile_id' not in gdf_base_tiles.columns:
+                                gdf_base_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                                df_tiles['tile_id'] = df_tiles['tile_id'].astype(int)
+                            tmp = pd.merge(gdf_base_tiles, df_tiles, on="tile_id", how="left")
+                            # CCI
+                            cci_tiles_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'mercator_views',
+                                f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_cci.csv")
+                            if giga_store.file_exists(cci_tiles_path):
+                                try:
+                                    df_cci = get_impact_data('tile_cci', giga_store, cci_tiles_path,
+                                                             country=country, storm=storm,
+                                                             forecast_date=forecast_datetime_str,
+                                                             zoom_level=ZOOM_LEVEL)
+                                    df_cci = df_cci.rename(columns={'zone_id': 'tile_id'})
+                                    if 'Unnamed: 0' in df_cci.columns:
+                                        df_cci = df_cci.drop(columns=['Unnamed: 0'])
+                                    df_cci['tile_id'] = df_cci['tile_id'].astype(int)
+                                    tmp = pd.merge(tmp, df_cci, on="tile_id", how="left")
+                                except Exception as e:
+                                    print(f'Cannot merge tile CCI: {e}')
+                            else:
+                                print('CCI tile file not found')
+                            gdf_tiles = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_tiles.crs)
+                            tiles_data = gdf_tiles.__geo_interface__
+                        except Exception as e:
+                            print(f"Error reading tiles file: {e}")
+                            tiles_data = {}
 
             # Admin
             admin_file = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}_admin1.csv"
             admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', admin_file)
             if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(admin_path):
-                base_admin_file = f"{country}_admin1.parquet"
-                base_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', base_admin_file)
-                if giga_store.file_exists(base_admin_path):
+                if config.IMPACT_DATA_SOURCE == 'SQL':
+                    # SQL mode: geometry from BASE_ADMIN_GEOM_MAT, impact from ADMIN_ALL_IMPACT_MAT.
                     try:
                         df_admin = get_impact_data('admin_impact', giga_store, admin_path,
                                                     country=country, storm=storm,
                                                     forecast_date=forecast_datetime_str,
                                                     wind_threshold=int(wind_threshold))
                         if df_admin.empty:
-                            print(f'No admin impact data for {country}/{storm}/{forecast_datetime_str}')
-                            raise ValueError('empty admin data')
-                        df_admin = df_admin.rename(columns={'zone_id':'tile_id'})
-                        gdf_base_admin = read_dataset(giga_store, base_admin_path)
-                        # Ensure both tile_id columns have the same type before merging
-                        if 'tile_id' in gdf_base_admin.columns and 'tile_id' in df_admin.columns:
-                            # Convert both to string to avoid type mismatch issues
+                            raise ValueError('empty admin impact data')
+                        df_admin = df_admin.rename(columns={'zone_id': 'tile_id'})
+                        # Drop name from impact data — base table is authoritative for region names
+                        df_admin = df_admin.drop(columns=[c for c in ['name', 'admin_level'] if c in df_admin.columns])
+                        gdf_base_admin = get_base_admin(country, admin_level=1)
+                        if not gdf_base_admin.empty:
                             gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
                             df_admin['tile_id'] = df_admin['tile_id'].astype(str)
-                        print(f'DEBUG admin merge: MAT tile_ids={df_admin["tile_id"].tolist()[:5]}, base parquet tile_ids={gdf_base_admin["tile_id"].tolist()[:5]}')
-                        print(f'DEBUG admin probability col: {df_admin["probability"].tolist()[:5] if "probability" in df_admin.columns else "MISSING"}')
-                        tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
-                        nan_after_merge = tmp['probability'].isna().sum() if 'probability' in tmp.columns else len(tmp)
-                        if nan_after_merge == len(tmp):
-                            print(f'WARNING: Admin merge produced all-NaN probability for {country}/{storm} — possible tile_id format mismatch between MAT table and base parquet')
-
-                        #cci
-                        cci_admin_file = f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv"
-                        cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views', cci_admin_file)
-                        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(cci_admin_path):
+                            tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+                            # CCI
+                            cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views',
+                                f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv")
                             try:
                                 df_cci_admin = get_impact_data('admin_cci', giga_store, cci_admin_path,
-                                                                country=country, storm=storm,
-                                                                forecast_date=forecast_datetime_str)
-                                df_cci_admin = df_cci_admin.rename(columns={'zone_id':'tile_id'})
-                                if 'Unnamed: 0' in df_cci_admin.columns:
-                                    df_cci_admin.drop(columns=['Unnamed: 0'])
-                                # Ensure tile_id type matches tmp (which is string)
-                                if 'tile_id' in df_cci_admin.columns:
-                                    df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
+                                                               country=country, storm=storm,
+                                                               forecast_date=forecast_datetime_str)
+                                df_cci_admin = df_cci_admin.rename(columns={'zone_id': 'tile_id'})
+                                df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
                                 tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
                             except Exception as e:
                                 print(f'Cannot merge admin CCI: {e}')
-                        else:
-                            print('CCI admin file not found')
-
-                        gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
-                        admin_data = gdf_admin.__geo_interface__
+                            gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
+                            admin_data = gdf_admin.__geo_interface__
                     except Exception as e:
-                        print(f"Error reading admin file: {e}")
+                        print(f"Error loading admin (SQL): {e}")
                         admin_data = {}
+                else:
+                    # STAGE / LOCAL / BLOB mode: read base parquet from file store
+                    base_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views',
+                                                    f"{country}_admin1.parquet")
+                    if giga_store.file_exists(base_admin_path):
+                        try:
+                            df_admin = get_impact_data('admin_impact', giga_store, admin_path,
+                                                        country=country, storm=storm,
+                                                        forecast_date=forecast_datetime_str,
+                                                        wind_threshold=int(wind_threshold))
+                            if df_admin.empty:
+                                print(f'No admin impact data for {country}/{storm}/{forecast_datetime_str}')
+                                raise ValueError('empty admin data')
+                            df_admin = df_admin.rename(columns={'zone_id': 'tile_id'})
+                            gdf_base_admin = read_dataset(giga_store, base_admin_path)
+                            if 'tile_id' in gdf_base_admin.columns and 'tile_id' in df_admin.columns:
+                                gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
+                                df_admin['tile_id'] = df_admin['tile_id'].astype(str)
+                            tmp = pd.merge(gdf_base_admin, df_admin, on="tile_id", how="left")
+                            # CCI
+                            cci_admin_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'admin_views',
+                                f"{country}_{storm}_{forecast_datetime_str}_admin1_cci.csv")
+                            if giga_store.file_exists(cci_admin_path):
+                                try:
+                                    df_cci_admin = get_impact_data('admin_cci', giga_store, cci_admin_path,
+                                                                   country=country, storm=storm,
+                                                                   forecast_date=forecast_datetime_str)
+                                    df_cci_admin = df_cci_admin.rename(columns={'zone_id': 'tile_id'})
+                                    if 'Unnamed: 0' in df_cci_admin.columns:
+                                        df_cci_admin = df_cci_admin.drop(columns=['Unnamed: 0'])
+                                    df_cci_admin['tile_id'] = df_cci_admin['tile_id'].astype(str)
+                                    tmp = pd.merge(tmp, df_cci_admin, on="tile_id", how="left")
+                                except Exception as e:
+                                    print(f'Cannot merge admin CCI: {e}')
+                            else:
+                                print('CCI admin file not found')
+                            gdf_admin = gpd.GeoDataFrame(tmp, geometry="geometry", crs=gdf_base_admin.crs)
+                            admin_data = gdf_admin.__geo_interface__
+                        except Exception as e:
+                            print(f"Error reading admin file: {e}")
+                            admin_data = {}
                 
         except Exception as e:
             print(f"Error loading impact data: {e}")
@@ -2569,6 +2645,44 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 variant="light"
             )
         
+        # Fall back to base MAT tables if no impact data loaded (SQL mode only)
+        if config.IMPACT_DATA_SOURCE == 'SQL':
+            if not tiles_data or not tiles_data.get('features'):
+                try:
+                    gdf_base = get_base_tiles(country, ZOOM_LEVEL)
+                    if not gdf_base.empty:
+                        tiles_data = gdf_base.__geo_interface__
+                        using_base_layers = True
+                        print(f"✓ Base tile fallback: {len(gdf_base)} tiles for {country}")
+                except Exception as e:
+                    print(f"Base tile fallback error: {e}")
+
+            if not admin_data or not admin_data.get('features'):
+                try:
+                    gdf_base_admin = get_base_admin(country, admin_level=1)
+                    if not gdf_base_admin.empty:
+                        admin_data = gdf_base_admin.__geo_interface__
+                        using_base_layers = True
+                        print(f"✓ Base admin fallback: {len(gdf_base_admin)} regions for {country}")
+                except Exception as e:
+                    print(f"Base admin fallback error: {e}")
+
+        # Show warning if we fell back to base layers; success if SQL loaded impact data normally
+        if using_base_layers:
+            status_alert = dmc.Alert(
+                "No impact data found for this storm and forecast time. Showing base context layers only.",
+                title="Base Layers Only — No Impact Data Available",
+                color="yellow",
+                variant="light",
+            )
+        elif config.IMPACT_DATA_SOURCE == 'SQL':
+            status_alert = dmc.Alert(
+                "All layers loaded successfully",
+                title="Success",
+                color="green",
+                variant="light",
+            )
+
         # Create independent copies for each tile layer
         if not tiles_data or not isinstance(tiles_data, dict) or not 'features' in tiles_data:
             tiles_data = {"type": "FeatureCollection", "features": []}
@@ -2583,25 +2697,12 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         admin_stats = compute_layer_stats(admin_data)
 
         # Compute initial hideouts for GeoJSON layers based on current UI state
-        _layer_to_prop = {
-            "population": "population", "children-total": "children_total",
-            "infant": "infant_population", "school-age": "school_age_population",
-            "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
-            "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
-        }
-        _layer_to_e_prop = {
-            "population": "E_population", "children-total": "E_children_total",
-            "infant": "E_infant_population", "school-age": "E_school_age_population",
-            "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
-            "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
-            "none": "probability", None: "probability",
-        }
         def _hideouts(layer_group, prob_checked):
             pop_hidden = (not layer_group or layer_group == "none") or (
                 prob_checked and layer_group in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
             )
-            prop = _layer_to_prop.get(layer_group, "population")
-            e_prop = _layer_to_e_prop.get(layer_group, "probability")
+            prop = _LAYER_TO_PROP.get(layer_group, "population")
+            e_prop = _LAYER_TO_E_PROP.get(layer_group, "probability")
             pop_h = {"hidden": True} if pop_hidden else {"prop": prop}
             prob_h = {"prop": e_prop} if prob_checked else {"hidden": True}
             return pop_h, prob_h
@@ -2612,21 +2713,30 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
         load_elapsed = time.time() - load_start_time
         print(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY in {load_elapsed:.2f}s ===")
+
+        # Hurricane/probability/CCI controls require impact data
+        dis_hurricane = using_base_layers   # tracks, envelopes, show-all
+        dis_prob      = using_base_layers   # probability-tiles-layer, probability-admin-layer
+        dis_cci       = using_base_layers   # cci-tiles-layer, cci-admin-layer
+
         return (tracks_data, envelope_data, schools_data, health_data,
                 shelters_data, wash_data,
                 tiles_stats, admin_stats,
-                True, status_alert,
+                True, using_base_layers, status_alert,
                 tiles_data, False, layer_key, tiles_pop_h,
                 tiles_data, False, layer_key, tiles_prob_h,
                 admin_data, False, layer_key, admin_pop_h,
                 admin_data, False, layer_key, admin_prob_h,
-                False, False, False, False, False, False, False,
-                False, False, False, False, False, False, False, False, False, False,
-                False, False, False, False, False, False, False, False, False, False)
+                # hurricane: tracks, envelopes, show-all; facilities: schools, health, shelters, wash
+                dis_hurricane, dis_hurricane, dis_hurricane, False, False, False, False,
+                # tile layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+                dis_prob, False, False, False, False, False, False, dis_cci, False, False,
+                # admin layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+                dis_prob, False, False, False, False, False, False, dis_cci, False, False)
 
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
-        return ({}, {}, {}, {}, {}, {}, {}, {}, False,
+        return ({}, {}, {}, {}, {}, {}, {}, {}, False, False,
                 dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"),
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
@@ -3244,7 +3354,7 @@ def toggle_shelters_overlay(checked, shelters_data_in):
     shelters_data = copy.deepcopy(shelters_data_in)
     key = hashlib.md5(json.dumps(shelters_data, sort_keys=True).encode()).hexdigest()
     try:
-        shelters_data['features'] = _style_point_layer(shelters_data, '#FF8C00')  # Orange
+        shelters_data['features'] = _style_point_layer(shelters_data, '#E91E8C')  # Pink
         return shelters_data, False, key
     except Exception as e:
         print(f"Error styling shelters layer: {e}")
@@ -3278,6 +3388,39 @@ def toggle_wash_overlay(checked, wash_data_in):
 # Handle tile layer display and styling based on selected property
 # Data is written directly by load_all_layers; these callbacks only update hideout.
 
+_LAYER_TO_PROP = {
+    "population": "population", "children-total": "children_total",
+    "infant": "infant_population", "school-age": "school_age_population",
+    "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
+    "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+}
+_LAYER_TO_E_PROP = {
+    "population": "E_population", "children-total": "E_children_total",
+    "infant": "E_infant_population", "school-age": "E_school_age_population",
+    "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
+    "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+    "none": "probability", None: "probability",
+}
+
+def _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only):
+    """Shared hideout + disabled computation for both tile and admin layer toggle callbacks."""
+    if prob_checked:
+        pop_dis = inf_dis = sch_dis = blt_dis = ado_dis = chi_dis = False
+        set_dis = rwi_dis = True
+    else:
+        pop_dis = inf_dis = sch_dis = blt_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
+    cci_dis = bool(base_layers_only)  # CCI requires impact data
+
+    pop_hidden = (not selected_layer or selected_layer == "none") or (
+        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
+    )
+    prop = _LAYER_TO_PROP.get(selected_layer, "population")
+    e_prop = _LAYER_TO_E_PROP.get(selected_layer, "probability")
+    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
+    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
+    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
+
+
 @callback(
     Output("population-tiles-json", "hideout", allow_duplicate=True),
     Output("probability-tiles-json", "hideout", allow_duplicate=True),
@@ -3292,39 +3435,13 @@ def toggle_wash_overlay(checked, wash_data_in):
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
     Input('tiles-layer-group', 'value'),
     Input('probability-tiles-layer', 'checked'),
+    State('using-base-layers-store', 'data'),
     prevent_initial_call=True,
 )
-def juggle_toggles_tiles_layer(selected_layer, prob_checked):
-    """Update tile layer hideout on radio/checkbox toggle — zero data transfer (no store reference)."""
-    layer_to_prop = {
-        "population": "population", "children-total": "children_total",
-        "infant": "infant_population", "school-age": "school_age_population",
-        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
-        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
-    }
-    layer_to_e_prop = {
-        "population": "E_population", "children-total": "E_children_total",
-        "infant": "E_infant_population", "school-age": "E_school_age_population",
-        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
-        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
-        "none": "probability", None: "probability",
-    }
-    if prob_checked:
-        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = False
-        set_dis = rwi_dis = True
-    else:
-        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
+def juggle_toggles_tiles_layer(selected_layer, prob_checked, base_layers_only):
+    return _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only)
 
-    pop_hidden = (not selected_layer or selected_layer == "none") or (
-        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
-    )
-    prop = layer_to_prop.get(selected_layer, "population")
-    e_prop = layer_to_e_prop.get(selected_layer, "probability")
-    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
-    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
-    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
 
-# Handle admin layer toggles — data written directly by load_all_layers
 @callback(
     Output("population-admin-json", "hideout", allow_duplicate=True),
     Output("probability-admin-json", "hideout", allow_duplicate=True),
@@ -3339,37 +3456,11 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked):
     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
     Input('admin-layer-group', 'value'),
     Input('probability-admin-layer', 'checked'),
+    State('using-base-layers-store', 'data'),
     prevent_initial_call=True,
 )
-def juggle_toggles_admin_layer(selected_layer, prob_checked):
-    """Update admin layer hideout on radio/checkbox toggle — zero data transfer."""
-    layer_to_prop = {
-        "population": "population", "children-total": "children_total",
-        "infant": "infant_population", "school-age": "school_age_population",
-        "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
-        "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
-    }
-    layer_to_e_prop = {
-        "population": "E_population", "children-total": "E_children_total",
-        "infant": "E_infant_population", "school-age": "E_school_age_population",
-        "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
-        "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
-        "none": "probability", None: "probability",
-    }
-    if prob_checked:
-        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = False
-        set_dis = rwi_dis = True
-    else:
-        pop_dis = inf_dis = sch_dis = blt_dis = cci_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
-
-    pop_hidden = (not selected_layer or selected_layer == "none") or (
-        prob_checked and selected_layer in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]
-    )
-    prop = layer_to_prop.get(selected_layer, "population")
-    e_prop = layer_to_e_prop.get(selected_layer, "probability")
-    pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
-    prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
-    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
+def juggle_toggles_admin_layer(selected_layer, prob_checked, base_layers_only):
+    return _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only)
 
 # Callback for Impact Probability layer
 @callback(

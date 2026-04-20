@@ -933,3 +933,240 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     except Exception as e:
         print(f"Error querying TRACK_MAT: {str(e)}")
         return gpd.GeoDataFrame()
+
+
+# =============================================================================
+# BASE LAYER QUERIES (no storm required)
+# =============================================================================
+# These functions query country-static MAT tables created in
+# 02_setup_base_layer_tables.sql. They enable tile and facility layers to be
+# displayed immediately on country selection, before any storm is loaded.
+# Only used when IMPACT_DATA_SOURCE=SQL.
+# =============================================================================
+
+@lru_cache(maxsize=32)
+def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
+    """
+    Query BASE_MERCATOR_TILE_MAT and reconstruct tile polygons from quadkeys.
+
+    Returns GeoDataFrame with geometry (WGS84 bounding box per quadkey tile)
+    and all available context columns: smod_class, rwi, population, facility counts.
+    Missing columns (older pipeline format) are returned as NaN.
+    """
+    try:
+        import mercantile
+        from shapely.geometry import box as shapely_box
+        import time
+        t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            TILE_ID,
+            ADMIN_ID,
+            POPULATION,
+            SCHOOL_AGE_POPULATION,
+            INFANT_POPULATION,
+            ADOLESCENT_POPULATION,
+            BUILT_SURFACE_M2,
+            SMOD_CLASS,
+            SMOD_CLASS_L1,
+            RWI,
+            NUM_SCHOOLS,
+            NUM_HCS,
+            NUM_SHELTERS,
+            NUM_WASH
+        FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT
+        WHERE COUNTRY = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, zoom_level])
+        if df.empty:
+            return gpd.GeoDataFrame()
+
+        df.columns = [c.lower() for c in df.columns]
+
+        def _qk_to_geom(qk):
+            try:
+                t = mercantile.quadkey_to_tile(qk)
+                b = mercantile.bounds(t)
+                return shapely_box(b.west, b.south, b.east, b.north)
+            except Exception:
+                return None
+
+        df['geometry'] = df['tile_id'].apply(_qk_to_geom)
+        df = df.dropna(subset=['geometry'])
+        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+        print(f"✓ Base tiles {country}/z{zoom_level}: {len(gdf)} tiles in {time.time()-t0:.1f}s")
+        return gdf
+    except Exception as e:
+        print(f"Error querying BASE_MERCATOR_TILE_MAT: {str(e)}")
+        return gpd.GeoDataFrame()
+
+
+@lru_cache(maxsize=32)
+def get_base_schools(country: str) -> pd.DataFrame:
+    """Query BASE_SCHOOL_MAT — all school locations for a country (no storm required)."""
+    try:
+        import time; t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            SCHOOL_ID_GIGA  AS school_id_giga,
+            SCHOOL_NAME     AS school_name,
+            EDUCATION_LEVEL AS education_level,
+            LATITUDE        AS latitude,
+            LONGITUDE       AS longitude,
+            COUNTRY_ISO3_CODE AS country_iso3_code
+        FROM AOTS.TC_ECMWF.BASE_SCHOOL_MAT
+        WHERE COUNTRY = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+        """
+        df = _run_query(query, params=[country])
+        df.columns = [c.lower() for c in df.columns]
+        print(f"✓ Base schools {country}: {len(df)} rows in {time.time()-t0:.1f}s")
+        return df
+    except Exception as e:
+        print(f"Error querying BASE_SCHOOL_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=32)
+def get_base_hcs(country: str) -> pd.DataFrame:
+    """Query BASE_HC_MAT — all health centre locations for a country (no storm required)."""
+    try:
+        import time; t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME                AS name,
+            HEALTH_AMENITY_TYPE AS health_amenity_type,
+            AMENITY             AS amenity,
+            OPERATIONAL_STATUS  AS operational_status,
+            BEDS                AS beds,
+            EMERGENCY           AS emergency,
+            ELECTRICITY         AS electricity,
+            OPERATOR_TYPE       AS operator_type,
+            LATITUDE            AS latitude,
+            LONGITUDE           AS longitude
+        FROM AOTS.TC_ECMWF.BASE_HC_MAT
+        WHERE COUNTRY = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+        """
+        df = _run_query(query, params=[country])
+        df.columns = [c.lower() for c in df.columns]
+        print(f"✓ Base HCs {country}: {len(df)} rows in {time.time()-t0:.1f}s")
+        return df
+    except Exception as e:
+        print(f"Error querying BASE_HC_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=32)
+def get_base_shelters(country: str) -> pd.DataFrame:
+    """Query BASE_SHELTER_MAT — all shelter locations for a country (no storm required)."""
+    try:
+        import time; t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME         AS name,
+            NAME_EN      AS name_en,
+            SHELTER_TYPE AS shelter_type,
+            CATEGORY     AS category,
+            LATITUDE     AS latitude,
+            LONGITUDE    AS longitude
+        FROM AOTS.TC_ECMWF.BASE_SHELTER_MAT
+        WHERE COUNTRY = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+        """
+        df = _run_query(query, params=[country])
+        df.columns = [c.lower() for c in df.columns]
+        print(f"✓ Base shelters {country}: {len(df)} rows in {time.time()-t0:.1f}s")
+        return df
+    except Exception as e:
+        print(f"Error querying BASE_SHELTER_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=32)
+def get_base_wash(country: str) -> pd.DataFrame:
+    """Query BASE_WASH_MAT — all WASH facility locations for a country (no storm required)."""
+    try:
+        import time; t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            NAME      AS name,
+            NAME_EN   AS name_en,
+            WASH_TYPE AS wash_type,
+            CATEGORY  AS category,
+            LATITUDE  AS latitude,
+            LONGITUDE AS longitude
+        FROM AOTS.TC_ECMWF.BASE_WASH_MAT
+        WHERE COUNTRY = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+        """
+        df = _run_query(query, params=[country])
+        df.columns = [c.lower() for c in df.columns]
+        print(f"✓ Base WASH {country}: {len(df)} rows in {time.time()-t0:.1f}s")
+        return df
+    except Exception as e:
+        print(f"Error querying BASE_WASH_MAT: {str(e)}")
+        return pd.DataFrame()
+
+
+@lru_cache(maxsize=32)
+def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
+    """
+    Query BASE_ADMIN_GEOM_MAT — admin boundary polygons with demographics (no storm required).
+
+    Geometry stored as GEOGRAPHY in Snowflake; returned as ST_ASGEOJSON and
+    reconstructed into a GeoDataFrame for map rendering.
+    """
+    try:
+        import time, json
+        from shapely.geometry import shape
+        t0 = time.time()
+        conn = get_snowflake_connection()
+        query = """
+        SELECT
+            TILE_ID                  AS tile_id,
+            NAME                     AS name,
+            POPULATION               AS population,
+            SCHOOL_AGE_POPULATION    AS school_age_population,
+            INFANT_POPULATION        AS infant_population,
+            ADOLESCENT_POPULATION    AS adolescent_population,
+            BUILT_SURFACE_M2         AS built_surface_m2,
+            SMOD_CLASS               AS smod_class,
+            SMOD_CLASS_L1            AS smod_class_l1,
+            RWI                      AS rwi,
+            NUM_SCHOOLS              AS num_schools,
+            NUM_HCS                  AS num_hcs,
+            NUM_SHELTERS             AS num_shelters,
+            NUM_WASH                 AS num_wash,
+            ST_ASGEOJSON(GEOMETRY)   AS geojson
+        FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT
+        WHERE COUNTRY = %s
+          AND ADMIN_LEVEL = %s
+          AND GEOMETRY IS NOT NULL
+        """
+        df = _run_query(query, params=[country, admin_level])
+        if df.empty:
+            return gpd.GeoDataFrame()
+
+        df.columns = [c.lower() for c in df.columns]
+
+        def _parse_geojson(s):
+            try:
+                return shape(json.loads(s))
+            except Exception:
+                return None
+
+        df['geometry'] = df['geojson'].apply(_parse_geojson)
+        df = df.drop(columns=['geojson']).dropna(subset=['geometry'])
+        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
+        print(f"✓ Base admin {country}/L{admin_level}: {len(gdf)} regions in {time.time()-t0:.1f}s")
+        return gdf
+    except Exception as e:
+        print(f"Error querying BASE_ADMIN_GEOM_MAT: {str(e)}")
+        return gpd.GeoDataFrame()
