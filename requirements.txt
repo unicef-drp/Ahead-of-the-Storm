@@ -5,6 +5,7 @@ numpy>=1.24.0
 # Geospatial processing
 geopandas>=0.13.0
 shapely>=2.0.0
+mercantile>=1.2.1
 pyproj>=3.4.0
 matplotlib>=3.7.0
 contextily>=1.4.0

@@ -79,6 +79,26 @@ DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lo
 # Build country options list for dropdowns
 COUNTRY_OPTIONS = []
 REGION_MEMBERS = {}  # {'ECA': [{'value': 'AIA', 'label': 'Anguilla'}, ...]}
+
+
+def _get_base_multi(fn, country, *args):
+    """Call a get_base_* function for a country or each member of a region, then concat.
+
+    Individual per-country results are lru_cached, so repeated calls are free.
+    Returns same type as the single-country function (DataFrame or GeoDataFrame).
+    """
+    codes = ([item['value'] for item in REGION_MEMBERS[country]]
+             if country in REGION_MEMBERS else [country])
+    frames = [fn(c, *args) for c in codes]
+    non_empty = [f for f in frames if not f.empty]
+    if not non_empty:
+        return frames[0]
+    result = pd.concat(non_empty, ignore_index=True)
+    if isinstance(non_empty[0], gpd.GeoDataFrame):
+        result = gpd.GeoDataFrame(result, geometry='geometry', crs=non_empty[0].crs)
+    return result
+
+
 if not countries_df.empty:
     sql_mode = config.IMPACT_DATA_SOURCE == 'SQL'
 
@@ -2429,7 +2449,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     ('wash',     wash_data,     get_base_wash),
                 ]
                 with ThreadPoolExecutor(max_workers=4) as _pool:
-                    _futures = {vn: _pool.submit(fn, country) for vn, store, fn in base_fac_map if _fac_empty(store)}
+                    _futures = {vn: _pool.submit(_get_base_multi, fn, country) for vn, store, fn in base_fac_map if _fac_empty(store)}
                 for var_name, store, fn in base_fac_map:
                     if not _fac_empty(store):
                         continue
@@ -2490,7 +2510,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                                     forecast_date=forecast_datetime_str,
                                                     wind_threshold=int(wind_threshold))
                         df_tiles = df_tiles.rename(columns={'zone_id': 'tile_id'})
-                        gdf_base_tiles = get_base_tiles(country, ZOOM_LEVEL)
+                        gdf_base_tiles = _get_base_multi(get_base_tiles, country, ZOOM_LEVEL)
                         if not gdf_base_tiles.empty and not df_tiles.empty:
                             gdf_base_tiles['tile_id'] = gdf_base_tiles['tile_id'].astype(str)
                             df_tiles['tile_id'] = df_tiles['tile_id'].astype(str)
@@ -2572,7 +2592,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         df_admin = df_admin.rename(columns={'zone_id': 'tile_id'})
                         # Drop name from impact data — base table is authoritative for region names
                         df_admin = df_admin.drop(columns=[c for c in ['name', 'admin_level'] if c in df_admin.columns])
-                        gdf_base_admin = get_base_admin(country, admin_level=1)
+                        gdf_base_admin = _get_base_multi(get_base_admin, country, 1)
                         if not gdf_base_admin.empty:
                             gdf_base_admin['tile_id'] = gdf_base_admin['tile_id'].astype(str)
                             df_admin['tile_id'] = df_admin['tile_id'].astype(str)
@@ -2649,7 +2669,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         if config.IMPACT_DATA_SOURCE == 'SQL':
             if not tiles_data or not tiles_data.get('features'):
                 try:
-                    gdf_base = get_base_tiles(country, ZOOM_LEVEL)
+                    gdf_base = _get_base_multi(get_base_tiles, country, ZOOM_LEVEL)
                     if not gdf_base.empty:
                         tiles_data = gdf_base.__geo_interface__
                         using_base_layers = True
@@ -2659,7 +2679,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
             if not admin_data or not admin_data.get('features'):
                 try:
-                    gdf_base_admin = get_base_admin(country, admin_level=1)
+                    gdf_base_admin = _get_base_multi(get_base_admin, country, 1)
                     if not gdf_base_admin.empty:
                         admin_data = gdf_base_admin.__geo_interface__
                         using_base_layers = True
