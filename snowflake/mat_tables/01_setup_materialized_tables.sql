@@ -792,6 +792,15 @@ $$
     errors.push('REGIONAL_GROUPS: ' + e.message);
   }
 
+  // Refresh base layer tables (country-static: tiles, schools, HCs, shelters, WASH).
+  // Defined in 02_setup_base_layer_tables.sql — must be run before this procedure is called.
+  try {
+    run('CALL AOTS.TC_ECMWF.REFRESH_BASE_LAYER_TABLES()');
+    refreshed.push('BASE_LAYER_TABLES');
+  } catch (e) {
+    errors.push('BASE_LAYER_TABLES: ' + e.message);
+  }
+
   if (errors.length > 0) {
     return 'PARTIAL: refreshed [' + refreshed.join(', ') + '], errors: ' + errors.join(' | ');
   }

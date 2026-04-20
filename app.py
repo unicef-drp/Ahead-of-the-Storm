@@ -32,6 +32,7 @@ app.layout = dmc.MantineProvider(
         dcc.Store("country-is-region-store", data=False),
         dcc.Store("storm-store", data=""),
         dcc.Store("date-store", data=""),
+        dcc.Store("using-base-layers-store", data=False),
     ],
     id="mantine-provider",
     forceColorScheme="light",
