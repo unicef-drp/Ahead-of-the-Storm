@@ -2462,7 +2462,6 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                             elif var_name == 'health':  health_data   = geojson
                             elif var_name == 'shelters': shelters_data = geojson
                             elif var_name == 'wash':    wash_data     = geojson
-                            using_base_layers = True
                     except Exception as e:
                         print(f"Base {var_name} fallback error: {e}")
             else:
