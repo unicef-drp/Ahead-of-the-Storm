@@ -182,6 +182,8 @@ latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) +
             .sort_values(["TRACK_ID","dt"])
             .drop_duplicates("TRACK_ID", keep="last"))
 
+latest['TRACK_ID'] = latest['TRACK_ID'].astype(str)
+_latlon_bulk['TRACK_ID'] = _latlon_bulk['TRACK_ID'].astype(str)
 latest = latest.merge(_latlon_bulk[['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude']],
                       on=['TRACK_ID', 'FORECAST_TIME'], how='left')
 

@@ -145,6 +145,20 @@ def get_snowflake_connection():
 
     try:
         conn = snowflake.connector.connect(**conn_params)
+        # SPCS OAuth mode sometimes ignores the warehouse param in the connection
+        # string — explicitly set it so every new thread session has a warehouse.
+        if config.SPCS_RUN and config.SNOWFLAKE_WAREHOUSE:
+            try:
+                conn.cursor().execute(f"USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE}")
+            except Exception as e:
+                print(f"Warning: USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE} failed: {e}")
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE()")
+                row = cur.fetchone()
+                print(f"SPCS session: role={row[0]}, warehouse={row[1]}")
+            except Exception as e:
+                print(f"Warning: could not check session state: {e}")
         if should_print:
             print("✓ Connected to Snowflake (connection will be reused per thread)")
         _thread_local.connection = conn
