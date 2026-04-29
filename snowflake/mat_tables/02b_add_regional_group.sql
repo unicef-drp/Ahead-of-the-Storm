@@ -6,7 +6,7 @@
 --
 -- How regional groups work:
 --   PIPELINE_COUNTRIES holds a row per region (IS_REGION=TRUE, MEMBER_CODES=[...]).
---   REFRESH_REGIONAL_GROUPS() (defined in 01b_setup_regional_groups.sql) reads
+--   REFRESH_REGIONAL_GROUPS() (defined in 02_regional_groups.sql) reads
 --   those rows and re-derives regional rows in every MAT table by unioning /
 --   aggregating the member-country rows already loaded from stage files.
 --   REFRESH_MATERIALIZED_VIEWS() calls REFRESH_REGIONAL_GROUPS() automatically
@@ -14,7 +14,7 @@
 --   The app queries regional rows identically to country rows (WHERE country='ECA').
 --
 -- Prerequisites:
---   - 01b_setup_regional_groups.sql has been run (REFRESH_REGIONAL_GROUPS procedure exists)
+--   - 02_regional_groups.sql has been run (REFRESH_REGIONAL_GROUPS procedure exists)
 --   - All MEMBER_CODES must already exist as rows in PIPELINE_COUNTRIES
 --   - COUNTRY_BOUNDARY is intentionally left NULL for regions — the pipeline
 --     uses it for spatial storm filtering but skips rows where it is NULL.

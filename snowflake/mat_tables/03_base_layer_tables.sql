@@ -1,5 +1,5 @@
 -- ============================================================================
--- Step 2: Base Layer MAT Tables
+-- 04_data/03_base_layer_tables.sql — Base Layer MAT Tables
 -- ============================================================================
 -- Country-static tables that do NOT require a storm/forecast/threshold.
 -- They serve two roles in SQL/Snowflake mode (IMPACT_DATA_SOURCE=SQL):
@@ -76,7 +76,7 @@ USE SCHEMA TC_ECMWF;
 -- Variant column access returns NULL for absent columns — no discrimination needed.
 -- NO geometry stored — reconstruct from quadkey using mercantile in Python.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_MERCATOR_TILE_MAT
+CREATE TABLE IF NOT EXISTS BASE_MERCATOR_TILE_MAT
 CLUSTER BY (COUNTRY, ZOOM_LEVEL)
 AS
 SELECT
@@ -107,7 +107,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
 -- Columns from GIGA API (or custom override): school_id_giga, school_name,
 -- education_level, latitude, longitude, country_iso3_code
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_SCHOOL_MAT
+CREATE TABLE IF NOT EXISTS BASE_SCHOOL_MAT
 CLUSTER BY (COUNTRY)
 AS
 SELECT
@@ -130,7 +130,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/school_views/
 -- coordinates extracted from WKB geometry using ST_Y/ST_X, matching the
 -- pattern used by get_hc_impacts() in snowflake_utils.py.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_HC_MAT
+CREATE TABLE IF NOT EXISTS BASE_HC_MAT
 CLUSTER BY (COUNTRY)
 AS
 SELECT
@@ -155,7 +155,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/hc_views/
 -- Source: shelter_views/{COUNTRY}_shelters.parquet
 -- Columns from OSM Overpass (or custom override).
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_SHELTER_MAT
+CREATE TABLE IF NOT EXISTS BASE_SHELTER_MAT
 CLUSTER BY (COUNTRY)
 AS
 SELECT
@@ -176,7 +176,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/shelter_views/
 -- Source: wash_views/{COUNTRY}_wash.parquet
 -- Columns from OSM Overpass (or custom override).
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_WASH_MAT
+CREATE TABLE IF NOT EXISTS BASE_WASH_MAT
 CLUSTER BY (COUNTRY)
 AS
 SELECT
@@ -202,7 +202,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/wash_views/
 -- Query with ST_ASGEOJSON(GEOMETRY) to get GeoJSON for map rendering.
 -- Clustered by (COUNTRY, ADMIN_LEVEL) to match typical WHERE clause.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_ADMIN_GEOM_MAT
+CREATE TABLE IF NOT EXISTS BASE_ADMIN_GEOM_MAT
 CLUSTER BY (COUNTRY, ADMIN_LEVEL)
 AS
 SELECT
