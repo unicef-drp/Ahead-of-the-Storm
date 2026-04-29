@@ -40,8 +40,6 @@ docs/
 
 snowflake/intelligence/technical_writeup_images
 snowflake/intelligence/eval_config.yaml
-snowflake/intelligence/05_create_eval_dataset.sql
-snowflake/intelligence/05b_create_eval_views.sql
 snowflake/intelligence/06_grant_aots_agent_privileges.sql
 
 snowflake_spcs/
