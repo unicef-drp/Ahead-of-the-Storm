@@ -144,9 +144,10 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         # STAGE path — original behaviour
         result = read_dataset(giga_store, filepath)
         source_label = f"STAGE/{filepath}"
-        # CCI stage files use mixed-case column names (CCI_children, E_CCI_children).
-        # Normalize them to match the SQL path convention (cci_children, E_cci_children).
-        if data_type in ('tile_cci', 'admin_cci') and not result.empty:
+        # Normalize column names to match SQL path convention (E_population, tile_id, probability…).
+        # Previously only CCI files were normalized; admin_impact files also need it so the
+        # tooltip can find E_population etc. regardless of how the pipeline wrote them.
+        if not result.empty:
             result.columns = [_norm(c) for c in result.columns]
 
     _elapsed = time.perf_counter() - _t0

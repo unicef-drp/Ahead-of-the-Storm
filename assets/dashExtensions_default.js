@@ -506,7 +506,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
                 const formatNumber = (num) => {
                     if (typeof num === 'number') {
-                        return new Intl.NumberFormat('en-US').format(Math.round(num));
+                        return new Intl.NumberFormat('en-US').format(Math.ceil(num));
                     }
                     return num;
                 };
@@ -528,15 +528,25 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                     if (normalized === 3) return 'Urban Centers';
                     return 'N/A';
                 };
-                const fmtExp = (base, prob) => {
+                // Format expected impact. Prefers pre-computed E_ values from ADMIN_ALL_IMPACT_MAT (SQL mode);
+                // falls back to base × probability when E_ columns are absent (STAGE/LOCAL/BLOB mode).
+                const fmtExpVal = (precomputed, base, prob) => {
+                    if (typeof precomputed === 'number' && !isNaN(precomputed) && precomputed > 0) {
+                        const expStr = precomputed >= 1 ?
+                            new Intl.NumberFormat('en-US').format(Math.ceil(precomputed)) :
+                            precomputed.toFixed(1);
+                        return ` <span style="color: #dc143c; font-size: 0.88em;">(~${expStr})</span>`;
+                    }
                     if (!prob || prob <= 0 || typeof base !== 'number' || base <= 0) return '';
                     const exp = base * prob;
-                    const expStr = exp >= 1 ? formatNumber(Math.round(exp)) : exp.toFixed(1);
+                    const expStr = exp >= 1 ? new Intl.NumberFormat('en-US').format(Math.ceil(exp)) : exp.toFixed(1);
                     return ` <span style="color: #dc143c; font-size: 0.88em;">(~${expStr})</span>`;
                 };
 
                 const name = props.name || props.tile_id || '';
                 const probability = props.probability || 0;
+
+                // Base counts (from BASE_ADMIN_GEOM_MAT — total in region regardless of storm)
                 const population = props.population || 0;
                 const infant_pop = props.infant_population || 0;
                 const school_age_pop = props.school_age_population || 0;
@@ -550,6 +560,19 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const smod_class = props.smod_class;
                 const rwi = props.rwi || 0;
                 const cci = props.cci_children || 0;
+
+                // Pre-computed expected values — data_store_utils._norm produces "E_population" (capital E_, lowercase rest)
+                const e_population = props.E_population;
+                const e_infant_pop = props.E_infant_population;
+                const e_school_age_pop = props.E_school_age_population;
+                const e_adolescent_pop = props.E_adolescent_population;
+                const e_children_total = (typeof e_infant_pop === 'number' && typeof e_school_age_pop === 'number' && typeof e_adolescent_pop === 'number') ?
+                    (e_infant_pop || 0) + (e_school_age_pop || 0) + (e_adolescent_pop || 0) : undefined;
+                const e_num_schools = props.E_num_schools;
+                const e_num_hcs = props.E_num_hcs;
+                const e_num_shelters = props.E_num_shelters;
+                const e_num_wash = props.E_num_wash;
+                const e_built_surface = props.E_built_surface_m2;
 
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #2e7d32; margin-bottom: 3px;">
@@ -570,16 +593,16 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
                 content += `
     <div style="font-size: 11px; color: #777; margin-top: 5px;"><strong>Region Base Data:</strong></div>
-    <div style="font-size: 11px; color: #555;">Population: ${formatValue(population)}${fmtExp(population, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}</div>
-    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 0–4: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}</div>
-    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 5–14: ${formatValue(school_age_pop)}${fmtExp(school_age_pop, probability)}</div>
-    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 15–19: ${formatValue(adolescent_pop)}${fmtExp(adolescent_pop, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Schools: ${formatValue(num_schools)}${fmtExp(num_schools, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Shelters: ${formatValue(num_shelters)}${fmtExp(num_shelters, probability)}</div>
-    <div style="font-size: 11px; color: #555;">WASH Facilities: ${formatValue(num_wash)}${fmtExp(num_wash, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}</div>
+    <div style="font-size: 11px; color: #555;">Population: ${formatValue(population)}${fmtExpVal(e_population, population, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExpVal(e_children_total, children_total, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 0–4: ${formatValue(infant_pop)}${fmtExpVal(e_infant_pop, infant_pop, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 5–14: ${formatValue(school_age_pop)}${fmtExpVal(e_school_age_pop, school_age_pop, probability)}</div>
+    <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">Age 15–19: ${formatValue(adolescent_pop)}${fmtExpVal(e_adolescent_pop, adolescent_pop, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Schools: ${formatValue(num_schools)}${fmtExpVal(e_num_schools, num_schools, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Health Centers: ${formatValue(num_hcs)}${fmtExpVal(e_num_hcs, num_hcs, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Shelters: ${formatValue(num_shelters)}${fmtExpVal(e_num_shelters, num_shelters, probability)}</div>
+    <div style="font-size: 11px; color: #555;">WASH Facilities: ${formatValue(num_wash)}${fmtExpVal(e_num_wash, num_wash, probability)}</div>
+    <div style="font-size: 11px; color: #555;">Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExpVal(e_built_surface, built_surface, probability) : 'N/A'}</div>
     <div style="font-size: 11px; color: #555;">CCI: ${formatDecimal(cci)}</div>
     <div style="font-size: 11px; color: #555;">Settlement: ${smod_class !== null && smod_class !== undefined ? getSettlementLabel(smod_class) : 'N/A'}</div>
     <div style="font-size: 11px; color: #555;">Relative Wealth Index: ${formatDecimal(rwi)}</div>
