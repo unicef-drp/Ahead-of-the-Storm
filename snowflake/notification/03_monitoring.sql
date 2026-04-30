@@ -13,15 +13,13 @@
 -- Note on latency: SNOWFLAKE.ACCOUNT_USAGE views have up to 45-minute lag.
 -- For immediate post-run checks use the INFORMATION_SCHEMA table functions
 -- (Section 3b) which reflect data within seconds but only cover 7 days.
---
--- Adjust :credit_price_usd to your contracted Snowflake credit rate.
 -- ==============================================================================
 
 USE DATABASE AOTS;
 USE SCHEMA TC_ECMWF;
 
 -- ─── CONFIG ───────────────────────────────────────────────────────────────────
--- Set your contracted Snowflake credit price in USD before running cost queries.
+-- Set Snowflake credit price in USD before running cost queries.
 SET credit_price_usd = 3.00;
 
 
