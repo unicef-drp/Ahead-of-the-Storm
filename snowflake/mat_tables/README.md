@@ -34,7 +34,7 @@ Raw ECMWF ensemble forecast data arrives as CSV/Parquet files in Snowflake stage
 
 Run scripts in this order:
 
-### Step 1: Create Materialized Tables (`01_setup_materialized_tables.sql`)
+### Step 1: Create Materialized Tables (`01_materialized_tables.sql`)
 
 Creates all `*_MAT` tables, loads data from stage, creates `REFRESH_MATERIALIZED_VIEWS()` stored procedure, and creates a scheduled refresh task.
 
@@ -58,7 +58,7 @@ Both formats are handled in the same `SELECT` using `IFF($13 IS NULL, old_pos, n
 
 **Adding new columns when the pipeline changes:** see `MAT_TABLE_FIX.md`.
 
-### Step 2: Set Up Regional Groups (`01b_setup_regional_groups.sql`)
+### Step 2: Set Up Regional Groups (`02_regional_groups.sql`)
 
 Creates `REFRESH_REGIONAL_GROUPS()` — the procedure that derives regional rows in every MAT table from member-country rows. Run once after Step 1.
 
@@ -75,15 +75,15 @@ A region is a row in `PIPELINE_COUNTRIES` with `IS_REGION = TRUE` and a `MEMBER_
 
 **Pipeline exclusion:** Regions are excluded from data pipeline processing via `IS_REGION = TRUE`. The `DATAPIPELINE` repo filters `WHERE IS_REGION IS NULL OR IS_REGION = FALSE` in all country selection queries (`country_utils.py`). `COUNTRY_BOUNDARY` is intentionally left NULL for regions — the pipeline's spatial storm filter already skips NULL rows.
 
-### Step 3: Register a Region (`01c_add_regional_group.sql`)
+### Step 3: Register a Region (`02b_add_regional_group.sql`)
 
 Template for registering a new multi-country region (e.g. ECA — East Caribbean Area). Run once per region; no other files need to change. ECA is included as a commented-out reference example.
 
 Fill in the values at the bottom of the script and run it. The next `REFRESH_MATERIALIZED_VIEWS()` call (or the hourly task) will populate the regional rows automatically.
 
-### Step 4: Verify (`05_test_materialized_tables.sql`)
+### Step 4: Set Up Base Layer Tables (`03_base_layer_tables.sql`)
 
-Test queries to verify all tables are correctly populated — row counts, aggregates, worst-case member selection, expected vs worst-case comparison.
+Creates static base layer tables (schools, health centers, shelters, WASH, admin geometries). Run once after Step 1.
 
 ## Key Notes
 

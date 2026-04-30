@@ -41,6 +41,9 @@ docs/
 snowflake/intelligence/technical_writeup_images
 snowflake/intelligence/eval_config.yaml
 snowflake/intelligence/06_grant_aots_agent_privileges.sql
+snowflake/notification/03_send_alert_procedure_js.sql
+snowflake/notification/88_create_alert_agent.sql
+snowflake/notification/99_send_alert_procedure_TEST.sql
 
 snowflake_spcs/
 
