@@ -470,11 +470,6 @@ def main(session):
                     pass
 
             # Impact bullet list
-            adolescent_li = f'<li>Age 15–19 (adolescents): {fmt_n(exp.get("total_adolescent_children"))}{lbl("data")}</li>'
-            shelter_li    = (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters"))}</strong>{lbl("data")}</li>'
-                             if exp.get('total_shelters') is not None else '')
-            wash_li       = (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash"))}</strong>{lbl("data")}</li>'
-                             if exp.get('total_wash') is not None else '')
             impact_bullets = (
                 '<ul style="margin:8px 0; padding-left:20px;">'
                 f'<li>Expected population at risk: <strong>{fmt_n(exp.get("total_population"))}</strong>{lbl("data")}</li>'
@@ -482,15 +477,24 @@ def main(session):
                 '<ul style="margin:4px 0; padding-left:20px;">'
                 f'<li>Age 0–4 (infants): {fmt_n(exp.get("total_infant_children"))}{lbl("data")}</li>'
                 f'<li>Age 5–14 (school-age): {fmt_n(exp.get("total_school_age_children"))}{lbl("data")}</li>'
-                f'{adolescent_li}'
+                f'<li>Age 15–19 (adolescents): {fmt_n(exp.get("total_adolescent_children"))}{lbl("data")}</li>'
                 '</ul></li>'
                 f'<li>Expected schools at risk: <strong>{fmt_n(exp.get("total_schools"))}</strong>{lbl("data")}</li>'
                 f'<li>Expected health centers at risk: <strong>{fmt_n(exp.get("total_hcs"))}</strong>{lbl("data")}</li>'
-                f'{shelter_li}{wash_li}'
-                '</ul>'
+                + (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters"))}</strong>{lbl("data")}</li>'
+                   if exp.get('total_shelters') is not None else '')
+                + (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash"))}</strong>{lbl("data")}</li>'
+                   if exp.get('total_wash') is not None else '')
+                + '</ul>'
             )
 
             # Admin breakdown table
+            prev_date_fmt = (
+                f'{months[int(prev_date[4:6]) - 1]} {int(prev_date[6:8])}, '
+                f'{prev_date[0:4]} {prev_date[8:10]}Z'
+                if prev_date else None
+            )
+
             admin_table = ''
             if admin_areas:
                 admin_has_shelters = any(a.get('shelters') is not None for a in admin_areas)
@@ -539,7 +543,10 @@ def main(session):
                     '</tbody></table>'
                     f'<p style="font-size:0.88em; color:#777; margin-top:4px;">Expected impact at storm-force winds (50kt) '
                     f'by administrative area. {lbl("data")} Values are rounded to the nearest integer; '
-                    'the sum across administrative areas may exceed the totals shown above.</p>'
+                    'the sum across administrative areas may exceed the totals shown above.'
+                    + (f' Trend arrows (▲/▼) compare to the previous forecast ({prev_date_fmt}).'
+                       if prev_date_fmt and admin_delta_map else '')
+                    + '</p>'
                 )
 
             # Forecast stability / centroid shift section — always shown
@@ -561,8 +568,6 @@ def main(session):
                                   f'({fmt_n(prev_pop)} → {fmt_n(exp["total_population"])}).')
                 else:
                     trend_note = ' Overall population at risk remains broadly similar to the previous run.'
-                prev_date_fmt = (f'{months[int(prev_date[4:6]) - 1]} {int(prev_date[6:8])}, '
-                                 f'{prev_date[0:4]} {prev_date[8:10]}Z')
                 shift_section = (
                     f'<p style="margin:14px 0 4px; color:#555;">The expected impact footprint is '
                     f'<strong>broadly stable</strong> since the previous forecast ({prev_date_fmt}).'

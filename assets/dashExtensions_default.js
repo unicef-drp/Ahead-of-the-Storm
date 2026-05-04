@@ -152,22 +152,33 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const props = feature.properties || {};
                 const wind_threshold = props.wind_threshold || props.WIND_THRESHOLD || 'N/A';
                 const ensemble_member = props.ensemble_member || props.ENSEMBLE_MEMBER || 'N/A';
-                const severity_school_age_population = props.severity_school_age_population || 0;
-                const severity_infant_population = props.severity_infant_population || 0;
-                const severity_adolescent_population = props.severity_adolescent_population || 0;
-                const severity_population = props.severity_population || 0;
-                const severity_schools = props.severity_schools || 0;
-                const severity_hcs = props.severity_hcs || 0;
-                const severity_num_shelters = props.severity_num_shelters || 0;
-                const severity_num_wash = props.severity_num_wash || 0;
-                const severity_built_surface_m2 = props.severity_built_surface_m2 || 0;
-
+                const severity_population = props.severity_population;
+                const severity_school_age_population = props.severity_school_age_population;
+                const severity_infant_population = props.severity_infant_population;
+                const severity_adolescent_population = props.severity_adolescent_population;
+                const severity_schools = props.severity_schools;
+                const severity_hcs = props.severity_hcs;
+                const severity_num_shelters = props.severity_num_shelters;
+                const severity_num_wash = props.severity_num_wash;
+                const severity_built_surface_m2 = props.severity_built_surface_m2;
 
                 const formatNumber = (num) => {
                     if (typeof num === 'number') {
                         return new Intl.NumberFormat('en-US').format(Math.round(num));
                     }
                     return num;
+                };
+
+                // null/NaN → 'N/A'; 0 → '0' (confirmed no impact); >0 → formatted number
+                const fmtImpact = (val) => {
+                    if (val == null || (typeof val === 'number' && isNaN(val))) return 'N/A';
+                    return val > 0 ? formatNumber(val) : '0';
+                };
+
+                // null/NaN → 'N/A'; 0 → 'N/A' (0 m² is meaningless); >0 → 'X m²'
+                const fmtSurface = (val) => {
+                    if (val == null || (typeof val === 'number' && isNaN(val)) || val <= 0) return 'N/A';
+                    return formatNumber(val) + ' m²';
                 };
 
                 // Always show same structure, use N/A when data not available
@@ -183,45 +194,45 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         </div>
     `;
 
-                // Children total (sum of available age groups)
-                const sev_child_parts = [severity_infant_population, severity_school_age_population, severity_adolescent_population].filter(v => v > 0);
-                const sev_children_total = sev_child_parts.length > 0 ? sev_child_parts.reduce((a, b) => a + b, 0) : null;
+                // Children total: N/A only when all components are null; 0 when all are confirmed 0
+                const _isNoData = v => v == null || (typeof v === 'number' && isNaN(v));
+                const _sev_children_all_null = _isNoData(severity_infant_population) && _isNoData(severity_school_age_population) && _isNoData(severity_adolescent_population);
+                const sev_children_total = _sev_children_all_null ? null : (severity_infant_population || 0) + (severity_school_age_population || 0) + (severity_adolescent_population || 0);
 
-                // Always show impact section
                 content += `
         <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
         <div style="font-size: 11px; color: #777; margin-top: 5px;">
             <strong>Impact:</strong>
         </div>
         <div style="font-size: 11px; color: #555;">
-            Population: ${severity_population > 0 ? formatNumber(severity_population) : 'N/A'}
+            Population: ${fmtImpact(severity_population)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? formatNumber(sev_children_total) : 'N/A'}
+            Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? fmtImpact(sev_children_total) : 'N/A'}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 0–4: ${severity_infant_population > 0 ? formatNumber(severity_infant_population) : 'N/A'}
+            Age 0–4: ${fmtImpact(severity_infant_population)}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 5–14: ${severity_school_age_population > 0 ? formatNumber(severity_school_age_population) : 'N/A'}
+            Age 5–14: ${fmtImpact(severity_school_age_population)}
         </div>
         <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 15–19: ${severity_adolescent_population > 0 ? formatNumber(severity_adolescent_population) : 'N/A'}
+            Age 15–19: ${fmtImpact(severity_adolescent_population)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            Schools: ${severity_schools > 0 ? formatNumber(severity_schools) : 'N/A'}
+            Schools: ${fmtImpact(severity_schools)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            Health Centers: ${severity_hcs > 0 ? formatNumber(severity_hcs) : 'N/A'}
+            Health Centers: ${fmtImpact(severity_hcs)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            Shelters: ${severity_num_shelters > 0 ? formatNumber(severity_num_shelters) : 'N/A'}
+            Shelters: ${fmtImpact(severity_num_shelters)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            WASH Facilities: ${severity_num_wash > 0 ? formatNumber(severity_num_wash) : 'N/A'}
+            WASH Facilities: ${fmtImpact(severity_num_wash)}
         </div>
         <div style="font-size: 11px; color: #555;">
-            Built Surface: ${severity_built_surface_m2 > 0 ? formatNumber(severity_built_surface_m2) + ' m²' : 'N/A'}
+            Built Surface: ${fmtSurface(severity_built_surface_m2)}
         </div>
     `;
 
@@ -328,7 +339,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const name = props.name || props.name_en || null;
                 const wash_type = props.wash_type || props.type || null;
                 const category = props.category || null;
-                const probability = props.probability || 0;
+                const probability = props.probability;
 
                 const formatPercent = (prob) => {
                     if (typeof prob === 'number') return (prob * 100).toFixed(1) + '%';
@@ -343,7 +354,11 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
                 if (wash_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${wash_type}</div>`;
                 if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
-                content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                if (probability !== undefined && probability !== null) {
+                    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                } else {
+                    content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                }
 
                 layer.bindTooltip(content, {
                     sticky: true
@@ -369,30 +384,30 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
 
                 // Expected impact values (from hurricane envelopes)
-                const E_population = props.E_population || props.expected_population || 0;
-                const E_built_surface_m2 = props.E_built_surface_m2 || props.expected_built_surface || 0;
-                const E_num_schools = props.E_num_schools || 0;
-                const E_school_age_population = props.E_school_age_population || 0;
-                const E_infant_population = props.E_infant_population || 0;
-                const E_adolescent_population = props.E_adolescent_population || 0;
-                const E_num_hcs = props.E_num_hcs || 0;
-                const E_num_shelters = props.E_num_shelters || 0;
-                const E_num_wash = props.E_num_wash || 0;
-                const E_rwi = props.E_rwi || 0;
-                const E_cci = props.E_cci_children || 0;
+                const E_population = props.E_population ?? props.expected_population;
+                const E_built_surface_m2 = props.E_built_surface_m2 ?? props.expected_built_surface;
+                const E_num_schools = props.E_num_schools;
+                const E_school_age_population = props.E_school_age_population;
+                const E_infant_population = props.E_infant_population;
+                const E_adolescent_population = props.E_adolescent_population;
+                const E_num_hcs = props.E_num_hcs;
+                const E_num_shelters = props.E_num_shelters;
+                const E_num_wash = props.E_num_wash;
+                const E_rwi = props.E_rwi;
+                const E_cci = props.E_cci_children;
                 const probability = props.probability || 0;
 
                 // Base infrastructure values
-                const population = props.population || 0;
-                const built_surface = props.built_surface_m2 || 0;
-                const num_schools = props.num_schools || 0;
-                const school_age_pop = props.school_age_population || 0;
-                const infant_pop = props.infant_population || 0;
-                const adolescent_pop = props.adolescent_population || 0;
-                const num_hcs = props.num_hcs || 0;
-                const rwi = props.rwi || 0;
-                const cci = props.cci_children || 0;
-                const smod_class = props.smod_class || 'N/A';
+                const population = props.population;
+                const built_surface = props.built_surface_m2;
+                const num_schools = props.num_schools;
+                const school_age_pop = props.school_age_population;
+                const infant_pop = props.infant_population;
+                const adolescent_pop = props.adolescent_population;
+                const num_hcs = props.num_hcs;
+                const rwi = props.rwi;
+                const cci = props.cci_children;
+                const smod_class = props.smod_class;
 
                 // Settlement classification mapping (values are 0, 10, 20, 30)
                 const getSettlementLabel = (classNum) => {
@@ -445,9 +460,11 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         `;
                 }
 
-                // Children total: always show the sum (0 is valid); N/A only if no tile data at all
+                // Children total: N/A only if all components are null; 0 when all confirmed zero
                 const has_tile_data = props.population !== undefined;
-                const children_total = has_tile_data ? infant_pop + school_age_pop + adolescent_pop : null;
+                const _noData = v => v == null || (typeof v === 'number' && isNaN(v));
+                const _children_all_null = _noData(infant_pop) && _noData(school_age_pop) && _noData(adolescent_pop);
+                const children_total = !has_tile_data ? null : (_children_all_null ? null : (infant_pop || 0) + (school_age_pop || 0) + (adolescent_pop || 0));
 
                 // Show tile data - always show all fields
                 content += `
@@ -458,7 +475,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         Population: ${formatValue(population)}${fmtExp(population, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatNumber(children_total) : 'N/A'}${fmtExp(children_total, probability)}
+        Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${children_total !== null ? formatValue(children_total) : 'N/A'}${fmtExp(children_total, probability)}
     </div>
     <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
         Age 0–4: ${formatValue(infant_pop)}${fmtExp(infant_pop, probability)}
@@ -476,13 +493,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         Health Centers: ${formatValue(num_hcs)}${fmtExp(num_hcs, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Shelters: ${formatValue(props.num_shelters || 0)}${fmtExp(props.num_shelters || 0, probability)}
+        Shelters: ${formatValue(props.num_shelters)}${fmtExp(props.num_shelters, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        WASH Facilities: ${formatValue(props.num_wash || 0)}${fmtExp(props.num_wash || 0, probability)}
+        WASH Facilities: ${formatValue(props.num_wash)}${fmtExp(props.num_wash, probability)}
     </div>
     <div style="font-size: 11px; color: #555;">
-        Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}
+        Built Surface: ${(built_surface != null && built_surface > 0) ? formatNumber(built_surface) + ' m²' + fmtExp(built_surface, probability) : 'N/A'}
     </div>
     <div style="font-size: 11px; color: #555;">
         CCI: ${formatDecimal(cci)}
@@ -547,19 +564,24 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const probability = props.probability || 0;
 
                 // Base counts (from BASE_ADMIN_GEOM_MAT — total in region regardless of storm)
-                const population = props.population || 0;
-                const infant_pop = props.infant_population || 0;
-                const school_age_pop = props.school_age_population || 0;
-                const adolescent_pop = props.adolescent_population || 0;
-                const children_total = props.population !== undefined ? infant_pop + school_age_pop + adolescent_pop : null;
-                const num_schools = props.num_schools || 0;
-                const num_hcs = props.num_hcs || 0;
-                const num_shelters = props.num_shelters || 0;
-                const num_wash = props.num_wash || 0;
-                const built_surface = props.built_surface_m2 || 0;
+                const population = props.population;
+                const infant_pop = props.infant_population;
+                const school_age_pop = props.school_age_population;
+                const adolescent_pop = props.adolescent_population;
+                // Children total: N/A only when all components are null; 0 when all confirmed zero
+                const _noDataA = v => v == null || (typeof v === 'number' && isNaN(v));
+                const _children_all_null_a = _noDataA(infant_pop) && _noDataA(school_age_pop) && _noDataA(adolescent_pop);
+                const children_total = props.population !== undefined ?
+                    (_children_all_null_a ? null : (infant_pop || 0) + (school_age_pop || 0) + (adolescent_pop || 0)) :
+                    null;
+                const num_schools = props.num_schools;
+                const num_hcs = props.num_hcs;
+                const num_shelters = props.num_shelters;
+                const num_wash = props.num_wash;
+                const built_surface = props.built_surface_m2;
                 const smod_class = props.smod_class;
-                const rwi = props.rwi || 0;
-                const cci = props.cci_children || 0;
+                const rwi = props.rwi;
+                const cci = props.cci_children;
 
                 // Pre-computed expected values — data_store_utils._norm produces "E_population" (capital E_, lowercase rest)
                 const e_population = props.E_population;
@@ -602,7 +624,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
     <div style="font-size: 11px; color: #555;">Health Centers: ${formatValue(num_hcs)}${fmtExpVal(e_num_hcs, num_hcs, probability)}</div>
     <div style="font-size: 11px; color: #555;">Shelters: ${formatValue(num_shelters)}${fmtExpVal(e_num_shelters, num_shelters, probability)}</div>
     <div style="font-size: 11px; color: #555;">WASH Facilities: ${formatValue(num_wash)}${fmtExpVal(e_num_wash, num_wash, probability)}</div>
-    <div style="font-size: 11px; color: #555;">Built Surface: ${built_surface > 0 ? formatNumber(built_surface) + ' m²' + fmtExpVal(e_built_surface, built_surface, probability) : 'N/A'}</div>
+    <div style="font-size: 11px; color: #555;">Built Surface: ${(built_surface != null && built_surface > 0) ? formatNumber(built_surface) + ' m²' + fmtExpVal(e_built_surface, built_surface, probability) : 'N/A'}</div>
     <div style="font-size: 11px; color: #555;">CCI: ${formatDecimal(cci)}</div>
     <div style="font-size: 11px; color: #555;">Settlement: ${smod_class !== null && smod_class !== undefined ? getSettlementLabel(smod_class) : 'N/A'}</div>
     <div style="font-size: 11px; color: #555;">Relative Wealth Index: ${formatDecimal(rwi)}</div>
