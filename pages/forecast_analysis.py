@@ -458,6 +458,13 @@ else:
     date_options = []
     default_date = None
 
+def _col(src, col):
+    """N/A when column absent or all-NaN; otherwise sum. Used across multiple callbacks."""
+    if col not in src.columns or src[col].isna().all():
+        return "N/A"
+    return src[col].sum()
+
+
 @callback(
     Output("analysis-forecast-date", "data"),
     Output("analysis-forecast-date", "value"),
@@ -956,7 +963,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
         na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
         return na_values * 9  # Return for all 9 tabs
-    
+
     # Calculate probabilistic impact metrics
     try:
         # Construct the filename for the tiles impact view
@@ -997,12 +1004,12 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                 else:
                     probabilistic_results["adolescent"] = "N/A"
 
-                probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
-                probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
-                probabilistic_results["shelters"] = df['E_num_shelters'].sum() if 'E_num_shelters' in df.columns else "N/A"
-                probabilistic_results["wash"] = df['E_num_wash'].sum() if 'E_num_wash' in df.columns else "N/A"
-                probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
-                probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else "N/A"
+                probabilistic_results["schools"] = _col(df, 'E_num_schools')
+                probabilistic_results["health"] = _col(df, 'E_num_hcs')
+                probabilistic_results["shelters"] = _col(df, 'E_num_shelters')
+                probabilistic_results["wash"] = _col(df, 'E_num_wash')
+                probabilistic_results["population"] = _col(df, 'E_population')
+                probabilistic_results["built_surface_m2"] = _col(df, 'E_built_surface_m2')
                 
                 # Calculate DETERMINISTIC (member 51) and HIGH scenarios (from track data)
                 tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
@@ -1032,29 +1039,29 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                         
                         # DETERMINISTIC scenario (member 51)
                         if not low_scenario_data.empty:
-                            low_results["children"] = low_scenario_data['severity_school_age_population'].sum() if 'severity_school_age_population' in low_scenario_data.columns else "N/A"
-                            low_results["infant"] = low_scenario_data['severity_infant_population'].sum() if 'severity_infant_population' in low_scenario_data.columns else "N/A"
-                            low_results["adolescent"] = low_scenario_data['severity_adolescent_population'].sum() if 'severity_adolescent_population' in low_scenario_data.columns else "N/A"
-                            low_results["schools"] = low_scenario_data['severity_schools'].sum() if 'severity_schools' in low_scenario_data.columns else "N/A"
-                            low_results["population"] = low_scenario_data['severity_population'].sum() if 'severity_population' in low_scenario_data.columns else "N/A"
-                            low_results["health"] = low_scenario_data['severity_hcs'].sum() if ('severity_hcs' in low_scenario_data.columns and hc_data_available) else "N/A"
-                            low_results["shelters"] = low_scenario_data['severity_num_shelters'].sum() if 'severity_num_shelters' in low_scenario_data.columns else "N/A"
-                            low_results["wash"] = low_scenario_data['severity_num_wash'].sum() if 'severity_num_wash' in low_scenario_data.columns else "N/A"
-                            low_results["built_surface_m2"] = low_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in low_scenario_data.columns and hc_data_available) else "N/A"
+                            low_results["children"]       = _col(low_scenario_data, 'severity_school_age_population')
+                            low_results["infant"]         = _col(low_scenario_data, 'severity_infant_population')
+                            low_results["adolescent"]     = _col(low_scenario_data, 'severity_adolescent_population')
+                            low_results["schools"]        = _col(low_scenario_data, 'severity_schools')
+                            low_results["population"]     = _col(low_scenario_data, 'severity_population')
+                            low_results["health"]         = _col(low_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                            low_results["shelters"]       = _col(low_scenario_data, 'severity_num_shelters')
+                            low_results["wash"]           = _col(low_scenario_data, 'severity_num_wash')
+                            low_results["built_surface_m2"] = _col(low_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                         else:
                             # Member 51 not found in data (badge will still show #51 as static value)
                             pass
 
                         # HIGH scenario
-                        high_results["children"] = high_scenario_data['severity_school_age_population'].sum() if 'severity_school_age_population' in high_scenario_data.columns else "N/A"
-                        high_results["infant"] = high_scenario_data['severity_infant_population'].sum() if 'severity_infant_population' in high_scenario_data.columns else "N/A"
-                        high_results["adolescent"] = high_scenario_data['severity_adolescent_population'].sum() if 'severity_adolescent_population' in high_scenario_data.columns else "N/A"
-                        high_results["schools"] = high_scenario_data['severity_schools'].sum() if 'severity_schools' in high_scenario_data.columns else "N/A"
-                        high_results["population"] = high_scenario_data['severity_population'].sum() if 'severity_population' in high_scenario_data.columns else "N/A"
-                        high_results["health"] = high_scenario_data['severity_hcs'].sum() if ('severity_hcs' in high_scenario_data.columns and hc_data_available) else "N/A"
-                        high_results["shelters"] = high_scenario_data['severity_num_shelters'].sum() if 'severity_num_shelters' in high_scenario_data.columns else "N/A"
-                        high_results["wash"] = high_scenario_data['severity_num_wash'].sum() if 'severity_num_wash' in high_scenario_data.columns else "N/A"
-                        high_results["built_surface_m2"] = high_scenario_data['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in high_scenario_data.columns and hc_data_available) else "N/A"
+                        high_results["children"]       = _col(high_scenario_data, 'severity_school_age_population')
+                        high_results["infant"]         = _col(high_scenario_data, 'severity_infant_population')
+                        high_results["adolescent"]     = _col(high_scenario_data, 'severity_adolescent_population')
+                        high_results["schools"]        = _col(high_scenario_data, 'severity_schools')
+                        high_results["population"]     = _col(high_scenario_data, 'severity_population')
+                        high_results["health"]         = _col(high_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
+                        high_results["shelters"]       = _col(high_scenario_data, 'severity_num_shelters')
+                        high_results["wash"]           = _col(high_scenario_data, 'severity_num_wash')
+                        high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                 
             except Exception as e:
                 print(f"Analysis Impact metrics: Error reading file {filename}: {e}")
@@ -1287,22 +1294,27 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             member_row = {'member': member_id}
             
             # Population metrics
-            member_row['population'] = member_data_subset['severity_population'].sum() if 'severity_population' in member_data_subset.columns else 0
-            member_row['children'] = member_data_subset['severity_school_age_population'].sum() if 'severity_school_age_population' in member_data_subset.columns else 0
-            member_row['infants'] = member_data_subset['severity_infant_population'].sum() if 'severity_infant_population' in member_data_subset.columns else 0
-            member_row['adolescents'] = member_data_subset['severity_adolescent_population'].sum() if 'severity_adolescent_population' in member_data_subset.columns else 0
+            member_row['population']   = _col(member_data_subset, 'severity_population')
+            member_row['children']     = _col(member_data_subset, 'severity_school_age_population')
+            member_row['infants']      = _col(member_data_subset, 'severity_infant_population')
+            member_row['adolescents']  = _col(member_data_subset, 'severity_adolescent_population')
 
             # Infrastructure metrics
-            member_row['schools'] = member_data_subset['severity_schools'].sum() if 'severity_schools' in member_data_subset.columns else 0
-            member_row['health'] = member_data_subset['severity_hcs'].sum() if ('severity_hcs' in member_data_subset.columns and hc_data_available) else 0
-            member_row['shelters'] = member_data_subset['severity_num_shelters'].sum() if 'severity_num_shelters' in member_data_subset.columns else 0
-            member_row['wash'] = member_data_subset['severity_num_wash'].sum() if 'severity_num_wash' in member_data_subset.columns else 0
-            member_row['built_surface'] = member_data_subset['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in member_data_subset.columns and hc_data_available) else 0
+            no_intersection = (member_row['population'] == "N/A")
+            member_row['schools']      = "N/A" if no_intersection else _col(member_data_subset, 'severity_schools')
+            member_row['health']       = "N/A" if (no_intersection or not hc_data_available) else _col(member_data_subset, 'severity_hcs')
+            member_row['shelters']     = _col(member_data_subset, 'severity_num_shelters')
+            member_row['wash']         = _col(member_data_subset, 'severity_num_wash')
+            member_row['built_surface'] = "N/A" if (no_intersection or not hc_data_available) else _col(member_data_subset, 'severity_built_surface_m2')
             
             member_data.append(member_row)
         
         member_df = pd.DataFrame(member_data)
-        
+        # Coerce 'N/A' strings to NaN so plot functions receive numeric arrays
+        for _c in member_df.columns:
+            if _c != 'member':
+                member_df[_c] = pd.to_numeric(member_df[_c], errors='coerce')
+
         # Load data for higher wind thresholds
         higher_threshold_data = {}  # Structure: {metric_name: {threshold: values_array}}
         if available_wind_thresholds and wind_threshold:
@@ -1324,20 +1336,24 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                                 higher_member_subset = higher_gdf_tracks[higher_gdf_tracks['zone_id'] == member_id]
                                 
                                 higher_member_row = {'member': member_id}
-                                higher_member_row['population'] = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else 0
-                                higher_member_row['children'] = higher_member_subset['severity_school_age_population'].sum() if 'severity_school_age_population' in higher_member_subset.columns else 0
-                                higher_member_row['infants'] = higher_member_subset['severity_infant_population'].sum() if 'severity_infant_population' in higher_member_subset.columns else 0
-                                higher_member_row['adolescents'] = higher_member_subset['severity_adolescent_population'].sum() if 'severity_adolescent_population' in higher_member_subset.columns else 0
-                                higher_member_row['schools'] = higher_member_subset['severity_schools'].sum() if 'severity_schools' in higher_member_subset.columns else 0
-                                higher_member_row['health'] = higher_member_subset['severity_hcs'].sum() if ('severity_hcs' in higher_member_subset.columns and hc_data_available) else 0
-                                higher_member_row['shelters'] = higher_member_subset['severity_num_shelters'].sum() if 'severity_num_shelters' in higher_member_subset.columns else 0
-                                higher_member_row['wash'] = higher_member_subset['severity_num_wash'].sum() if 'severity_num_wash' in higher_member_subset.columns else 0
-                                higher_member_row['built_surface'] = higher_member_subset['severity_built_surface_m2'].sum() if ('severity_built_surface_m2' in higher_member_subset.columns and hc_data_available) else 0
+                                higher_member_row['population']   = _col(higher_member_subset, 'severity_population')
+                                higher_member_row['children']     = _col(higher_member_subset, 'severity_school_age_population')
+                                higher_member_row['infants']      = _col(higher_member_subset, 'severity_infant_population')
+                                higher_member_row['adolescents']  = _col(higher_member_subset, 'severity_adolescent_population')
+                                _no_int = (higher_member_row['population'] == "N/A")
+                                higher_member_row['schools']      = "N/A" if _no_int else _col(higher_member_subset, 'severity_schools')
+                                higher_member_row['health']       = "N/A" if (_no_int or not hc_data_available) else _col(higher_member_subset, 'severity_hcs')
+                                higher_member_row['shelters']     = _col(higher_member_subset, 'severity_num_shelters')
+                                higher_member_row['wash']         = _col(higher_member_subset, 'severity_num_wash')
+                                higher_member_row['built_surface'] = "N/A" if (_no_int or not hc_data_available) else _col(higher_member_subset, 'severity_built_surface_m2')
                                 
                                 higher_member_data.append(higher_member_row)
                             
                             higher_member_df = pd.DataFrame(higher_member_data)
-                            
+                            for _c in higher_member_df.columns:
+                                if _c != 'member':
+                                    higher_member_df[_c] = pd.to_numeric(higher_member_df[_c], errors='coerce')
+
                             # Store values for each metric
                             metric_names = ['population', 'children', 'infants', 'adolescents', 'schools', 'health', 'shelters', 'wash', 'built_surface']
                             for metric in metric_names:
@@ -1576,11 +1592,14 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             # For each probability level, find the impact threshold where P(X > threshold) = probability
             # The threshold for probability p% is the (100-p)th percentile
             # (e.g., for 50% probability, we want the 50th percentile where 50% exceed it)
+            # Drop NaN values (members with no data for this metric) before computing percentiles
+            valid_values = values[~np.isnan(values)] if hasattr(values, '__len__') else values
+            if len(valid_values) == 0:
+                return fig
             impact_thresholds = []
             for prob in probability_levels:
-                # Convert probability to percentile: percentile = 100 - probability
                 percentile = 100 - prob
-                threshold = np.percentile(values, percentile)
+                threshold = np.nanpercentile(valid_values, percentile)
                 impact_thresholds.append(threshold)
             
             fillcolor_rgba = hex_to_rgba(color, 0.2)
@@ -1624,11 +1643,14 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                 
                 for higher_thresh, higher_values in higher_threshold_data.items():
                     if len(higher_values) > 0:
+                        valid_hv = higher_values[~np.isnan(higher_values.astype(float))] if hasattr(higher_values, '__len__') else higher_values
+                        if len(valid_hv) == 0:
+                            continue
                         # Calculate exceedance curve for this higher threshold
                         higher_impact_thresholds = []
                         for prob in probability_levels:
                             percentile = 100 - prob
-                            threshold = np.percentile(higher_values, percentile)
+                            threshold = np.nanpercentile(valid_hv, percentile)
                             higher_impact_thresholds.append(threshold)
                         
                         # Get color for this threshold
@@ -1694,17 +1716,18 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         
         def create_percentiles_display(values, color):
             """Create percentile display for a metric"""
-            if len(values) == 0:
+            valid_vals = values[~np.isnan(values.astype(float))] if hasattr(values, '__len__') else values
+            if len(valid_vals) == 0:
                 return html.Div("No data available")
-            
+
             percentile_data = [
-                ('10th Percentile', np.percentile(values, 10)),
-                ('25th Percentile (Q1)', np.percentile(values, 25)),
-                ('50th Percentile (Median)', np.percentile(values, 50)),
-                ('75th Percentile (Q3)', np.percentile(values, 75)),
-                ('90th Percentile', np.percentile(values, 90)),
-                ('Mean', np.mean(values)),
-                ('Standard Deviation', np.std(values)),
+                ('10th Percentile', np.nanpercentile(valid_vals, 10)),
+                ('25th Percentile (Q1)', np.nanpercentile(valid_vals, 25)),
+                ('50th Percentile (Median)', np.nanpercentile(valid_vals, 50)),
+                ('75th Percentile (Q3)', np.nanpercentile(valid_vals, 75)),
+                ('90th Percentile', np.nanpercentile(valid_vals, 90)),
+                ('Mean', np.nanmean(valid_vals)),
+                ('Standard Deviation', np.nanstd(valid_vals)),
             ]
             
             if member_51_idx is not None:
