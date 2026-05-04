@@ -409,14 +409,16 @@ $$
       ORDER BY member_population DESC
       LIMIT 1
     )
-    SELECT 
+    SELECT
       ensemble_member,
       member_population,
       member_school_age_children,
       member_infants,
       member_children,
       member_schools,
-      member_hcs
+      member_hcs,
+      member_shelters,
+      member_wash
     FROM worst_case_member
   `;
   
@@ -1001,7 +1003,12 @@ $$
     WITH current_aggregated AS (
       SELECT
         a.name AS admin_id,
-        SUM(COALESCE(a.E_population, 0)) AS pop
+        SUM(COALESCE(a.E_population, 0)) AS pop,
+        SUM(COALESCE(a.E_school_age_population, 0) + COALESCE(a.E_infant_population, 0) + COALESCE(a.E_adolescent_population, 0)) AS children,
+        SUM(COALESCE(a.E_num_schools, 0)) AS schools,
+        SUM(COALESCE(a.E_num_hcs, 0)) AS hcs,
+        SUM(COALESCE(a.E_num_shelters, 0)) AS shelters,
+        SUM(COALESCE(a.E_num_wash, 0)) AS wash
       FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
@@ -1025,16 +1032,26 @@ $$
         AND a.admin_level = 1
     ),
     current_with_names AS (
-      SELECT 
+      SELECT
         COALESCE(mapping.admin_name, curr.admin_id) AS administrative_area,
-        curr.pop AS current_population
+        curr.pop    AS current_population,
+        curr.children AS current_children,
+        curr.schools  AS current_schools,
+        curr.hcs      AS current_hcs,
+        curr.shelters AS current_shelters,
+        curr.wash     AS current_wash
       FROM current_aggregated curr
       LEFT JOIN current_name_mapping mapping ON curr.admin_id = mapping.admin_id
     ),
     previous_aggregated AS (
       SELECT
         a.name AS admin_id,
-        SUM(COALESCE(a.E_population, 0)) AS pop
+        SUM(COALESCE(a.E_population, 0)) AS pop,
+        SUM(COALESCE(a.E_school_age_population, 0) + COALESCE(a.E_infant_population, 0) + COALESCE(a.E_adolescent_population, 0)) AS children,
+        SUM(COALESCE(a.E_num_schools, 0)) AS schools,
+        SUM(COALESCE(a.E_num_hcs, 0)) AS hcs,
+        SUM(COALESCE(a.E_num_shelters, 0)) AS shelters,
+        SUM(COALESCE(a.E_num_wash, 0)) AS wash
       FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT a
       WHERE a.country = ?
         AND UPPER(a.storm) = UPPER(?)
@@ -1058,26 +1075,51 @@ $$
         AND a.admin_level = 1
     ),
     previous_with_names AS (
-      SELECT 
+      SELECT
         COALESCE(mapping.admin_name, prev.admin_id) AS administrative_area,
-        prev.pop AS previous_population
+        prev.pop    AS previous_population,
+        prev.children AS previous_children,
+        prev.schools  AS previous_schools,
+        prev.hcs      AS previous_hcs,
+        prev.shelters AS previous_shelters,
+        prev.wash     AS previous_wash
       FROM previous_aggregated prev
       LEFT JOIN previous_name_mapping mapping ON prev.admin_id = mapping.admin_id
     ),
     combined_data AS (
-      SELECT 
+      SELECT
         COALESCE(c.administrative_area, p.administrative_area) AS administrative_area,
-        COALESCE(c.current_population, 0) AS current_population,
+        COALESCE(c.current_population, 0)  AS current_population,
         COALESCE(p.previous_population, 0) AS previous_population,
-        COALESCE(c.current_population, 0) - COALESCE(p.previous_population, 0) AS change
+        COALESCE(c.current_population, 0) - COALESCE(p.previous_population, 0) AS change,
+        COALESCE(c.current_children, 0)    AS current_children,
+        COALESCE(p.previous_children, 0)   AS previous_children,
+        COALESCE(c.current_schools, 0)     AS current_schools,
+        COALESCE(p.previous_schools, 0)    AS previous_schools,
+        COALESCE(c.current_hcs, 0)         AS current_hcs,
+        COALESCE(p.previous_hcs, 0)        AS previous_hcs,
+        COALESCE(c.current_shelters, 0)    AS current_shelters,
+        COALESCE(p.previous_shelters, 0)   AS previous_shelters,
+        COALESCE(c.current_wash, 0)        AS current_wash,
+        COALESCE(p.previous_wash, 0)       AS previous_wash
       FROM current_with_names c
       FULL OUTER JOIN previous_with_names p ON c.administrative_area = p.administrative_area
     )
-    SELECT 
+    SELECT
       administrative_area,
       current_population,
       previous_population,
-      change
+      change,
+      current_children,
+      previous_children,
+      current_schools,
+      previous_schools,
+      current_hcs,
+      previous_hcs,
+      current_shelters,
+      previous_shelters,
+      current_wash,
+      previous_wash
     FROM combined_data
     ORDER BY ABS(change) DESC
   `;
@@ -1110,11 +1152,21 @@ $$
     }
     
     admin_trends.push({
-      administrative_area: result.getColumnValue(1),
-      current_population: current_pop,
-      previous_population: previous_pop,
-      change: change,
-      percentage_change: percentage_change
+      administrative_area:  result.getColumnValue(1),
+      current_population:   current_pop,
+      previous_population:  previous_pop,
+      change:               change,
+      percentage_change:    percentage_change,
+      current_children:     result.getColumnValue(5),
+      previous_children:    result.getColumnValue(6),
+      current_schools:      result.getColumnValue(7),
+      previous_schools:     result.getColumnValue(8),
+      current_hcs:          result.getColumnValue(9),
+      previous_hcs:         result.getColumnValue(10),
+      current_shelters:     result.getColumnValue(11),
+      previous_shelters:    result.getColumnValue(12),
+      current_wash:         result.getColumnValue(13),
+      previous_wash:        result.getColumnValue(14)
     });
   }
   
@@ -1933,5 +1985,329 @@ GRANT USAGE ON PROCEDURE GET_HIGH_RISK_SCHOOLS(VARCHAR, VARCHAR, VARCHAR, VARCHA
 GRANT USAGE ON PROCEDURE GET_HIGH_RISK_HEALTH_CENTERS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE VALIDATE_ADMIN_TOTALS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 
+-- ============================================================================
+-- GET_STORM_ARRIVAL_TIMING
+-- ============================================================================
+-- Estimates the full impact window for storm winds reaching a country by
+-- finding the first intersection of each ensemble member's wind field polygon
+-- (TC_TRACKS.WIND_FIELD_POLYGON_{N}KT) with the country boundary
+-- (PIPELINE_COUNTRIES.COUNTRY_BOUNDARY).
+--
+-- wind_threshold_val — Wind threshold in knots: '34', '50', or '64'
+--   (only these three thresholds have wind field polygon columns in TC_TRACKS)
+--   Use '50' for storm-force arrival (agent default).
+--
+-- Per-member first arrival is computed, then:
+--   earliest  = first member to arrive       (best-case, most optimistic)
+--   consensus = median first-arrival across intersecting members (50th pct)
+--   latest    = last member to arrive        (worst-case, full window close)
+--
+-- Returns:
+--   has_timing              — false if no member ever intersects the country
+--   wind_threshold          — threshold used (echoed back)
+--   earliest_impact_hours   — hours to first member arrival
+--   earliest_impact_time    — corresponding VALID_TIME (YYYY-MM-DD HH24:MI UTC)
+--   consensus_impact_hours  — median hours to arrival across intersecting members
+--   consensus_impact_time   — corresponding VALID_TIME
+--   latest_impact_hours     — hours to last member arrival (window close)
+--   latest_impact_time      — corresponding VALID_TIME
+--   members_hitting         — count of members whose field intersects country
+--   total_members           — total ensemble size
+--   warning                 — null or description if timing unavailable
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE GET_STORM_ARRIVAL_TIMING(
+    COUNTRY_CODE       VARCHAR,
+    STORM_NAME         VARCHAR,
+    FORECAST_DATE_STR  VARCHAR,
+    WIND_THRESHOLD_VAL VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS $$
+  var ccQ = COUNTRY_CODE.replace(/'/g, "''");
+  var snQ = STORM_NAME.replace(/'/g, "''");
+  var fdQ = FORECAST_DATE_STR.replace(/[^0-9]/g, '').padEnd(14, '0');
+
+  // TC_TRACKS stores wind field polygons as separate columns per threshold.
+  // Only 34, 50, and 64 kt have polygon columns — validate and construct name.
+  var threshNum = parseInt(WIND_THRESHOLD_VAL);
+  if ([34, 50, 64].indexOf(threshNum) === -1) threshNum = 50;
+  var windCol = 'WIND_FIELD_POLYGON_' + threshNum + 'KT';
+
+  var result = {
+    country_code:           COUNTRY_CODE,
+    storm:                  STORM_NAME,
+    wind_threshold:         threshNum,
+    has_timing:             false,
+    earliest_impact_hours:  null,
+    earliest_impact_time:   null,
+    consensus_impact_hours: null,
+    consensus_impact_time:  null,
+    latest_impact_hours:    null,
+    latest_impact_time:     null,
+    members_hitting:        null,
+    total_members:          null,
+    warning:                null
+  };
+
+  try {
+    var res = snowflake.execute({ sqlText: `
+      WITH country AS (
+        SELECT COUNTRY_BOUNDARY
+        FROM AOTS.TC_ECMWF.PIPELINE_COUNTRIES
+        WHERE COUNTRY_CODE = '${ccQ}'
+        LIMIT 1
+      ),
+      forecast_ts AS (
+        SELECT TO_TIMESTAMP_NTZ('${fdQ}', 'YYYYMMDDHH24MISS') AS ft
+      ),
+      total_members AS (
+        SELECT COUNT(DISTINCT ENSEMBLE_MEMBER) AS n
+        FROM AOTS.TC_ECMWF.TC_TRACKS, forecast_ts
+        WHERE TRACK_ID ILIKE '%${snQ}%'
+          AND FORECAST_TIME = forecast_ts.ft
+          AND LEAD_TIME = 0
+      ),
+      all_hits AS (
+        SELECT t.VALID_TIME, t.LEAD_TIME, t.ENSEMBLE_MEMBER
+        FROM AOTS.TC_ECMWF.TC_TRACKS t
+        CROSS JOIN country c
+        CROSS JOIN forecast_ts f
+        WHERE t.TRACK_ID ILIKE '%${snQ}%'
+          AND t.FORECAST_TIME = f.ft
+          AND t.LEAD_TIME > 0
+          AND t.${windCol} IS NOT NULL
+          AND ST_INTERSECTS(TRY_TO_GEOGRAPHY(t.${windCol}), c.COUNTRY_BOUNDARY)
+      ),
+      -- First intersection per ensemble member — defines each member's arrival
+      first_per_member AS (
+        SELECT
+          ENSEMBLE_MEMBER,
+          MIN(LEAD_TIME)  AS first_lead,
+          MIN(VALID_TIME) AS first_time
+        FROM all_hits
+        GROUP BY ENSEMBLE_MEMBER
+      ),
+      -- Rank members by arrival time; median = consensus
+      ranked AS (
+        SELECT
+          ENSEMBLE_MEMBER,
+          first_lead,
+          first_time,
+          ROW_NUMBER() OVER (ORDER BY first_lead ASC) AS rn,
+          COUNT(*)       OVER ()                       AS hitting_count
+        FROM first_per_member
+      ),
+      -- Consensus = the member at position CEIL(hitting_count / 2)
+      consensus AS (
+        SELECT first_lead AS cons_lead, first_time AS cons_time
+        FROM ranked
+        WHERE rn = CEIL(hitting_count / 2.0)
+        LIMIT 1
+      )
+      SELECT
+        MIN(r.first_lead)                                     AS earliest_hrs,
+        TO_CHAR(MIN(r.first_time), 'YYYY-MM-DD HH24:MI')     AS earliest_time,
+        MAX(c.cons_lead)                                      AS consensus_hrs,
+        TO_CHAR(MAX(c.cons_time), 'YYYY-MM-DD HH24:MI')      AS consensus_time,
+        MAX(r.first_lead)                                     AS latest_hrs,
+        TO_CHAR(MAX(r.first_time), 'YYYY-MM-DD HH24:MI')     AS latest_time,
+        COUNT(DISTINCT r.ENSEMBLE_MEMBER)                     AS members_hitting,
+        MAX(m.n)                                              AS total_members
+      FROM ranked r
+      CROSS JOIN total_members m
+      LEFT JOIN consensus c ON 1=1
+    `});
+
+    if (res.next()) {
+      var earliestHrs   = res.getColumnValue(1);
+      var earliestTime  = res.getColumnValue(2);
+      var consensusHrs  = res.getColumnValue(3);
+      var consensusTime = res.getColumnValue(4);
+      var latestHrs     = res.getColumnValue(5);
+      var latestTime    = res.getColumnValue(6);
+      var membersHit    = res.getColumnValue(7);
+      var totalMem      = res.getColumnValue(8);
+
+      result.has_timing              = (earliestHrs !== null);
+      result.earliest_impact_hours   = earliestHrs;
+      result.earliest_impact_time    = earliestTime;
+      result.consensus_impact_hours  = consensusHrs;
+      result.consensus_impact_time   = consensusTime;
+      result.latest_impact_hours     = latestHrs;
+      result.latest_impact_time      = latestTime;
+      result.members_hitting         = membersHit;
+      result.total_members           = totalMem;
+
+      if (!result.has_timing) {
+        result.warning = 'No 50kt wind field intersection found in TC_TRACKS for this country/storm/date.';
+      }
+    }
+  } catch(e) {
+    result.has_timing = false;
+    result.warning    = 'Timing query failed: ' + e.message;
+  }
+
+  return JSON.stringify(result);
+$$;
+
+GRANT USAGE ON PROCEDURE GET_STORM_ARRIVAL_TIMING(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE GET_STORM_ARRIVAL_TIMING(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE AOTS_ROLE;
+
 GRANT USAGE ON SCHEMA TC_ECMWF TO ROLE SYSADMIN;
 GRANT USAGE ON DATABASE AOTS TO ROLE SYSADMIN;
+
+
+-- ============================================================================
+-- Stored Procedure: Get Centroid Shift
+-- ============================================================================
+-- Computes how the geographic centre of child impact has shifted between the
+-- current forecast and the immediately preceding one for the same storm.
+-- The centroid is weighted by expected children at risk (age 0–19) per admin area.
+--
+-- Returns: JSON object with
+--   has_previous       — boolean; false if no prior forecast exists
+--   dist_km            — shift distance in kilometres (integer)
+--   direction          — 8-point compass direction: N/NE/E/SE/S/SW/W/NW
+--   top_gainer         — { name, delta } — admin area with largest increase in children at risk
+--   top_loser          — { name, delta } — admin area with largest decrease (delta is negative)
+--   previous_forecast_date — the previous forecast date used for comparison
+--
+-- Example:
+--   GET_CENTROID_SHIFT('JAM', 'MELISSA', '20251027180000', '50')
+--   → { has_previous: true, dist_km: 13, direction: "W",
+--       top_gainer: { name: "Saint James", delta: 4074 },
+--       top_loser:  { name: "Saint Catherine", delta: -3604 },
+--       previous_forecast_date: "20251027120000" }
+
+CREATE OR REPLACE PROCEDURE GET_CENTROID_SHIFT(
+    country_code VARCHAR,
+    storm_name VARCHAR,
+    current_forecast_date_str VARCHAR,
+    wind_threshold_val VARCHAR
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+  var result = { has_previous: false };
+
+  try {
+    var threshold = parseInt(WIND_THRESHOLD_VAL);
+
+    // ── Step 1: find previous forecast date ───────────────────────────────────
+    var prevStmt = snowflake.createStatement({
+      sqlText: 'CALL AOTS.TC_ECMWF.GET_PREVIOUS_FORECAST_DATE(?, ?, ?)',
+      binds: [COUNTRY_CODE, STORM_NAME, CURRENT_FORECAST_DATE_STR]
+    });
+    var prevRes = prevStmt.execute();
+    if (!prevRes.next()) return result;
+    var prevJson = prevRes.getColumnValue(1);
+    if (typeof prevJson === 'string') { try { prevJson = JSON.parse(prevJson); } catch(e) {} }
+    if (!prevJson || !prevJson.has_previous || !prevJson.previous_forecast_date) return result;
+    var prevDate = String(prevJson.previous_forecast_date);
+    result.previous_forecast_date = prevDate;
+
+    // ── Step 2: fetch centroids for all admin-1 areas ─────────────────────────
+    var centroidStmt = snowflake.createStatement({
+      sqlText: `
+        SELECT NAME,
+               ST_X(ST_CENTROID(GEOMETRY)) AS lon,
+               ST_Y(ST_CENTROID(GEOMETRY)) AS lat
+        FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT
+        WHERE COUNTRY = ? AND ADMIN_LEVEL = 1
+      `,
+      binds: [COUNTRY_CODE]
+    });
+    var centRes = centroidStmt.execute();
+    var centroids = {};
+    while (centRes.next()) {
+      centroids[centRes.getColumnValue(1)] = {
+        lon: centRes.getColumnValue(2),
+        lat: centRes.getColumnValue(3)
+      };
+    }
+
+    // ── Step 3: fetch children at risk per admin for current and previous ─────
+    var impactStmt = snowflake.createStatement({
+      sqlText: `
+        SELECT
+          NAME,
+          FORECAST_DATE,
+          SUM(COALESCE(E_SCHOOL_AGE_POPULATION + E_INFANT_POPULATION + E_ADOLESCENT_POPULATION, 0)) AS kids
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
+        WHERE COUNTRY        = ?
+          AND UPPER(STORM)   ILIKE ?
+          AND FORECAST_DATE  IN (
+                RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0'),
+                RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')
+              )
+          AND WIND_THRESHOLD = ?
+          AND ADMIN_LEVEL    = 1
+        GROUP BY NAME, FORECAST_DATE
+      `,
+      binds: [COUNTRY_CODE, '%' + STORM_NAME + '%',
+              CURRENT_FORECAST_DATE_STR, prevDate, threshold]
+    });
+    var impRes = impactStmt.execute();
+    var currKids = {}, prevKids = {};
+    var currDateNorm = CURRENT_FORECAST_DATE_STR.replace(/[^0-9]/g, '').padEnd(14, '0');
+    var prevDateNorm = prevDate.replace(/[^0-9]/g, '').padEnd(14, '0');
+    while (impRes.next()) {
+      var aName = impRes.getColumnValue(1);
+      var aDate = String(impRes.getColumnValue(2));
+      var aKids = impRes.getColumnValue(3);
+      if (aDate.replace(/[^0-9]/g, '') === currDateNorm) currKids[aName] = aKids;
+      else                                                prevKids[aName] = aKids;
+    }
+
+    // ── Step 4: compute weighted centroids and top movers ─────────────────────
+    var cwLon = 0, cwLat = 0, cTot = 0;
+    var pwLon = 0, pwLat = 0, pTot = 0;
+    var topGain = null, topGainDelta = 0;
+    var topLose = null, topLoseDelta = 0;
+
+    for (var name in centroids) {
+      var ctr  = centroids[name];
+      var ck   = currKids[name] || 0;
+      var pk   = prevKids[name] || 0;
+      cwLon += ctr.lon * ck;  cwLat += ctr.lat * ck;  cTot += ck;
+      pwLon += ctr.lon * pk;  pwLat += ctr.lat * pk;  pTot += pk;
+      var delta = ck - pk;
+      if (delta > topGainDelta) { topGainDelta = delta; topGain = name; }
+      if (delta < topLoseDelta) { topLoseDelta = delta; topLose = name; }
+    }
+
+    if (cTot === 0 || pTot === 0) return result;
+
+    cwLon /= cTot;  cwLat /= cTot;
+    pwLon /= pTot;  pwLat /= pTot;
+
+    // ── Step 5: distance and 8-point compass direction ────────────────────────
+    var dLon = cwLon - pwLon;
+    var dLat = cwLat - pwLat;
+    var midLat   = (cwLat + pwLat) / 2;
+    var dLonKm   = dLon * 111.32 * Math.cos(midLat * Math.PI / 180);
+    var dLatKm   = dLat * 111.32;
+    var distKm   = Math.round(Math.sqrt(dLonKm * dLonKm + dLatKm * dLatKm));
+    var angleDeg = ((Math.atan2(dLonKm, dLatKm) * 180 / Math.PI) + 360) % 360;
+    var dirs     = ['N','NE','E','SE','S','SW','W','NW'];
+    var direction = dirs[Math.round(angleDeg / 45) % 8];
+
+    result.has_previous = true;
+    result.dist_km      = distKm;
+    result.direction    = direction;
+    if (topGain) result.top_gainer = { name: topGain, delta: Math.round(topGainDelta) };
+    if (topLose) result.top_loser  = { name: topLose, delta: Math.round(topLoseDelta) };
+
+  } catch(e) {
+    result.error = e.message;
+  }
+
+  return result;
+$$;
+
+GRANT USAGE ON PROCEDURE GET_CENTROID_SHIFT(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE AOTS_ROLE;
+GRANT USAGE ON PROCEDURE GET_CENTROID_SHIFT(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;

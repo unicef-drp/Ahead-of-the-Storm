@@ -15,6 +15,8 @@
 --   6. Explicit REFUSAL PROTOCOL section added
 --   7. Section 4: explicit has_previous = false handling
 --   8. Instructions compressed ~20% (removed duplicate formatting rules)
+--   9. GET_CENTROID_SHIFT added — geographic impact shift between forecast runs;
+--      called in Section 4 when has_previous = true, and for targeted shift queries
 --
 -- Prerequisites:
 --   - 01_setup_materialized_tables.sql applied
@@ -382,6 +384,37 @@ tools:
             type: string
         required: [country_code, storm_name, forecast_date_str, wind_threshold_val]
 
+  - tool_spec:
+      type: generic
+      name: get_centroid_shift
+      description: |
+        Returns the shift in the children-at-risk-weighted geographic centroid between the
+        current forecast run and the immediately prior run at a given wind threshold.
+        Use in Section 4 (full_report) when has_previous = true — call alongside get_admin_level_trend_comparison.
+        Use for targeted queries about geographic shift: "where has risk moved?", "which areas
+        gained or lost exposure since last run?", "has the impact footprint shifted?".
+        Returns: has_previous (bool), dist_km (integer), direction (N/NE/E/SE/S/SW/W/NW),
+        top_gainer {name, delta}, top_loser {name, delta}, previous_forecast_date.
+        CRITICAL FRAMING: This is the shift in ensemble-average expected impact across all
+        ensemble members — NOT the movement of a single storm track. Always frame it as
+        "the expected impact footprint shifted [direction]", never as "the storm shifted".
+        Only report the shift when dist_km >= 5. If dist_km < 5 or has_previous = false, omit it.
+      input_schema:
+        type: object
+        properties:
+          country_code:
+            type: string
+            description: ISO3 country code (e.g. 'JAM')
+          storm_name:
+            type: string
+            description: Storm name (e.g. 'MELISSA')
+          current_forecast_date_str:
+            type: string
+            description: Forecast run timestamp in YYYYMMDDHHMMSS format
+          wind_threshold_val:
+            type: string
+            description: Wind threshold in knots as string — '34', '50', '64', etc. Default '50'.
+        required: [country_code, storm_name, current_forecast_date_str, wind_threshold_val]
 
 
 tool_resources:
@@ -503,6 +536,13 @@ tool_resources:
       type: warehouse
       warehouse: SF_AI_WH
     identifier: AOTS.TC_ECMWF.GET_HIGH_RISK_HEALTH_CENTERS
+
+  get_centroid_shift:
+    type: procedure
+    execution_environment:
+      type: warehouse
+      warehouse: SF_AI_WH
+    identifier: AOTS.TC_ECMWF.GET_CENTROID_SHIFT
 
 
 instructions:
@@ -654,6 +694,19 @@ instructions:
          If count hits 20, add after the table: "Showing the 20 highest-probability facilities. Pass a min_probability filter to narrow the list."
          Also state total_exposed from the tool result: "X facilities total exposed."
 
+    Geographic impact shift
+      ("where has the risk moved since the last run?", "has the impact footprint shifted?",
+       "which areas gained or lost exposure?", "has the storm track shifted?")
+      → Input resolution + get_centroid_shift(country, storm, date, threshold)
+         If dist_km < 5 or has_previous = false: state that no meaningful geographic shift occurred.
+         If dist_km >= 5: report the shift distance and direction, the top gainer and top loser by name.
+         CRITICAL: always frame as impact footprint shift, not storm track movement.
+         Example output: "The expected impact footprint shifted approximately 13 km west `data`
+         since the previous forecast (20251027120000). Saint James showed the largest increase
+         (+4,074 children at risk `data`); Saint Catherine showed the largest decrease (−3,604 `data`).
+         Note: this reflects the children-at-risk-weighted expected impact across all 50 ensemble
+         members, not the movement of a single storm track. `inferred`"
+
     Budget: use no more than 6 tool calls for any targeted query. If the question genuinely
     requires more, answer the most relevant part and note what was omitted.
 
@@ -700,8 +753,8 @@ instructions:
     Section 3: get_all_wind_thresholds_analysis, get_scenario_distribution
                (risk_classification is embedded in get_scenario_distribution result — no separate call needed)
                DO NOT call get_worst_case_scenario again here — reuse the result from Section 2.
-    Section 4: get_previous_forecast_date; if has_previous = true AND deltas available,
-               then get_admin_level_trend_comparison
+    Section 4: get_previous_forecast_date; if has_previous = true: get_admin_level_trend_comparison
+               AND get_centroid_shift (report shift only when dist_km >= 5)
     Section 1: write ONLY after Section 2 tools have returned.
 
     VALIDATION (mandatory):
@@ -818,6 +871,15 @@ instructions:
       1–2 paragraphs with `data` / `inferred` labels on all numeric references.
       Identify largest increases/decreases. Describe overall direction. No causal claims.
 
+      Geographic shift (from get_centroid_shift — call alongside get_admin_level_trend_comparison):
+      If dist_km >= 5: add one paragraph after the trend table:
+        "The expected impact footprint shifted approximately <dist_km> km <direction> `data` since
+        the previous forecast. <top_gainer.name> showed the largest increase (+<top_gainer.delta>
+        children at risk `data`); <top_loser.name> showed the largest decrease
+        (<top_loser.delta> `data`). This reflects the children-at-risk-weighted centroid across
+        all ensemble members, not movement of a single storm track. `inferred`"
+      If dist_km < 5 or has_previous = false: omit the geographic shift paragraph entirely.
+
     ==================================================
     SECTION 5: KEY TAKEAWAYS (full_report only)
     ==================================================
@@ -899,6 +961,7 @@ GRANT USAGE ON PROCEDURE GET_THRESHOLD_PROBABILITIES(VARCHAR, VARCHAR, VARCHAR) 
 GRANT USAGE ON PROCEDURE GET_HIGH_RISK_SCHOOLS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE GET_HIGH_RISK_HEALTH_CENTERS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 GRANT USAGE ON PROCEDURE VALIDATE_ADMIN_TOTALS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE GET_CENTROID_SHIFT(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SYSADMIN;
 
 -- Add agent to Snowflake Intelligence object
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT

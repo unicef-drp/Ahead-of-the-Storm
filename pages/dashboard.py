@@ -682,15 +682,17 @@ population_infrastructure_selection = dmc.Box([
 
 # Layer Selection
 layer_selection = dmc.Stack([
-                        
+
                         hurricane_selection,
 
                         infrastructure_impact,
 
+                        html.Div(id="layer-no-data-warning"),
+
                         population_infrastructure_selection,
                         
                         # Disclaimer
-                        dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
+                        dmc.Text('Note: When "Impact Probability" is enabled, "Population Density", "School-Age Population", "Adolescent Population (Age 15–19)", and "Built Surface Area" show expected impact (base value × probability). Context Data layers cannot be selected when "Impact Probability" is active.', size="xs", c="dimmed", mb="md", mt="md")
                     ],id='layer_selection_stack')
 
 # Step 4: Layer Controls
@@ -750,6 +752,7 @@ center_panel = dmc.GridCol(
                     dcc.Store(id="admin-stats-store", data={}),
                     dcc.Store(id="tracks-data-store", data={}),
                     dcc.Store(id="layers-loaded-store", data=False),
+                    dcc.Store(id="layer-availability-store", data={}),
                     dl.Map(
                         [
                             dl.LayersControl(
@@ -1306,8 +1309,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     _child_parts = [v for v in [probabilistic_results["infant"], probabilistic_results["children"], probabilistic_results["adolescent"]] if v != "N/A"]
                     probabilistic_results["children_total"] = sum(_child_parts) if _child_parts else "N/A"
 
-                    probabilistic_results["schools"] = df['E_num_schools'].sum() if 'E_num_schools' in df.columns else "N/A"
-                    probabilistic_results["health"] = df['E_num_hcs'].sum() if 'E_num_hcs' in df.columns else "N/A"
+                    probabilistic_results["schools"] = df['E_num_schools'].sum() if ('E_num_schools' in df.columns and not df['E_num_schools'].isna().all()) else "N/A"
+                    probabilistic_results["health"] = df['E_num_hcs'].sum() if ('E_num_hcs' in df.columns and not df['E_num_hcs'].isna().all()) else "N/A"
                     probabilistic_results["shelters"] = df['E_num_shelters'].sum() if ('E_num_shelters' in df.columns and not df['E_num_shelters'].isna().all()) else "N/A"
                     probabilistic_results["wash"] = df['E_num_wash'].sum() if ('E_num_wash' in df.columns and not df['E_num_wash'].isna().all()) else "N/A"
                     probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else "N/A"
@@ -1344,40 +1347,40 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                             # Check if health center data is available for this time slot
                             hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                             hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
-                            hc_data_available = giga_store.file_exists(hc_filepath)
+                            hc_data_available = (config.IMPACT_DATA_SOURCE == 'SQL') or giga_store.file_exists(hc_filepath)
                             
                             def _col(df, col):
-                                return df[col].sum() if col in df.columns and not df[col].isna().all() else "N/A"
+                                """N/A if column absent or all-NaN; otherwise sum."""
+                                if col not in df.columns or df[col].isna().all():
+                                    return "N/A"
+                                return df[col].sum()
+
+                            def _fill_scenario(data, hc_ok):
+                                """Compute all impact metrics for one scenario subset."""
+                                r = {}
+                                r["population"]     = _col(data, 'severity_population')
+                                r["children"]       = _col(data, 'severity_school_age_population')
+                                r["infant"]         = _col(data, 'severity_infant_population')
+                                r["adolescent"]     = _col(data, 'severity_adolescent_population')
+                                _parts = [v for v in [r["infant"], r["children"], r["adolescent"]] if v != "N/A"]
+                                r["children_total"] = sum(_parts) if _parts else "N/A"
+                                r["shelters"]       = _col(data, 'severity_num_shelters')
+                                r["wash"]           = _col(data, 'severity_num_wash')
+                                r["built_surface_m2"] = _col(data, 'severity_built_surface_m2') if hc_ok else "N/A"
+                                # Schools and HCS: if population is N/A (member doesn't intersect
+                                # the country), treat as N/A rather than 0 — guards against the
+                                # pipeline writing 0.0 instead of NaN for non-intersecting members.
+                                no_intersection = (r["population"] == "N/A")
+                                r["schools"] = "N/A" if no_intersection else _col(data, 'severity_schools')
+                                r["health"]  = "N/A" if (no_intersection or not hc_ok) else _col(data, 'severity_hcs')
+                                return r
 
                             # DETERMINISTIC scenario (member 51)
                             if not low_scenario_data.empty:
-                                low_results["children"]  = _col(low_scenario_data, 'severity_school_age_population')
-                                low_results["infant"]    = _col(low_scenario_data, 'severity_infant_population')
-                                low_results["adolescent"] = _col(low_scenario_data, 'severity_adolescent_population')
-                                _low_child_parts = [v for v in [low_results["infant"], low_results["children"], low_results["adolescent"]] if v != "N/A"]
-                                low_results["children_total"] = sum(_low_child_parts) if _low_child_parts else "N/A"
-                                low_results["schools"]   = _col(low_scenario_data, 'severity_schools')
-                                low_results["population"] = _col(low_scenario_data, 'severity_population')
-                                low_results["health"]    = _col(low_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
-                                low_results["shelters"]  = _col(low_scenario_data, 'severity_num_shelters')
-                                low_results["wash"]      = _col(low_scenario_data, 'severity_num_wash')
-                                low_results["built_surface_m2"] = _col(low_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
-                            else:
-                                # Member 51 not found in data (badge will still show #51 as static value)
-                                pass
+                                low_results.update(_fill_scenario(low_scenario_data, hc_data_available))
 
                             # HIGH scenario
-                            high_results["children"]  = _col(high_scenario_data, 'severity_school_age_population')
-                            high_results["infant"]    = _col(high_scenario_data, 'severity_infant_population')
-                            high_results["adolescent"] = _col(high_scenario_data, 'severity_adolescent_population')
-                            _high_child_parts = [v for v in [high_results["infant"], high_results["children"], high_results["adolescent"]] if v != "N/A"]
-                            high_results["children_total"] = sum(_high_child_parts) if _high_child_parts else "N/A"
-                            high_results["schools"]   = _col(high_scenario_data, 'severity_schools')
-                            high_results["population"] = _col(high_scenario_data, 'severity_population')
-                            high_results["health"]    = _col(high_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
-                            high_results["shelters"]  = _col(high_scenario_data, 'severity_num_shelters')
-                            high_results["wash"]      = _col(high_scenario_data, 'severity_num_wash')
-                            high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
+                            high_results.update(_fill_scenario(high_scenario_data, hc_data_available))
                     
                     print(f"Impact metrics: Successfully loaded {len(df)} features")
                 except Exception as e:
@@ -1890,7 +1893,8 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('built-surface-admin-layer', 'disabled', allow_duplicate=True),
      Output('cci-admin-layer', 'disabled', allow_duplicate=True),
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
-     Output('rwi-admin-layer', 'disabled', allow_duplicate=True)],
+     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+     Output('layer-availability-store', 'data')],
     [Input('load-layers-btn', 'n_clicks')],
     State('effective-country-store', 'data'),
     State('storm-select', 'value'),
@@ -1930,7 +1934,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 _empty_fc, False, dash.no_update, _hidden,
                 True, True, True, True, True, True, True,
                 True, True, True, True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True)
+                True, True, True, True, True, True, True, True, True, True,
+                {})
     try:
         # Initialize empty data stores
         tracks_data = {}
@@ -2085,17 +2090,23 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                                 if not tracks_thresh.empty:
                                                     ensemble_col = 'ENSEMBLE_MEMBER' if 'ENSEMBLE_MEMBER' in gdf.columns else 'ensemble_member'
                                                     if ensemble_col in gdf.columns:
-                                                        agg_cols = {c: 'sum' for c in [
-                                                            'severity_population',
-                                                            'severity_school_age_population',
-                                                            'severity_infant_population',
-                                                            'severity_adolescent_population',
-                                                            'severity_schools',
-                                                            'severity_hcs',
-                                                            'severity_num_shelters',
-                                                            'severity_num_wash',
-                                                            'severity_built_surface_m2',
-                                                        ] if c in tracks_thresh.columns}
+                                                        # Use NaN-preserving sum for optional cols (no-data ≠ zero impact)
+                                                        _opt_sum = lambda s: s.sum() if s.notna().any() else float('nan')
+                                                        _opt_cols = {'severity_num_shelters', 'severity_num_wash'}
+                                                        agg_cols = {
+                                                            c: (_opt_sum if c in _opt_cols else 'sum')
+                                                            for c in [
+                                                                'severity_population',
+                                                                'severity_school_age_population',
+                                                                'severity_infant_population',
+                                                                'severity_adolescent_population',
+                                                                'severity_schools',
+                                                                'severity_hcs',
+                                                                'severity_num_shelters',
+                                                                'severity_num_wash',
+                                                                'severity_built_surface_m2',
+                                                            ] if c in tracks_thresh.columns
+                                                        }
                                                         impact_summary = tracks_thresh.groupby('zone_id').agg(agg_cols).reset_index()
                                                         impact_summary.columns = ['ensemble_member'] + [col for col in impact_summary.columns if col != 'zone_id']
 
@@ -2104,8 +2115,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
                                                         gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
                                                         impact_cols = [c for c in impact_summary.columns if c != 'ensemble_member']
+                                                        _no_fill = {'severity_num_shelters', 'severity_num_wash', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2'}
                                                         for col in impact_cols:
-                                                            if col in gdf.columns:
+                                                            if col in gdf.columns and col not in _no_fill:
                                                                 gdf[col] = gdf[col].fillna(0)
                                         except Exception as e:
                                             pass  # Impact data is optional
@@ -2740,6 +2752,48 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         dis_prob      = using_base_layers   # probability-tiles-layer, probability-admin-layer
         dis_cci       = using_base_layers   # cci-tiles-layer, cci-admin-layer
 
+        # Determine which optional layers have actual data
+        # Single-pass scan to find which tile/admin properties have at least one non-null value
+        def _available_props(fc):
+            found = set()
+            for f in fc.get('features', []):
+                for k, v in (f.get('properties') or {}).items():
+                    if v is not None:
+                        found.add(k)
+            return found
+
+        tile_props  = _available_props(tiles_data)
+        admin_props = _available_props(admin_data)
+
+        _prop_map = {
+            "population":    "population",
+            "children-total":"children_total",
+            "infant":        "infant_population",
+            "school-age":    "school_age_population",
+            "adolescent":    "adolescent_population",
+            "built-surface": "built_surface_m2",
+            "cci":           config.CCI_COL,
+            "settlement":    "smod_class",
+            "rwi":           "rwi",
+        }
+
+        layer_availability = {
+            "using_base_layers": using_base_layers,
+            # Infrastructure point layers
+            "schools":   bool(schools_data  and schools_data.get('features')),
+            "health":    bool(health_data   and health_data.get('features')),
+            "shelters":  bool(shelters_data and shelters_data.get('features')),
+            "wash":      bool(wash_data     and wash_data.get('features')),
+            # Hurricane overlays
+            "tracks":    bool(tracks_data    and tracks_data.get('features')),
+            # envelope_data uses 'data' key (list of records), not 'features'
+            "envelopes": bool(envelope_data  and envelope_data.get('data')),
+        }
+        # Tile and admin property layers
+        for layer_key, prop_name in _prop_map.items():
+            layer_availability[f"tile_{layer_key}"]  = prop_name in tile_props
+            layer_availability[f"admin_{layer_key}"] = prop_name in admin_props
+
         return (tracks_data, envelope_data, schools_data, health_data,
                 shelters_data, wash_data,
                 tiles_stats, admin_stats,
@@ -2753,7 +2807,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 # tile layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
                 dis_prob, False, False, False, False, False, False, dis_cci, False, False,
                 # admin layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
-                dis_prob, False, False, False, False, False, False, dis_cci, False, False)
+                dis_prob, False, False, False, False, False, False, dis_cci, False, False,
+                layer_availability)
 
     except Exception as e:
         print(f"Error in load_all_layers: {e}")
@@ -2765,7 +2820,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 _empty_fc, False, dash.no_update, _hidden,
                 True, True, True, True, True, True, True,
                 True, True, True, True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True)
+                True, True, True, True, True, True, True, True, True, True,
+                {})
 
 
 # Callback to warn when selectors change after layers are loaded
@@ -2986,14 +3042,21 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                                 if not track_data.empty and 'wind_threshold' in track_data.columns:
                                     track_data_filtered = track_data[track_data['wind_threshold'] == thresh]
                                     if not track_data_filtered.empty:
+                                        def _col_sum(col):
+                                            if col not in track_data_filtered.columns or track_data_filtered[col].isna().all():
+                                                return None
+                                            return track_data_filtered[col].sum()
                                         return {
                                             'wind_threshold': thresh,
-                                            'severity_population': track_data_filtered['severity_population'].sum() if 'severity_population' in track_data_filtered.columns else 0,
-                                            'severity_school_age_population': track_data_filtered['severity_school_age_population'].sum() if 'severity_school_age_population' in track_data_filtered.columns else 0,
-                                            'severity_infant_population': track_data_filtered['severity_infant_population'].sum() if 'severity_infant_population' in track_data_filtered.columns else 0,
-                                            'severity_schools': track_data_filtered['severity_schools'].sum() if 'severity_schools' in track_data_filtered.columns else 0,
-                                            'severity_hcs': track_data_filtered['severity_hcs'].sum() if 'severity_hcs' in track_data_filtered.columns else 0,
-                                            'severity_built_surface_m2': track_data_filtered['severity_built_surface_m2'].sum() if 'severity_built_surface_m2' in track_data_filtered.columns else 0,
+                                            'severity_population': _col_sum('severity_population'),
+                                            'severity_school_age_population': _col_sum('severity_school_age_population'),
+                                            'severity_infant_population': _col_sum('severity_infant_population'),
+                                            'severity_adolescent_population': _col_sum('severity_adolescent_population'),
+                                            'severity_num_shelters': _col_sum('severity_num_shelters'),
+                                            'severity_num_wash': _col_sum('severity_num_wash'),
+                                            'severity_schools': _col_sum('severity_schools'),
+                                            'severity_hcs': _col_sum('severity_hcs'),
+                                            'severity_built_surface_m2': _col_sum('severity_built_surface_m2'),
                                         }
                         except Exception as e:
                             print(f"Error loading impact data for threshold {thresh}: {e}")
@@ -3014,12 +3077,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                         wind_thresh_col_gdf = 'wind_threshold' if 'wind_threshold' in gdf.columns else 'WIND_THRESHOLD'
                         if wind_thresh_col_gdf in gdf.columns:
                             gdf = gdf.merge(impact_df, on=wind_thresh_col_gdf, how='left', suffixes=('', '_from_tracks'))
-                            # Fill NaN values with 0
-                            impact_cols = ['severity_population', 'severity_school_age_population', 'severity_infant_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
-                            for col in impact_cols:
-                                if col in gdf.columns:
-                                    gdf[col] = gdf[col].fillna(0)
-                    
+
             except Exception as e:
                 print(f"Could not add impact data to stacked envelopes: {e}")
             
@@ -3083,20 +3141,24 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             # Already a Shapely geometry object - convert to GeoJSON
                             geometry = row['geometry'].__geo_interface__
                         
+                        def _prop_float(col):
+                            return float(row[col]) if col in row.index and pd.notna(row[col]) else None
                         feature = {
                             "type": "Feature",
                             "geometry": geometry,
                             "properties": {
                                 "zone_id": int(row['zone_id']),
-                                "ensemble_member": int(row['zone_id']),  # Use zone_id as ensemble_member for specific tracks
+                                "ensemble_member": int(row['zone_id']),
                                 "wind_threshold": int(row['wind_threshold']),
-                                "severity_population": float(row['severity_population']),
-                                "severity_schools": int(row['severity_schools']),
-                                "severity_hcs": int(row['severity_hcs']),
-                                "severity_built_surface_m2": float(row['severity_built_surface_m2']),
-                                "severity_children": float(row['severity_children']) if 'severity_children' in row else 0,
-                                "severity_infant": float(
-                                    row['severity_infant']) if 'severity_infant' in row else 0
+                                "severity_population": _prop_float('severity_population'),
+                                "severity_schools": _prop_float('severity_schools'),
+                                "severity_hcs": _prop_float('severity_hcs'),
+                                "severity_built_surface_m2": _prop_float('severity_built_surface_m2'),
+                                "severity_school_age_population": _prop_float('severity_school_age_population'),
+                                "severity_infant_population": _prop_float('severity_infant_population'),
+                                "severity_adolescent_population": _prop_float('severity_adolescent_population'),
+                                "severity_num_shelters": _prop_float('severity_num_shelters'),
+                                "severity_num_wash": _prop_float('severity_num_wash'),
                             }
                         }
                         specific_envelope['features'].append(feature)
@@ -3211,21 +3273,25 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                         
                         if not tracks_thresh.empty:
                             # Aggregate impact data by ensemble member
+                            _opt = lambda s: s.sum() if s.notna().any() else float('nan')
+                            _opt_cols = {'severity_num_shelters', 'severity_num_wash'}
                             agg_dict = {
-                                'severity_school_age_population': 'sum',
-                                'severity_infant_population': 'sum',
-                                'severity_population': 'sum',
-                                'severity_schools': 'sum',
-                                'severity_hcs': 'sum',
-                                'severity_built_surface_m2': 'sum'
+                                c: (_opt if c in _opt_cols else 'sum')
+                                for c in [
+                                    'severity_school_age_population',
+                                    'severity_infant_population',
+                                    'severity_adolescent_population',
+                                    'severity_population',
+                                    'severity_schools',
+                                    'severity_hcs',
+                                    'severity_num_shelters',
+                                    'severity_num_wash',
+                                    'severity_built_surface_m2',
+                                ] if c in tracks_thresh.columns
                             }
 
-                            
                             impact_summary = tracks_thresh.groupby('zone_id').agg(agg_dict).reset_index()
-                            
-                            # Build column names list dynamically
-                            col_names = ['ensemble_member', 'severity_school_age_population','severity_infant_population','severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
-                            impact_summary.columns = col_names
+                            impact_summary.columns = ['ensemble_member'] + [col for col in impact_summary.columns if col != 'zone_id']
                             
                             # Merge with envelope data
                             # Get ensemble_member from envelope data - could be in ENSEMBLE_MEMBER column
@@ -3234,13 +3300,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                             
                             # Merge impact data
                             gdf = gdf.merge(impact_summary, on='ensemble_member', how='left')
-                            
-                            # Fill NaN values with 0
-                            impact_cols = ['severity_school_age_population','severity_infant_population', 'severity_population', 'severity_schools', 'severity_hcs', 'severity_built_surface_m2']
-                            for col in impact_cols:
-                                if col in gdf.columns:
-                                    gdf[col] = gdf[col].fillna(0)
-                            
+
                             # Calculate max population for relative scaling
                             if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
                                 max_pop = gdf['severity_population'].max()
@@ -3282,7 +3342,7 @@ def _style_point_layer(geo_data, base_color):
     for feature in geo_data.get('features', []):
         if 'properties' not in feature or 'geometry' not in feature:
             continue
-        prob = feature['properties'].get('probability', None) or 0
+        prob = feature['properties'].get('probability') or 0
         if prob == 0:
             color, radius = base_color, 4
         elif prob <= 0.15:
@@ -3401,6 +3461,86 @@ def toggle_wash_overlay(checked, wash_data_in):
     except Exception as e:
         print(f"Error styling WASH layer: {e}")
         return wash_data, False, key
+
+
+_LAYER_DISPLAY_NAMES = {
+    "schools":        "Schools",
+    "health":         "Health Centers",
+    "shelters":       "Shelters",
+    "wash":           "WASH Facilities",
+    "tracks":         "Hurricane Tracks",
+    "envelopes":      "Hurricane Envelopes",
+    "population":     "Population",
+    "children-total": "Children (Total)",
+    "infant":         "Age 0–4",
+    "school-age":     "Age 5–14",
+    "adolescent":     "Age 15–19",
+    "built-surface":  "Built Surface Area",
+    "cci":            "CCI (Child Cyclone Index)",
+    "settlement":     "Settlement Classification",
+    "rwi":            "Relative Wealth Index (RWI)",
+}
+
+@callback(
+    Output("layer-no-data-warning", "children"),
+    Input("schools-layer", "checked"),
+    Input("health-layer", "checked"),
+    Input("shelters-layer", "checked"),
+    Input("wash-layer", "checked"),
+    Input("hurricane-tracks-toggle", "checked"),
+    Input("hurricane-envelopes-toggle", "checked"),
+    Input("tiles-layer-group", "value"),
+    Input("admin-layer-group", "value"),
+    State("layer-availability-store", "data"),
+    prevent_initial_call=True,
+)
+def show_layer_no_data_warning(schools_checked, health_checked, shelters_checked, wash_checked,
+                                tracks_checked, envelopes_checked, tiles_layer, admin_layer,
+                                availability):
+    """Show a warning when the user enables a layer that has no data for the current country."""
+    if not availability:
+        return None
+
+    missing = []
+
+    # Infrastructure and hurricane checkboxes
+    checkbox_layers = [
+        ("schools",   schools_checked),
+        ("health",    health_checked),
+        ("shelters",  shelters_checked),
+        ("wash",      wash_checked),
+        ("tracks",    tracks_checked),
+        ("envelopes", envelopes_checked),
+    ]
+    for key, checked in checkbox_layers:
+        if checked and not availability.get(key):
+            missing.append(_LAYER_DISPLAY_NAMES[key])
+
+    # Tile and admin radio group selections (skip "none" and base-layer-only mode for tile props)
+    using_base = availability.get("using_base_layers", False)
+    for prefix, selected in [("tile", tiles_layer), ("admin", admin_layer)]:
+        if not selected or selected == "none":
+            continue
+        avail_key = f"{prefix}_{selected}"
+        # In base-layer-only mode, impact-derived props are expected to be absent — don't warn
+        if using_base and selected not in ("population", "children-total", "infant",
+                                           "school-age", "adolescent", "built-surface", "settlement", "rwi"):
+            continue
+        if not availability.get(avail_key, True):
+            label = _LAYER_DISPLAY_NAMES.get(selected, selected)
+            entry = f"{label} ({'tiles' if prefix == 'tile' else 'admin regions'})"
+            if entry not in missing:
+                missing.append(entry)
+
+    if missing:
+        return dmc.Alert(
+            f"No data available for: {', '.join(missing)}.",
+            title="Layer Has No Data",
+            color="yellow",
+            variant="light",
+            withCloseButton=True,
+        )
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -3805,7 +3945,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
         unique_members = gdf_tracks['zone_id'].unique()
         for member_id in unique_members:
             member_data_subset = gdf_tracks[gdf_tracks['zone_id'] == member_id]
-            total_population = member_data_subset['severity_population'].sum() if 'severity_population' in member_data_subset.columns else 0
+            total_population = member_data_subset['severity_population'].sum() if 'severity_population' in member_data_subset.columns else float('nan')
             member_data.append({'member': member_id, 'population': total_population})
         
         member_df = pd.DataFrame(member_data)
@@ -3845,7 +3985,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                             higher_member_data = []
                             for member_id in higher_gdf_tracks['zone_id'].unique():
                                 higher_member_subset = higher_gdf_tracks[higher_gdf_tracks['zone_id'] == member_id]
-                                higher_total = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else 0
+                                higher_total = higher_member_subset['severity_population'].sum() if 'severity_population' in higher_member_subset.columns else float('nan')
                                 higher_member_data.append(higher_total)
                             
                             if higher_member_data:
@@ -3868,7 +4008,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
         impact_thresholds = []
         for prob in probability_levels:
             percentile = 100 - prob
-            threshold = np.percentile(values, percentile)
+            threshold = np.nanpercentile(values, percentile)
             impact_thresholds.append(threshold)
         
         # Helper function to convert hex color to rgba
@@ -3927,7 +4067,7 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
                     higher_impact_thresholds = []
                     for prob in probability_levels:
                         percentile = 100 - prob
-                        threshold = np.percentile(higher_values, percentile)
+                        threshold = np.nanpercentile(higher_values, percentile)
                         higher_impact_thresholds.append(threshold)
                     
                     trace_color = higher_threshold_colors.get(higher_thresh, "#888888")

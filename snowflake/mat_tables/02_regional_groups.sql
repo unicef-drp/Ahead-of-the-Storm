@@ -1,14 +1,14 @@
 -- ============================================================================
--- Step 1b: Regional Groups — one-time procedure setup
+-- 04_data/02_regional_groups.sql — Regional Groups — one-time procedure setup
 -- ============================================================================
--- Run once after 01_setup_materialized_tables.sql.
+-- Run once after 01_materialized_tables.sql.
 --
 -- What this does:
 --   Creates REFRESH_REGIONAL_GROUPS() — the procedure that derives regional
 --   rows in every MAT table from member-country rows already loaded from stage.
 --
 -- REFRESH_REGIONAL_GROUPS() is called automatically at the end of
--- REFRESH_MATERIALIZED_VIEWS() (01_setup_materialized_tables.sql) — no
+-- REFRESH_MATERIALIZED_VIEWS() (01_materialized_tables.sql) — no
 -- separate task or manual call needed after this setup.
 --
 --
@@ -26,7 +26,7 @@ USE SCHEMA TC_ECMWF;
 -- REFRESH_REGIONAL_GROUPS procedure
 -- ============================================================================
 -- Reads all active regions from PIPELINE_COUNTRIES at call time, so adding a
--- new region (via 01c_add_regional_group.sql) requires no changes here.
+-- new region (via 02b_add_regional_group.sql) requires no changes here.
 
 CREATE OR REPLACE PROCEDURE REFRESH_REGIONAL_GROUPS()
 RETURNS VARCHAR

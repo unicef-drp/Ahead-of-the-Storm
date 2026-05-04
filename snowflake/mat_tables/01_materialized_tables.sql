@@ -1,5 +1,5 @@
 -- ============================================================================
--- Step 1: Setup – Materialized Tables for Hurricane Impact Analysis
+-- 04_data/01_materialized_tables.sql — Materialized Tables for Hurricane Impact Analysis
 -- ============================================================================
 -- Creates the data layer that stored procedures query.
 --
@@ -49,7 +49,7 @@ USE SCHEMA TC_ECMWF;
 -- Standard CSV format with header skip — used for all CSV stage reads.
 -- ERROR_ON_COLUMN_COUNT_MISMATCH=FALSE allows accessing $N beyond the row width
 -- (returns NULL), which is how we detect old vs new format.
-CREATE OR REPLACE FILE FORMAT CSV_ADMIN_VIEWS_FORMAT
+CREATE FILE FORMAT IF NOT EXISTS CSV_ADMIN_VIEWS_FORMAT
     TYPE = CSV
     SKIP_HEADER = 1
     FIELD_OPTIONALLY_ENCLOSED_BY = '"'
@@ -61,7 +61,7 @@ CREATE OR REPLACE FILE FORMAT CSV_ADMIN_VIEWS_FORMAT
 -- Legacy alias kept for reference — identical to CSV_ADMIN_VIEWS_FORMAT.
 -- PARSE_HEADER=TRUE is only useful with COPY INTO MATCH_BY_COLUMN_NAME,
 -- which cannot be combined with INCLUDE_METADATA. Not used for data loads.
-CREATE OR REPLACE FILE FORMAT CSV_NAMED_COLS_FORMAT
+CREATE FILE FORMAT IF NOT EXISTS CSV_NAMED_COLS_FORMAT
     TYPE = CSV
     PARSE_HEADER = TRUE
     FIELD_OPTIONALLY_ENCLOSED_BY = '"'
@@ -70,7 +70,7 @@ CREATE OR REPLACE FILE FORMAT CSV_NAMED_COLS_FORMAT
     TRIM_SPACE = TRUE
     ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE;
 
-CREATE OR REPLACE FILE FORMAT PARQUET_ADMIN_FORMAT
+CREATE FILE FORMAT IF NOT EXISTS PARQUET_ADMIN_FORMAT
     TYPE = PARQUET
     BINARY_AS_TEXT = FALSE
     REPLACE_INVALID_CHARACTERS = TRUE;
@@ -91,7 +91,7 @@ CREATE OR REPLACE FILE FORMAT PARQUET_ADMIN_FORMAT
 -- CRITICAL: Use FLOAT for schools/hcs — CSV contains decimals (e.g. 0.583333)
 --           that get truncated if cast to NUMBER.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE MERCATOR_TILE_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS MERCATOR_TILE_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD, ZOOM_LEVEL)
 AS
 SELECT
@@ -141,7 +141,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
 -- Admin level parsed from filename (admin1 → 1, admin2 → 2).
 -- Pattern matches _34_admin1.csv but NOT _admin1_cci.csv (CCI excluded).
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE ADMIN_ALL_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS ADMIN_ALL_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD, ADMIN_LEVEL)
 AS
 SELECT
@@ -179,7 +179,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/admin_views/
 --   $6=E_CCI_school_age $7=CCI_infants $8=E_CCI_infants $9=CCI_pop
 --   $10=E_CCI_pop $11=id (admin_id)
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE MERCATOR_TILE_CCI_MAT
+CREATE TABLE IF NOT EXISTS MERCATOR_TILE_CCI_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, ZOOM_LEVEL)
 AS
 SELECT
@@ -212,7 +212,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
 --   $6=E_CCI_school_age $7=CCI_infants $8=E_CCI_infants $9=CCI_pop $10=E_CCI_pop
 -- Admin level parsed from filename. Pattern matches _admin1_cci.csv only.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE ADMIN_ALL_CCI_MAT
+CREATE TABLE IF NOT EXISTS ADMIN_ALL_CCI_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, ADMIN_LEVEL)
 AS
 SELECT
@@ -240,7 +240,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/admin_views/
 -- TRACK_MAT
 -- Per-ensemble-member severity metrics.
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE TRACK_MAT
+CREATE TABLE IF NOT EXISTS TRACK_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
 AS
 WITH parquet_data AS (
@@ -272,7 +272,7 @@ FROM parquet_data;
 -- ----------------------------------------------------------------------------
 -- SCHOOL_IMPACT_MAT
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE SCHOOL_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS SCHOOL_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
 AS
 WITH parquet_data AS (
@@ -301,7 +301,7 @@ FROM parquet_data;
 -- ----------------------------------------------------------------------------
 -- HC_IMPACT_MAT
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE HC_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS HC_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
 AS
 WITH parquet_data AS (
@@ -335,7 +335,7 @@ FROM parquet_data;
 -- Point-level shelter impact data (one row per shelter per storm/threshold)
 -- File name pattern: {COUNTRY}_{STORM}_{FORECAST_DATE}_{WIND_THRESHOLD}.parquet
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE SHELTER_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS SHELTER_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
 AS
 WITH parquet_data AS (
@@ -366,7 +366,7 @@ FROM parquet_data;
 -- Point-level WASH facility impact data (one row per facility per storm/threshold)
 -- File name pattern: {COUNTRY}_{STORM}_{FORECAST_DATE}_{WIND_THRESHOLD}.parquet
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE WASH_IMPACT_MAT
+CREATE TABLE IF NOT EXISTS WASH_IMPACT_MAT
 CLUSTER BY (COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD)
 AS
 WITH parquet_data AS (
@@ -396,7 +396,7 @@ FROM parquet_data;
 -- BASE_ADMIN_MAT
 -- Admin ID -> human-readable name lookup
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE TABLE BASE_ADMIN_MAT
+CREATE TABLE IF NOT EXISTS BASE_ADMIN_MAT
 AS
 WITH parquet_data AS (
     SELECT
@@ -430,7 +430,12 @@ WHERE COALESCE(zone_id_direct, tile_id_direct, zone_id_props, tile_id_props) IS 
 
 
 -- ============================================================================
--- Refresh Stored Procedure
+-- Refresh Stored Procedure — superseded by 09_orchestration/03_procedures.sql
+-- ============================================================================
+-- This JavaScript version is superseded by the native SQL implementation in
+-- 09_orchestration/03_procedures.sql. Do not run this block standalone —
+-- running 09_orchestration/03_procedures.sql will replace it.
+-- Kept here for reference.
 -- ============================================================================
 -- Truncates and reloads all tables from stage.
 -- Runtime: ~2–5 minutes. Call manually or let the Task below run it.
@@ -784,7 +789,7 @@ $$
   }
 
   // Derive regional group rows (e.g. ECA) from the member-country rows just loaded.
-  // Defined in 01b_setup_regional_groups.sql — must be run before this procedure is called.
+  // Defined in 02_regional_groups.sql — must be run before this procedure is called.
   try {
     run('CALL AOTS.TC_ECMWF.REFRESH_REGIONAL_GROUPS()');
     refreshed.push('REGIONAL_GROUPS');
@@ -793,7 +798,7 @@ $$
   }
 
   // Refresh base layer tables (country-static: tiles, schools, HCs, shelters, WASH).
-  // Defined in 02_setup_base_layer_tables.sql — must be run before this procedure is called.
+  // Defined in 04_base_layer_tables.sql — must be run before this procedure is called.
   try {
     run('CALL AOTS.TC_ECMWF.REFRESH_BASE_LAYER_TABLES()');
     refreshed.push('BASE_LAYER_TABLES');
@@ -814,7 +819,7 @@ GRANT USAGE ON PROCEDURE REFRESH_MATERIALIZED_VIEWS() TO ROLE SYSADMIN;
 -- Scheduled Task — refresh every hour
 -- ============================================================================
 CREATE OR REPLACE TASK REFRESH_MATERIALIZED_VIEWS_TASK
-  WAREHOUSE = SF_AI_WH
+  WAREHOUSE = AOTS_WH
   SCHEDULE = 'USING CRON 0 * * * * UTC'
 AS
   CALL AOTS.TC_ECMWF.REFRESH_MATERIALIZED_VIEWS();
