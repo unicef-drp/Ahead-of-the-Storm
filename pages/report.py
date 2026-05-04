@@ -104,10 +104,10 @@ def format_change(value,key):
     return " "
 
 def _fmt_count(val):
-    """Format a count: 0 → light-grey span, non-zero → comma-separated integer.
+    """Format a count: None → N/A, 0 → light-grey span, non-zero → comma-separated integer.
     Floats are ceiling-rounded so 0.3 expected schools → 1, not 0."""
     if val is None:
-        return '<span style="color: #ccc;">0</span>'
+        return 'N/A'
     if isinstance(val, float):
         val = math.ceil(val)
     if not isinstance(val, int):
@@ -172,15 +172,42 @@ def refactor_html_str(html_str,d):
                      any(isinstance(d.get(f'wash_prob_{i}'), float) and d[f'wash_prob_{i}'] > 0 for i in range(1, 6)))
     d_refactored['no_wash_risk_data'] = not wash_has_data
 
+    # When no named at-risk facilities exist for a type, convert all expected counts for
+    # that type to None so _fmt_count renders 'N/A' instead of a greyed '0'.
+    # Semantic rule: 0 = confirmed zero impact; None/N/A = no data for this country.
+    _facility_na_map = [
+        (d_refactored['no_school_risk_data'],   'expected_schools'),
+        (d_refactored['no_hc_risk_data'],       'expected_hcs'),
+        (d_refactored['no_shelter_risk_data'],  'expected_shelters'),
+        (d_refactored['no_wash_risk_data'],     'expected_wash'),
+    ]
+    for no_data, prefix in _facility_na_map:
+        if no_data:
+            for key in list(d_refactored.keys()):
+                if key.startswith(prefix) and d_refactored[key] in (0, None):
+                    d_refactored[key] = None
+
+    # Urban/rural: if both are 0 or None, SMOD data is unavailable — show N/A
+    if d.get('expected_pop_urban', 0) in (0, None) and d.get('expected_pop_rural', 0) in (0, None):
+        for key in list(d_refactored.keys()):
+            if ('urban' in key or 'rural' in key) and d_refactored[key] in (0, None):
+                d_refactored[key] = None
+
+    # Poverty/severe: if both are 0 or None, RWI data is unavailable — show N/A
+    if d.get('expected_pop_poverty', 0) in (0, None) and d.get('expected_pop_severe', 0) in (0, None):
+        for key in list(d_refactored.keys()):
+            if ('poverty' in key or 'severe' in key) and d_refactored[key] in (0, None):
+                d_refactored[key] = None
+
     # Replace empty facility names with "Name unknown"
     for i in range(1, 6):
         for prefix in ['school_name', 'hc_name', 'wash_name']:
             if not d_refactored.get(f'{prefix}_{i}'):
                 d_refactored[f'{prefix}_{i}'] = 'Name unknown'
 
-    # Format all numeric count fields — int or float (grey zero, comma-separated ceiling-rounded integer)
+    # Format all numeric count fields — int, float, or None (grey zero, comma-separated ceiling-rounded integer, or N/A)
     for key, val in list(d_refactored.items()):
-        if isinstance(val, (int, float)) and not isinstance(val, bool) and key.startswith('expected_'):
+        if (val is None or (isinstance(val, (int, float)) and not isinstance(val, bool))) and key.startswith('expected_'):
             d_refactored[key] = _fmt_count(val)
 
     # Compute total population change at the main threshold (sum of per-admin changes)
@@ -255,19 +282,21 @@ def refactor_html_str(html_str,d):
         rows_admins_infant.append(row_admins_pop.format(**values))
     d_refactored['rows_admins_infant'] = "\n".join(rows_admins_infant)+"\n"
 
+    _school_na = d_refactored.get('no_school_risk_data', False)
     rows_schools_winds = []
     for admin_d in d_refactored['rows_schools_winds']:
         values = {'admin_name':admin_d['name']}
         for wind in storm_categories.keys():
-            values[f"pois_{wind}"] = _fmt_count(admin_d[f'{wind}'])
+            values[f"pois_{wind}"] = _fmt_count(None if _school_na else admin_d.get(f'{wind}'))
         rows_schools_winds.append(row_poi_winds.format(**values))
     d_refactored['rows_schools_winds'] = "\n".join(rows_schools_winds)+"\n"
 
+    _hc_na = d_refactored.get('no_hc_risk_data', False)
     rows_hcs_winds = []
     for admin_d in d_refactored['rows_hcs_winds']:
         values = {'admin_name':admin_d['name']}
         for wind in storm_categories.keys():
-            values[f"pois_{wind}"] = _fmt_count(admin_d[f'{wind}'])
+            values[f"pois_{wind}"] = _fmt_count(None if _hc_na else admin_d.get(f'{wind}'))
         rows_hcs_winds.append(row_poi_winds.format(**values))
     d_refactored['rows_hcs_winds'] = "\n".join(rows_hcs_winds)+"\n"
 
@@ -281,19 +310,21 @@ def refactor_html_str(html_str,d):
         rows_admins_adolescent.append(row_admins_pop.format(**values))
     d_refactored['rows_admins_adolescent'] = "\n".join(rows_admins_adolescent)+"\n"
 
+    _shelter_na = d_refactored.get('no_shelter_risk_data', False)
     rows_shelters_winds = []
     for admin_d in d_refactored.get('rows_shelters_winds', []):
         values = {'admin_name':admin_d['name']}
         for wind in storm_categories.keys():
-            values[f"pois_{wind}"] = _fmt_count(admin_d[f'{wind}'])
+            values[f"pois_{wind}"] = _fmt_count(None if _shelter_na else admin_d.get(f'{wind}'))
         rows_shelters_winds.append(row_poi_winds.format(**values))
     d_refactored['rows_shelters_winds'] = "\n".join(rows_shelters_winds)+"\n"
 
+    _wash_na = d_refactored.get('no_wash_risk_data', False)
     rows_wash_winds = []
     for admin_d in d_refactored.get('rows_wash_winds', []):
         values = {'admin_name':admin_d['name']}
         for wind in storm_categories.keys():
-            values[f"pois_{wind}"] = _fmt_count(admin_d[f'{wind}'])
+            values[f"pois_{wind}"] = _fmt_count(None if _wash_na else admin_d.get(f'{wind}'))
         rows_wash_winds.append(row_poi_winds.format(**values))
     d_refactored['rows_wash_winds'] = "\n".join(rows_wash_winds)+"\n"
 
