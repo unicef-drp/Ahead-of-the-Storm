@@ -196,9 +196,6 @@ def main(session):
             if not exp or not exp.get('total_population'):
                 errors.append(f"{pair['track_id']}/{pair['country_code']}: no 50kt impact data")
                 continue
-            adolescents = ((exp.get('total_children') or 0)
-                           - (exp.get('total_school_age_children') or 0)
-                           - (exp.get('total_infant_children') or 0))
 
             # ── 2c: All wind thresholds (cross-threshold table) ───────────────
             all_thresh = call_proc(f"CALL GET_ALL_WIND_THRESHOLDS_ANALYSIS('{t_cc}', '{t_sn}', '{t_fd}')")
@@ -354,12 +351,13 @@ def main(session):
                 f"Children at risk (0-19): {fmt_n(exp.get('total_children'))}\n"
                 f"  Age 0-4 (infants): {fmt_n(exp.get('total_infant_children'))}\n"
                 f"  Age 5-14 (school-age): {fmt_n(exp.get('total_school_age_children'))}\n"
+                f"  Age 15-19 (adolescents): {fmt_n(exp.get('total_adolescent_children'))}\n"
                 f"Schools at risk (50kt): {fmt_n(exp.get('total_schools'))}\n"
                 f"Health centers at risk (50kt): {fmt_n(exp.get('total_hcs'))}\n"
-                + (f"Shelters at risk: {fmt_n(exp.get('total_shelters', 0))}\n"
-                   if (exp.get('total_shelters') or 0) > 0 else '')
-                + (f"WASH facilities at risk: {fmt_n(exp.get('total_wash', 0))}\n"
-                   if (exp.get('total_wash') or 0) > 0 else '')
+                + (f"Shelters at risk: {fmt_n(exp.get('total_shelters'))}\n"
+                   if exp.get('total_shelters') is not None else '')
+                + (f"WASH facilities at risk: {fmt_n(exp.get('total_wash'))}\n"
+                   if exp.get('total_wash') is not None else '')
                 + f"Population by wind speed: {thresh_ctx}\n"
                 f"Most affected areas (50kt): {admin_summary or 'N/A'}\n"
                 f"Forecast trend vs previous run: {trend_str}\n"
@@ -472,12 +470,11 @@ def main(session):
                     pass
 
             # Impact bullet list
-            adolescent_li = (f'<li>Age 15–19 (adolescents): {fmt_n(adolescents)}{lbl("data")}</li>'
-                             if math.ceil(adolescents) > 0 else '')
-            shelter_li    = (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters", 0))}</strong>{lbl("data")}</li>'
-                             if (exp.get('total_shelters') or 0) > 0 else '')
-            wash_li       = (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash", 0))}</strong>{lbl("data")}</li>'
-                             if (exp.get('total_wash') or 0) > 0 else '')
+            adolescent_li = f'<li>Age 15–19 (adolescents): {fmt_n(exp.get("total_adolescent_children"))}{lbl("data")}</li>'
+            shelter_li    = (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters"))}</strong>{lbl("data")}</li>'
+                             if exp.get('total_shelters') is not None else '')
+            wash_li       = (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash"))}</strong>{lbl("data")}</li>'
+                             if exp.get('total_wash') is not None else '')
             impact_bullets = (
                 '<ul style="margin:8px 0; padding-left:20px;">'
                 f'<li>Expected population at risk: <strong>{fmt_n(exp.get("total_population"))}</strong>{lbl("data")}</li>'
@@ -496,8 +493,8 @@ def main(session):
             # Admin breakdown table
             admin_table = ''
             if admin_areas:
-                admin_has_shelters = any((a.get('shelters') or 0) > 0 for a in admin_areas)
-                admin_has_wash     = any((a.get('wash_facilities') or 0) > 0 for a in admin_areas)
+                admin_has_shelters = any(a.get('shelters') is not None for a in admin_areas)
+                admin_has_wash     = any(a.get('wash_facilities') is not None for a in admin_areas)
                 s_th = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">Shelters</th>'
                         if admin_has_shelters else '')
                 w_th = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">WASH</th>'
@@ -671,8 +668,8 @@ def main(session):
                 )
 
             # Cross-threshold table
-            has_shelters = any((th.get('total_shelters') or 0) > 0 for th in thresholds)
-            has_wash     = any((th.get('total_wash') or 0)     > 0 for th in thresholds)
+            has_shelters = any(th.get('total_shelters') is not None for th in thresholds)
+            has_wash     = any(th.get('total_wash') is not None for th in thresholds)
             s_th2 = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">Shelters</th>'
                      if has_shelters else '')
             w_th2 = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">WASH Facilities</th>'
