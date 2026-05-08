@@ -988,7 +988,9 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
             NUM_SCHOOLS,
             NUM_HCS,
             NUM_SHELTERS,
-            NUM_WASH
+            NUM_WASH,
+            MODERATE_POVERTY_PROB,
+            SEVERE_POVERTY_PROB
         FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT
         WHERE COUNTRY = %s
           AND ZOOM_LEVEL = %s
@@ -1158,6 +1160,8 @@ def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
             NUM_HCS                  AS num_hcs,
             NUM_SHELTERS             AS num_shelters,
             NUM_WASH                 AS num_wash,
+            MODERATE_POVERTY_PROB    AS moderate_poverty_prob,
+            SEVERE_POVERTY_PROB      AS severe_poverty_prob,
             ST_ASGEOJSON(GEOMETRY)   AS geojson
         FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT
         WHERE COUNTRY = %s

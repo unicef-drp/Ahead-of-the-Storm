@@ -394,7 +394,9 @@ function(feature, layer) {
     const rwi = props.rwi;
     const cci = props.cci_children;
     const smod_class = props.smod_class;
-    
+    const moderate_poverty_prob = props.moderate_poverty_prob;
+    const severe_poverty_prob = props.severe_poverty_prob;
+
     // Settlement classification mapping (values are 0, 10, 20, 30)
     const getSettlementLabel = (classNum) => {
         if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
@@ -423,6 +425,11 @@ function(feature, layer) {
     const formatDecimal = (val) => {
         if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '' || val === 0) return 'N/A';
         return val.toFixed(2);
+    };
+
+    const formatPercent = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+        return (val * 100).toFixed(1) + '%';
     };
 
     // Expected value inline annotation: base * probability, shown in red
@@ -496,8 +503,14 @@ function(feature, layer) {
     <div style="font-size: 11px; color: #555;">
         Relative Wealth Index: ${formatDecimal(rwi)}
     </div>
+    <div style="font-size: 11px; color: #555;">
+        Moderate Child Poverty Rate: ${formatPercent(moderate_poverty_prob)}
+    </div>
+    <div style="font-size: 11px; color: #555;">
+        Severe Child Poverty Rate: ${formatPercent(severe_poverty_prob)}
+    </div>
     `;
-    
+
     layer.bindTooltip(content, {sticky: true});
 }
 """)
@@ -521,6 +534,10 @@ function(feature, layer) {
     const formatDecimal = (val) => {
         if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '' || val === 0) return 'N/A';
         return val.toFixed(2);
+    };
+    const formatPercent = (val) => {
+        if (val === null || val === undefined || (typeof val === 'number' && isNaN(val)) || val === '') return 'N/A';
+        return (val * 100).toFixed(1) + '%';
     };
     const getSettlementLabel = (classNum) => {
         if (classNum === null || classNum === undefined || classNum === '' || Number(classNum) === 0) return 'No Data';
@@ -568,6 +585,8 @@ function(feature, layer) {
     const smod_class = props.smod_class;
     const rwi = props.rwi;
     const cci = props.cci_children;
+    const moderate_poverty_prob = props.moderate_poverty_prob;
+    const severe_poverty_prob = props.severe_poverty_prob;
 
     // Pre-computed expected values — data_store_utils._norm produces "E_population" (capital E_, lowercase rest)
     const e_population = props.E_population;
@@ -614,6 +633,8 @@ function(feature, layer) {
     <div style="font-size: 11px; color: #555;">CCI: ${formatDecimal(cci)}</div>
     <div style="font-size: 11px; color: #555;">Settlement: ${smod_class !== null && smod_class !== undefined ? getSettlementLabel(smod_class) : 'N/A'}</div>
     <div style="font-size: 11px; color: #555;">Relative Wealth Index: ${formatDecimal(rwi)}</div>
+    <div style="font-size: 11px; color: #555;">Moderate Child Poverty Rate: ${formatPercent(moderate_poverty_prob)}</div>
+    <div style="font-size: 11px; color: #555;">Severe Child Poverty Rate: ${formatPercent(severe_poverty_prob)}</div>
     `;
 
     layer.bindTooltip(content, {sticky: true});

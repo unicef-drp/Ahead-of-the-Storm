@@ -66,6 +66,13 @@ all_colors = {
     # RWI: 9 colors from negative (red/yellow) to neutral (gray) to positive (green)
     # Format: transparent, 4 negative colors (red to yellow), gray (neutral at 0), 4 positive colors (light green to dark green)
     'rwi': ['transparent', '#d73027', '#f46d43', '#fdae61', '#fee08b', '#808080', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850'],
+    # Poverty probability layers (0.0–1.0 linear scale, fixed 0%–100% legend)
+    'moderate_poverty_prob': ['transparent',
+                    '#fff4eb', '#ffd8b3', '#ffb960', '#ff9b06',
+                    '#e87b00', '#d25a00', '#b73800', '#941600'],
+    'severe_poverty_prob': ['transparent',
+                    '#ffebeb', '#ffcdcd', '#ffacac', '#ff8585',
+                    '#ff4f4f', '#f70000', '#c40000', '#940000'],
     # Tile-level impact counts (no base layer equivalent in the radio group)
     'E_num_shelters': ['transparent',
                     '#fde0dd', '#fcc5c0', '#fa9fb5', '#f768a1', '#dd3497',
@@ -307,6 +314,7 @@ def precompute_all_colors(geojson_data):
         config.CCI_COL,          config.E_CCI_COL,
         'smod_class',
         'rwi',
+        'moderate_poverty_prob', 'severe_poverty_prob',
         'E_num_shelters',        'E_num_wash',
     ]
 
@@ -335,7 +343,7 @@ def precompute_all_colors(geojson_data):
                 values = [f['properties'].get(prop) for f in features]
 
             clean_values = [v for v in values if v is not None and not pd.isna(v)]
-            max_val = 1.0 if prop == 'probability' else (max(clean_values) if clean_values else 0)
+            max_val = 1.0 if prop in ('probability', 'moderate_poverty_prob', 'severe_poverty_prob') else (max(clean_values) if clean_values else 0)
 
             if not clean_values or (max_val == 0 and prop != 'rwi'):
                 color_list = [colors[0]] * len(values)

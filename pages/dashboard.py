@@ -432,6 +432,8 @@ tiles_radiogroup = dmc.RadioGroup([
                         dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                         dmc.Radio(id="settlement-tiles-layer", label="Settlement Classification", value="settlement", mb="xs"),
                         dmc.Radio(id="rwi-tiles-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                        dmc.Radio(id="moderate-poverty-tiles-layer", label="Moderate Child Poverty Rate", value="moderate-poverty", mb="xs"),
+                        dmc.Radio(id="severe-poverty-tiles-layer", label="Severe Child Poverty Rate", value="severe-poverty", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                     ], id="tiles-layer-group", value="none")
 
@@ -530,6 +532,24 @@ tiles_legends = dmc.Box([
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-legend", style={"display": "none"}, gutter="xs", mb="xs"),
 
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('moderate_poverty_prob'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                    ], id="moderate-poverty-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('severe_poverty_prob'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                    ], id="severe-poverty-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
                 ], id='tiles_legends_box')
 
 # Admin radiogroup
@@ -546,6 +566,8 @@ admin_radiogroup = dmc.RadioGroup([
                         dmc.Text("Context Data", size="xs", fw=600, c="dimmed", mb="xs", style={"textTransform": "uppercase", "letterSpacing": "1px"}),
                         dmc.Radio(id="settlement-admin-layer", label="Settlement Classification", value="settlement", mb="xs"),
                         dmc.Radio(id="rwi-admin-layer", label="Relative Wealth Index", value="rwi", mb="xs"),
+                        dmc.Radio(id="moderate-poverty-admin-layer", label="Moderate Child Poverty Rate", value="moderate-poverty", mb="xs"),
+                        dmc.Radio(id="severe-poverty-admin-layer", label="Severe Child Poverty Rate", value="severe-poverty", mb="xs"),
                         dmc.Divider(mb="xs", mt="xs"),
                     ], id="admin-layer-group", value="none")
 
@@ -643,6 +665,24 @@ admin_legends = dmc.Box([
                         )),
                         dmc.GridCol(span=1.5, children=[dmc.Text("+1", size="xs", c="dimmed")]),
                     ], id="rwi-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('moderate_poverty_prob'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                    ], id="moderate-poverty-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
+
+                    dmc.Grid([
+                        dmc.GridCol(span=1.5, children=[dmc.Text("0%", size="xs", c="dimmed")]),
+                        dmc.GridCol(span=9, children=html.Div(
+                            create_legend_divs('severe_poverty_prob'),
+                            style={"display": "flex", "width": "100%"}
+                        )),
+                        dmc.GridCol(span=1.5, children=[dmc.Text("100%", size="xs", c="dimmed")]),
+                    ], id="severe-poverty-admin-legend", style={"display": "none"}, gutter="xs", mb="xs"),
 
                 ], id='admin_legends_box')
 
@@ -1367,17 +1407,20 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                                 r["shelters"]       = _col(data, 'severity_num_shelters')
                                 r["wash"]           = _col(data, 'severity_num_wash')
                                 r["built_surface_m2"] = _col(data, 'severity_built_surface_m2') if hc_ok else "N/A"
-                                # Schools and HCS: if population is N/A (member doesn't intersect
-                                # the country), treat as N/A rather than 0 — guards against the
-                                # pipeline writing 0.0 instead of NaN for non-intersecting members.
-                                no_intersection = (r["population"] == "N/A")
-                                r["schools"] = "N/A" if no_intersection else _col(data, 'severity_schools')
-                                r["health"]  = "N/A" if (no_intersection or not hc_ok) else _col(data, 'severity_hcs')
+                                # If population is N/A the member didn't reach this country — all
+                                # metrics are 0, not N/A (0 is the correct answer, not "unknown").
+                                if r["population"] == "N/A":
+                                    return {**{k: 0 for k in r}, "schools": 0, "health": 0}
+                                r["schools"] = _col(data, 'severity_schools')
+                                r["health"]  = "N/A" if not hc_ok else _col(data, 'severity_hcs')
                                 return r
 
                             # DETERMINISTIC scenario (member 51)
                             if not low_scenario_data.empty:
                                 low_results.update(_fill_scenario(low_scenario_data, hc_data_available))
+                            elif not gdf_tracks.empty:
+                                # Member 51 has no rows — track didn't reach this country, impact is 0
+                                low_results.update({k: 0 for k in low_results})
 
                             # HIGH scenario
                             high_results.update(_fill_scenario(high_scenario_data, hc_data_available))
@@ -1883,6 +1926,8 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
      Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
      Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('moderate-poverty-tiles-layer', 'disabled', allow_duplicate=True),
+     Output('severe-poverty-tiles-layer', 'disabled', allow_duplicate=True),
      # Admin layers
      Output('probability-admin-layer', 'disabled'),
      Output('population-admin-layer', 'disabled', allow_duplicate=True),
@@ -1894,6 +1939,8 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('cci-admin-layer', 'disabled', allow_duplicate=True),
      Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
      Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+     Output('moderate-poverty-admin-layer', 'disabled', allow_duplicate=True),
+     Output('severe-poverty-admin-layer', 'disabled', allow_duplicate=True),
      Output('layer-availability-store', 'data')],
     [Input('load-layers-btn', 'n_clicks')],
     State('effective-country-store', 'data'),
@@ -1933,8 +1980,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
                 True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True, True, True,
                 {})
     try:
         # Initialize empty data stores
@@ -2773,8 +2820,10 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             "adolescent":    "adolescent_population",
             "built-surface": "built_surface_m2",
             "cci":           config.CCI_COL,
-            "settlement":    "smod_class",
-            "rwi":           "rwi",
+            "settlement":       "smod_class",
+            "rwi":              "rwi",
+            "moderate-poverty": "moderate_poverty_prob",
+            "severe-poverty":   "severe_poverty_prob",
         }
 
         layer_availability = {
@@ -2804,10 +2853,10 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 admin_data, False, layer_key, admin_prob_h,
                 # hurricane: tracks, envelopes, show-all; facilities: schools, health, shelters, wash
                 dis_hurricane, dis_hurricane, dis_hurricane, False, False, False, False,
-                # tile layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
-                dis_prob, False, False, False, False, False, False, dis_cci, False, False,
-                # admin layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi
-                dis_prob, False, False, False, False, False, False, dis_cci, False, False,
+                # tile layers: prob, pop, children, infant, school-age, adolescent, built-surface, cci, settlement, rwi, mod-poverty, sev-poverty
+                dis_prob, False, False, False, False, False, False, dis_cci, False, False, False, False,
+                # admin layers: same
+                dis_prob, False, False, False, False, False, False, dis_cci, False, False, False, False,
                 layer_availability)
 
     except Exception as e:
@@ -2819,8 +2868,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
                 True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True,
-                True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True, True, True,
+                True, True, True, True, True, True, True, True, True, True, True, True,
                 {})
 
 
@@ -3477,8 +3526,10 @@ _LAYER_DISPLAY_NAMES = {
     "adolescent":     "Age 15–19",
     "built-surface":  "Built Surface Area",
     "cci":            "CCI (Child Cyclone Index)",
-    "settlement":     "Settlement Classification",
-    "rwi":            "Relative Wealth Index (RWI)",
+    "settlement":       "Settlement Classification",
+    "rwi":              "Relative Wealth Index (RWI)",
+    "moderate-poverty": "Moderate Child Poverty Rate",
+    "severe-poverty":   "Severe Child Poverty Rate",
 }
 
 @callback(
@@ -3524,7 +3575,8 @@ def show_layer_no_data_warning(schools_checked, health_checked, shelters_checked
         avail_key = f"{prefix}_{selected}"
         # In base-layer-only mode, impact-derived props are expected to be absent — don't warn
         if using_base and selected not in ("population", "children-total", "infant",
-                                           "school-age", "adolescent", "built-surface", "settlement", "rwi"):
+                                           "school-age", "adolescent", "built-surface", "settlement", "rwi",
+                                           "moderate-poverty", "severe-poverty"):
             continue
         if not availability.get(avail_key, True):
             label = _LAYER_DISPLAY_NAMES.get(selected, selected)
@@ -3554,12 +3606,14 @@ _LAYER_TO_PROP = {
     "infant": "infant_population", "school-age": "school_age_population",
     "adolescent": "adolescent_population", "built-surface": "built_surface_m2",
     "cci": config.CCI_COL, "settlement": "smod_class", "rwi": "rwi",
+    "moderate-poverty": "moderate_poverty_prob", "severe-poverty": "severe_poverty_prob",
 }
 _LAYER_TO_E_PROP = {
     "population": "E_population", "children-total": "E_children_total",
     "infant": "E_infant_population", "school-age": "E_school_age_population",
     "adolescent": "E_adolescent_population", "built-surface": "E_built_surface_m2",
     "cci": config.E_CCI_COL, "settlement": "probability", "rwi": "probability",
+    "moderate-poverty": "probability", "severe-poverty": "probability",
     "none": "probability", None: "probability",
 }
 
@@ -3567,9 +3621,10 @@ def _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only
     """Shared hideout + disabled computation for both tile and admin layer toggle callbacks."""
     if prob_checked:
         pop_dis = inf_dis = sch_dis = blt_dis = ado_dis = chi_dis = False
-        set_dis = rwi_dis = True
+        set_dis = rwi_dis = mod_pov_dis = sev_pov_dis = True
     else:
-        pop_dis = inf_dis = sch_dis = blt_dis = ado_dis = chi_dis = set_dis = rwi_dis = False
+        pop_dis = inf_dis = sch_dis = blt_dis = ado_dis = chi_dis = False
+        set_dis = rwi_dis = mod_pov_dis = sev_pov_dis = False
     cci_dis = bool(base_layers_only)  # CCI requires impact data
 
     pop_hidden = (not selected_layer or selected_layer == "none") or (
@@ -3579,7 +3634,7 @@ def _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only
     e_prop = _LAYER_TO_E_PROP.get(selected_layer, "probability")
     pop_hideout = {"hidden": True} if pop_hidden else {"prop": prop}
     prob_hideout = {"prop": e_prop} if prob_checked else {"hidden": True}
-    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis
+    return pop_hideout, prob_hideout, pop_dis, chi_dis, inf_dis, sch_dis, ado_dis, blt_dis, cci_dis, set_dis, rwi_dis, mod_pov_dis, sev_pov_dis
 
 
 @callback(
@@ -3594,6 +3649,8 @@ def _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only
     Output('cci-tiles-layer', 'disabled', allow_duplicate=True),
     Output('settlement-tiles-layer', 'disabled', allow_duplicate=True),
     Output('rwi-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('moderate-poverty-tiles-layer', 'disabled', allow_duplicate=True),
+    Output('severe-poverty-tiles-layer', 'disabled', allow_duplicate=True),
     Input('tiles-layer-group', 'value'),
     Input('probability-tiles-layer', 'checked'),
     State('using-base-layers-store', 'data'),
@@ -3615,6 +3672,8 @@ def juggle_toggles_tiles_layer(selected_layer, prob_checked, base_layers_only):
     Output('cci-admin-layer', 'disabled', allow_duplicate=True),
     Output('settlement-admin-layer', 'disabled', allow_duplicate=True),
     Output('rwi-admin-layer', 'disabled', allow_duplicate=True),
+    Output('moderate-poverty-admin-layer', 'disabled', allow_duplicate=True),
+    Output('severe-poverty-admin-layer', 'disabled', allow_duplicate=True),
     Input('admin-layer-group', 'value'),
     Input('probability-admin-layer', 'checked'),
     State('using-base-layers-store', 'data'),
@@ -4244,6 +4303,8 @@ def toggle_wash_infra_legend(checked):
      Output("cci-legend", "style"),
      Output("settlement-legend", "style"),
      Output("rwi-legend", "style"),
+     Output("moderate-poverty-legend", "style"),
+     Output("severe-poverty-legend", "style"),
      Output("population-legend-min", "children"),
      Output("population-legend-max", "children"),
      Output("children-total-legend-min", "children"),
@@ -4289,33 +4350,37 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_stats):
 
     _none = {"display": "none"}
     _show = {"display": "block"}
-    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi, moderate-poverty, severe-poverty
     _all_vals = (pop_min, pop_max, children_total_min, children_total_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]:
-        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
     if selected_value == "population":
-        return _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _show, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "children-total":
-        return _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _show, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "infant":
-        return _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "school-age":
-        return _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "adolescent":
-        return _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "built-surface":
-        return _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "cci":
-        return _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
     elif selected_value == "settlement":
-        return _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
     elif selected_value == "rwi":
-        return _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+    elif selected_value == "moderate-poverty":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+    elif selected_value == "severe-poverty":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
     else:
-        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
 @callback(
     [Output("population-admin-legend", "style"),
@@ -4327,6 +4392,8 @@ def toggle_tiles_legend(selected_value, prob_checked, tiles_stats):
      Output("cci-admin-legend", "style"),
      Output("settlement-admin-legend", "style"),
      Output("rwi-admin-legend", "style"),
+     Output("moderate-poverty-admin-legend", "style"),
+     Output("severe-poverty-admin-legend", "style"),
      Output("population-admin-legend-min", "children"),
      Output("population-admin-legend-max", "children"),
      Output("children-total-admin-legend-min", "children"),
@@ -4372,33 +4439,37 @@ def toggle_admin_legend(selected_value, prob_checked, admin_stats):
 
     _none = {"display": "none"}
     _show = {"display": "block"}
-    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi
+    # Order matches Output declarations: population, children-total, infant, school-age, adolescent, built-surface, cci, settlement, rwi, moderate-poverty, severe-poverty
     _all_vals = (pop_min, pop_max, children_total_min, children_total_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
 
     # Hide regular layer legends when probability is checked and a layer with expected values is selected
     if prob_checked and selected_value in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]:
-        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
     if selected_value == "population":
-        return _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _show, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "children-total":
-        return _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _show, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "infant":
-        return _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _show, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "school-age":
-        return _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _show, _none, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "adolescent":
-        return _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _show, _none, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "built-surface":
-        return _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _show, _none, _none, _none, _none, _none, *_all_vals
     elif selected_value == "cci":
-        return _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _show, _none, _none, _none, _none, *_all_vals
     elif selected_value == "settlement":
-        return _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _show, _none, _none, _none, *_all_vals
     elif selected_value == "rwi":
-        return _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _show, _none, _none, *_all_vals
+    elif selected_value == "moderate-poverty":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _show, _none, *_all_vals
+    elif selected_value == "severe-poverty":
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _show, *_all_vals
     else:
-        return _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
+        return _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, _none, *_all_vals
 
 
 
