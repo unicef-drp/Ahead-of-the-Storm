@@ -314,7 +314,7 @@ function _setupHoverTooltips(lMap) {
         var req = { _cancelled: false };
         _pending_request = req;
 
-        var url = (config.tile_server_url || 'http://localhost:8001')
+        var url = (config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001')
             + '/tile-value/'
             + encodeURIComponent(config.country) + '/'
             + encodeURIComponent(config.storm) + '/'
@@ -560,13 +560,16 @@ function applyTileConfig(config) {
     var storm         = config.storm;
     var forecast_date = config.forecast_date;
     var wind_threshold = config.wind_threshold;
-    var base          = config.tile_server_url || 'http://localhost:8001';
+    var base          = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
+    // Vector tiles are fetched inside a MapLibre Web Worker which cannot resolve relative
+    // URLs. Use window.location.origin as fallback when base is '' (SPCS proxy mode).
+    var absBase       = base !== '' ? base : window.location.origin;
     var stats         = config.stats || {};
     var adminStats    = config.admin_stats || stats;
     var tileProp      = config.tile_prop  || null;
     var adminProp     = config.admin_prop || null;
 
-    var adminUrl = base
+    var adminUrl = absBase
         + '/tiles/admin/'
         + encodeURIComponent(country) + '/'
         + encodeURIComponent(storm) + '/'
@@ -671,7 +674,7 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats) {
     if (layerId === 'aots-tiles-layer') {
         // Raster layer: change the tile URL to the new property
         var config = window._aots_tile_config || {};
-        var base = config.tile_server_url || 'http://localhost:8001';
+        var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
         var country = config.country;
         var storm = config.storm;
         var forecast_date = config.forecast_date;

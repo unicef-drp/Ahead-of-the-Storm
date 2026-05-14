@@ -1374,7 +1374,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             "storm": storm,
             "forecast_date": forecast_datetime_str,
             "wind_threshold": int(wind_threshold),
-            "tile_server_url": config.TILE_SERVER_URL,
+            "tile_server_url": "" if config.SPCS_RUN else config.TILE_SERVER_URL,
             "stats": tiles_stats,
             "admin_stats": admin_stats,
             "center": _map_cfg["center"],
@@ -2056,7 +2056,7 @@ clientside_callback(
     """
     function(config) {
         if (!config || !config.country || !config.storm) return window.dash_clientside.no_update;
-        var base = config.tile_server_url || 'http://localhost:8001';
+        var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
         var url = base + '/preload/'
             + encodeURIComponent(config.country) + '/'
             + encodeURIComponent(config.storm) + '/'
