@@ -1,9 +1,11 @@
+import os
 import dash
 import dash_mantine_components as dmc
-from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State, dcc
+from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State
 from dotenv import load_dotenv
+import json as _json
+from flask import send_from_directory, Response
 from flask_compress import Compress
-import pandas as pd
 
 load_dotenv()
 
@@ -14,7 +16,15 @@ app = Dash(
     meta_tags=[
         {"name": "AoS Hurricane Impact", "content": "width=device-width, initial-scale=1"}
     ],
-    external_stylesheets=dmc.styles.ALL,
+    external_stylesheets=[
+        dmc.styles.ALL,
+        "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css",
+    ],
+    external_scripts=[
+        "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js",
+        "/map-static/tile_palettes.js",
+        "/map-static/maplibre_tiles.js",
+    ],
     use_pages=True,
 )
 
@@ -23,6 +33,26 @@ app.title = "AoS Hurricane Impact"
 app._favicon = "img/aots_icon.png"
 server = app.server
 Compress(server)
+
+_MAP_COMPONENTS_DIR = os.path.join(os.path.dirname(__file__), "components", "map")
+_PALETTES_JSON = os.path.join(_MAP_COMPONENTS_DIR, "tile_palettes.json")
+
+@server.route("/map-static/tile_palettes.js")
+def serve_tile_palettes_js():
+    with open(_PALETTES_JSON) as f:
+        data = _json.load(f)
+    js = (
+        "// Auto-generated from tile_palettes.json — edit that file, not this endpoint.\n"
+        "window._AOTS_PALETTES = "   + _json.dumps(data["palettes"])   + ";\n"
+        "window._AOTS_PROP_MAP = "   + _json.dumps(data["prop_map"])   + ";\n"
+        "window._AOTS_E_PROP_MAP = " + _json.dumps(data["e_prop_map"]) + ";\n"
+        "window._AOTS_IN_NEED_MAP = "+ _json.dumps(data["in_need_map"])+ ";\n"
+    )
+    return Response(js, mimetype="application/javascript")
+
+@server.route("/map-static/<path:filename>")
+def serve_map_static(filename):
+    return send_from_directory(_MAP_COMPONENTS_DIR, filename)
 
 
 app.layout = dmc.MantineProvider(
@@ -44,61 +74,12 @@ app.layout = dmc.MantineProvider(
     Output("app-shell", "navbar"),
     Input("burger-button", "opened"),
     State("app-shell", "navbar"),
-    prevent_initial_callback=True,
+    prevent_initial_call=True,
 )
 def navbar_is_open(opened, navbar):
     navbar["collapsed"] = {"mobile": not opened}
     return navbar
 
-
-# app.clientside_callback(
-#     """function(admin1_value, hideout){
-#         if (!admin1_value){
-#             return {filter: [], selected: []};
-#         }
-#         return {filter: [admin1_value], selected: []};
-#     }
-#     """,
-#     Output("admin2-json", "hideout"),
-#     Input("admin1-select", "value"),
-#     State("admin2-json", "hideout"),
-# )
-
-
-
-# toggle_select = """
-# function(n_clicks, feature, hideout) {
-#     console.log("Hideout state before toggle:", hideout);
-#     // Only execute if the layer is clicked
-#     if (n_clicks === 0) {
-#         return hideout; // Return current selection if no clicks yet
-#     }
-
-#     // Use an empty array if hideout.selected is undefined
-#     let selected = hideout.selected || [];
-#     const admin2_id = feature.properties.admin2_id_giga;
-
-#     // Check if the id is already in the selected array
-#     if (selected.includes(admin2_id)) {
-#         // If it exists, remove it
-#         selected = selected.filter((item) => item !== admin2_id);
-#     } else {
-#         // If it doesn't exist, add it
-#         selected.push(admin2_id);
-#     }
-
-#     // Return the updated selected list
-#     return {filter: hideout.filter, selected: selected};
-# }
-# """
-# app.clientside_callback(
-#     toggle_select,
-#     Output("admin2-json", "hideout", allow_duplicate=True),
-#     Input("admin2-json", "n_clicks"),
-#     State("admin2-json", "clickData"),
-#     State("admin2-json", "hideout"),
-#     prevent_initial_call=True,
-# )
 
 if __name__ == "__main__":
     app.run(debug=True)

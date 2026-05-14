@@ -20,6 +20,7 @@ __pycache__/
 
 *.aux.xml
 *.log
+nohup.out
 .DS_Store
 .idea/
 .claude/
@@ -50,5 +51,6 @@ snowflake/notification/99_send_alert_procedure_TEST.sql
 snowflake_spcs/
 
 !README.md
+!services/README.md
 !snowflake/intelligence/README.md
 !snowflake/mat_tables/README.md

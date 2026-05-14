@@ -1038,7 +1038,6 @@ def raster_tile(
     return Response(
         content=webp_bytes,
         media_type="image/webp",
-        headers={"Cache-Control": "no-store"},
     )
 
 

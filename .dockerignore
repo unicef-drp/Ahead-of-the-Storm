@@ -7,6 +7,7 @@ datastore/
 LLM-testing/
 testing/
 snowflake/
+snowflake_spcs/
 
 # Exclude Python cache and compiled files
 __pycache__/
@@ -46,6 +47,7 @@ extract_jamaica_data.py
 # Exclude logs
 *.log
 main_pipeline.log
+nohup.out
 
 # Exclude environment files (sensitive data)
 # Note: For SPCS, env vars are set in the service definition, so .env is not needed
