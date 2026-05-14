@@ -17,7 +17,6 @@ AOTS_ANALYSIS stage files (Parquet/CSV impact data), optional PMTiles tile serve
 # =============================================================================
 
 import logging
-import numpy as np
 import pandas as pd
 import dash
 from dash import Output, Input, State, callback, callback_context

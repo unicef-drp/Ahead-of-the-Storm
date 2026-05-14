@@ -1,3 +1,8 @@
+"""
+404 error page for the Ahead of the Storm dashboard.
+
+Displays "page not found" screen with a link back to the homepage.
+"""
 from dash import html
 import dash
 import dash_mantine_components as dmc
