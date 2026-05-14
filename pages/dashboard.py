@@ -8,7 +8,7 @@ defines the full layout via layouts/panels.py, owns the selector callbacks
 Snowflake / the file store and distributes them to the map components.
 
 Data sources: Snowflake (TC_TRACKS, TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES),
-AOTS_ANALYSIS stage files (Parquet/CSV impact data), optional PMTiles tile server.
+AOTS_ANALYSIS stage files (Parquet/CSV impact data), FastAPI tile server (port 8001).
 """
 
 # =============================================================================
@@ -2070,34 +2070,6 @@ clientside_callback(
     Input('maplibre-tile-config-store', 'data'),
     prevent_initial_call=True,
 )
-
-# Switch MapLibre to PMTiles sources when pre-signed URLs arrive
-clientside_callback(
-    """
-    function(urls) {
-        if (!urls || !urls.tiles_url) return window.dash_clientside.no_update;
-        if (window.switchBaseLayerToPMTiles) {
-            window.switchBaseLayerToPMTiles(urls.country, urls.tiles_url, urls.admin_url);
-        }
-        return window.dash_clientside.no_update;
-    }
-    """,
-    Output('maplibre-container', 'data-pmtiles', allow_duplicate=True),
-    Input('pmtiles-urls-store', 'data'),
-    prevent_initial_call=True,
-)
-
-
-@callback(
-    Output('pmtiles-urls-store', 'data'),
-    Input('maplibre-tile-config-store', 'data'),
-    prevent_initial_call=True,
-)
-def fetch_pmtiles_urls(config):
-    # PMTiles files have not been generated yet — skip until tippecanoe pipeline runs.
-    # Returning {} prevents switchBaseLayerToPMTiles from firing and destroying the
-    # working tile-server source (aots-mercator / aots-admin).
-    return {}
 
 
 # =============================================================================

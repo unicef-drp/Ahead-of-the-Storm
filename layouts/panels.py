@@ -511,7 +511,6 @@ def make_single_page_appshell(country_options, default_country):
             dcc.Store(id="preload-dummy-store",           data=None),
             dcc.Store(id="layer-availability-store",      data={}),
             dcc.Store(id="maplibre-tile-config-store",    data={}),
-            dcc.Store(id="pmtiles-urls-store",            data={}),
             html.Div([
                 # MapLibre canvas — renders tile/admin layers underneath Leaflet
                 html.Div(

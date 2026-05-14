@@ -55,15 +55,7 @@ function initMaplibre() {
         layers: [basemapLayer],
     };
 
-    // Register pmtiles:// protocol so MapLibre can read PMTiles files directly
-    // from Snowflake stage pre-signed URLs via HTTP range requests.
-    if (window.pmtiles && !window._aots_pmtiles_registered) {
-        var protocol = new window.pmtiles.Protocol();
-        maplibregl.addProtocol('pmtiles', protocol.tile.bind(protocol));
-        window._aots_pmtiles_registered = true;
-    }
-
-    window._aots_maplibre = new maplibregl.Map({
+window._aots_maplibre = new maplibregl.Map({
         container: 'maplibre-container',
         style: style,
         center: [0, 20],
@@ -583,7 +575,7 @@ function applyTileConfig(config) {
         + '?wind_threshold=' + wind_threshold
         + '&admin_level=1';
 
-    // --- Mercator (H3) raster tile source ---
+    // --- Mercator (quadkey) raster tile source ---
     var rasterUrl = base
         + '/tiles/raster/'
         + encodeURIComponent(country) + '/'
@@ -600,7 +592,7 @@ function applyTileConfig(config) {
             type: 'raster',
             tiles: [rasterUrl],
             tileSize: 512,
-            minzoom: 5,
+            minzoom: 3,
             maxzoom: 10,
         });
     }
@@ -667,95 +659,6 @@ function applyTileConfig(config) {
 }
 
 window.applyTileConfig = applyTileConfig;
-
-/**
- * Switch the base (non-impact) tile sources to PMTiles for instant loading.
- * Called from Dash after pre-signed URLs are fetched from /pmtiles-url/.
- * Falls back gracefully if URLs are null/unavailable.
- */
-function switchBaseLayerToPMTiles(country, tilesUrl, adminUrl) {
-    var map = window._aots_maplibre;
-    if (!map || !window._aots_maplibre_ready) return;
-
-    if (tilesUrl) {
-        var existingSrc = map.getSource('aots-mercator');
-        if (existingSrc) {
-            // Remove and replace the existing raster tile server source with PMTiles
-            if (map.getLayer('aots-tiles-layer')) map.removeLayer('aots-tiles-layer');
-            map.removeSource('aots-mercator');
-        }
-        // PMTiles for the mercator layer is still served as vector PMTiles,
-        // but re-use the raster tile server URL approach when PMTiles unavailable.
-        // For now, re-add as raster source pointing to the tile server URL so
-        // the layer type remains consistent (raster).
-        var config = window._aots_tile_config || {};
-        var tileProp = (config.tile_prop) || null;
-        var base = config.tile_server_url || 'http://localhost:8001';
-        var storm = config.storm;
-        var forecast_date = config.forecast_date;
-        var wind_threshold = config.wind_threshold;
-        var rasterUrl = base
-            + '/tiles/raster/'
-            + encodeURIComponent(country) + '/'
-            + encodeURIComponent(storm) + '/'
-            + encodeURIComponent(forecast_date)
-            + '/' + (tileProp ? tileProp.toUpperCase() : 'POPULATION')
-            + '/{z}/{x}/{y}.webp'
-            + '?wind_threshold=' + wind_threshold;
-        map.addSource('aots-mercator', {
-            type: 'raster',
-            tiles: [rasterUrl],
-            tileSize: 512,
-            minzoom: 5,
-            maxzoom: 10,
-        });
-        map.addLayer({
-            id: 'aots-tiles-layer',
-            type: 'raster',
-            source: 'aots-mercator',
-            layout: { visibility: tileProp ? 'visible' : 'none' },
-            paint: {
-                'raster-opacity': 0.8,
-                'raster-fade-duration': 0,
-                'raster-resampling': 'nearest',
-            }
-        });
-        console.log('[AoTS] Switched aots-mercator to raster (PMTiles path not used for raster source)');
-    }
-
-    if (adminUrl) {
-        var existingAdmin = map.getSource('aots-admin');
-        if (existingAdmin) {
-            map.removeLayer('aots-admin-layer');
-            map.removeSource('aots-admin');
-        }
-        map.addSource('aots-admin', {
-            type: 'vector',
-            url: 'pmtiles://' + adminUrl,
-            minzoom: 2,
-            maxzoom: 10,
-        });
-        var config = window._aots_tile_config || {};
-        var stats = (config.stats) || {};
-        var adminStats = (config.admin_stats) || stats;
-        var adminProp = (config.admin_prop) || null;
-        map.addLayer({
-            id: 'aots-admin-layer',
-            type: 'fill',
-            source: 'aots-admin',
-            'source-layer': 'admin',
-            layout: { visibility: adminProp ? 'visible' : 'none' },
-            paint: {
-                'fill-color': buildColorExpression(adminProp || 'population', adminStats),
-                'fill-opacity': 0.6,
-                'fill-outline-color': 'rgba(0,0,0,0.2)',
-            }
-        });
-        console.log('[AoTS] Switched aots-admin to PMTiles');
-    }
-}
-
-window.switchBaseLayerToPMTiles = switchBaseLayerToPMTiles;
 
 // ---------------------------------------------------------------------------
 // 6. Layer toggle helpers
