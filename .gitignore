@@ -26,6 +26,8 @@ __pycache__/
 
 *.share
 
+!components/map/tile_palettes.json
+
 geodb/
 datastore/
 project_results/
