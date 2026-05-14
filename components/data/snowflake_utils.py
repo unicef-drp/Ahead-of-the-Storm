@@ -6,26 +6,17 @@ This module provides utility functions for Snowflake operations and data retriev
 It serves as a focused toolkit for connecting to Snowflake and retrieving hurricane data.
 
 Key Components:
-- Snowflake connection management
-- Hurricane track data retrieval from TC_TRACKS table
-- Hurricane envelope data retrieval from TC_ENVELOPES_COMBINED table
-- Data format conversion utilities
-
-Usage:
-    from snowflake_utils import get_envelopes_from_snowflake, get_hurricane_data_from_snowflake
-    envelopes = get_envelopes_from_snowflake('JERRY', '2025-10-10 00:00:00')
-    tracks = get_hurricane_data_from_snowflake('JERRY', '2025-10-10 00:00:00')
+- Snowflake connection management (thread-local, SPCS OAuth + password auth)
+- Hurricane track and envelope data retrieval
+- Impact and base layer MAT table queries
 """
 
-import os
 import time
 import threading
 from functools import lru_cache
 import pandas as pd
-import numpy as np
 import geopandas as gpd
 import snowflake.connector
-from shapely import wkt as shapely_wkt
 import warnings
 
 # Suppress pandas SQLAlchemy warnings
@@ -46,7 +37,7 @@ def _is_connection_alive(conn):
         cursor.execute("SELECT 1")
         cursor.close()
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -101,7 +92,7 @@ def get_snowflake_connection():
         # Connection is dead — close and fall through to reconnect
         try:
             conn.close()
-        except:
+        except Exception:
             pass
         _thread_local.connection = None
 
@@ -152,13 +143,6 @@ def get_snowflake_connection():
                 conn.cursor().execute(f"USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE}")
             except Exception as e:
                 print(f"Warning: USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE} failed: {e}")
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE()")
-                row = cur.fetchone()
-                print(f"SPCS session: role={row[0]}, warehouse={row[1]}")
-            except Exception as e:
-                print(f"Warning: could not check session state: {e}")
         if should_print:
             print("✓ Connected to Snowflake (connection will be reused per thread)")
         _thread_local.connection = conn
@@ -169,128 +153,6 @@ def get_snowflake_connection():
         print(f"✗ Failed to connect to Snowflake: {str(e)}")
         raise
 
-def get_hurricane_data_from_snowflake(track_id, forecast_time):
-    """
-    Get hurricane track data from Snowflake TC_TRACKS table
-    
-    Args:
-        track_id: Storm identifier (e.g., 'JERRY')
-        forecast_time: Forecast time (e.g., '2025-10-10 00:00:00')
-    
-    Returns:
-        pandas.DataFrame: Hurricane track data with wind field polygons
-    """
-    conn = get_snowflake_connection()
-    
-    query = """
-    SELECT 
-        FORECAST_TIME,
-        TRACK_ID,
-        ENSEMBLE_MEMBER,
-        VALID_TIME,
-        LEAD_TIME,
-        LATITUDE,
-        LONGITUDE,
-        PRESSURE_HPA,
-        WIND_SPEED_KNOTS,
-        RADIUS_OF_MAXIMUM_WINDS_KM,
-        RADIUS_34_KNOT_WINDS_NE_KM,
-        RADIUS_34_KNOT_WINDS_SE_KM,
-        RADIUS_34_KNOT_WINDS_SW_KM,
-        RADIUS_34_KNOT_WINDS_NW_KM,
-        RADIUS_50_KNOT_WINDS_NE_KM,
-        RADIUS_50_KNOT_WINDS_SE_KM,
-        RADIUS_50_KNOT_WINDS_SW_KM,
-        RADIUS_50_KNOT_WINDS_NW_KM,
-        RADIUS_64_KNOT_WINDS_NE_KM,
-        RADIUS_64_KNOT_WINDS_SE_KM,
-        RADIUS_64_KNOT_WINDS_SW_KM,
-        RADIUS_64_KNOT_WINDS_NW_KM,
-        WIND_FIELD_POLYGON_34KT,
-        WIND_FIELD_POLYGON_50KT,
-        WIND_FIELD_POLYGON_64KT
-    FROM TC_TRACKS
-    WHERE TRACK_ID = %s AND FORECAST_TIME = %s
-    ORDER BY ENSEMBLE_MEMBER, LEAD_TIME
-    """
-    
-    df = _run_query(query, params=[track_id, forecast_time])
-    # Don't close connection - it's cached and will be reused
-    
-    return df
-
-def get_envelopes_from_snowflake(track_id, forecast_time):
-    """
-    Get envelope data from Snowflake TC_ENVELOPES_COMBINED table
-    
-    Args:
-        track_id: Storm identifier (e.g., 'JERRY')
-        forecast_time: Forecast time (e.g., '2025-10-10 00:00:00')
-    
-    Returns:
-        pandas.DataFrame: Envelope data with geography polygons
-    """
-    conn = get_snowflake_connection()
-    
-    query = """
-    SELECT 
-        FORECAST_TIME,
-        TRACK_ID,
-        ENSEMBLE_MEMBER,
-        VALID_TIME,
-        LEAD_TIME_RANGE,
-        WIND_THRESHOLD,
-        ST_ASWKT(ENVELOPE_REGION) AS ENVELOPE_REGION
-    FROM TC_ENVELOPES_COMBINED
-    WHERE TRACK_ID = %s AND FORECAST_TIME = %s
-    ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
-    """
-    
-    df = _run_query(query, params=[track_id, forecast_time])
-    # Don't close connection - it's cached and will be reused
-    
-    return df
-
-def convert_envelopes_to_geodataframe(envelopes_df):
-    """
-    Convert envelope DataFrame to GeoDataFrame for processing
-    
-    Args:
-        envelopes_df: DataFrame with envelope data from Snowflake
-    
-    Returns:
-        geopandas.GeoDataFrame: Envelopes as GeoDataFrame
-    """
-    if envelopes_df.empty:
-        return gpd.GeoDataFrame()
-    
-    # Parse WKT polygons
-    geometries = []
-    for wkt_str in envelopes_df['ENVELOPE_REGION']:
-        if pd.notna(wkt_str) and wkt_str:
-            try:
-                geom = shapely_wkt.loads(wkt_str)
-                geometries.append(geom)
-            except:
-                geometries.append(None)
-        else:
-            geometries.append(None)
-    
-    # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(envelopes_df, geometry=geometries, crs='EPSG:4326')
-    
-    # Rename columns to lowercase for consistency with processing functions
-    column_mapping = {
-        'ENSEMBLE_MEMBER': 'ensemble_member',
-        'WIND_THRESHOLD': 'wind_threshold',
-        'ENVELOPE_REGION': 'envelope_region'
-    }
-    gdf = gdf.rename(columns=column_mapping)
-    
-    # Remove rows with invalid geometries
-    gdf = gdf[gdf.geometry.notna()]
-    
-    return gdf
 
 def get_available_wind_thresholds(storm, forecast_time):
     """
@@ -304,8 +166,6 @@ def get_available_wind_thresholds(storm, forecast_time):
         List of available wind thresholds as strings, or empty list if none found
     """
     try:
-        conn = get_snowflake_connection()
-        
         # Query to get distinct wind thresholds for the specific storm and forecast time
         query = """
         SELECT DISTINCT WIND_THRESHOLD 
@@ -316,7 +176,6 @@ def get_available_wind_thresholds(storm, forecast_time):
         """
         
         df = _run_query(query, params=[storm, forecast_time])
-        # Don't close connection - it's cached and will be reused
         
         if not df.empty:
             # Convert to list of strings and sort
@@ -343,8 +202,6 @@ def get_latest_forecast_time_overall():
         datetime: Latest forecast issue time (when the most recent forecast was issued), or None if no data found
     """
     try:
-        conn = get_snowflake_connection()
-        
         # Query to get the most recent forecast time across all storms
         query = """
         SELECT MAX(FORECAST_TIME) as MAX_FORECAST_TIME
@@ -352,7 +209,6 @@ def get_latest_forecast_time_overall():
         """
         
         df = _run_query(query)
-        # Don't close connection - it's cached and will be reused
         
         if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
             latest_time = df['MAX_FORECAST_TIME'].iloc[0]
@@ -367,9 +223,6 @@ def get_latest_forecast_time_overall():
 def get_envelope_data_snowflake(track_id, forecast_time):
     """Get envelope data directly from Snowflake"""
     try:
-        conn = get_snowflake_connection()
-        
-        # Get envelope data from TC_ENVELOPES_COMBINED
         # Use ST_ASWKT() to ensure we get WKT format, not raw GEOGRAPHY type
         query = '''
         SELECT 
@@ -380,33 +233,15 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         WHERE TRACK_ID = %s AND FORECAST_TIME = %s
         ORDER BY ENSEMBLE_MEMBER, WIND_THRESHOLD
         '''
-        
         df = _run_query(query, params=[track_id, str(forecast_time)])
-        # Don't close connection - reuse it for better performance
-        # conn.close()
-        
         if not df.empty:
-            # Debug: Check what format we're getting
-            if len(df) > 0 and 'ENVELOPE_REGION' in df.columns:
-                sample_geom = df['ENVELOPE_REGION'].iloc[0]
-                if isinstance(sample_geom, str):
-                    if sample_geom.strip().startswith('{'):
-                        print(f"⚠ Warning: Snowflake returned GeoJSON format instead of WKT for envelopes")
-                    elif sample_geom.strip().startswith('POLYGON') or sample_geom.strip().startswith('MULTIPOLYGON'):
-                        print(f"✓ Snowflake returned WKT format for envelopes")
-                    else:
-                        print(f"⚠ Unknown geometry format from Snowflake: starts with '{sample_geom[:20] if len(sample_geom) > 20 else sample_geom}'")
-            
-            # Rename columns to match expected format
-            df = df.rename(columns={'ENVELOPE_REGION': 'geometry', 'WIND_THRESHOLD': 'wind_threshold'})
+            df = df.rename(columns={'ENSEMBLE_MEMBER': 'ensemble_member', 'ENVELOPE_REGION': 'geometry', 'WIND_THRESHOLD': 'wind_threshold'})
             return df
-        else:
-            return pd.DataFrame()
-        
+        return pd.DataFrame()
     except Exception as e:
         print(f"Error getting envelope data from Snowflake: {str(e)}")
         return pd.DataFrame()
-    
+
 
 @lru_cache(maxsize=1)
 def get_active_countries():
@@ -418,8 +253,6 @@ def get_active_countries():
         Returns empty DataFrame on error
     """
     try:
-        conn = get_snowflake_connection()
-        
         # Get active countries from PIPELINE_COUNTRIES table
         query = '''
         SELECT
@@ -437,7 +270,6 @@ def get_active_countries():
         '''
         
         df = _run_query(query)
-        # Don't close connection - it's cached and will be reused
         
         if not df.empty:
             print(f"✓ Loaded {len(df)} active countries from PIPELINE_COUNTRIES")
@@ -452,44 +284,6 @@ def get_active_countries():
         traceback.print_exc()
         return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL', 'IS_REGION', 'MEMBER_CODES'])
 
-def get_lat_lons(row):
-    """
-    Get latitude and longitude for a hurricane track from Snowflake
-
-    Args:
-        row: pandas Series or dict with 'TRACK_ID' and 'FORECAST_TIME' keys
-
-    Returns:
-        pandas.Series: Series with 'latitude' and 'longitude' values
-    """
-    try:
-        conn = get_snowflake_connection()
-
-        # Get any available track data at lead time 0
-        query = '''
-        SELECT LATITUDE, LONGITUDE
-        FROM TC_TRACKS
-        WHERE TRACK_ID = %s AND FORECAST_TIME = %s
-        AND LEAD_TIME = 0
-        LIMIT 1
-        '''
-
-        df_latlon = _run_query(query, params=[row['TRACK_ID'], str(row['FORECAST_TIME'])])
-        # Don't close connection - it's cached and will be reused
-
-        if len(df_latlon) > 0:
-            lat = df_latlon.iloc[0]['LATITUDE']
-            lon = df_latlon.iloc[0]['LONGITUDE']
-        else:
-            lat = np.nan
-            lon = np.nan
-
-        return pd.Series([lat, lon], index=["latitude", "longitude"])
-
-    except Exception as e:
-        print(f"Error getting lat/lon from Snowflake: {str(e)}")
-        return pd.Series([np.nan, np.nan], index=["latitude", "longitude"])
-
 
 @lru_cache(maxsize=1)
 def get_lat_lons_bulk() -> pd.DataFrame:
@@ -503,7 +297,6 @@ def get_lat_lons_bulk() -> pd.DataFrame:
         pandas.DataFrame with columns: TRACK_ID, FORECAST_TIME, latitude, longitude
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT DISTINCT TRACK_ID, FORECAST_TIME, LATITUDE, LONGITUDE
         FROM TC_TRACKS
@@ -521,7 +314,6 @@ def get_lat_lons_bulk() -> pd.DataFrame:
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
     try:
-        conn = get_snowflake_connection()
         
         # Get unique storm/forecast combinations from TC_TRACKS
         query = '''
@@ -535,7 +327,6 @@ def get_snowflake_data():
         '''
         
         df = _run_query(query)
-        # Don't close connection - it's cached and will be reused
         
         return df
         
@@ -564,7 +355,6 @@ def get_school_impacts(country: str, storm: str, forecast_date: str, wind_thresh
         ZONE_ID, LATITUDE, LONGITUDE, COUNTRY_ISO3_CODE
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             SCHOOL_NAME,
@@ -605,7 +395,6 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
         PROBABILITY, ZONE_ID
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             NAME,
@@ -649,7 +438,6 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
         pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             NAME,
@@ -688,7 +476,6 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             NAME,
@@ -730,7 +517,6 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         E_INFANT_POPULATION, E_NUM_HCS, E_RWI, E_SMOD_CLASS
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             ZONE_ID,
@@ -779,7 +565,6 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         E_NUM_HCS, PROBABILITY, ZONE_ID
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT
             TILE_ID,
@@ -812,6 +597,7 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         return pd.DataFrame()
 
 
+
 @lru_cache(maxsize=64)
 def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:
     """
@@ -819,7 +605,6 @@ def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int =
     Returns only zone_id + the two display columns to avoid merge conflicts.
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT ZONE_ID, CCI_CHILDREN, E_CCI_CHILDREN
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT
@@ -846,7 +631,6 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
     Returns only tile_id + the two display columns to avoid merge conflicts.
     """
     try:
-        conn = get_snowflake_connection()
         query = """
         SELECT TILE_ID, CCI_CHILDREN, E_CCI_CHILDREN
         FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT
@@ -864,29 +648,6 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
         print(f"Error querying ADMIN_ALL_CCI_MAT: {str(e)}")
         return pd.DataFrame()
 
-
-def get_available_admin_levels(country: str) -> list:
-    """
-    Return the admin levels available in ADMIN_ALL_IMPACT_MAT for a given country.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-
-    Returns:
-        Sorted list of integer admin levels, e.g. [1, 2, 3]
-    """
-    try:
-        conn = get_snowflake_connection()
-        query = """
-        SELECT DISTINCT ADMIN_LEVEL
-        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
-        WHERE COUNTRY = %s
-        ORDER BY 1
-        """
-        df = _run_query(query, params=[country])
-        return df['ADMIN_LEVEL'].tolist()
-    except Exception as e:
-        print(f"Error querying available admin levels: {str(e)}")
 
 
 @lru_cache(maxsize=64)
@@ -908,7 +669,6 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     """
     try:
         from shapely import wkb as shapely_wkb
-        conn = get_snowflake_connection()
         query = """
         SELECT
             ZONE_ID                        AS zone_id,
@@ -943,7 +703,7 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         df = df.drop(columns=['GEOMETRY'])
         gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
         print(f"✓ Loaded {len(gdf)} track rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
-        return gdf
+        return gdf.copy()
     except Exception as e:
         print(f"Error querying TRACK_MAT: {str(e)}")
         return gpd.GeoDataFrame()
@@ -970,9 +730,7 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
     try:
         import mercantile
         from shapely.geometry import box as shapely_box
-        import time
         t0 = time.time()
-        conn = get_snowflake_connection()
         query = """
         SELECT
             TILE_ID,
@@ -1023,8 +781,7 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
 def get_base_schools(country: str) -> pd.DataFrame:
     """Query BASE_SCHOOL_MAT — all school locations for a country (no storm required)."""
     try:
-        import time; t0 = time.time()
-        conn = get_snowflake_connection()
+        t0 = time.time()
         query = """
         SELECT
             SCHOOL_ID_GIGA  AS school_id_giga,
@@ -1050,8 +807,7 @@ def get_base_schools(country: str) -> pd.DataFrame:
 def get_base_hcs(country: str) -> pd.DataFrame:
     """Query BASE_HC_MAT — all health centre locations for a country (no storm required)."""
     try:
-        import time; t0 = time.time()
-        conn = get_snowflake_connection()
+        t0 = time.time()
         query = """
         SELECT
             NAME                AS name,
@@ -1081,8 +837,7 @@ def get_base_hcs(country: str) -> pd.DataFrame:
 def get_base_shelters(country: str) -> pd.DataFrame:
     """Query BASE_SHELTER_MAT — all shelter locations for a country (no storm required)."""
     try:
-        import time; t0 = time.time()
-        conn = get_snowflake_connection()
+        t0 = time.time()
         query = """
         SELECT
             NAME         AS name,
@@ -1108,8 +863,7 @@ def get_base_shelters(country: str) -> pd.DataFrame:
 def get_base_wash(country: str) -> pd.DataFrame:
     """Query BASE_WASH_MAT — all WASH facility locations for a country (no storm required)."""
     try:
-        import time; t0 = time.time()
-        conn = get_snowflake_connection()
+        t0 = time.time()
         query = """
         SELECT
             NAME      AS name,
@@ -1140,10 +894,9 @@ def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
     reconstructed into a GeoDataFrame for map rendering.
     """
     try:
-        import time, json
+        import json
         from shapely.geometry import shape
         t0 = time.time()
-        conn = get_snowflake_connection()
         query = """
         SELECT
             TILE_ID                  AS tile_id,

@@ -1,0 +1,60 @@
+{
+  "palettes": {
+    "probability":            { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "linear", "fixed_max": 1.0 },
+    "population":             { "colors": ["#add8e6","#8cc5d3","#6bb2c0","#4a9bad","#33849a","#216d87","#165674","#0d3f51","#06283d","#011129"], "scale": "log" },
+    "E_population":           { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "children_total":         { "colors": ["#e8d5f5","#d0a8ed","#b87de5","#9e52dd","#8429d4","#6b1fb0","#53178c","#3c1068","#260844","#110022"], "scale": "log" },
+    "E_children_total":       { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "E_people_in_need":       { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "E_children_in_need":     { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "infant_population":      { "colors": ["#d6e8ff","#b3d9ff","#8ac8ff","#66b7ff","#42a6ff","#1e95ff","#1685e6","#0f75cc","#0765b3","#005599"], "scale": "log" },
+    "E_infant_population":    { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "school_age_population":  { "colors": ["#a8e6cf","#7ed3b8","#5ec0a1","#40ad8a","#2d9a73","#228759","#177440","#0f5127","#083310","#001107"], "scale": "log" },
+    "E_school_age_population":{ "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "adolescent_population":  { "colors": ["#cce0ff","#99c2ff","#66a3ff","#3385ff","#0066ff","#0052cc","#003d99","#002b66","#001a33","#000d1a"], "scale": "log" },
+    "E_adolescent_population":{ "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "built_surface_m2":       { "colors": ["#f6e6d1","#e8d4b8","#dac29f","#ccb086","#be9e6d","#b08854","#a2723b","#945c22","#864609","#783000"], "scale": "log" },
+    "E_built_surface_m2":     { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "cci_children":           { "colors": ["#ffcccb","#ff9999","#ff6666","#ff3333","#ff0000","#cc0000","#990000","#660000","#330000","#1a0000"], "scale": "log" },
+    "E_cci_children":         { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
+    "smod_class":             { "colors": ["#dda0dd","#9370db","#4b0082"], "scale": "smod" },
+    "rwi":                    { "colors": ["#d73027","#f46d43","#fdae61","#fee08b","#808080","#d9ef8b","#a6d96a","#66bd63","#1a9850"], "scale": "rwi" },
+    "moderate_poverty_prob":  { "colors": ["#fff4eb","#ffd8b3","#ffb960","#ff9b06","#e87b00","#d25a00","#b73800","#941600"], "scale": "linear", "fixed_max": 1.0 },
+    "severe_poverty_prob":    { "colors": ["#ffebeb","#ffcdcd","#ffacac","#ff8585","#ff4f4f","#f70000","#c40000","#940000"], "scale": "linear", "fixed_max": 1.0 },
+    "E_num_shelters":         { "colors": ["#fde0dd","#fcc5c0","#fa9fb5","#f768a1","#dd3497","#ae017e","#7a0177","#49006a","#2d0040","#1a0026"], "scale": "log" },
+    "E_num_wash":             { "colors": ["#e5f5e0","#c7e9c0","#a1d99b","#74c476","#41ab5d","#238b45","#006d2c","#00441b","#002d12","#001a09"], "scale": "log" },
+    "E_num_schools":          { "colors": ["#fff7bc","#fee391","#fec44f","#fe9929","#ec7014","#cc4c02","#993404","#662506","#3d1604","#1a0900"], "scale": "log" },
+    "E_num_hcs":              { "colors": ["#edf8fb","#ccece6","#99d8c9","#66c2a4","#41ae76","#238b45","#006d2c","#00441b","#002d12","#001a09"], "scale": "log" }
+  },
+  "prop_map": {
+    "population":       "population",
+    "children-total":   "children_total",
+    "infant":           "infant_population",
+    "school-age":       "school_age_population",
+    "adolescent":       "adolescent_population",
+    "built-surface":    "built_surface_m2",
+    "cci":              "cci_children",
+    "settlement":       "smod_class",
+    "rwi":              "rwi",
+    "moderate-poverty": "moderate_poverty_prob",
+    "severe-poverty":   "severe_poverty_prob"
+  },
+  "e_prop_map": {
+    "population":       "E_population",
+    "children-total":   "E_children_total",
+    "infant":           "E_infant_population",
+    "school-age":       "E_school_age_population",
+    "adolescent":       "E_adolescent_population",
+    "built-surface":    "E_built_surface_m2",
+    "cci":              "E_cci_children",
+    "settlement":       "probability",
+    "rwi":              "probability",
+    "moderate-poverty": "probability",
+    "severe-poverty":   "probability",
+    "none":             "probability"
+  },
+  "in_need_map": {
+    "population":     "E_people_in_need",
+    "children-total": "E_children_in_need"
+  }
+}

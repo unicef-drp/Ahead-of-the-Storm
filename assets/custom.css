@@ -1,0 +1,4 @@
+/* Allow MapLibre canvas (zIndex 0) to show through Leaflet's container */
+.leaflet-container {
+    background: transparent !important;
+}
