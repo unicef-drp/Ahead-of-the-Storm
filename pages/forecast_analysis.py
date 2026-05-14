@@ -1,3 +1,19 @@
+"""
+Forecast Analysis page.
+
+Provides an ensemble-member-level breakdown of storm impact: impact metric cards
+(population, children, schools, health, shelters, WASH, built surface) across three
+scenarios (deterministic/probabilistic/high), box plots showing distribution across
+all ensemble members, and exceedance probability charts.
+
+Data flow:
+  load_all_layers (dashboard.py) → writes store selectors (country, storm, date, threshold)
+  update_wind_threshold_options  → queries SNOWFLAKE for available thresholds
+  update_impact_metrics          → reads <country>_<storm>_<datetime>_<threshold>_14.csv
+  update_box_plots               → reads <country>_<storm>_<datetime>_<threshold>.parquet
+"""
+import logging
+
 from dash import html, dcc, Input, Output, State, callback
 import dash
 import dash_mantine_components as dmc
@@ -18,6 +34,8 @@ from components.ui.footer import footer
 from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds, get_active_countries, get_snowflake_data
 from gigaspatial.core.io.readers import read_dataset
 from components.data.data_store_utils import get_data_store
+
+logger = logging.getLogger(__name__)
 
 # Constants
 ZOOM_LEVEL = 14
@@ -41,7 +59,7 @@ if not countries_df.empty:
     DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
 else:
     DEFAULT_COUNTRY = None
-    print("⚠ No country options available - country dropdown will be empty")
+    logger.warning("No country options available - country dropdown will be empty")
 
 dash.register_page(
     __name__, path="/analysis", name="Forecast Analysis"
@@ -631,7 +649,7 @@ def update_threshold_selectors(storm, date, time, current_threshold):
         )
 
     except Exception as e:
-        print(f"Analysis: Error getting wind threshold options: {e}")
+        logger.error(f"Analysis: Error getting wind threshold options: {e}")
         return (
             THRESHOLD_OPTIONS, "34",  # population
             THRESHOLD_OPTIONS, "34",  # children
@@ -974,7 +992,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.csv"
         filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", filename)
         
-        print(f"Analysis Impact metrics: Looking for file {filename}")
+        logger.debug(f"Analysis Impact metrics: Looking for file {filename}")
         
         # Initialize all scenario results
         low_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
@@ -1064,9 +1082,9 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                         high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
                 
             except Exception as e:
-                print(f"Analysis Impact metrics: Error reading file {filename}: {e}")
+                logger.error(f"Analysis Impact metrics: Error reading file {filename}: {e}")
         else:
-            print(f"Analysis Impact metrics: File not found {filename}")
+            logger.warning(f"Analysis Impact metrics: File not found {filename}")
         
         # Format results
         def format_value(value):
@@ -1129,7 +1147,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         return tab_values * 9
 
     except Exception as e:
-        print(f"Analysis Impact metrics: Error updating metrics: {e}")
+        logger.error(f"Analysis Impact metrics: Error updating metrics: {e}")
         na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
         return na_values * 9  # Return for all 9 tabs
 
@@ -1282,7 +1300,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             forecast_datetime_str = f"{forecast_date} {forecast_time}:00"
             available_wind_thresholds = get_available_wind_thresholds(storm, forecast_datetime_str)
         except Exception as e:
-            print(f"Error getting available wind thresholds: {e}")
+            logger.error(f"Error getting available wind thresholds: {e}")
             available_wind_thresholds = []
         
         # Calculate totals per ensemble member for all metrics
@@ -1364,7 +1382,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                                 for metric in metric_names:
                                     higher_threshold_data[metric][higher_thresh] = higher_member_df[metric].values
                 except Exception as e:
-                    print(f"Error loading higher threshold {higher_thresh}kt data: {e}")
+                    logger.warning(f"Error loading higher threshold {higher_thresh}kt data: {e}")
                     continue
         
         if member_df.empty:
@@ -1761,7 +1779,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             metrics_config['population']['color']
         )
         
-        print(f"Generated plots for population: box={type(pop_box)}, exceedance={type(pop_exceedance)}")
+        logger.debug(f"Generated plots for population: box={type(pop_box)}, exceedance={type(pop_exceedance)}")
         
         children_exceedance = create_exceedance_plot(
             member_df['children'].values,
@@ -1896,9 +1914,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
         )
         
     except Exception as e:
-        print(f"Error generating box plots: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error generating box plots: {e}", exc_info=True)
         status_msg = dmc.Alert(
             f"Error generating plots: {str(e)}",
             title="Error",

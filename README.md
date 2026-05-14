@@ -4,7 +4,7 @@ This repository contains the **Dash web application** for visualizing hurricane 
 
 ## Related Repositories
 
-- **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)**: Data processing pipeline for creating bounding boxes, initializing base data, and processing storm impact files that are read by the application
+- **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)**: Data processing pipeline for initializing base data and processing storm impact files that are read by the application
 - **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)**: Pipeline for processing ECMWF BUFR tropical cyclone and wind forecast data
 
 ## Prerequisites
@@ -32,11 +32,10 @@ pip install -r requirements.txt
 - `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`
 
 #### Data Storage Configuration
-- `RESULTS_DIR` (default: `project_results/climate/lacro_project`)
-- `BBOX_FILE` (e.g., `bbox.parquet`)
-- `STORMS_FILE` (e.g., `storms.json`)
-- `ROOT_DATA_DIR` (e.g., `geodb`)
-- `VIEWS_DIR` (e.g., `aos_views`)
+- `RESULTS_DIR` (default: `results`) — stores report templates and generated JSON reports
+- `ROOT_DATA_DIR` (default: `geodb`)
+- `VIEWS_DIR` (default: `aos_views`)
+- `REPORT_TEMPLATE_FILE` (default: `impact-report-template.html`)
 
 #### Optional: Impact Data Source and Storage
 
@@ -67,56 +66,66 @@ Note: Snowflake is used for BOTH raw hurricane forecast data (TC_TRACKS / TC_ENV
 - If using Azure Blob Storage: `ADLS_ACCOUNT_URL`, `ADLS_SAS_TOKEN`, `ADLS_CONTAINER_NAME`
 - If using Snowflake stage: `SNOWFLAKE_STAGE_NAME` (name of the Snowflake internal stage)
 
+#### SPCS Authentication (Snowflake Container Services deployment only)
+- `SPCS_RUN` — set to `true` to enable OAuth token auth via `/snowflake/session/token` (default: `false`)
+- `SPCS_TOKEN_PATH` (default: `/snowflake/session/token`)
+- `SNOWFLAKE_HOST`, `SNOWFLAKE_PORT` — required when `SPCS_RUN=true`
+
 #### Mapbox (for map visualization)
-- `MAPBOX_ACCESS_TOKEN` (optional)
+- `MAPBOX_ACCESS_TOKEN` (optional — falls back to OpenStreetMap tiles)
 
 ## Data Requirements
 
-Before running the application, you need to have pre-processed data available. This includes:
+**When `IMPACT_DATA_SOURCE=SQL`** (recommended): no local data files are needed. The app queries Snowflake MAT tables directly.
 
-1. **Bounding box** file: `project_results/climate/lacro_project/bbox.parquet`
-2. **Base views**: Mercator tiles with demographic and infrastructure data in `geodb/aos_views/mercator_views/`
-3. **Impact views**: Processed storm impact data in:
-   - `geodb/aos_views/school_views/` (schools)
-   - `geodb/aos_views/hc_views/` (health centers)
-   - `geodb/aos_views/shelter_views/` (shelters)
-   - `geodb/aos_views/wash_views/` (WASH facilities)
-   - `geodb/aos_views/track_views/` (hurricane tracks)
-   - `geodb/aos_views/mercator_views/` (tile impact data)
+**When `IMPACT_DATA_SOURCE=STAGE`**: pre-processed impact views must be available in the configured `IMPACT_DATA_STORE`. For `IMPACT_DATA_STORE=LOCAL`, the following directories are expected:
+
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/` — base Mercator tiles (demographic/infrastructure)
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` — school impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` — health centre impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/shelter_views/` — shelter impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/wash_views/` — WASH facility impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` — hurricane track data
 
 ### Setting Up Data Processing
 
 To generate the required data, follow the setup guide in the **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)** repository:
 
-1. **Create bounding box** (one-time setup)
-2. **Initialize base data** (demographic and infrastructure data - one-time setup)
-3. **Process storm data** (run regularly to update with new storm data from Snowflake)
+1. **Initialize base data** (demographic and infrastructure data — one-time setup)
+2. **Process storm data** (run regularly to update with new storm data from Snowflake)
 
-The hurricane forecast data is processed by the **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)** and can be loaded into Snowflake.
+The hurricane forecast data is processed by the **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)** and loaded into Snowflake.
 
 ## Running the Application
 
 ### Development Mode
 
+The Dash app and tile server must both be running. Start them in two separate terminals:
+
 ```bash
+# Terminal 1 — Dash app (http://127.0.0.1:8050)
 python app.py
+
+# Terminal 2 — FastAPI tile server (http://127.0.0.1:8001)
+uvicorn services.tile_server:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-The application will start on `http://127.0.0.1:8050` (or the port specified in your environment).
+### Production Deployment (SPCS)
 
-### Production Deployment
+Production runs as a Docker container on **Snowflake Container Services (SPCS)**. `entrypoint.sh` orchestrates three processes inside the container:
 
-For production (e.g., Azure App Service), use the provided `startup.sh` script with Gunicorn:
+```
+nginx  0.0.0.0:8000   (public — reverse proxy + tile cache)
+  ├─► gunicorn Dash   127.0.0.1:8050  (1 worker × 8 threads)
+  └─► uvicorn tiles   127.0.0.1:8001  (FastAPI tile server)
+```
 
 ```bash
-./startup.sh
+# Build
+docker build -t unicef-dash-app:latest . --platform=linux/amd64
 ```
 
-Or manually:
-
-```bash
-gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 120 app:server
-```
+A single gunicorn worker (1 process × 8 threads) is required to avoid fork-safety issues with `snowflake-connector-python` and Dash callback-map race conditions. Do not increase `--workers` beyond 1.
 
 ## Application Features
 
@@ -141,12 +150,9 @@ The application provides three main views:
 
 ## Troubleshooting
 
-### "Bounding box not found" error
-- Ensure the bounding box file exists at the path specified by `RESULTS_DIR`/`BBOX_FILE`
-- Run the bounding box creation step from the [DATAPIPELINE repository](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)
-
 ### "No data available" or missing views
-- Verify that impact views exist in `geodb/aos_views/`
+- If using `IMPACT_DATA_SOURCE=SQL`: verify Snowflake MAT tables are populated (see `snowflake/mat_tables/README.md`)
+- If using `IMPACT_DATA_SOURCE=STAGE`: verify that impact views exist in `{ROOT_DATA_DIR}/{VIEWS_DIR}/`
 - Run the storm processing pipeline from the [DATAPIPELINE repository](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)
 - Check that Snowflake contains the expected storm data
 
@@ -156,6 +162,8 @@ The application provides three main views:
 - Ensure Snowflake credentials have proper permissions
 
 ### "Map not loading" or missing map tiles
+- Verify the tile server is running: `curl http://localhost:8001/health` should return `{"status":"ok"}`
+- Verify `TILE_SERVER_URL` env var points to the tile server (default: `http://localhost:8001`)
 - Verify `MAPBOX_ACCESS_TOKEN` is set (optional but recommended)
 - Check browser console for JavaScript errors
 
@@ -166,24 +174,22 @@ The application provides three main views:
 
 ## Data Storage Locations
 
-The application expects data in the following structure:
-
-- **Bounding box:** `{RESULTS_DIR}/{BBOX_FILE}` (typically `project_results/climate/lacro_project/bbox.parquet`)
+- **Report template:** `{RESULTS_DIR}/impact-report-template.html` (default: `results/impact-report-template.html`)
+- **Generated reports:** `{RESULTS_DIR}/jsons/`
 - **Base views:** `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/` (e.g., `geodb/aos_views/mercator_views/`)
-- **Impact views:** 
+- **Impact views:**
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` (schools)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` (health centers)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/shelter_views/` (shelters)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/wash_views/` (WASH facilities)
   - `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` (hurricane tracks)
-- **Processed storms metadata:** `{RESULTS_DIR}/{STORMS_FILE}` (typically `project_results/climate/lacro_project/storms.json`)
 
 ## Architecture
 
-- **Frontend**: Dash with Mantine Components, Dash Leaflet for maps, Plotly for charts
-- **Backend**: Python with GeoPandas for geospatial processing
+- **Frontend**: Dash with Mantine Components, MapLibre GL JS for tile rendering (Dash Leaflet as map container), Plotly for charts
+- **Backend**: Python with GeoPandas for geospatial processing; FastAPI tile server sidecar (`services/tile_server.py`, port 8001) serves WebP raster tiles and MVT vector tiles
 - **Data Sources**:
   - Snowflake — hurricane track/envelope data (`TC_TRACKS`, `TC_ENVELOPES_COMBINED`) and, when `IMPACT_DATA_SOURCE=SQL`, impact data via materialized tables (`*_MAT`)
   - Pre-processed impact views via [giga-spatial](https://github.com/unicef/giga-spatial) — used when `IMPACT_DATA_SOURCE=STAGE` (local filesystem, Azure Blob, or Snowflake stage)
 - **AI Agent**: `HURRICANE_INTELLIGENCE` Snowflake Cortex agent — generates situation reports from the same MAT tables (see `snowflake/intelligence/`)
-- **Deployment**: Gunicorn for production (Azure App Service or Snowflake Container Services)
+- **Deployment**: Docker container on Snowflake Container Services (SPCS) — nginx reverse proxy + gunicorn Dash app + uvicorn tile server (see `entrypoint.sh` and `Dockerfile`)

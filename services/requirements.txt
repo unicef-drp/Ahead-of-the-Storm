@@ -1,0 +1,9 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+snowflake-connector-python>=3.10.0
+python-dotenv>=1.0.0
+mapbox-vector-tile>=5.1.0
+mercantile>=1.2.1
+shapely>=2.0.0
+pandas>=2.0.0
+Pillow>=10.0.0

@@ -62,6 +62,9 @@ class Config:
     # Mapbox Configuration
     MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN')
 
+    # Tile sidecar URL (FastAPI server serving raster/vector tiles, stats, and preload endpoints)
+    TILE_SERVER_URL = os.getenv('TILE_SERVER_URL', 'http://localhost:8001')
+
     CCI_COL = 'cci_children'
     E_CCI_COL = 'E_cci_children'
     

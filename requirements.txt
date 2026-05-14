@@ -11,18 +11,19 @@ matplotlib>=3.7.0
 contextily>=1.4.0
 
 # For Snowflake
-snowflake-connector-python[pandas]>=3.0.0
+snowflake-connector-python[pandas]>=3.10.0
 
 # For Dash web app
-dash>=2.14.0
+dash>=4.1.0
 plotly>=5.15.0
-dash-mantine-components>=0.12.0
+dash-mantine-components>=2.7.0
 dash-iconify>=0.1.2
 dash-leaflet>=0.2.0
 dash-extensions>=1.0.0
 
 # Production web server for Azure App Service
 gunicorn>=21.2.0
+flask>=2.3.0
 flask-compress>=1.14
 brotli>=1.0.9
 
@@ -33,4 +34,4 @@ python-dotenv>=1.0.0
 azure-storage-blob>=12.0.0
 
 # GigaSpatial platform integration
-giga-spatial[azure,snowflake]>=0.9.3
+giga-spatial[all]>=0.9.3

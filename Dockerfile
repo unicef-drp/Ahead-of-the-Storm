@@ -24,6 +24,8 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    libgl1 \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -47,7 +49,9 @@ EXPOSE 8000
 # SPCS_RUN=true enables OAuth token auth via /snowflake/session/token.
 # IMPACT_DATA_SOURCE=SQL queries MAT tables directly — no stage file downloads.
 ENV PORT=8000 \
-    WEB_CONCURRENCY=2 \
+    TILE_PORT=8001 \
+    TILE_WORKERS=1 \
+    WEB_CONCURRENCY=1 \
     SPCS_RUN=true \
     SPCS_TOKEN_PATH=/snowflake/session/token \
     SNOWFLAKE_ACCOUNT="" \
@@ -68,28 +72,16 @@ ENV PORT=8000 \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:${PORT}/ || exit 1
 
-# ── Gunicorn (SPCS-tuned) ─────────────────────────────────────────────────────
-# CPU_X64_XS: 2 vCPU, 8 GB RAM
-# Worker class: gthread — Snowflake queries are I/O-bound; threads allow other
-#   requests to proceed while one thread waits on a query response.
-# Workers: 1 — single process, no fork(). Avoids fork-safety issues with the
-#   snowflake-connector-python native extensions (connections inherited across
-#   fork cause broken-pipe / auth errors) AND eliminates the Dash callback-map
-#   race condition (RuntimeError: dictionary changed size during iteration)
-#   that occurs when multiple workers race to validate callbacks on first request.
-# Threads: 8 — equivalent concurrency to the previous 2×4 configuration on an
-#   I/O-bound workload; all threads share one in-process lru_cache (~1.4 GB).
-# Memory: ~1.4 GB (libraries + lru_cache), leaving ~6.5 GB free on 8 GB.
-# max-requests disabled (single worker restart would drop all connections).
-# Override WEB_CONCURRENCY in the service spec env block if needed (ignored here).
-CMD gunicorn \
-    --bind 0.0.0.0:${PORT:-8000} \
-    --workers 1 \
-    --worker-class gthread \
-    --threads 8 \
-    --timeout 300 \
-    --keep-alive 5 \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level info \
-    app:server
+# ── Startup ───────────────────────────────────────────────────────────────────
+# entrypoint.sh starts three processes in the same container:
+#   1. nginx on 0.0.0.0:PORT (public — reverse proxy + tile cache)
+#   2. uvicorn tile_server on 127.0.0.1:TILE_PORT (loopback only)
+#   3. gunicorn Dash app on 127.0.0.1:8050 (loopback only)
+#
+# Both app processes share the same SPCS OAuth token file and env vars.
+# Single gunicorn worker (1 process, 8 threads):
+#   - Avoids fork-safety issues with snowflake-connector-python native extensions
+#   - Eliminates Dash callback-map race condition on first request
+# Single uvicorn worker (TILE_WORKERS=1 default, overridable in service spec):
+RUN chmod +x /app/entrypoint.sh
+CMD ["/app/entrypoint.sh"]

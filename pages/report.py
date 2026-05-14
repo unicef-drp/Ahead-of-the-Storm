@@ -1,6 +1,18 @@
+"""
+Impact report page.
+
+Renders a Jinja2-templated HTML report inside an iframe. The report is populated
+from per-storm JSON files written by the DATAPIPELINE and loaded via the data store.
+Includes an optional static probability map generated from MERCATOR_TILE_IMPACT_MAT.
+
+Data flow:
+  DATAPIPELINE → writes <country>_<storm>_<date>.json + impact-report-template.html to AOTS_ANALYSIS stage
+  update_iframe → reads JSON + template → renders via refactor_html_str → pushes to iframe srcDoc
+"""
 import dash
 import dash_mantine_components as dmc
-from dash import Output, Input, State, callback, dcc, html, callback_context, ctx
+from dash import Output, Input, State, callback, dcc, html
+import logging
 import os
 from jinja2 import Template
 import json
@@ -13,6 +25,8 @@ from components.ui.header import make_header
 from components.ui.footer import footer
 from components.config import config
 from components.data.data_store_utils import get_data_store
+
+logger = logging.getLogger(__name__)
 
 # Always use data store (works for both local filesystem and blob storage)
 # For SPCS, this will be LocalDataStore pointing to /datastore
@@ -27,7 +41,10 @@ dash.register_page(
     __name__, path="/report", name="Impact Report"
 )
 
-################### Templates #####################
+# =============================================================================
+# REPORT TEMPLATES
+# HTML fragment templates and data mappings used by refactor_html_str.
+# =============================================================================
 storm_categories = {34:'Tropical Storm',40:'Strong Tropical Storm',50:'Very Strong TS',
                     64:'Cat 1 Hurricane', 83:'Cat 2 Hurricane',96:'Cat 3 Hurricane',
                     113:'Cat 4 Hurricane', 137:'Cat 5 Hurricane'}
@@ -78,7 +95,7 @@ row_poi_winds = """
                 <td style="text-align: center; padding: 4px;">{pois_137}</td>
             </tr>
 """
-###################################################
+
 
 def format_change(value,key):
     if 'schools' in key or 'hcs' in key:
@@ -373,7 +390,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         from pyproj import Transformer
         from components.data.snowflake_utils import get_snowflake_connection
     except ImportError as e:
-        print(f"Impact report map: missing dependency — {e}")
+        logger.warning(f"Impact report map: missing dependency — {e}")
         return None
 
     try:
@@ -398,11 +415,11 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         rows = cur.fetchall()
         cur.close()
     except Exception as e:
-        print(f"Impact report map: error querying tile data — {e}")
+        logger.error(f"Impact report map: error querying tile data — {e}")
         return None
 
     if not rows:
-        print(f"Impact report map: no tile data found for {country}/{storm}/{forecast_date}/{wind_threshold}kt")
+        logger.debug(f"Impact report map: no tile data found for {country}/{storm}/{forecast_date}/{wind_threshold}kt")
         return None
 
     # Convert quadkeys to lat/lon
@@ -448,10 +465,10 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         marker_size = max((tile_px * pts_per_px) ** 2, 2.0)
 
         # Fixed 0–100% scale — low-probability storms stay yellow, not red.
-        _dashboard_prob_colors = [
-            '#ffffcc', '#ffeda0', '#fed976', '#feb24c', '#fd8d3c',
-            '#fc4e2a', '#f03b20', '#e31a1c', '#bd0026', '#800026',
-        ]
+        # Colors loaded from tile_palettes.json (single source of truth).
+        _palettes_path = os.path.join(os.path.dirname(__file__), '..', 'components', 'map', 'tile_palettes.json')
+        with open(_palettes_path) as _f:
+            _dashboard_prob_colors = json.load(_f)['palettes']['probability']['colors']
         cmap = mcolors.LinearSegmentedColormap.from_list('dashboard_prob', _dashboard_prob_colors)
         norm = mcolors.Normalize(vmin=0, vmax=1.0)
 
@@ -464,7 +481,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
             try:
                 ctx.add_basemap(ax, source=tile_url, attribution=False, zoom_adjust=1)
             except Exception as e:
-                print(f"Impact report map: Mapbox tiles failed ({e}), falling back to CartoDB")
+                logger.warning(f"Impact report map: Mapbox tiles failed ({e}), falling back to CartoDB")
                 ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron, attribution=False,
                                 zoom_adjust=1)
         else:
@@ -507,7 +524,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         return base64.b64encode(buf.read()).decode('utf-8')
 
     except Exception as e:
-        print(f"Impact report map: error generating figure — {e}")
+        logger.error(f"Impact report map: error generating figure — {e}")
         return None
 
 
@@ -520,10 +537,10 @@ def _load_template():
     """Load report HTML template from the data store. Returns html_str or None."""
     report_path = os.path.join(RESULTS_DIR, REPORT_TEMPLATE_FILE)
     if giga_store.file_exists(report_path):
-        print(f"Impact report: Loading template from {report_path}")
+        logger.debug(f"Impact report: Loading template from {report_path}")
         with giga_store.open(report_path, 'r') as f:
             return f.read()
-    print(f"Impact report: Template not found at {report_path}")
+    logger.warning(f"Impact report: Template not found at {report_path}")
     return None
 
 
@@ -537,10 +554,23 @@ def make_single_page_layout():
             variant="light"
         )
 
-    return html.Iframe(
-        srcDoc=html_str,
-        style={"width": "100%", "height": "100%", "border": 0},
-        id='iframe'
+    return dmc.Box(
+        [
+            dmc.LoadingOverlay(
+                id="report-loading-overlay",
+                visible=True,
+                loaderProps={"type": "bars", "color": "#1cabe2", "size": "xl"},
+                overlayProps={"radius": "sm", "blur": 2},
+                zIndex=10,
+            ),
+            html.Iframe(
+                srcDoc=html_str,
+                style={"width": "100%", "height": "100%", "border": 0},
+                id='iframe',
+            ),
+        ],
+        pos="relative",
+        style={"height": "100%", "width": "100%"},
     )
 
 def make_single_page_appshell():
@@ -584,8 +614,23 @@ _BASE_LAYERS_WARNING_HTML = """
 </div></body></html>
 """
 
+# Show the overlay immediately (client-side) when any input changes,
+# before the server round-trip begins.
+dash.clientside_callback(
+    "function() { return true; }",
+    Output("report-loading-overlay", "visible", allow_duplicate=True),
+    Input("country-store", "data"),
+    Input("storm-store", "data"),
+    Input("date-store", "data"),
+    Input("country-is-region-store", "data"),
+    Input("using-base-layers-store", "data"),
+    prevent_initial_call=True,
+)
+
+
 @callback(
     Output("iframe", "srcDoc"),
+    Output("report-loading-overlay", "visible"),
     Input("country-store","data"),
     Input("storm-store","data"),
     Input("date-store","data"),
@@ -594,37 +639,36 @@ _BASE_LAYERS_WARNING_HTML = """
     State("country-store","data"),
     State("storm-store","data"),
     State("date-store","data"),
-    #prevent_initial_call=True
 )
 def update_iframe(i_country,i_storm,i_date,i_is_region,i_base_layers_only,s_country,s_storm,s_date):
     if i_is_region:
-        return _REGION_WARNING_HTML
+        return _REGION_WARNING_HTML, False
 
     if i_base_layers_only:
-        return _BASE_LAYERS_WARNING_HTML
+        return _BASE_LAYERS_WARNING_HTML, False
 
     if s_country and s_storm and s_date:
         file = f"{s_country}_{s_storm}_{s_date}.json"
         filename = os.path.join(RESULTS_DIR, "jsons", file)
-        
-        print(f"Impact report: Loading {filename}")
+
+        logger.debug(f"Impact report: Loading {filename}")
 
         if not giga_store.file_exists(filename):
-            print(f"Impact report: JSON not found at {filename}")
-            return dash.no_update
+            logger.warning(f"Impact report: JSON not found at {filename}")
+            return dash.no_update, False
 
         html_str = _load_template()
         if not html_str:
-            print(f"Impact report: Template not found in data store — cannot render report")
-            return dash.no_update
+            logger.warning(f"Impact report: Template not found in data store — cannot render report")
+            return dash.no_update, False
 
         # Read the JSON data file
         try:
             with giga_store.open(filename, 'r') as f:
                 d = json.load(f)
         except Exception as e:
-            print(f"Impact report: Error reading JSON {filename}: {e}")
-            return dash.no_update
+            logger.error(f"Impact report: Error reading JSON {filename}: {e}")
+            return dash.no_update, False
 
         # Find the main wind threshold: the threshold N where expected_children_N == expected_children
         main_children = d.get('expected_children', 0)
@@ -642,9 +686,9 @@ def update_iframe(i_country,i_storm,i_date,i_is_region,i_base_layers_only,s_coun
             d['map_image'] = None
 
         try:
-            return refactor_html_str(html_str, d)
+            return refactor_html_str(html_str, d), False
         except Exception as e:
-            print(f"Impact report: Error rendering report: {e}")
-            return dash.no_update
+            logger.error(f"Impact report: Error rendering report: {e}")
+            return dash.no_update, False
 
-    return dash.no_update
+    return dash.no_update, False

@@ -1,5 +1,5 @@
 # Gunicorn configuration for SPCS deployment.
-# Settings here supplement the CMD flags in the Dockerfile.
+# Auto-detected from WORKDIR /app; supplements the CLI flags in entrypoint.sh.
 # This file is picked up automatically when gunicorn is invoked as `app:server`.
 
 
