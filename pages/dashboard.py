@@ -49,7 +49,7 @@ from components.data.snowflake_utils import (
     get_active_countries, get_available_wind_thresholds, get_latest_forecast_time_overall,
     get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data,
     get_lat_lons_bulk,
-    get_base_tiles, get_base_schools, get_base_hcs, get_base_shelters, get_base_wash, get_base_admin,
+    get_base_tiles, get_base_admin,
 )
 
 ZOOM_LEVEL = 14  # tile zoom level baked into mercator CSV filenames
@@ -519,10 +519,6 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
 @callback(
     [Output('tracks-data-store', 'data'),
      Output('envelope-data-store', 'data'),
-     Output('schools-data-store', 'data'),
-     Output('health-data-store', 'data'),
-     Output('shelters-data-store', 'data'),
-     Output('wash-data-store', 'data'),
      Output('tiles-stats-store', 'data'),
      Output('admin-stats-store', 'data'),
      Output('layers-loaded-store', 'data'),
@@ -620,7 +616,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     _hidden = {"hidden": True}
     if not all([country, storm, forecast_date, forecast_time, wind_threshold]):
         logger.info("=== MISSING SELECTIONS - RETURNING EARLY ===")
-        return ({}, {}, {}, {}, {}, {}, {}, {}, False, False,
+        return ({}, {}, {}, {}, False, False,
                 dmc.Alert("Missing selections", title="Warning", color="orange", variant="light"),
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
@@ -635,10 +631,6 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         # Initialize empty data stores
         tracks_data = {}
         envelope_data = {}
-        schools_data = {}
-        health_data = {}
-        shelters_data = {}
-        wash_data = {}
         tiles_data = {}
         admin_data = {}
         using_base_layers = False
@@ -1110,110 +1102,9 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     logger.error(f"Failed to load {dataset_name} after {max_retries} attempts. Last error: {last_error}")
                 return {}
             
-            # Infrastructure point layers — schools, health centres, shelters, WASH
-            impact_fname = f"{country}_{storm}_{forecast_datetime_str}_{wind_threshold}.parquet"
-            
-            schools_path  = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'school_views',   impact_fname)
-            health_path   = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views',        impact_fname)
-            shelters_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'shelter_views',   impact_fname)
-            wash_path     = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'wash_views',      impact_fname)
-
-            schools_data = {}
-            health_data  = {}
-            shelters_data = {}
-            wash_data    = {}
-
-            if config.IMPACT_DATA_SOURCE == 'SQL':
-                sql_kwargs = dict(country=country, storm=storm,
-                                  forecast_date=forecast_datetime_str,
-                                  wind_threshold=int(wind_threshold))
-                def _fetch_sql_facility(data_type, path, var_name):
-                    try:
-                        df = get_impact_data(data_type, giga_store, path, **sql_kwargs)
-                        if not df.empty and 'latitude' in df.columns:
-                            gdf = gpd.GeoDataFrame(
-                                df,
-                                geometry=gpd.points_from_xy(df['longitude'], df['latitude']),
-                                crs='EPSG:4326'
-                            )
-                            return (var_name, gdf.__geo_interface__)
-                    except Exception as e:
-                        logger.error(f"Error loading {var_name} from SQL: {e}")
-                    return (var_name, {})
-
-                _sql_tasks = [
-                    ('school',   schools_path,  'schools'),
-                    ('hc',       health_path,   'health'),
-                    ('shelter',  shelters_path, 'shelters'),
-                    ('wash',     wash_path,     'wash'),
-                ]
-                with ThreadPoolExecutor(max_workers=4) as _sql_pool:
-                    _sql_futures = [_sql_pool.submit(_fetch_sql_facility, dt, p, vn) for dt, p, vn in _sql_tasks]
-                for _f in _sql_futures:
-                    _vn, _geo = _f.result()
-                    if _vn == 'schools':   schools_data  = _geo
-                    elif _vn == 'health':  health_data   = _geo
-                    elif _vn == 'shelters': shelters_data = _geo
-                    elif _vn == 'wash':    wash_data     = _geo
-
-                # Fall back to base layer MAT tables for any facility with no impact data
-                def _fac_empty(store):
-                    return not store or not store.get('features')
-                base_fac_map = [
-                    ('schools',  schools_data,  get_base_schools),
-                    ('health',   health_data,   get_base_hcs),
-                    ('shelters', shelters_data, get_base_shelters),
-                    ('wash',     wash_data,     get_base_wash),
-                ]
-                with ThreadPoolExecutor(max_workers=4) as _pool:
-                    _futures = {vn: _pool.submit(_get_base_multi, fn, country) for vn, store, fn in base_fac_map if _fac_empty(store)}
-                for var_name, store, fn in base_fac_map:
-                    if not _fac_empty(store):
-                        continue
-                    try:
-                        df_base = _futures[var_name].result()
-                        if not df_base.empty and 'latitude' in df_base.columns:
-                            gdf = gpd.GeoDataFrame(df_base, geometry=gpd.points_from_xy(df_base['longitude'], df_base['latitude']), crs='EPSG:4326')
-                            geojson = gdf.__geo_interface__
-                            if var_name == 'schools':   schools_data  = geojson
-                            elif var_name == 'health':  health_data   = geojson
-                            elif var_name == 'shelters': shelters_data = geojson
-                            elif var_name == 'wash':    wash_data     = geojson
-                    except Exception as e:
-                        logger.error(f"Base {var_name} fallback error: {e}")
-            else:
-                # STAGE path: load all four in parallel
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = {}
-                    for name, path in [
-                        ('schools',  schools_path),
-                        ('health',   health_path),
-                        ('shelters', shelters_path),
-                        ('wash',     wash_path),
-                    ]:
-                        if giga_store.file_exists(path):
-                            futures[name] = executor.submit(load_dataset, path, name)
-                            time.sleep(0.1)  # stagger to avoid overwhelming connection pool
-
-                    for name, future in futures.items():
-                        try:
-                            result = future.result(timeout=30)
-                            if result and isinstance(result, dict) and len(result) > 0:
-                                if name == 'schools':    schools_data  = result
-                                elif name == 'health':   health_data   = result
-                                elif name == 'shelters': shelters_data = result
-                                elif name == 'wash':     wash_data     = result
-                            else:
-                                logger.warning(f"Warning: {name} loaded but returned empty result")
-                        except TimeoutError:
-                            logger.error(f"Error: Timeout loading {name} (exceeded 30s)")
-                        except Exception as e:
-                            error_msg = str(e)
-                            logger.error(f"Error in parallel load for {name}: {error_msg[:300]}")
-                            if "connection" in error_msg.lower() or "253002" in error_msg:
-                                logger.info(f"  This appears to be a connection/network issue.")
-
             # Phase 2: MapLibre fetches PBF tiles on-demand from the tile sidecar.
+            # Facility layers (schools, health, shelters, WASH) are also fetched on-demand
+            # by async clientside callbacks from /geojson/facilities/ on the tile server.
             # Skip full GeoJSON loading — only fetch aggregate stats for the legend.
             import urllib.request as _urllib_req
             import urllib.parse as _urllib_parse
@@ -1347,11 +1238,8 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
         layer_availability = {
             "using_base_layers": using_base_layers,
-            # Infrastructure point layers
-            "schools":   bool(schools_data  and schools_data.get('features')),
-            "health":    bool(health_data   and health_data.get('features')),
-            "shelters":  bool(shelters_data and shelters_data.get('features')),
-            "wash":      bool(wash_data     and wash_data.get('features')),
+            # Facility layers served by tile server on-demand — always available
+            "schools": True, "health": True, "shelters": True, "wash": True,
             # Hurricane overlays
             "tracks":    bool(tracks_data    and tracks_data.get('features')),
             # envelope_data uses 'data' key (list of records), not 'features'
@@ -1374,7 +1262,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             "storm": storm,
             "forecast_date": forecast_datetime_str,
             "wind_threshold": int(wind_threshold),
-            "tile_server_url": config.TILE_SERVER_URL,
+            "tile_server_url": "" if config.SPCS_RUN else config.TILE_SERVER_URL,
             "stats": tiles_stats,
             "admin_stats": admin_stats,
             "center": _map_cfg["center"],
@@ -1385,8 +1273,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                            if admin_layer_group and admin_layer_group != "none" else None),
         }
 
-        return (tracks_data, envelope_data, schools_data, health_data,
-                shelters_data, wash_data,
+        return (tracks_data, envelope_data,
                 tiles_stats, admin_stats,
                 True, using_base_layers, status_alert,
                 tiles_data, False, layer_key, tiles_pop_h,
@@ -1406,7 +1293,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
     except Exception as e:
         logger.error(f"Error in load_all_layers: {e}")
-        return ({}, {}, {}, {}, {}, {}, {}, {}, False, False,
+        return ({}, {}, {}, {}, False, False,
                 dmc.Alert(f"Error loading layers: {str(e)}", title="Error", color="red", variant="light"),
                 _empty_fc, False, dash.no_update, _hidden,
                 _empty_fc, False, dash.no_update, _hidden,
@@ -2056,7 +1943,7 @@ clientside_callback(
     """
     function(config) {
         if (!config || !config.country || !config.storm) return window.dash_clientside.no_update;
-        var base = config.tile_server_url || 'http://localhost:8001';
+        var base = (config.tile_server_url != null && config.tile_server_url !== '') ? config.tile_server_url : window.location.origin;
         var url = base + '/preload/'
             + encodeURIComponent(config.country) + '/'
             + encodeURIComponent(config.storm) + '/'

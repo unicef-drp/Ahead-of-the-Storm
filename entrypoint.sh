@@ -2,8 +2,8 @@
 # entrypoint.sh — orchestrates three processes inside the SPCS container:
 #
 #   nginx        0.0.0.0:8000  (public — proxy + tile cache)
-#     └─► Dash   127.0.0.1:8050  (gunicorn, 1 worker × 8 threads)
-#     └─► Tiles  127.0.0.1:8001  (uvicorn, 1 worker × 8 threads)
+#     └─► Dash   127.0.0.1:8050  (gunicorn, 1 worker, 8 threads)
+#     └─► Tiles  127.0.0.1:8001  (uvicorn, 1 async worker)
 #
 # Horizontal scaling is handled by the SPCS compute pool (more container
 # instances), not more workers per container. One process per service avoids
