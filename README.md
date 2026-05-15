@@ -71,6 +71,9 @@ Note: Snowflake is used for BOTH raw hurricane forecast data (TC_TRACKS / TC_ENV
 - `SPCS_TOKEN_PATH` (default: `/snowflake/session/token`)
 - `SNOWFLAKE_HOST`, `SNOWFLAKE_PORT` — required when `SPCS_RUN=true`
 
+#### Tile server
+- `TILE_SERVER_URL` (optional) — override the tile server base URL used by browser clientside callbacks. Defaults to `window.location.origin` (correct when nginx proxies `/tiles/` and `/geojson/` on the same host). Set explicitly only if the tile server is on a different host.
+
 #### Mapbox (for map visualization)
 - `MAPBOX_ACCESS_TOKEN` (optional — falls back to OpenStreetMap tiles)
 

@@ -42,13 +42,14 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from shapely.geometry import box, shape
+from shapely.ops import transform as _shapely_transform
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-SNOWFLAKE_ACCOUNT   = os.environ["SNOWFLAKE_ACCOUNT"]
+SNOWFLAKE_ACCOUNT   = os.getenv("SNOWFLAKE_ACCOUNT", "")
 SNOWFLAKE_DATABASE  = os.getenv("SNOWFLAKE_DATABASE", "AOTS")
 SNOWFLAKE_SCHEMA    = os.getenv("SNOWFLAKE_SCHEMA", "TC_ECMWF")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE", "AOTS_WH")
@@ -62,9 +63,25 @@ SPCS_TOKEN_PATH = os.getenv("SPCS_TOKEN_PATH", "/snowflake/session/token")
 SNOWFLAKE_HOST  = os.getenv("SNOWFLAKE_HOST", "")
 SNOWFLAKE_PORT  = int(os.getenv("SNOWFLAKE_PORT") or "443")
 
+# Data source mode — controls where tile/admin/facility data is loaded from.
+# SNOWFLAKE (default): all data from Snowflake MAT tables (SPCS production).
+# LOCAL: read parquet/CSV files from ROOT_DATA_DIR/VIEWS_DIR on local disk.
+# BLOB:  read parquet/CSV files from Azure Data Lake Storage (ADLS).
+IMPACT_DATA_STORE   = os.getenv("IMPACT_DATA_STORE", "SNOWFLAKE").upper()
+ROOT_DATA_DIR       = os.getenv("ROOT_DATA_DIR", "geodb")
+VIEWS_DIR_NAME      = os.getenv("VIEWS_DIR", "aos_views")
+ADLS_ACCOUNT_URL    = os.getenv("ADLS_ACCOUNT_URL", "")
+ADLS_SAS_TOKEN      = os.getenv("ADLS_SAS_TOKEN", "")
+ADLS_CONTAINER_NAME = os.getenv("ADLS_CONTAINER_NAME", "")
+
 if not SPCS_RUN:
-    SNOWFLAKE_USER     = os.environ["SNOWFLAKE_USER"]
-    SNOWFLAKE_PASSWORD = os.environ["SNOWFLAKE_PASSWORD"]
+    if IMPACT_DATA_STORE == "SNOWFLAKE":
+        SNOWFLAKE_USER     = os.environ["SNOWFLAKE_USER"]
+        SNOWFLAKE_PASSWORD = os.environ["SNOWFLAKE_PASSWORD"]
+    else:
+        # Snowflake credentials optional in LOCAL/BLOB mode — stats fall back to DataFrame.
+        SNOWFLAKE_USER     = os.getenv("SNOWFLAKE_USER", "")
+        SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD", "")
 
 MAT_ZOOM_LEVEL: int = 14
 
@@ -144,6 +161,17 @@ def _tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     return b.west, b.south, b.east, b.north
 
 
+_MERC_R = 6378137.0
+
+def _to_merc(geom):
+    """Project a shapely geometry from WGS84 (lon/lat degrees) to Web Mercator (metres)."""
+    def _proj(lons, lats, zs=None):
+        xs = np.array(lons, dtype=np.float64) * (math.pi / 180.0 * _MERC_R)
+        ys = np.log(np.tan(np.pi / 4.0 + np.radians(np.array(lats, dtype=np.float64)) / 2.0)) * _MERC_R
+        return (xs.tolist(), ys.tolist()) if zs is None else (xs.tolist(), ys.tolist(), list(zs))
+    return _shapely_transform(_proj, geom)
+
+
 def _quadkey_like_pattern(z: int, x: int, y: int) -> str:
     """LIKE pattern that selects all MAT_ZOOM_LEVEL=14 tiles within (z, x, y)."""
     qk = mercantile.quadkey(x, y, z)
@@ -152,6 +180,306 @@ def _quadkey_like_pattern(z: int, x: int, y: int) -> str:
     if z == MAT_ZOOM_LEVEL:
         return qk          # exact match via LIKE (no wildcard)
     return qk[:MAT_ZOOM_LEVEL]  # ancestor quadkey, exact match
+
+
+# ---------------------------------------------------------------------------
+# LOCAL / BLOB file-reading helpers
+# ---------------------------------------------------------------------------
+
+def _read_file_local(rel_path: str) -> Optional[pd.DataFrame]:
+    full = os.path.join(ROOT_DATA_DIR, VIEWS_DIR_NAME, rel_path)
+    if not os.path.exists(full):
+        log.debug("LOCAL: not found: %s", full)
+        return None
+    try:
+        df = pd.read_parquet(full) if rel_path.endswith(".parquet") else pd.read_csv(full)
+        return df.loc[:, ~df.columns.str.startswith("Unnamed:")]
+    except Exception as exc:
+        log.warning("LOCAL: read failed %s: %s", full, exc)
+        return None
+
+
+def _read_file_blob(rel_path: str) -> Optional[pd.DataFrame]:
+    try:
+        from azure.storage.blob import BlobServiceClient
+        import io as _io
+        client = BlobServiceClient(account_url=ADLS_ACCOUNT_URL, credential=ADLS_SAS_TOKEN)
+        blob_path = f"{ROOT_DATA_DIR}/{VIEWS_DIR_NAME}/{rel_path}"
+        data = client.get_blob_client(ADLS_CONTAINER_NAME, blob_path).download_blob().readall()
+        buf = _io.BytesIO(data)
+        df = pd.read_parquet(buf) if rel_path.endswith(".parquet") else pd.read_csv(buf)
+        return df.loc[:, ~df.columns.str.startswith("Unnamed:")]
+    except Exception as exc:
+        log.debug("BLOB: read failed %s: %s", rel_path, exc)
+        return None
+
+
+def _read_file(rel_path: str) -> Optional[pd.DataFrame]:
+    if IMPACT_DATA_STORE == "LOCAL":
+        return _read_file_local(rel_path)
+    if IMPACT_DATA_STORE == "BLOB":
+        return _read_file_blob(rel_path)
+    return None
+
+
+def _wkb_to_geojson(geom_val) -> Optional[str]:
+    """Convert WKB (bytes or hex string) to a GeoJSON geometry string."""
+    if geom_val is None:
+        return None
+    if isinstance(geom_val, float):
+        return None  # NaN from pandas
+    try:
+        from shapely import wkb as _wkb
+        g = _wkb.loads(geom_val if isinstance(geom_val, bytes) else bytes.fromhex(str(geom_val)))
+        return json.dumps(g.__geo_interface__)
+    except Exception:
+        return None
+
+
+def _wkb_centroid(geom_val) -> tuple[Optional[float], Optional[float]]:
+    """Return (lat, lon) of the centroid of a WKB geometry."""
+    if geom_val is None:
+        return None, None
+    if isinstance(geom_val, float):
+        return None, None  # NaN from pandas
+    try:
+        from shapely import wkb as _wkb
+        g = _wkb.loads(geom_val if isinstance(geom_val, bytes) else bytes.fromhex(str(geom_val)))
+        c = g.centroid
+        return c.y, c.x
+    except Exception:
+        return None, None
+
+
+def _norm_cols(df: pd.DataFrame, zone_id_to_tile_id: bool = True) -> pd.DataFrame:
+    """Uppercase all column names; optionally rename ZONE_ID → TILE_ID; cast TILE_ID to str."""
+    df = df.copy()
+    df.columns = [c.upper() for c in df.columns]
+    if zone_id_to_tile_id and "TILE_ID" not in df.columns and "ZONE_ID" in df.columns:
+        df = df.rename(columns={"ZONE_ID": "TILE_ID"})
+    if "TILE_ID" in df.columns:
+        df["TILE_ID"] = df["TILE_ID"].astype(str)
+    return df
+
+
+def _merge_no_collision(base: pd.DataFrame, right: pd.DataFrame, on: str) -> pd.DataFrame:
+    """Merge right onto base, dropping any right columns that already exist in base (except join key)."""
+    drop_cols = [c for c in right.columns if c != on and c in base.columns]
+    if drop_cols:
+        right = right.drop(columns=drop_cols)
+    return base.merge(right, on=on, how="left")
+
+
+def _add_children_total(df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
+    cols = [f"{prefix}INFANT_POPULATION", f"{prefix}SCHOOL_AGE_POPULATION", f"{prefix}ADOLESCENT_POPULATION"]
+    for c in cols:
+        if c not in df.columns:
+            df[c] = 0.0
+    df[f"{prefix}CHILDREN_TOTAL"] = sum(
+        pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols
+    )
+    return df
+
+
+def _load_mercator_from_files(code: str, storm: str, forecast_date: str, wt: int) -> list[dict]:
+    base = _read_file(f"mercator_views/{code}_{MAT_ZOOM_LEVEL}.parquet")
+    if base is None or base.empty:
+        log.warning("FILE: no base mercator for %s", code)
+        return []
+    base = _norm_cols(base)
+    base = _add_children_total(base)
+
+    impact = _read_file(f"mercator_views/{code}_{storm}_{forecast_date}_{wt}_{MAT_ZOOM_LEVEL}.csv")
+    if impact is not None and not impact.empty:
+        impact = _norm_cols(impact)
+        impact = _add_children_total(impact, prefix="E_")
+        base = _merge_no_collision(base, impact, on="TILE_ID")
+
+    # CCI and vulnerability files have NO wind threshold in their filename — they aggregate all thresholds.
+    vuln = _read_file(f"mercator_views/{code}_{storm}_{forecast_date}_{MAT_ZOOM_LEVEL}_vulnerability.csv")
+    if vuln is not None and not vuln.empty:
+        vuln = _norm_cols(vuln)
+        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED"] if c in vuln.columns]
+        if len(keep) > 1:
+            base = _merge_no_collision(base, vuln[keep], on="TILE_ID")
+
+    cci = _read_file(f"mercator_views/{code}_{storm}_{forecast_date}_{MAT_ZOOM_LEVEL}_cci.csv")
+    if cci is not None and not cci.empty:
+        cci = _norm_cols(cci)
+        keep = [c for c in ["TILE_ID", "CCI_CHILDREN", "E_CCI_CHILDREN"] if c in cci.columns]
+        if len(keep) > 1:
+            base = _merge_no_collision(base, cci[keep], on="TILE_ID")
+
+    return base.to_dict("records")
+
+
+def _load_admin_from_files(code: str, storm: str, forecast_date: str, wt: int, admin_level: int) -> list[dict]:
+    base = _read_file(f"admin_views/{code}_admin{admin_level}.parquet")
+    if base is None or base.empty:
+        log.warning("FILE: no base admin for %s L%s", code, admin_level)
+        return []
+    base = _norm_cols(base)
+
+    # Convert WKB geometry → GeoJSON string (matches SQL ST_ASGEOJSON output)
+    for geom_col in ("GEOMETRY",):
+        if geom_col in base.columns:
+            base["GEOJSON"] = base[geom_col].apply(_wkb_to_geojson)
+            base = base.drop(columns=[geom_col])
+            break
+
+    base = _add_children_total(base)
+
+    impact = _read_file(f"admin_views/{code}_{storm}_{forecast_date}_{wt}_admin{admin_level}.csv")
+    if impact is not None and not impact.empty:
+        impact = _norm_cols(impact)
+        impact = _add_children_total(impact, prefix="E_")
+        base = _merge_no_collision(base, impact, on="TILE_ID")
+
+    # CCI and vulnerability files have NO wind threshold — they aggregate all thresholds.
+    vuln = _read_file(f"admin_views/{code}_{storm}_{forecast_date}_admin{admin_level}_vulnerability.csv")
+    if vuln is not None and not vuln.empty:
+        vuln = _norm_cols(vuln)
+        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED"] if c in vuln.columns]
+        if len(keep) > 1:
+            base = _merge_no_collision(base, vuln[keep], on="TILE_ID")
+
+    cci = _read_file(f"admin_views/{code}_{storm}_{forecast_date}_admin{admin_level}_cci.csv")
+    if cci is not None and not cci.empty:
+        cci = _norm_cols(cci)
+        keep = [c for c in ["TILE_ID", "CCI_CHILDREN", "E_CCI_CHILDREN"] if c in cci.columns]
+        if len(keep) > 1:
+            base = _merge_no_collision(base, cci[keep], on="TILE_ID")
+
+    return base.to_dict("records")
+
+
+_FACILITY_SUBDIR = {
+    "schools":  "school_views",
+    "health":   "hc_views",
+    "shelters": "shelter_views",
+    "wash":     "wash_views",
+}
+_FACILITY_BASE_FILENAME = {
+    "schools":  "schools",
+    "health":   "health_centers",   # actual filename: {country}_health_centers.parquet
+    "shelters": "shelters",
+    "wash":     "wash",
+}
+
+
+def _attach_latlon_from_geometry(df: pd.DataFrame) -> pd.DataFrame:
+    """If LATITUDE/LONGITUDE missing (or all-null) but GEOMETRY present, extract from WKB centroid."""
+    has_latlon = (
+        "LATITUDE" in df.columns and "LONGITUDE" in df.columns
+        and df["LATITUDE"].notna().any() and df["LONGITUDE"].notna().any()
+    )
+    if has_latlon or "GEOMETRY" not in df.columns:
+        return df
+    coords = [_wkb_centroid(v) for v in df["GEOMETRY"]]
+    df = df.copy()
+    df["LATITUDE"]  = [c[0] for c in coords]
+    df["LONGITUDE"] = [c[1] for c in coords]
+    df = df.drop(columns=["GEOMETRY"])
+    return df
+
+
+def _load_facility_from_files(layer_type: str, code: str, storm: str,
+                              forecast_date: str, wt: int) -> list[dict]:
+    subdir = _FACILITY_SUBDIR[layer_type]
+
+    df = _read_file(f"{subdir}/{code}_{storm}_{forecast_date}_{wt}.parquet")
+    if df is None or df.empty:
+        base_name = _FACILITY_BASE_FILENAME[layer_type]
+        df = _read_file(f"{subdir}/{code}_{base_name}.parquet")
+        if df is None or df.empty:
+            return []
+
+    df = _norm_cols(df, zone_id_to_tile_id=False)
+    if "PROBABILITY" not in df.columns:
+        df["PROBABILITY"] = 0.0
+    df = _attach_latlon_from_geometry(df)
+    # Drop raw geometry bytes unconditionally — they're not JSON-serializable.
+    if "GEOMETRY" in df.columns:
+        df = df.drop(columns=["GEOMETRY"])
+
+    # Normalize layer-specific column names to match SQL output
+    if layer_type == "schools":
+        if "SCHOOL_NAME" not in df.columns and "NAME" in df.columns:
+            df = df.rename(columns={"NAME": "SCHOOL_NAME"})
+    elif layer_type == "health":
+        if "FACILITY_TYPE" not in df.columns:
+            for alt in ("HEALTH_AMENITY_TYPE", "AMENITY", "HEALTHCARE", "TYPE"):
+                if alt in df.columns:
+                    df["FACILITY_TYPE"] = df[alt]
+                    break
+
+    df["PROBABILITY"] = pd.to_numeric(df["PROBABILITY"], errors="coerce").fillna(0.0)
+    return df.to_dict("records")
+
+
+# ---------------------------------------------------------------------------
+# Stats helper — compute min/max from a cached DataFrame (LOCAL/BLOB mode)
+# ---------------------------------------------------------------------------
+
+_STATS_COL_MAP = [
+    ("population",              "POPULATION",              False),
+    ("children_total",          "CHILDREN_TOTAL",          False),
+    ("infant_population",       "INFANT_POPULATION",       False),
+    ("school_age_population",   "SCHOOL_AGE_POPULATION",   False),
+    ("adolescent_population",   "ADOLESCENT_POPULATION",   False),
+    ("built_surface_m2",        "BUILT_SURFACE_M2",        False),
+    ("moderate_poverty_prob",   "MODERATE_POVERTY_PROB",   True),
+    ("severe_poverty_prob",     "SEVERE_POVERTY_PROB",     True),
+    ("rwi",                     "RWI",                     False),
+    ("probability",             "PROBABILITY",             True),
+    ("E_population",            "E_POPULATION",            True),
+    ("E_children_total",        "E_CHILDREN_TOTAL",        True),
+    ("E_infant_population",     "E_INFANT_POPULATION",     True),
+    ("E_school_age_population", "E_SCHOOL_AGE_POPULATION", True),
+    ("E_adolescent_population", "E_ADOLESCENT_POPULATION", True),
+    ("E_built_surface_m2",      "E_BUILT_SURFACE_M2",      True),
+    ("E_num_schools",           "E_NUM_SCHOOLS",           True),
+    ("E_num_hcs",               "E_NUM_HCS",               True),
+    ("E_num_shelters",          "E_NUM_SHELTERS",           True),
+    ("E_num_wash",              "E_NUM_WASH",              True),
+    ("E_people_in_need",        "E_PEOPLE_IN_NEED",        True),
+    ("E_children_in_need",      "E_CHILDREN_IN_NEED",      True),
+    ("cci_children",            "CCI_CHILDREN",            True),
+    ("E_cci_children",          "E_CCI_CHILDREN",          True),
+]
+
+
+def _py(v):
+    """Convert numpy scalar to Python native for JSON serialization."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def _safe_prop(v):
+    """Return a JSON-safe scalar; None for NaN, None, or non-scalar types (e.g. arrays)."""
+    if v is None:
+        return None
+    try:
+        if v != v:  # NaN scalar check
+            return None
+    except (ValueError, TypeError):
+        return None  # array/complex types can't be NaN-tested
+    return _py(v)
+
+
+def _stats_from_df(df: pd.DataFrame) -> dict:
+    """Compute the same stats dict as the SQL stats queries, from a cached DataFrame."""
+    result = {}
+    for prop, col, positive_only in _STATS_COL_MAP:
+        if col not in df.columns:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        if positive_only:
+            s = s[s > 0]
+        s = s.dropna()
+        if s.empty:
+            continue
+        result[prop] = {"min": float(s.min()), "max": float(s.max())}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +647,7 @@ class _DataCache:
         self._mercator: dict[tuple, pd.DataFrame] = {}
         self._admin: dict[tuple, pd.DataFrame] = {}
         self._admin_geoms: dict[tuple, tuple] = {}  # key → (geom_list, strtree, props_list)
+        self._facility: dict[tuple, pd.DataFrame] = {}
         self._load_lock = threading.Lock()
 
     # --- mercator --------------------------------------------------------
@@ -334,13 +663,17 @@ class _DataCache:
             codes = [c.upper() for c in country.split('+') if c.strip()]
             all_rows: list[dict] = []
             for code in codes:
-                log.info("Cache: bulk-loading mercator %s/%s/%s/%skt…", code, storm, forecast_date, wind_threshold)
-                all_rows.extend(_run_query(_MERCATOR_FULL_SQL, [
-                    storm, forecast_date, wind_threshold,  # impact join
-                    storm, forecast_date,                  # vulnerability join
-                    storm, forecast_date,                  # CCI join
-                    code, MAT_ZOOM_LEVEL,
-                ]))
+                log.info("Cache: bulk-loading mercator %s/%s/%s/%skt [%s]…",
+                         code, storm, forecast_date, wind_threshold, IMPACT_DATA_STORE)
+                if IMPACT_DATA_STORE == "SNOWFLAKE":
+                    all_rows.extend(_run_query(_MERCATOR_FULL_SQL, [
+                        storm, forecast_date, wind_threshold,
+                        storm, forecast_date,
+                        storm, forecast_date,
+                        code, MAT_ZOOM_LEVEL,
+                    ]))
+                else:
+                    all_rows.extend(_load_mercator_from_files(code, storm, forecast_date, wind_threshold))
             if all_rows:
                 df = pd.DataFrame(all_rows)
                 df = pd.concat([df, _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
@@ -375,14 +708,17 @@ class _DataCache:
             codes = [c.upper() for c in country.split('+') if c.strip()]
             all_rows_admin: list[dict] = []
             for code in codes:
-                log.info("Cache: bulk-loading admin %s/%s/%s/%skt L%s…",
-                         code, storm, forecast_date, wind_threshold, admin_level)
-                all_rows_admin.extend(_run_query(_ADMIN_FULL_SQL, [
-                    storm, forecast_date, wind_threshold,  # impact join
-                    storm, forecast_date,                  # vulnerability join
-                    storm, forecast_date,                  # CCI join
-                    code, admin_level,
-                ]))
+                log.info("Cache: bulk-loading admin %s/%s/%s/%skt L%s [%s]…",
+                         code, storm, forecast_date, wind_threshold, admin_level, IMPACT_DATA_STORE)
+                if IMPACT_DATA_STORE == "SNOWFLAKE":
+                    all_rows_admin.extend(_run_query(_ADMIN_FULL_SQL, [
+                        storm, forecast_date, wind_threshold,
+                        storm, forecast_date,
+                        storm, forecast_date,
+                        code, admin_level,
+                    ]))
+                else:
+                    all_rows_admin.extend(_load_admin_from_files(code, storm, forecast_date, wind_threshold, admin_level))
             df = pd.DataFrame(all_rows_admin) if all_rows_admin else pd.DataFrame(columns=["TILE_ID"])
             self._admin[key] = df
             # Pre-parse geometries and build spatial index for instant tile filtering.
@@ -394,8 +730,8 @@ class _DataCache:
                 try:
                     geojson_data = json.loads(geojson_str) if isinstance(geojson_str, str) else geojson_str
                     geom = shape(geojson_data)
-                    props = {k: v for k, v in row.items()
-                             if k != "GEOJSON" and v is not None and v == v}
+                    props = {k: _py(v) for k, v in row.items()
+                             if k != "GEOJSON" and _safe_prop(v) is not None}
                     geoms.append(geom)
                     props_list.append(props)
                 except Exception as e:
@@ -417,8 +753,109 @@ class _DataCache:
         candidate_idxs = tree.query(tile_box, predicate='intersects')
         return [(geoms[i], props_list[i]) for i in candidate_idxs]
 
+    # --- facility points -------------------------------------------------
+
+    def ensure_facility(self, layer_type: str, country: str, storm: str,
+                        forecast_date: str, wind_threshold: int) -> None:
+        key = (layer_type, country, storm, forecast_date, wind_threshold)
+        if key in self._facility:
+            return
+        with self._load_lock:
+            if key in self._facility:
+                return
+            codes = [c.upper() for c in country.split('+') if c.strip()]
+            all_rows: list[dict] = []
+            for code in codes:
+                log.info("Cache: bulk-loading facility %s %s/%s/%s/%skt [%s]…",
+                         layer_type, code, storm, forecast_date, wind_threshold, IMPACT_DATA_STORE)
+                if IMPACT_DATA_STORE == "SNOWFLAKE":
+                    rows = _run_query(_FACILITY_IMPACT_SQL[layer_type],
+                                      [code, storm, forecast_date, wind_threshold])
+                    if not rows:
+                        log.info("  No impact data for %s %s — using base layer", layer_type, code)
+                        rows = _run_query(_FACILITY_BASE_SQL[layer_type], [code])
+                else:
+                    rows = _load_facility_from_files(layer_type, code, storm, forecast_date, wind_threshold)
+                all_rows.extend(rows)
+            df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(
+                columns=["NAME", "PROBABILITY", "LATITUDE", "LONGITUDE"])
+            if "PROBABILITY" in df.columns:
+                df["PROBABILITY"] = pd.to_numeric(df["PROBABILITY"], errors="coerce").fillna(0.0)
+            log.info("  Cache: %d %s points (country=%s)", len(df), layer_type, country)
+            self._facility[key] = df
+
+    def get_facility_df(self, layer_type: str, country: str, storm: str,
+                        forecast_date: str, wind_threshold: int) -> "pd.DataFrame":
+        self.ensure_facility(layer_type, country, storm, forecast_date, wind_threshold)
+        return self._facility.get((layer_type, country, storm, forecast_date, wind_threshold),
+                                  pd.DataFrame())
+
 
 _cache = _DataCache()
+
+
+# ---------------------------------------------------------------------------
+# Facility SQL — impact tables (with PROBABILITY) and base fallbacks
+# ---------------------------------------------------------------------------
+
+_FACILITY_IMPACT_SQL: dict[str, str] = {
+    "schools": """
+        SELECT SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+    "health": """
+        SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
+               ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
+               ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
+          AND ALL_DATA:geometry::STRING IS NOT NULL
+    """,
+    "shelters": """
+        SELECT NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+    "wash": """
+        SELECT NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.WASH_IMPACT_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+}
+
+_FACILITY_BASE_SQL: dict[str, str] = {
+    "schools": """
+        SELECT SCHOOL_NAME, EDUCATION_LEVEL, 0.0 AS PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.BASE_SCHOOL_MAT
+        WHERE COUNTRY = %s AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+    "health": """
+        SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, 0.0 AS PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.BASE_HC_MAT
+        WHERE COUNTRY = %s AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+    "shelters": """
+        SELECT NAME, SHELTER_TYPE, CATEGORY, 0.0 AS PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.BASE_SHELTER_MAT
+        WHERE COUNTRY = %s AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+    "wash": """
+        SELECT NAME, WASH_TYPE, CATEGORY, 0.0 AS PROBABILITY, LATITUDE, LONGITUDE
+        FROM AOTS.TC_ECMWF.BASE_WASH_MAT
+        WHERE COUNTRY = %s AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+    """,
+}
+
+_FACILITY_BASE_COLORS: dict[str, str] = {
+    "schools":  "#ADD8E6",
+    "health":   "#90EE90",
+    "shelters": "#E91E8C",
+    "wash":     "#40E0D0",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -458,8 +895,8 @@ def _fetch_mercator_tile(
         # Exclude internal/NaN columns and None/NaN property values.
         # v == v is False for float NaN — filters out Snowflake NULLs that
         # pandas converted to NaN (which would otherwise encode as opaque tiles).
-        props = {k: v for k, v in row.items()
-                 if k not in _SKIP_COLS_MERCATOR and v is not None and v == v}
+        props = {k: _py(v) for k, v in row.items()
+                 if k not in _SKIP_COLS_MERCATOR and _safe_prop(v) is not None}
         features.append({"geometry": geom.wkt, "properties": props})
 
     if not features:
@@ -490,14 +927,22 @@ def _fetch_admin_tile(
     if not candidates:
         return b""
 
-    tile_box = box(tile_w, tile_s, tile_e, tile_n)
+    # Clip in WGS84, then project to Web Mercator for PBF encoding so MapLibre
+    # (which uses Mercator internally) renders polygons without lat distortion.
+    merc_b = mercantile.xy_bounds(mercantile.Tile(x, y, z))
+    tile_box_wgs = box(tile_w, tile_s, tile_e, tile_n)
+    tile_box_merc = box(merc_b.left, merc_b.bottom, merc_b.right, merc_b.top)
+
     features = []
     for geom, props in candidates:
         try:
-            clipped = geom.intersection(tile_box)
-            if clipped.is_empty or clipped.geom_type == "GeometryCollection":
+            clipped_wgs = geom.intersection(tile_box_wgs)
+            if clipped_wgs.is_empty or clipped_wgs.geom_type == "GeometryCollection":
                 continue
-            features.append({"geometry": clipped.wkt, "properties": props})
+            clipped_merc = _to_merc(clipped_wgs).intersection(tile_box_merc)
+            if clipped_merc.is_empty:
+                continue
+            features.append({"geometry": clipped_merc.wkt, "properties": props})
         except Exception as e:
             log.debug("Skip admin clip: %s", e)
 
@@ -506,7 +951,7 @@ def _fetch_admin_tile(
 
     pbf = mapbox_vector_tile.encode(
         [{"name": "admin", "features": features}],
-        default_options={"quantize_bounds": (tile_w, tile_s, tile_e, tile_n)},
+        default_options={"quantize_bounds": (merc_b.left, merc_b.bottom, merc_b.right, merc_b.top)},
     )
     return bytes(pbf) if not isinstance(pbf, bytes) else pbf
 
@@ -805,6 +1250,8 @@ def preload(country: str, storm: str, forecast_date: str,
         try:
             _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold)
             _cache.ensure_admin(country.upper(), storm, forecast_date, wind_threshold, admin_level)
+            for layer_type in _FACILITY_IMPACT_SQL:
+                _cache.ensure_facility(layer_type, country.upper(), storm, forecast_date, wind_threshold)
         except Exception as e:
             log.error("Preload error: %s", e)
     threading.Thread(target=_load, daemon=True).start()
@@ -819,6 +1266,10 @@ def get_tile_stats(
     zoom_level: int = 14,
 ) -> dict:
     try:
+        if IMPACT_DATA_STORE != "SNOWFLAKE":
+            _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold)
+            df = _cache._mercator.get((country.upper(), storm, forecast_date, wind_threshold))
+            return _stats_from_df(df) if df is not None else {}
         rows = _run_query("""
             SELECT
                 MIN(NULLIF(b.POPULATION, 0))             AS pop_min,   MAX(b.POPULATION)             AS pop_max,
@@ -921,6 +1372,10 @@ def get_admin_stats(
     admin_level: int = 1,
 ) -> dict:
     try:
+        if IMPACT_DATA_STORE != "SNOWFLAKE":
+            _cache.ensure_admin(country.upper(), storm, forecast_date, wind_threshold, admin_level)
+            df = _cache._admin.get((country.upper(), storm, forecast_date, wind_threshold, admin_level))
+            return _stats_from_df(df) if df is not None else {}
         rows = _run_query("""
             SELECT
                 MIN(NULLIF(b.POPULATION, 0))              AS pop_min,   MAX(b.POPULATION)              AS pop_max,
@@ -1039,6 +1494,73 @@ def raster_tile(
         content=webp_bytes,
         media_type="image/webp",
     )
+
+
+@app.get("/geojson/facilities/{layer_type}/{country}/{storm}/{forecast_date}",
+         response_class=Response)
+def facility_geojson(
+    layer_type: str,
+    country: str, storm: str, forecast_date: str,
+    wind_threshold: int = Query(...),
+) -> Response:
+    """Return a styled GeoJSON FeatureCollection for the requested facility layer.
+
+    Properties include `_color`, `_radius`, `_opacity`, `_weight`, `_fillOpacity` for
+    Leaflet's pointToLayer, plus lowercase field names for tooltip functions.
+    Response is gzip-compressed so the browser receives it efficiently via fetch().
+    """
+    if layer_type not in _FACILITY_IMPACT_SQL:
+        raise HTTPException(status_code=404, detail=f"Unknown layer type: {layer_type}")
+    base_color = _FACILITY_BASE_COLORS[layer_type]
+    try:
+        df = _cache.get_facility_df(layer_type, country.upper(), storm, forecast_date, wind_threshold)
+        features = []
+        for _, row in df.iterrows():
+            lat = row.get("LATITUDE")
+            lon = row.get("LONGITUDE")
+            if lat is None or lon is None or lat != lat or lon != lon:
+                continue
+            prob = float(row.get("PROBABILITY") or 0)
+            if prob <= 0:
+                color, radius = base_color, 4
+            elif prob <= 0.15:
+                color, radius = "#FFFF00", 10
+            elif prob <= 0.30:
+                color, radius = "#FFD700", 12
+            elif prob <= 0.45:
+                color, radius = "#FFA500", 15
+            elif prob <= 0.60:
+                color, radius = "#FF8C00", 18
+            elif prob <= 0.75:
+                color, radius = "#FF4500", 20
+            elif prob <= 0.90:
+                color, radius = "#DC143C", 22
+            else:
+                color, radius = "#8B0000", 25
+            props = {k.lower(): _safe_prop(v)
+                     for k, v in row.items()
+                     if k not in ("LATITUDE", "LONGITUDE")}
+            props.update({
+                "_color": color, "_radius": radius,
+                "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
+            })
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+                "properties": props,
+            })
+        body = gzip.compress(
+            json.dumps({"type": "FeatureCollection", "features": features}).encode(),
+            compresslevel=6,
+        )
+        return Response(
+            content=body,
+            media_type="application/geo+json",
+            headers={"Content-Encoding": "gzip", "Cache-Control": "public, max-age=300"},
+        )
+    except Exception as exc:
+        log.error("facility_geojson error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/tile-value/{country}/{storm}/{forecast_date}")

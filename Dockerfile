@@ -3,7 +3,7 @@
 # Build (run from project root):
 #   docker build -t unicef-dash-app:latest . --platform=linux/amd64
 #
-# Tag & push to Snowflake registry (see snowflake_spcs/03_build_and_push.sh):
+# Tag & push to Snowflake image registry:
 #   docker tag unicef-dash-app:latest <registry>/<repo>/unicef-dash-app:latest
 #   docker push <registry>/<repo>/unicef-dash-app:latest
 
@@ -82,6 +82,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 # Single gunicorn worker (1 process, 8 threads):
 #   - Avoids fork-safety issues with snowflake-connector-python native extensions
 #   - Eliminates Dash callback-map race condition on first request
-# Single uvicorn worker (TILE_WORKERS=1 default, overridable in service spec):
+# Single uvicorn worker for tile server (TILE_WORKERS=1 default, overridable in service spec):
+#   NOTE: tile_server.py has no __main__ block — always start via uvicorn, never python3 directly.
 RUN chmod +x /app/entrypoint.sh
 CMD ["/app/entrypoint.sh"]

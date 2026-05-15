@@ -2,21 +2,15 @@
 Infrastructure overlay callbacks.
 
 Handles the four point-layer overlays (schools, health centers, shelters, WASH)
-and the cross-layer "no data" warning banner. Each overlay callback reads pre-loaded
-GeoJSON from a dcc.Store, converts polygon features to centroid points, applies a
-shared yellow→red probability colour scale, and pushes the result to a
-dash_leaflet GeoJSON component.
+and the cross-layer "no data" warning banner.
+
+Each overlay uses an async clientside callback that fetches styled GeoJSON directly
+from the tile server, bypassing Dash's callback POST channel (which has a ~10 MB
+size limit that large countries exceed). Data flows: tile server → browser → Leaflet
+component, with no server round-trip through Dash.
 """
-import copy
-import hashlib
-import json
-import logging
-
-import dash
-from dash import Output, Input, State, callback
+from dash import Output, Input, State, callback, clientside_callback
 import dash_mantine_components as dmc
-
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -47,107 +41,55 @@ _LAYER_DISPLAY_NAMES = {
 
 
 # =============================================================================
-# HELPERS
-# Internal utilities used by the overlay toggle callbacks.
-# =============================================================================
-
-def _style_point_layer(geo_data, base_color):
-    """Convert GeoJSON features to styled point markers based on impact probability.
-
-    All four infrastructure layers (schools, HCs, shelters, WASH) share the same
-    yellow→red impact scale; only the base_color (no-impact dot) differs per layer.
-    """
-    from shapely.geometry import shape
-    point_features = []
-    for feature in geo_data.get('features', []):
-        if 'properties' not in feature or 'geometry' not in feature:
-            continue
-        prob = feature['properties'].get('probability') or 0
-        # 8-band yellow→red scale (0–15%, 15–30%, ..., 90–100%) matching the map tile colour ramp.
-        # Radius grows with probability to give higher-impact features additional visual weight.
-        if prob == 0:
-            color, radius = base_color, 4
-        elif prob <= 0.15:
-            color, radius = '#FFFF00', 10
-        elif prob <= 0.30:
-            color, radius = '#FFD700', 12
-        elif prob <= 0.45:
-            color, radius = '#FFA500', 15
-        elif prob <= 0.60:
-            color, radius = '#FF8C00', 18
-        elif prob <= 0.75:
-            color, radius = '#FF4500', 20
-        elif prob <= 0.90:
-            color, radius = '#DC143C', 22
-        else:
-            color, radius = '#8B0000', 25
-        try:
-            centroid = shape(feature['geometry']).centroid
-            point_features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [centroid.x, centroid.y]},
-                "properties": {
-                    **feature['properties'],
-                    "_color": color,
-                    "_radius": radius,
-                    "_opacity": 0.8,
-                    "_weight": 2,
-                    "_fillOpacity": 0.7
-                }
-            })
-        except Exception as e:
-            logger.error(f"Error converting to point: {e}")
-    return point_features
-
-
-# =============================================================================
 # INFRASTRUCTURE OVERLAY TOGGLE CALLBACKS
-# One callback per layer — registered via factory to avoid code duplication.
-# Each reads pre-loaded GeoJSON from a dcc.Store, converts polygon features
-# to centroid points with probability-scaled colour/radius, and writes the
-# result to the corresponding dash_leaflet GeoJSON component.
+# One async clientside callback per layer. When the checkbox is toggled OR a new
+# storm is loaded (maplibre-tile-config-store changes), the callback fetches styled
+# GeoJSON directly from the tile server and updates the Leaflet GeoJSON component.
+#
+# Why clientside + async fetch instead of a server callback:
+#   A server callback sends GeoJSON through Dash's _dash-update-component POST,
+#   which nginx caps at 50 MB and Dash serialises synchronously. Large countries
+#   (e.g. Mexico with ~30 k schools) exceed the limit and return HTTP 413.
+#   An async fetch runs entirely in the browser — Dash never touches the payload.
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Layer registry
-# ---------------------------------------------------------------------------
-_OVERLAY_LAYERS = [
-    # (layer_id, base_color)   — layer_id matches both the checkbox and store IDs
-    ("schools",  "#ADD8E6"),   # Light blue
-    ("health",   "#90EE90"),   # Light green
-    ("shelters", "#E91E8C"),   # Pink
-    ("wash",     "#40E0D0"),   # Turquoise
-]
+_EMPTY_FC = '{"type":"FeatureCollection","features":[]}'
 
-
-def _register_overlay_toggle(layer_id, base_color):
-    """Register the toggle callback for one infrastructure overlay layer.
-
-    Uses a closure so the correct layer_id and base_color are captured at registration
-    time. Called once per entry in _OVERLAY_LAYERS during module import.
-    """
-    @callback(
-        Output(f"{layer_id}-overlay-json", "data"),
-        Output(f"{layer_id}-overlay-json", "zoomToBounds"),
-        Output(f"{layer_id}-overlay-json", "key"),
+def _register_overlay_toggle(layer_id: str) -> None:
+    clientside_callback(
+        f"""
+        async function(checked, config) {{
+            if (!checked || !config || !config.country || !config.storm) {{
+                return [{_EMPTY_FC}, window.dash_clientside.no_update];
+            }}
+            var base = (config.tile_server_url != null && config.tile_server_url !== '')
+                ? config.tile_server_url
+                : window.location.origin;
+            var url = base + '/geojson/facilities/{layer_id}/'
+                + encodeURIComponent(config.country) + '/'
+                + encodeURIComponent(config.storm) + '/'
+                + encodeURIComponent(config.forecast_date)
+                + '?wind_threshold=' + config.wind_threshold;
+            try {{
+                var resp = await fetch(url);
+                if (!resp.ok) return [{_EMPTY_FC}, window.dash_clientside.no_update];
+                var geojson = await resp.json();
+                return [geojson, Date.now().toString()];
+            }} catch(e) {{
+                console.error('[AoTS] Failed to fetch {layer_id}:', e);
+                return [{_EMPTY_FC}, window.dash_clientside.no_update];
+            }}
+        }}
+        """,
+        [Output(f"{layer_id}-overlay-json", "data"),
+         Output(f"{layer_id}-overlay-json", "key")],
         Input(f"{layer_id}-layer", "checked"),
-        State(f"{layer_id}-data-store", "data"),
-        prevent_initial_call=True
+        Input("maplibre-tile-config-store", "data"),
+        prevent_initial_call=True,
     )
-    def _toggle(checked, data_in):
-        if not checked or not data_in:
-            return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-        data = copy.deepcopy(data_in)
-        key = hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
-        try:
-            data["features"] = _style_point_layer(data, base_color)
-            return data, False, key
-        except Exception as e:
-            logger.error(f"Error styling {layer_id} layer: {e}")
-            return data, False, key
 
-for _lid, _col in _OVERLAY_LAYERS:
-    _register_overlay_toggle(_lid, _col)
+for _lid in ("schools", "health", "shelters", "wash"):
+    _register_overlay_toggle(_lid)
 
 
 # =============================================================================
