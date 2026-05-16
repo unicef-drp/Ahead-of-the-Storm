@@ -713,7 +713,26 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                             thresholds_to_preprocess.append(64)
                         # Remove duplicates
                         thresholds_to_preprocess = list(set(thresholds_to_preprocess))
-                        
+
+                        # Load vulnerability in-need lookup ONCE (shared across all threshold threads)
+                        _vt_lookup = {}
+                        try:
+                            _dt = f"{forecast_date.replace('-','')}{forecast_time.replace(':','').replace(' ','')}00"
+                            _vt_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views',
+                                                     f"{country}_{storm}_{_dt}_{ZOOM_LEVEL}_vulnerability_tracks.parquet")
+                            if giga_store.file_exists(_vt_path):
+                                import io as _io
+                                _df_vt = pd.read_parquet(_io.BytesIO(giga_store.read_file(_vt_path)))
+                                _in_need_cols = ['severity_people_in_need', 'severity_children_in_need',
+                                                 'severity_infant_in_need', 'severity_school_age_in_need',
+                                                 'severity_adolescent_in_need']
+                                _available = [c for c in _in_need_cols if c in _df_vt.columns]
+                                if _available:
+                                    _vt_lookup = _df_vt.set_index('zone_id')[_available].to_dict('index')
+                                    logger.info(f"Loaded vulnerability tracks for {country}/{storm}/{_dt}: {len(_vt_lookup)} members")
+                        except Exception as _e:
+                            logger.warning(f"Could not load vulnerability tracks for envelope preprocessing: {_e}")
+
                         def preprocess_threshold(thresh):
                             """Pre-process envelopes for a specific wind threshold"""
                             try:
@@ -813,14 +832,24 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                                 
                                 # Convert to GeoJSON and store
                                 geo_dict = gdf.__geo_interface__
-                                
+
                                 # Calculate max population for relative scaling
                                 if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
                                     max_pop = gdf['severity_population'].max()
                                     for feature in geo_dict.get('features', []):
                                         if 'properties' in feature:
                                             feature['properties']['max_population'] = max_pop
-                                
+
+                                # Inject per-member vulnerability in-need from shared lookup
+                                if _vt_lookup:
+                                    for feature in geo_dict.get('features', []):
+                                        props = feature.get('properties', {})
+                                        _mem = props.get('ensemble_member') or props.get('ENSEMBLE_MEMBER')
+                                        if _mem is not None:
+                                            _row = _vt_lookup.get(int(_mem), {})
+                                            for col, val in _row.items():
+                                                props[col] = None if (isinstance(val, float) and val != val) else val
+
                                 parse_elapsed = time.time() - parse_start
                                 logger.info(f"Pre-processed {len(gdf)} envelopes for {thresh}kt in {parse_elapsed:.2f}s")
                                 return thresh, geo_dict
@@ -1538,23 +1567,47 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
 
             except Exception as e:
                 logger.error(f"Could not add impact data to stacked envelopes: {e}")
-            
+
+            # Merge vulnerability in-need data for this member from _vulnerability_tracks.parquet
+            vuln_in_need = {}
+            try:
+                if country and storm and forecast_datetime_str and selected_track is not None:
+                    vuln_tracks_filename = f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_vulnerability_tracks.parquet"
+                    vuln_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', vuln_tracks_filename)
+                    file_exists = giga_store.file_exists(vuln_tracks_filepath)
+                    if file_exists:
+                        import io as _io
+                        df_vt = pd.read_parquet(_io.BytesIO(giga_store.read_file(vuln_tracks_filepath)))
+                        member_row = df_vt[df_vt['zone_id'] == int(selected_track)]
+                        if not member_row.empty:
+                            for col in ['severity_people_in_need', 'severity_children_in_need',
+                                        'severity_infant_in_need', 'severity_school_age_in_need',
+                                        'severity_adolescent_in_need']:
+                                if col in member_row.columns:
+                                    v = member_row.iloc[0][col]
+                                    vuln_in_need[col] = None if (v is None or (isinstance(v, float) and v != v)) else v
+            except Exception as e:
+                logger.warning(f"Could not load vulnerability in-need data for envelope tooltip: {e}")
+
             # Convert to GeoJSON and return
             geo_dict = gdf.__geo_interface__
-            
+
             # Calculate max population for relative scaling across all thresholds
             if 'severity_population' in gdf.columns and gdf['severity_population'].max() > 0:
                 max_pop = gdf['severity_population'].max()
                 for feature in geo_dict.get('features', []):
                     if 'properties' in feature:
                         feature['properties']['max_population'] = max_pop
-                        # Mark as stacked for higher opacity in visualization
                         feature['properties']['is_stacked'] = True
+                        if vuln_in_need:
+                            feature['properties'].update(vuln_in_need)
             
-            # Mark all features as stacked if not already marked
+            # Mark all features as stacked if not already marked; inject vuln in-need for unmarked ones
             for feature in geo_dict.get('features', []):
                 if 'properties' in feature and 'is_stacked' not in feature['properties']:
                     feature['properties']['is_stacked'] = True
+                    if vuln_in_need:
+                        feature['properties'].update(vuln_in_need)
             
             logger.info(f"Showing stacked envelopes for track {selected_track} at wind thresholds >= {wth_int} ({len(gdf)} envelopes)")
             return geo_dict, False, key
@@ -1779,8 +1832,33 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                 for feature in geo_dict.get('features', []):
                     if 'properties' in feature:
                         feature['properties']['max_population'] = max_pop
+
+            # Inject per-member vulnerability in-need
+            try:
+                _vt_path = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views',
+                                         f"{country}_{storm}_{forecast_datetime_str}_{ZOOM_LEVEL}_vulnerability_tracks.parquet")
+                _file_exists = giga_store.file_exists(_vt_path)
+                if _file_exists:
+                    import io as _io
+                    _df_vt = pd.read_parquet(_io.BytesIO(giga_store.read_file(_vt_path)))
+                    _in_need_cols = ['severity_people_in_need', 'severity_children_in_need',
+                                     'severity_infant_in_need', 'severity_school_age_in_need',
+                                     'severity_adolescent_in_need']
+                    _available = [c for c in _in_need_cols if c in _df_vt.columns]
+                    if _available:
+                        _vt_lookup = _df_vt.set_index('zone_id')[_available].to_dict('index')
+                        for feature in geo_dict.get('features', []):
+                            props = feature.get('properties', {})
+                            _mem = props.get('ensemble_member') or props.get('ENSEMBLE_MEMBER')
+                            if _mem is not None:
+                                _row = _vt_lookup.get(int(_mem), {})
+                                for col, val in _row.items():
+                                    props[col] = None if (isinstance(val, float) and val != val) else val
+            except Exception as _e:
+                logger.warning(f"Could not load vulnerability in-need data for envelope tooltip: {_e}")
+
             return geo_dict, False, key
-        
+
         return gdf.__geo_interface__, False, key
         
     except Exception as e:

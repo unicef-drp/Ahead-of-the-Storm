@@ -27,7 +27,20 @@ window._leaflet_maps = window._leaflet_maps || {};
 
 function initMaplibre() {
     var container = document.getElementById('maplibre-container');
-    if (!container || window._aots_maplibre) return;
+    if (!container) return;
+
+    // If we have a stale MapLibre instance whose container is no longer in the DOM
+    // (happens when Dash re-renders the page on navigation), destroy it so we can re-init.
+    if (window._aots_maplibre) {
+        var existingContainer = window._aots_maplibre.getContainer();
+        if (!document.body.contains(existingContainer) || existingContainer !== container) {
+            window._aots_maplibre.remove();
+            window._aots_maplibre = null;
+            window._aots_maplibre_ready = false;
+        } else {
+            return; // healthy instance already bound to this container
+        }
+    }
 
     // Basemap is rendered entirely by MapLibre; all Leaflet BaseLayers are opacity=0.
     // Leaflet's LayersControl fires 'baselayerchange' → swapMaplibreBasemap swaps tiles here.
@@ -79,9 +92,17 @@ window._aots_maplibre = new maplibregl.Map({
 // Try immediately on DOMContentLoaded, then poll
 document.addEventListener('DOMContentLoaded', initMaplibre);
 var _initInterval = setInterval(function () {
-    if (document.getElementById('maplibre-container') && !window._aots_maplibre) initMaplibre();
+    initMaplibre();
     if (window._aots_maplibre) clearInterval(_initInterval);
 }, 500);
+
+// Re-init when Dash re-renders the page and replaces maplibre-container in the DOM
+(function () {
+    var _observer = new MutationObserver(function () {
+        if (document.getElementById('maplibre-container')) initMaplibre();
+    });
+    _observer.observe(document.body, { childList: true, subtree: true });
+})();
 
 // ---------------------------------------------------------------------------
 // 3. Leaflet → MapLibre real-time sync
@@ -169,6 +190,8 @@ function _buildTileTooltip(feature) {
     var e_hcs  = G('E_NUM_HCS');
     var e_shlt = G('E_NUM_SHELTERS');
     var e_wash = G('E_NUM_WASH');
+    var pin    = G('E_PEOPLE_IN_NEED');
+    var chin   = G('E_CHILDREN_IN_NEED');
 
     var children = (inf !== null || sch !== null || ado !== null)
         ? (inf || 0) + (sch || 0) + (ado || 0) : null;
@@ -193,8 +216,16 @@ function _buildTileTooltip(feature) {
 
     if (prob > 0) {
         html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">Expected Impact:</div>'
-              + '<div style="font-size:11px;color:#555;">Hurricane Impact Probability: ' + _fmtPct(prob) + '</div>'
-              + '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
+              + '<div style="font-size:11px;color:#555;">Hurricane Impact Probability: ' + _fmtPct(prob) + '</div>';
+        if (pin !== null && pin !== undefined && pin > 0) {
+            html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">'
+                  + '<div style="font-size:11px;color:#f59f00;font-weight:600;margin-top:4px;">In Need:</div>'
+                  + '<div style="font-size:11px;color:#f59f00;">Population: ' + _fmtN(pin) + '</div>';
+            if (chin !== null && chin !== undefined && chin > 0) {
+                html += '<div style="font-size:11px;color:#f59f00;">Children (total): ' + _fmtN(chin) + '</div>';
+            }
+        }
+        html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
     }
 
     html += '<div style="font-size:11px;color:#777;margin-top:4px;"><strong>' + (isAdmin ? 'Region' : 'Tile') + ' Base Data:</strong></div>'

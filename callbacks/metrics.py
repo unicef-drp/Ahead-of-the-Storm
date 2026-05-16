@@ -113,7 +113,22 @@ def _get_store():
      Output("bsm2-count-low", "children"),
      Output("bsm2-count-probabilistic", "children"),
      Output("bsm2-count-high", "children"),
-     Output("high-impact-badge", "children"),],
+     Output("high-impact-badge", "children"),
+     Output("population-in-need-low", "children"),
+     Output("population-in-need-probabilistic", "children"),
+     Output("population-in-need-high", "children"),
+     Output("children-total-in-need-low", "children"),
+     Output("children-total-in-need-probabilistic", "children"),
+     Output("children-total-in-need-high", "children"),
+     Output("infant-in-need-low", "children"),
+     Output("infant-in-need-probabilistic", "children"),
+     Output("infant-in-need-high", "children"),
+     Output("children-in-need-low", "children"),
+     Output("children-in-need-probabilistic", "children"),
+     Output("children-in-need-high", "children"),
+     Output("adolescent-in-need-low", "children"),
+     Output("adolescent-in-need-probabilistic", "children"),
+     Output("adolescent-in-need-high", "children"),],
    [Input("storm-select", "value"),
     Input("wind-threshold-select", "value"),
     Input("effective-country-store", "data"),
@@ -132,13 +147,13 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
     Returns a 31-tuple matching the declared Outputs: (pop_low, pop_prob, pop_high, …, badge).
     Retries up to 3× on transient I/O errors with exponential back-off.
     """
-    _NA31 = (_NA_VALUE,) * 31
+    _NA46 = (_NA_VALUE,) * 46
 
     if not layers_loaded:
-        return _NA31
+        return _NA46
 
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        return _NA31
+        return _NA46
 
     giga_store = _get_store()
 
@@ -158,6 +173,9 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         probabilistic_results = {"children": _NA_VALUE, "infant": _NA_VALUE, "adolescent": _NA_VALUE, "children_total": _NA_VALUE, "schools": _NA_VALUE, "health": _NA_VALUE, "shelters": _NA_VALUE, "wash": _NA_VALUE, "population": _NA_VALUE, "built_surface_m2": _NA_VALUE}
         high_results = {"children": _NA_VALUE, "infant": _NA_VALUE, "adolescent": _NA_VALUE, "children_total": _NA_VALUE, "schools": _NA_VALUE, "health": _NA_VALUE, "shelters": _NA_VALUE, "wash": _NA_VALUE, "population": _NA_VALUE, "built_surface_m2": _NA_VALUE}
         high_member_badge = _NA_VALUE
+        df = None
+        gdf_tracks = None
+        high_impact_member = None
 
         if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(filepath):
             df = None
@@ -299,6 +317,89 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
         else:
             logger.warning(f"Impact metrics: File not found {filename}")
 
+        # PIN/CHIN sub-lines
+        # SQL: in-need columns are already in df (MERCATOR_TILE_VULNERABILITY_MAT LEFT JOIN)
+        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN) — no extra download needed.
+        # Stage: read vulnerability CSV and tracks parquet directly from stage.
+        pin_pop_prob = pin_children_prob = pin_infant_prob = pin_schoolage_prob = pin_adolescent_prob = ""
+        pin_pop_low = pin_children_low = pin_infant_low = pin_schoolage_low = pin_adolescent_low = ""
+        pin_pop_high = pin_children_high = pin_infant_high = pin_schoolage_high = pin_adolescent_high = ""
+        _pin_high_impact_member = high_impact_member
+
+        try:
+            def _in_need_fmt(v):
+                if isinstance(v, str) or v is None or (isinstance(v, float) and (np.isnan(v) or v <= 0)):
+                    return ""
+                return f"{v:,.0f}"
+
+            def _row_val(row_df, col):
+                if row_df.empty or col not in row_df.columns:
+                    return None
+                return row_df.iloc[0][col]
+
+            if config.IMPACT_DATA_SOURCE == 'SQL':
+                # Expected — from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
+                if df is not None:
+                    pin_pop_prob        = _in_need_fmt(df['E_people_in_need'].sum()       if 'E_people_in_need'       in df.columns else None)
+                    pin_children_prob   = _in_need_fmt(df['E_children_in_need'].sum()     if 'E_children_in_need'     in df.columns else None)
+                    pin_infant_prob     = _in_need_fmt(df['E_infant_in_need'].sum()       if 'E_infant_in_need'       in df.columns else None)
+                    pin_schoolage_prob  = _in_need_fmt(df['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in df.columns else None)
+                    pin_adolescent_prob = _in_need_fmt(df['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in df.columns else None)
+
+                # DET + Worst — from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
+                _gdf_vt = gdf_tracks if gdf_tracks is not None else pd.DataFrame()
+                if not _gdf_vt.empty and 'zone_id' in _gdf_vt.columns:
+                    det_row   = _gdf_vt[_gdf_vt['zone_id'] == DETERMINISTIC_MEMBER_ID]
+                    worst_row = _gdf_vt[_gdf_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer)) else pd.DataFrame()
+
+                    pin_pop_low        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
+                    pin_children_low   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
+                    pin_infant_low     = _in_need_fmt(_row_val(det_row,   'severity_infant_in_need'))
+                    pin_schoolage_low  = _in_need_fmt(_row_val(det_row,   'severity_school_age_in_need'))
+                    pin_adolescent_low = _in_need_fmt(_row_val(det_row,   'severity_adolescent_in_need'))
+
+                    pin_pop_high        = _in_need_fmt(_row_val(worst_row, 'severity_people_in_need'))
+                    pin_children_high   = _in_need_fmt(_row_val(worst_row, 'severity_children_in_need'))
+                    pin_infant_high     = _in_need_fmt(_row_val(worst_row, 'severity_infant_in_need'))
+                    pin_schoolage_high  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
+                    pin_adolescent_high = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
+            else:
+                # Stage path — read vulnerability CSV and tracks parquet directly
+                vuln_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability.csv"
+                vuln_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", vuln_filename)
+                if giga_store.file_exists(vuln_filepath):
+                    import io as _io
+                    df_vuln = pd.read_csv(_io.BytesIO(giga_store.read_file(vuln_filepath)))
+                    pin_pop_prob        = _in_need_fmt(df_vuln['E_people_in_need'].sum()       if 'E_people_in_need'       in df_vuln.columns else None)
+                    pin_children_prob   = _in_need_fmt(df_vuln['E_children_in_need'].sum()     if 'E_children_in_need'     in df_vuln.columns else None)
+                    pin_infant_prob     = _in_need_fmt(df_vuln['E_infant_in_need'].sum()       if 'E_infant_in_need'       in df_vuln.columns else None)
+                    pin_schoolage_prob  = _in_need_fmt(df_vuln['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in df_vuln.columns else None)
+                    pin_adolescent_prob = _in_need_fmt(df_vuln['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in df_vuln.columns else None)
+
+                vuln_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability_tracks.parquet"
+                vuln_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "track_views", vuln_tracks_filename)
+                if giga_store.file_exists(vuln_tracks_filepath):
+                    import io as _io
+                    df_vt = pd.read_parquet(_io.BytesIO(giga_store.read_file(vuln_tracks_filepath)))
+                    if 'zone_id' in df_vt.columns:
+                        det_row   = df_vt[df_vt['zone_id'] == DETERMINISTIC_MEMBER_ID]
+                        worst_row = df_vt[df_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer)) else pd.DataFrame()
+
+                        pin_pop_low        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
+                        pin_children_low   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
+                        pin_infant_low     = _in_need_fmt(_row_val(det_row,   'severity_infant_in_need'))
+                        pin_schoolage_low  = _in_need_fmt(_row_val(det_row,   'severity_school_age_in_need'))
+                        pin_adolescent_low = _in_need_fmt(_row_val(det_row,   'severity_adolescent_in_need'))
+
+                        pin_pop_high        = _in_need_fmt(_row_val(worst_row, 'severity_people_in_need'))
+                        pin_children_high   = _in_need_fmt(_row_val(worst_row, 'severity_children_in_need'))
+                        pin_infant_high     = _in_need_fmt(_row_val(worst_row, 'severity_infant_in_need'))
+                        pin_schoolage_high  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
+                        pin_adolescent_high = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
+
+        except Exception as e:
+            logger.warning(f"Impact metrics: Could not load vulnerability in-need data: {e}")
+
         def format_value(value):
             """Format a numeric impact value for display; pass _NA_VALUE strings through unchanged.
             Shrinks font for 9-digit numbers to prevent card overflow.
@@ -342,12 +443,18 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(low_results["built_surface_m2"]),
             format_value(probabilistic_results["built_surface_m2"]),
             format_value(high_results["built_surface_m2"]),
-            high_member_badge
+            high_member_badge,
+            # PIN/CHIN sub-lines (15 new):
+            pin_pop_low,        pin_pop_prob,        pin_pop_high,
+            pin_children_low,   pin_children_prob,   pin_children_high,
+            pin_infant_low,     pin_infant_prob,      pin_infant_high,
+            pin_schoolage_low,  pin_schoolage_prob,  pin_schoolage_high,
+            pin_adolescent_low, pin_adolescent_prob, pin_adolescent_high,
         )
 
     except Exception as e:
         logger.error(f"Impact metrics: Error updating metrics: {e}")
-        return (_NA_VALUE,) * 31
+        return (_NA_VALUE,) * 46
 
 
 # =============================================================================

@@ -519,26 +519,37 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
     try:
         query = """
         SELECT
-            ZONE_ID,
-            ADMIN_ID,
-            PROBABILITY,
-            E_POPULATION,
-            E_INFANT_POPULATION,
-            E_SCHOOL_AGE_POPULATION,
-            E_ADOLESCENT_POPULATION,
-            E_BUILT_SURFACE_M2,
-            E_NUM_SCHOOLS,
-            E_NUM_HCS,
-            E_NUM_SHELTERS,
-            E_NUM_WASH,
-            E_SMOD_CLASS,
-            E_RWI
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-          AND ZOOM_LEVEL = %s
+            t.ZONE_ID,
+            t.ADMIN_ID,
+            t.PROBABILITY,
+            t.E_POPULATION,
+            t.E_INFANT_POPULATION,
+            t.E_SCHOOL_AGE_POPULATION,
+            t.E_ADOLESCENT_POPULATION,
+            t.E_BUILT_SURFACE_M2,
+            t.E_NUM_SCHOOLS,
+            t.E_NUM_HCS,
+            t.E_NUM_SHELTERS,
+            t.E_NUM_WASH,
+            t.E_SMOD_CLASS,
+            t.E_RWI,
+            v.E_INFANT_IN_NEED,
+            v.E_SCHOOL_AGE_IN_NEED,
+            v.E_ADOLESCENT_IN_NEED,
+            v.E_CHILDREN_IN_NEED,
+            v.E_PEOPLE_IN_NEED
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ZOOM_LEVEL    = t.ZOOM_LEVEL
+            AND v.ZONE_ID       = t.ZONE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+          AND t.ZOOM_LEVEL = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, zoom_level])
         print(f"✓ Loaded {len(df)} tile impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt zoom={zoom_level})")
@@ -567,27 +578,38 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     try:
         query = """
         SELECT
-            TILE_ID,
-            NAME,
-            ADMIN_LEVEL,
-            PROBABILITY,
-            E_POPULATION,
-            E_INFANT_POPULATION,
-            E_SCHOOL_AGE_POPULATION,
-            E_ADOLESCENT_POPULATION,
-            E_BUILT_SURFACE_M2,
-            E_NUM_SCHOOLS,
-            E_NUM_HCS,
-            E_NUM_SHELTERS,
-            E_NUM_WASH,
-            E_SMOD_CLASS,
-            E_RWI
-        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-          AND ADMIN_LEVEL = %s
+            t.TILE_ID,
+            t.NAME,
+            t.ADMIN_LEVEL,
+            t.PROBABILITY,
+            t.E_POPULATION,
+            t.E_INFANT_POPULATION,
+            t.E_SCHOOL_AGE_POPULATION,
+            t.E_ADOLESCENT_POPULATION,
+            t.E_BUILT_SURFACE_M2,
+            t.E_NUM_SCHOOLS,
+            t.E_NUM_HCS,
+            t.E_NUM_SHELTERS,
+            t.E_NUM_WASH,
+            t.E_SMOD_CLASS,
+            t.E_RWI,
+            v.E_INFANT_IN_NEED,
+            v.E_SCHOOL_AGE_IN_NEED,
+            v.E_ADOLESCENT_IN_NEED,
+            v.E_CHILDREN_IN_NEED,
+            v.E_PEOPLE_IN_NEED
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ADMIN_LEVEL   = t.ADMIN_LEVEL
+            AND v.TILE_ID       = t.TILE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+          AND t.ADMIN_LEVEL = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, admin_level])
         print(f"✓ Loaded {len(df)} admin impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt admin_level={admin_level})")
@@ -671,24 +693,34 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         from shapely import wkb as shapely_wkb
         query = """
         SELECT
-            ZONE_ID                        AS zone_id,
-            WIND_THRESHOLD                 AS wind_threshold,
-            SEVERITY_POPULATION            AS severity_population,
-            SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
-            SEVERITY_INFANT_POPULATION     AS severity_infant_population,
-            SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
-            SEVERITY_SCHOOLS               AS severity_schools,
-            SEVERITY_HCS                   AS severity_hcs,
-            SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
-            SEVERITY_NUM_WASH              AS severity_num_wash,
-            SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
-            GEOMETRY
-        FROM AOTS.TC_ECMWF.TRACK_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-        ORDER BY ZONE_ID
+            t.ZONE_ID                        AS zone_id,
+            t.WIND_THRESHOLD                 AS wind_threshold,
+            t.SEVERITY_POPULATION            AS severity_population,
+            t.SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
+            t.SEVERITY_INFANT_POPULATION     AS severity_infant_population,
+            t.SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
+            t.SEVERITY_SCHOOLS               AS severity_schools,
+            t.SEVERITY_HCS                   AS severity_hcs,
+            t.SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
+            t.SEVERITY_NUM_WASH              AS severity_num_wash,
+            t.SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
+            t.GEOMETRY,
+            v.SEVERITY_PEOPLE_IN_NEED        AS severity_people_in_need,
+            v.SEVERITY_CHILDREN_IN_NEED      AS severity_children_in_need,
+            v.SEVERITY_INFANT_IN_NEED        AS severity_infant_in_need,
+            v.SEVERITY_SCHOOL_AGE_IN_NEED    AS severity_school_age_in_need,
+            v.SEVERITY_ADOLESCENT_IN_NEED    AS severity_adolescent_in_need
+        FROM AOTS.TC_ECMWF.TRACK_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.TRACK_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ZONE_ID       = t.ZONE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+        ORDER BY t.ZONE_ID
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
 
