@@ -234,19 +234,23 @@ def create_impact_summary(tab_suffix=""):
                     ], justify="flex-start", gap="sm", mb="sm"),
                     
                     # Impact Summary Table
+                    html.Div([
+                        html.Div([
+                            html.Span("● ", style={"color": "#6c757d", "fontSize": "0.75em"}),
+                            html.Span("at risk (at selected wind speed)", style={"color": "#6c757d", "fontSize": "0.8em"}),
+                        ]),
+                        html.Div([
+                            html.Span("● ", style={"color": "#f59f00", "fontSize": "0.75em"}),
+                            html.Span("in need (across all wind speeds)", style={"color": "#f59f00", "fontSize": "0.8em"}),
+                        ]),
+                    ], style={"marginBottom": "8px"}),
                     dmc.Table(
                         [
                             dmc.TableThead([
                                 dmc.TableTr([
                                     dmc.TableTh([
                                         dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                        html.Span([
-                                            html.Span("● ", style={"color": "#6c757d", "fontSize": "0.7em"}),
-                                            html.Span("at risk  ", style={"color": "#6c757d", "fontSize": "0.8em"}),
-                                            html.Span("● ", style={"color": "#f59f00", "fontSize": "0.7em"}),
-                                            html.Span("in need", style={"color": "#f59f00", "fontSize": "0.8em"}),
-                                        ], style={"display": "block", "marginTop": "3px"})
-                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
+                                    ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "40px", "verticalAlign": "middle", "paddingTop": "8px"}),
                                     dmc.TableTh([
                                         dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                                         dmc.Badge("#51", id=f"analysis-deterministic-badge{suffix}", size="xs", color="blue", variant="light", style={"marginTop": "2px"})

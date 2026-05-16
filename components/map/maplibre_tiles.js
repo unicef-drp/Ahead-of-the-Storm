@@ -217,13 +217,13 @@ function _buildTileTooltip(feature) {
     if (prob > 0) {
         html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">Expected Impact:</div>'
               + '<div style="font-size:11px;color:#555;">Hurricane Impact Probability: ' + _fmtPct(prob) + '</div>';
-        if (pin !== null && pin !== undefined && pin > 0) {
-            html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">'
-                  + '<div style="font-size:11px;color:#f59f00;font-weight:600;margin-top:4px;">In Need:</div>'
-                  + '<div style="font-size:11px;color:#f59f00;">Population: ' + _fmtN(pin) + '</div>';
-            if (chin !== null && chin !== undefined && chin > 0) {
-                html += '<div style="font-size:11px;color:#f59f00;">Children (total): ' + _fmtN(chin) + '</div>';
-            }
+        html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
+    }
+    if (pin !== null && pin !== undefined && pin > 0) {
+        html += '<div style="font-size:11px;color:#f59f00;font-weight:600;margin-top:4px;">In Need (across all wind speeds):</div>'
+              + '<div style="font-size:11px;color:#f59f00;">Population: ' + _fmtN(pin) + '</div>';
+        if (chin !== null && chin !== undefined && chin > 0) {
+            html += '<div style="font-size:11px;color:#f59f00;">Children (total): ' + _fmtN(chin) + '</div>';
         }
         html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
     }

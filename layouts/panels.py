@@ -238,12 +238,20 @@ def make_single_page_appshell(country_options, default_country):
                        styles={"track": _SWITCH_TRACK_BASE, "trackLabel": _SWITCH_LABEL_BASE}),
         ], style=_sub_radio_row),
         html.Div([
+            html.Span("ℹ︎ ", style={"marginRight": "4px"}),
+            "Across all wind speeds — not wind speed specific",
+        ], id="in-need-tiles-note", style={"display": "none", "fontSize": "0.72em", "fontWeight": 600, "color": "#5c7a9e", "backgroundColor": "#e8f0fb", "border": "1px solid #c5d8f5", "borderRadius": "6px", "padding": "5px 10px", "marginLeft": "12px", "marginTop": "4px", "marginBottom": "8px"}),
+        html.Div([
             dmc.Radio(id="children-total-tiles-layer", label="Children (total)", value="children-total"),
             dmc.Switch(id="in-need-children-tiles-switch", checked=False, disabled=True,
                        size="md", color=PRIMARY_COLOR,
                        onLabel="In need", offLabel="At risk",
                        styles={"track": _SWITCH_TRACK_BASE, "trackLabel": _SWITCH_LABEL_BASE}),
         ], style=_sub_radio_row),
+        html.Div([
+            html.Span("ℹ︎ ", style={"marginRight": "4px"}),
+            "Across all wind speeds — not wind speed specific",
+        ], id="in-need-children-tiles-note", style={"display": "none", "fontSize": "0.72em", "fontWeight": 600, "color": "#5c7a9e", "backgroundColor": "#e8f0fb", "border": "1px solid #c5d8f5", "borderRadius": "6px", "padding": "5px 10px", "marginLeft": "12px", "marginTop": "4px", "marginBottom": "8px"}),
         dmc.Radio(id="infant-tiles-layer",     label=html.Span("Age 0–4",   style={"paddingLeft": "12px", "color": "#888", "fontSize": "0.88em"}), value="infant",     mb=6),
         dmc.Radio(id="school-age-tiles-layer", label=html.Span("Age 5–14",  style={"paddingLeft": "12px", "color": "#888", "fontSize": "0.88em"}), value="school-age", mb=6),
         dmc.Radio(id="adolescent-tiles-layer", label=html.Span("Age 15–19", style={"paddingLeft": "12px", "color": "#888", "fontSize": "0.88em"}), value="adolescent", mb="md"),
@@ -267,10 +275,22 @@ def make_single_page_appshell(country_options, default_country):
         ], id="population-legend", style=_DISPLAY_NONE, gutter="xs", mb="xs"),
 
         dmc.Grid([
+            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-in-need-legend-min",  children="0",   size="xs", c="dimmed")]),
+            dmc.GridCol(span=9,   children=html.Div(create_legend_divs('E_people_in_need'),               style=_flex_full)),
+            dmc.GridCol(span=1.5, children=[dmc.Text(id="population-in-need-legend-max",  children="Max", size="xs", c="dimmed")]),
+        ], id="population-in-need-legend", style=_DISPLAY_NONE, gutter="xs", mb="xs"),
+
+        dmc.Grid([
             dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-legend-min",  children="0",   size="xs", c="dimmed")]),
             dmc.GridCol(span=9,   children=html.Div(create_legend_divs('children_total'),             style=_flex_full)),
             dmc.GridCol(span=1.5, children=[dmc.Text(id="children-total-legend-max",  children="Max", size="xs", c="dimmed")]),
         ], id="children-total-legend", style=_DISPLAY_NONE, gutter="xs", mb="xs"),
+
+        dmc.Grid([
+            dmc.GridCol(span=1.5, children=[dmc.Text(id="children-in-need-legend-min",  children="0",   size="xs", c="dimmed")]),
+            dmc.GridCol(span=9,   children=html.Div(create_legend_divs('E_children_in_need'),             style=_flex_full)),
+            dmc.GridCol(span=1.5, children=[dmc.Text(id="children-in-need-legend-max",  children="Max", size="xs", c="dimmed")]),
+        ], id="children-in-need-legend", style=_DISPLAY_NONE, gutter="xs", mb="xs"),
 
         dmc.Grid([
             dmc.GridCol(span=1.5, children=[dmc.Text(id="infant-legend-min",          children="0",   size="xs", c="dimmed")]),
@@ -604,12 +624,16 @@ def make_single_page_appshell(country_options, default_country):
             dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
         ], justify="flex-start", gap="sm", mb="sm"),
         dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="xs"),
-        html.Span([
-            html.Span("● ", style={"color": "#6c757d", "fontSize": "0.75em"}),
-            html.Span("at risk  ", style={"color": "#6c757d", "fontSize": "0.8em"}),
-            html.Span("● ", style={"color": "#f59f00", "fontSize": "0.75em"}),
-            html.Span("in need", style={"color": "#f59f00", "fontSize": "0.8em"}),
-        ], style={"display": "block", "marginBottom": "12px"}),
+        html.Div([
+            html.Div([
+                html.Span("● ", style={"color": "#6c757d", "fontSize": "0.75em"}),
+                html.Span("at risk (at selected wind speed)", style={"color": "#6c757d", "fontSize": "0.8em"}),
+            ]),
+            html.Div([
+                html.Span("● ", style={"color": "#f59f00", "fontSize": "0.75em"}),
+                html.Span("in need (across all wind speeds)", style={"color": "#f59f00", "fontSize": "0.8em"}),
+            ]),
+        ], style={"marginBottom": "12px"}),
         html.Div(style={"overflowX": "auto"}, children=[
             dmc.Table(
                 [

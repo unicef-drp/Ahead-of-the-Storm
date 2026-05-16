@@ -336,7 +336,9 @@ def toggle_layer_mode(selected_mode):
 
 @callback(
     [Output("population-legend", "style"),
+     Output("population-in-need-legend", "style"),
      Output("children-total-legend", "style"),
+     Output("children-in-need-legend", "style"),
      Output("infant-legend", "style"),
      Output("school-age-legend", "style"),
      Output("adolescent-legend", "style"),
@@ -348,8 +350,12 @@ def toggle_layer_mode(selected_mode):
      Output("severe-poverty-legend", "style"),
      Output("population-legend-min", "children"),
      Output("population-legend-max", "children"),
+     Output("population-in-need-legend-min", "children"),
+     Output("population-in-need-legend-max", "children"),
      Output("children-total-legend-min", "children"),
      Output("children-total-legend-max", "children"),
+     Output("children-in-need-legend-min", "children"),
+     Output("children-in-need-legend-max", "children"),
      Output("infant-legend-min", "children"),
      Output("infant-legend-max", "children"),
      Output("school-age-legend-min", "children"),
@@ -371,11 +377,11 @@ def toggle_layer_mode(selected_mode):
 def toggle_tiles_legend(selected_value, prob_checked, in_need_pop, in_need_chi, tiles_stats):
     """Show the correct legend panel for the active tile layer.
 
-    Logic: when in-need is active show the in-need legend for pop/children; when probability
-    overlay is on for a quantitative layer hide the per-layer legend (the probability legend
-    takes over); otherwise show exactly the legend matching `selected_value`. The 11 style
-    outputs map 1-to-1 to the Output list order; only one is _SHOW, the rest are _none.
-    The trailing 14 outputs are min/max label pairs read from pre-computed `tiles_stats`.
+    Logic: when in-need is active show the in-need legend (orange→brown) for pop/children;
+    when probability overlay is on for a quantitative layer hide the per-layer legend (the
+    probability legend takes over); otherwise show exactly the legend matching `selected_value`.
+    The 13 style outputs map 1-to-1 to the Output list order; only one is _SHOW, the rest _NONE.
+    The trailing 18 outputs are min/max label pairs read from pre-computed `tiles_stats`.
     """
     in_need = bool(in_need_pop) if selected_value == "population" else (bool(in_need_chi) if selected_value == "children-total" else False)
 
@@ -384,50 +390,56 @@ def toggle_tiles_legend(selected_value, prob_checked, in_need_pop, in_need_chi, 
             return _format_number(tiles_stats[prop]['min']), _format_number(tiles_stats[prop]['max'])
         return "Min", "Max"
 
-    pop_min, pop_max                         = get_stats('E_people_in_need'   if in_need_pop else 'population')
-    children_total_min, children_total_max   = get_stats('E_children_in_need' if in_need_chi else 'children_total')
+    pop_min, pop_max                         = get_stats('population')
+    pop_in_need_min, pop_in_need_max         = get_stats('E_people_in_need')
+    chi_min, chi_max                         = get_stats('children_total')
+    chi_in_need_min, chi_in_need_max         = get_stats('E_children_in_need')
     infant_min, infant_max                   = get_stats('infant_population')
     school_min, school_max                   = get_stats('school_age_population')
     adolescent_min, adolescent_max           = get_stats('adolescent_population')
     built_min, built_max                     = get_stats('built_surface_m2')
     cci_min, cci_max                         = get_stats(config.CCI_COL)
 
-    _all_vals = (pop_min, pop_max, children_total_min, children_total_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
+    _all_vals = (pop_min, pop_max, pop_in_need_min, pop_in_need_max, chi_min, chi_max, chi_in_need_min, chi_in_need_max, infant_min, infant_max, school_min, school_max, adolescent_min, adolescent_max, built_min, built_max, cci_min, cci_max)
+
+    # 13 style outputs: pop, pop-in-need, chi, chi-in-need, infant, school, adolescent, built, cci, settlement, rwi, mod-pov, sev-pov
+    _N = _NONE
+    _S = _SHOW
 
     if in_need:
         if selected_value == "population":
-            return _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+            return _N, _S, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
         elif selected_value == "children-total":
-            return _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+            return _N, _N, _N, _S, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
 
     if prob_checked and selected_value in ["population", "children-total", "infant", "school-age", "adolescent", "built-surface", "cci"]:
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
 
     if selected_value == "population":
-        return _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _S, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "children-total":
-        return _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _S, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "infant":
-        return _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _S, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "school-age":
-        return _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _S, _N, _N, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "adolescent":
-        return _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _S, _N, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "built-surface":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _S, _N, _N, _N, _N, _N, *_all_vals
     elif selected_value == "cci":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _S, _N, _N, _N, _N, *_all_vals
     elif selected_value == "settlement":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _S, _N, _N, _N, *_all_vals
     elif selected_value == "rwi":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _S, _N, _N, *_all_vals
     elif selected_value == "moderate-poverty":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _S, _N, *_all_vals
     elif selected_value == "severe-poverty":
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _S, *_all_vals
     else:
-        return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+        return _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, _N, *_all_vals
 
 
 @callback(
@@ -511,6 +523,20 @@ def toggle_admin_legend(selected_value, prob_checked, admin_stats):
         return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _SHOW, *_all_vals
     else:
         return _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, _NONE, *_all_vals
+
+
+@callback(
+    Output("in-need-tiles-note", "style"),
+    Output("in-need-children-tiles-note", "style"),
+    Input("in-need-tiles-switch", "checked"),
+    Input("in-need-children-tiles-switch", "checked"),
+    prevent_initial_call=True,
+)
+def toggle_in_need_notes(in_need_pop, in_need_chi):
+    _base = {"fontSize": "0.72em", "fontWeight": 600, "color": "#5c7a9e", "backgroundColor": "#e8f0fb", "border": "1px solid #c5d8f5", "borderRadius": "6px", "padding": "5px 10px", "marginLeft": "12px", "marginTop": "4px", "marginBottom": "8px"}
+    show = {**_base, "display": "block"}
+    hide = {**_base, "display": "none"}
+    return show if in_need_pop else hide, show if in_need_chi else hide
 
 
 # Register one legend-visibility callback per infrastructure layer.
