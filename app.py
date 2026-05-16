@@ -1,4 +1,13 @@
+"""
+Dash application entry point for Ahead of the Storm.
+
+Initialises the Dash app, wires external stylesheets/scripts, defines global
+dcc.Store components, and serves the JS map-static assets. Page layouts and
+page-specific callbacks are registered lazily by the pages/ modules via
+dash.page_container / use_pages=True.
+"""
 import os
+import logging
 import dash
 import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State
@@ -39,16 +48,20 @@ _PALETTES_JSON = os.path.join(_MAP_COMPONENTS_DIR, "tile_palettes.json")
 
 @server.route("/map-static/tile_palettes.js")
 def serve_tile_palettes_js():
-    with open(_PALETTES_JSON) as f:
-        data = _json.load(f)
-    js = (
-        "// Auto-generated from tile_palettes.json — edit that file, not this endpoint.\n"
-        "window._AOTS_PALETTES = "   + _json.dumps(data["palettes"])   + ";\n"
-        "window._AOTS_PROP_MAP = "   + _json.dumps(data["prop_map"])   + ";\n"
-        "window._AOTS_E_PROP_MAP = " + _json.dumps(data["e_prop_map"]) + ";\n"
-        "window._AOTS_IN_NEED_MAP = "+ _json.dumps(data["in_need_map"])+ ";\n"
-    )
-    return Response(js, mimetype="application/javascript")
+    try:
+        with open(_PALETTES_JSON) as f:
+            data = _json.load(f)
+        js = (
+            "// Auto-generated from tile_palettes.json — edit that file, not this endpoint.\n"
+            "window._AOTS_PALETTES = "   + _json.dumps(data["palettes"])   + ";\n"
+            "window._AOTS_PROP_MAP = "   + _json.dumps(data["prop_map"])   + ";\n"
+            "window._AOTS_E_PROP_MAP = " + _json.dumps(data["e_prop_map"]) + ";\n"
+            "window._AOTS_IN_NEED_MAP = "+ _json.dumps(data["in_need_map"])+ ";\n"
+        )
+        return Response(js, mimetype="application/javascript")
+    except (FileNotFoundError, _json.JSONDecodeError, KeyError) as e:
+        logging.getLogger(__name__).error("Failed to serve tile_palettes.js: %s", e)
+        return Response("// tile_palettes.json unavailable\n", mimetype="application/javascript", status=500)
 
 @server.route("/map-static/<path:filename>")
 def serve_map_static(filename):

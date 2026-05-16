@@ -1,14 +1,52 @@
 """
 Dashboard page — Ahead of the Storm.
 
-Entry point for the Dash multi-page app. Loads country/storm metadata at startup,
-defines the full layout via layouts/panels.py, owns the selector callbacks
-(country → date → time → storm → wind threshold), and drives the central
-`load_all_layers` callback that fetches tracks, envelopes, and impact GeoJSON from
-Snowflake / the file store and distributes them to the map components.
+This module is the primary page of the Dash multi-page app. It coordinates the
+three-panel interactive map interface for hurricane impact analysis.
 
-Data sources: Snowflake (TC_TRACKS, TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES),
-AOTS_ANALYSIS stage files (Parquet/CSV impact data), FastAPI tile server (port 8001).
+At startup it loads active countries, forecast metadata, and location data from
+Snowflake in parallel, builds country-specific map centres/zoom levels, and
+constructs the complete layout via layouts/panels.py.
+
+The page owns the selector-cascade callbacks (country → forecast date → time →
+storm → wind threshold), manages dcc.Store components for shared state
+(effective country, layers-loaded flag, envelope/track GeoJSON, tile statistics,
+layer availability, MapLibre tile config), and orchestrates the central
+``load_all_layers`` callback. That callback fetches hurricane tracks and envelopes
+from Snowflake (via components/data/snowflake_utils.py), merges them with ensemble
+member vulnerability data, pre-processes them into GeoJSON, and distributes the
+results to map components via Stores.
+
+Key collaborators
+-----------------
+layouts/panels.py          — builds the three-panel layout (map, metrics sidebar,
+                             controls drawer) and defines all dcc.Store components
+callbacks/metrics.py       — computes and renders impact metric cards (population,
+                             children, schools, health centres) for low/prob/high
+                             scenarios; draws the ensemble member arc chart
+callbacks/tiles_and_admin.py — toggles Mercator raster tile layers and admin
+                               choropleth overlays; populates legend min/max labels
+callbacks/overlays.py      — fetches and toggles school/health-centre point overlays
+
+components/ui/header.py    — top navigation bar with forecast-time badge
+components/ui/footer.py    — bottom footer with partner logos
+components/ui/appshell.py  — composes header, nav, content area, and footer
+components/ui/styling.py   — colour palettes and shared CSS constants
+components/map/map_config.py — MapLibre tile layer URL construction and map defaults
+components/map/javascript.py — client-side JS callbacks for map event handling
+components/data/snowflake_utils.py — thread-local Snowflake connection pool and
+                                     all @lru_cache query helpers (TC_TRACKS,
+                                     TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES, etc.)
+components/data/data_store_utils.py — data-store factory (LOCAL / BLOB / SNOWFLAKE)
+                                      for reading AOTS_ANALYSIS stage Parquet/CSV files
+
+services/tile_server.py    — standalone FastAPI sidecar (port 8001) that renders
+                             Mercator raster tiles and admin choropleth polygons
+                             on demand from the Snowflake MAT tables
+
+Data sources: Snowflake tables TC_TRACKS, TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES,
+MERCATOR_TILE_IMPACT_MAT, TRACK_VULNERABILITY_MAT, BASE_MERCATOR_TILE_MAT;
+AOTS_ANALYSIS stage Parquet/CSV files; FastAPI tile server on port 8001.
 """
 
 # =============================================================================
@@ -860,10 +898,13 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                         # Pre-process multiple thresholds in parallel
                         with ThreadPoolExecutor(max_workers=3) as executor:
                             futures = {executor.submit(preprocess_threshold, thresh): thresh for thresh in thresholds_to_preprocess}
-                            for future in futures:
-                                thresh, geo_dict = future.result()
-                                if geo_dict:
-                                    preprocessed_envelopes[str(thresh)] = geo_dict
+                            for future, thresh in futures.items():
+                                try:
+                                    _thresh, geo_dict = future.result()
+                                    if geo_dict:
+                                        preprocessed_envelopes[str(_thresh)] = geo_dict
+                                except Exception as e:
+                                    logger.error("Error getting result for threshold %s: %s", thresh, e)
                         
                         # Fallback: if parallel processing didn't work, do selected threshold synchronously
                         if str(wth_int) not in preprocessed_envelopes:
@@ -1356,13 +1397,20 @@ def toggle_tracks_layer(checked, selected_track, tracks_data_in):
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     tracks_data = copy.deepcopy(tracks_data_in)
-    key = hashlib.md5(json.dumps(tracks_data, sort_keys=True).encode()).hexdigest()
-    
+    try:
+        key = hashlib.md5(json.dumps(tracks_data, sort_keys=True).encode()).hexdigest()
+    except (TypeError, ValueError):
+        key = str(id(tracks_data))
+
     # If specific track is selected, filter to show only that track
     if selected_track and 'features' in tracks_data:
+        try:
+            selected_track_int = int(selected_track)
+        except (TypeError, ValueError):
+            selected_track_int = None
         filtered_tracks = {"type": "FeatureCollection", "features": []}
         for feature in tracks_data['features']:
-            if feature.get('properties', {}).get('ensemble_member') == int(selected_track):
+            if feature.get('properties', {}).get('ensemble_member') == selected_track_int:
                 filtered_tracks['features'].append(feature)
         return filtered_tracks, False, key
     
@@ -1391,7 +1439,10 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
     
     envelope_data = copy.deepcopy(envelope_data_in)
-    key = hashlib.md5(json.dumps(envelope_data, sort_keys=True).encode()).hexdigest()
+    try:
+        key = hashlib.md5(json.dumps(envelope_data, sort_keys=True).encode()).hexdigest()
+    except (TypeError, ValueError):
+        key = str(id(envelope_data))
     
     # Construct datetime string for file paths
     date_str = forecast_date.replace('-', '') if forecast_date else ''
@@ -1553,10 +1604,13 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
                     impact_data_list = []
                     with ThreadPoolExecutor(max_workers=4) as executor:
                         futures = {executor.submit(load_impact_data_for_threshold, thresh): thresh for thresh in available_thresholds}
-                        for future in futures:
-                            result = future.result()
-                            if result:
-                                impact_data_list.append(result)
+                        for future, thresh in futures.items():
+                            try:
+                                result = future.result()
+                                if result:
+                                    impact_data_list.append(result)
+                            except Exception as e:
+                                logger.error("Error loading impact data for threshold %s: %s", thresh, e)
                     
                     # Add impact data to each envelope based on its wind threshold
                     if impact_data_list:

@@ -671,6 +671,28 @@ def make_single_page_appshell(country_options, default_country):
     style={"borderLeft": f"3px solid {PRIMARY_COLOR}", "marginBottom": "16px"},
     )
 
+    _num_style = {"fontSize": "1.5em", "fontWeight": 700, "color": "#212529", "display": "block", "lineHeight": "1.1", "marginBottom": "2px"}
+
+    in_need_charts = dmc.Paper([
+        dmc.Text("PEOPLE IN NEED", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px", "marginBottom": "2px"}),
+        dmc.Text("Expected exposure vs. need for this forecast run", size="xs", c="dimmed", mb="sm"),
+        # Children chart
+        html.Div([
+            dmc.Text("Children In Need", size="xs", fw=600, c="dark"),
+            html.Span("—", id="in-need-number-children", style=_num_style),
+            dcc.Graph(id="in-need-arc-chart-children", config={"displayModeBar": False}, style={"height": "210px", "width": "100%"}),
+        ], style={"marginBottom": "4px"}),
+        # People chart
+        html.Div([
+            dmc.Text("People In Need", size="xs", fw=600, c="dark"),
+            html.Span("—", id="in-need-number-people", style=_num_style),
+            dcc.Graph(id="in-need-arc-chart-people", config={"displayModeBar": False}, style={"height": "210px", "width": "100%"}),
+        ]),
+    ],
+    p="md", shadow="xs",
+    style={"borderLeft": f"3px solid {PRIMARY_COLOR}", "marginBottom": "16px"},
+    )
+
     specific_track_view = dmc.Paper([
         dmc.Group([
             dmc.Text("SPECIFIC TRACK VIEW", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
@@ -713,7 +735,7 @@ def make_single_page_appshell(country_options, default_country):
     )
 
     right_panel = dmc.GridCol(
-        [dmc.Paper([impact_summary, specific_track_view, exceedance_chart], p="md", shadow="sm")],
+        [dmc.Paper([impact_summary, in_need_charts, specific_track_view, exceedance_chart], p="md", shadow="sm")],
         span=3,
         style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"},
     )

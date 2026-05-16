@@ -46,7 +46,6 @@ from shapely.ops import transform as _shapely_transform
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 SNOWFLAKE_ACCOUNT   = os.getenv("SNOWFLAKE_ACCOUNT", "")
@@ -459,10 +458,10 @@ def _safe_prop(v):
     if v is None:
         return None
     try:
-        if v != v:  # NaN scalar check
+        if pd.isna(v):
             return None
     except (ValueError, TypeError):
-        return None  # array/complex types can't be NaN-tested
+        return None  # array/complex types raise on pd.isna()
     return _py(v)
 
 
@@ -886,7 +885,7 @@ def _fetch_mercator_tile(
     for row in rows:
         w, s, e, n = row.get("BW"), row.get("BS"), row.get("BE"), row.get("BN")
         # Skip rows with invalid pre-computed bounds (NaN from failed quadkey parse)
-        if w is None or w != w:
+        if w is None or pd.isna(w):
             continue
         # Quadkey hierarchy guarantees every matched z=14 tile is fully
         # contained in (z, x, y) → intersection with tile_box is always a
@@ -1116,14 +1115,15 @@ def _fetch_raster_tile(
     # For log scale, zero is undefined (log(0) = -inf) → skip.
     # For RWI, 0 is a valid midpoint (average wealth) → include.
     # For all others (probability, poverty, E_* impact props), 0 = no data → transparent.
+    _bounds_valid = np.isfinite(ws) & np.isfinite(ss) & np.isfinite(es) & np.isfinite(ns)
     if spec['scale'] == 'smod':
-        valid = np.isfinite(vals) & (vals >= 11) & np.isfinite(ws) & np.isfinite(ns)
+        valid = np.isfinite(vals) & (vals >= 11) & _bounds_valid
     elif spec['scale'] == 'rwi':
-        valid = np.isfinite(vals) & np.isfinite(ws) & np.isfinite(ns)
+        valid = np.isfinite(vals) & _bounds_valid
     elif spec['scale'] == 'log':
-        valid = np.isfinite(vals) & (vals > 0) & np.isfinite(ws) & np.isfinite(ns)
+        valid = np.isfinite(vals) & (vals > 0) & _bounds_valid
     else:
-        valid = np.isfinite(vals) & (vals != 0) & np.isfinite(ws) & np.isfinite(ns)
+        valid = np.isfinite(vals) & (vals != 0) & _bounds_valid
     vals, ws, ss, es, ns = vals[valid], ws[valid], ss[valid], es[valid], ns[valid]
 
     if len(vals) == 0:
@@ -1135,9 +1135,10 @@ def _fetch_raster_tile(
 
     if spec['scale'] == 'log':
         safe = np.where(vals > 0, vals, np.nan)
-        t = (np.log(safe) - math.log(min_val)) / (math.log(max_val) - math.log(min_val))
+        log_range = math.log(max_val) - math.log(min_val) if max_val != min_val else 1.0
+        t = (np.log(safe) - math.log(min_val)) / log_range
     elif spec['scale'] == 'linear':
-        t = (vals - min_val) / (max_val - min_val)
+        t = (vals - min_val) / (max_val - min_val) if max_val != min_val else np.zeros_like(vals)
     elif spec['scale'] == 'rwi':
         t = (vals - (-1.0)) / 2.0
     else:
@@ -1518,7 +1519,7 @@ def facility_geojson(
         for _, row in df.iterrows():
             lat = row.get("LATITUDE")
             lon = row.get("LONGITUDE")
-            if lat is None or lon is None or lat != lat or lon != lon:
+            if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
                 continue
             prob = float(row.get("PROBABILITY") or 0)
             if prob <= 0:
@@ -1585,4 +1586,4 @@ def tile_value(
     if row.empty:
         return {}
     result = row.iloc[0].drop(labels=['BW', 'BS', 'BE', 'BN'], errors='ignore').to_dict()
-    return {k: (None if (v != v) else v) for k, v in result.items()}
+    return {k: (None if pd.isna(v) else v) for k, v in result.items()}

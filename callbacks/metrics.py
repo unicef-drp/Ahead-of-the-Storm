@@ -30,7 +30,7 @@ import plotly.graph_objects as go
 
 from components.config import config
 from components.data.data_store_utils import get_data_store, get_impact_data
-from components.data.snowflake_utils import get_available_wind_thresholds
+from components.data.snowflake_utils import get_available_wind_thresholds, get_country_totals
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +244,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     probabilistic_results["health"] = df['E_num_hcs'].sum() if ('E_num_hcs' in df.columns and not df['E_num_hcs'].isna().all()) else _NA_VALUE
                     probabilistic_results["shelters"] = df['E_num_shelters'].sum() if ('E_num_shelters' in df.columns and not df['E_num_shelters'].isna().all()) else _NA_VALUE
                     probabilistic_results["wash"] = df['E_num_wash'].sum() if ('E_num_wash' in df.columns and not df['E_num_wash'].isna().all()) else _NA_VALUE
-                    probabilistic_results["population"] = df['E_population'].sum() if 'E_population' in df.columns else _NA_VALUE
-                    probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if 'E_built_surface_m2' in df.columns else _NA_VALUE
+                    probabilistic_results["population"] = df['E_population'].sum() if ('E_population' in df.columns and not df['E_population'].isna().all()) else _NA_VALUE
+                    probabilistic_results["built_surface_m2"] = df['E_built_surface_m2'].sum() if ('E_built_surface_m2' in df.columns and not df['E_built_surface_m2'].isna().all()) else _NA_VALUE
 
                     tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                     tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
@@ -262,8 +262,9 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
                         if not gdf_tracks.empty and 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                             member_totals = gdf_tracks.groupby('zone_id')['severity_population'].sum()
-                            high_impact_member = member_totals.idxmax()
-                            high_member_badge = f"#{high_impact_member}"
+                            _idxmax = member_totals.idxmax()
+                            high_impact_member = _idxmax if pd.notna(_idxmax) else None
+                            high_member_badge = f"#{high_impact_member}" if high_impact_member is not None else ""
 
                             low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == DETERMINISTIC_MEMBER_ID]
                             high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
@@ -328,9 +329,15 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
         try:
             def _in_need_fmt(v):
-                if isinstance(v, str) or v is None or (isinstance(v, float) and (np.isnan(v) or v <= 0)):
+                if v is None or isinstance(v, str):
                     return ""
-                return f"{v:,.0f}"
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    return ""
+                if not np.isfinite(fv) or fv <= 0:
+                    return ""
+                return f"{fv:,.0f}"
 
             def _row_val(row_df, col):
                 if row_df.empty or col not in row_df.columns:
@@ -350,7 +357,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                 _gdf_vt = gdf_tracks if gdf_tracks is not None else pd.DataFrame()
                 if not _gdf_vt.empty and 'zone_id' in _gdf_vt.columns:
                     det_row   = _gdf_vt[_gdf_vt['zone_id'] == DETERMINISTIC_MEMBER_ID]
-                    worst_row = _gdf_vt[_gdf_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer)) else pd.DataFrame()
+                    worst_row = _gdf_vt[_gdf_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer, np.floating)) else pd.DataFrame()
 
                     pin_pop_low        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
                     pin_children_low   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
@@ -383,7 +390,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     df_vt = pd.read_parquet(_io.BytesIO(giga_store.read_file(vuln_tracks_filepath)))
                     if 'zone_id' in df_vt.columns:
                         det_row   = df_vt[df_vt['zone_id'] == DETERMINISTIC_MEMBER_ID]
-                        worst_row = df_vt[df_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer)) else pd.DataFrame()
+                        worst_row = df_vt[df_vt['zone_id'] == _pin_high_impact_member] if isinstance(_pin_high_impact_member, (int, float, np.integer, np.floating)) else pd.DataFrame()
 
                         pin_pop_low        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
                         pin_children_low   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
@@ -406,6 +413,8 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             """
             if isinstance(value, str):
                 return value
+            if value is None or (isinstance(value, float) and math.isnan(value)):
+                return _NA_VALUE
             ceiled = math.ceil(value)
             formatted = f"{ceiled:,}"
             if ceiled >= 100_000_000:
@@ -523,8 +532,10 @@ def populate_specific_track_options(layers_loaded, country, storm, forecast_date
                 sorted_members = member_totals.sort_values(ascending=False).index.tolist()
                 ordered_members = ([DETERMINISTIC_MEMBER_ID] if DETERMINISTIC_MEMBER_ID in sorted_members else []) + [m for m in sorted_members if m != DETERMINISTIC_MEMBER_ID]
 
-                low_impact_member = member_totals.idxmin()
-                high_impact_member = member_totals.idxmax()
+                _idxmin = member_totals.idxmin()
+                _idxmax = member_totals.idxmax()
+                low_impact_member = _idxmin if pd.notna(_idxmin) else None
+                high_impact_member = _idxmax if pd.notna(_idxmax) else None
 
                 deterministic_items = []
                 ensemble_items = []
@@ -964,7 +975,8 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
 
         custom_legend = dmc.Grid(legend_cols, gutter="sm") if legend_cols else html.Div()
 
-        info_text = f"Showing exceedance probability for {len(member_df)-1} ensemble members at {wind_threshold}kt wind threshold."
+        _ensemble_count = int(np.sum(member_ids != DETERMINISTIC_MEMBER_ID))
+        info_text = f"Showing exceedance probability for {_ensemble_count} ensemble members at {wind_threshold}kt wind threshold."
         return fig, info_text, custom_legend
 
     except Exception as e:
@@ -976,3 +988,201 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
             font=dict(size=12, color="red")
         )
         return empty_fig, f"Error: {str(e)}", empty_legend
+
+
+# =============================================================================
+# IN-NEED ARC CHARTS
+# Two concentric arc charts (Children / People):
+#   outer ring  — country total population (100% = full 270° sweep)
+#   middle ring — expected exposed ("at risk")
+#   inner ring  — expected in need
+# Angular axis: 0–100 % scale, 270° sweep, clockwise from top
+# Big in-need count displayed above each chart in the panel HTML (ids:
+#   in-need-number-children, in-need-number-people).
+# =============================================================================
+
+def _make_arc_chart(
+    total: int | None,
+    exposed: float | None,
+    in_need: float | None,
+    exposed_label: str = "People At Risk",
+    in_need_label: str = "People In Need",
+) -> go.Figure:
+    """Build a 270° concentric-arc polar gauge with 3 rings."""
+    _FULL_DEG = 270.0        # 100 % maps to 270 degrees
+    _SCALE    = _FULL_DEG / 100.0
+    _GRAY     = "#d0d5dd"
+    _NAVY     = "#1c3a6e"
+    _BLUE     = "#1cabe2"
+    _ORANGE   = "#f59f00"
+    _RING_W   = 12
+    _BASES    = [53, 35, 17]  # outer / middle / inner ring inner radius
+    _MIN_DEG  = 3.0           # minimum visible arc for any non-zero value
+
+    def _pct_deg(pct: float) -> float:
+        if not pct or pct <= 0:
+            return 0.0
+        return max(_MIN_DEG, min(_FULL_DEG, pct * _SCALE))
+
+    no_data = total is None or total == 0
+    exp_pct = (exposed / total * 100) if (not no_data and exposed) else 0.0
+    nee_pct = (in_need / total * 100) if (not no_data and in_need) else 0.0
+
+    pop_deg = _FULL_DEG if not no_data else 0.0
+    exp_deg = _pct_deg(exp_pct)
+    nee_deg = _pct_deg(nee_pct)
+
+    _GAP_THETA = 357  # degrees — 3° into the gap past arc start; nearly vertical radial direction → right edges align
+
+    ring_specs = [
+        (_BASES[0], pop_deg, _NAVY,   "Population"),
+        (_BASES[1], exp_deg, _BLUE,   exposed_label),
+        (_BASES[2], nee_deg, _ORANGE, in_need_label),
+    ]
+
+    traces = []
+    for base, fill_deg, fill_color, name in ring_specs:
+        # Colored arc (filled portion)
+        if fill_deg > 0:
+            traces.append(go.Barpolar(
+                r=[_RING_W], base=[base],
+                theta=[fill_deg / 2], width=[fill_deg],
+                marker_color=[fill_color], marker_line_width=0,
+                showlegend=False, hoverinfo="skip",
+            ))
+        # Gray background (remaining portion up to 270°)
+        bg_deg = _FULL_DEG - fill_deg
+        if bg_deg > 0:
+            traces.append(go.Barpolar(
+                r=[_RING_W], base=[base],
+                theta=[fill_deg + bg_deg / 2], width=[bg_deg],
+                marker_color=[_GRAY], marker_line_width=0,
+                showlegend=False, hoverinfo="skip",
+            ))
+
+    # Labels positioned inside the gap quarter (upper-left, 270°–360°)
+    for base, _fill, _color, name in ring_specs:
+        r_mid = base + _RING_W / 2
+        traces.append(go.Scatterpolar(
+            r=[r_mid], theta=[_GAP_THETA],
+            mode="text",
+            text=[name + "\u00a0\u00a0\u00a0"],
+            textfont=dict(size=10, color="#333"),
+            textposition="middle left",
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+    tick_degs = [i * 27.0 for i in range(11)]
+    tick_lbls = [str(i * 10) for i in range(11)]
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        polar=dict(
+            angularaxis=dict(
+                visible=True,
+                rotation=90,
+                direction="clockwise",
+                tickvals=tick_degs,
+                ticktext=tick_lbls,
+                showgrid=True,
+                gridcolor="#dde3ea",
+                griddash="dot",
+                tickfont=dict(size=8, color="#999"),
+                showline=False,
+                ticks="",
+            ),
+            radialaxis=dict(visible=False, range=[0, 74]),
+            bgcolor="white",
+            domain=dict(x=[0.0, 1.0], y=[0.0, 1.0]),
+        ),
+        showlegend=False,
+        margin=dict(l=8, r=32, t=16, b=20),
+        paper_bgcolor="white",
+        height=210,
+    )
+    return fig
+
+
+def _fmt_in_need(n: float | None) -> str:
+    """Format the big in-need headline number with commas (or M/B for very large)."""
+    if n is None or (isinstance(n, float) and math.isnan(n)):
+        return "—"
+    n = int(n)
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n:,}"
+
+
+_EMPTY_ARC = _make_arc_chart(None, None, None)
+
+
+@callback(
+    Output("in-need-arc-chart-people",    "figure"),
+    Output("in-need-arc-chart-children",  "figure"),
+    Output("in-need-number-people",       "children"),
+    Output("in-need-number-children",     "children"),
+    Input("storm-select",           "value"),
+    Input("wind-threshold-select",  "value"),
+    Input("effective-country-store", "data"),
+    Input("forecast-date",          "value"),
+    Input("forecast-time",          "value"),
+    Input("layers-loaded-store",    "data"),
+    prevent_initial_call=True,
+)
+def update_in_need_charts(storm, wind_threshold, country, forecast_date, forecast_time, layers_loaded):
+    """Populate the two concentric-arc In Need charts and their headline numbers."""
+    _empty = (_EMPTY_ARC, _EMPTY_ARC, "—", "—")
+    if not (layers_loaded and storm and wind_threshold and country and forecast_date and forecast_time):
+        return _empty
+
+    try:
+        date_str = forecast_date.replace('-', '')
+        time_str = forecast_time.replace(':', '')
+        forecast_datetime = f"{date_str}{time_str}00"
+
+        giga_store = _get_store()
+        filepath = os.path.join(
+            ROOT_DATA_DIR, VIEWS_DIR, "mercator_views",
+            f"{country}_{storm}_{forecast_datetime}_{wind_threshold}_{ZOOM_LEVEL}.csv",
+        )
+
+        if not (config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(filepath)):
+            return _empty
+
+        df = get_impact_data('tile', giga_store, filepath,
+                             country=country, storm=storm,
+                             forecast_date=forecast_datetime,
+                             wind_threshold=int(wind_threshold))
+
+        if df.empty:
+            return _empty
+
+        totals = get_country_totals(country)
+        total_pop      = totals["total_population"]
+        total_children = totals["total_children"]
+        if total_pop is None and total_children is None:
+            return _empty
+
+        exposed_pop      = float(df['E_population'].sum()) if ('E_population' in df.columns and not df['E_population'].isna().all()) else None
+        in_need_pop      = float(df['E_people_in_need'].sum())   if ('E_people_in_need'  in df.columns and not df['E_people_in_need'].isna().all())  else None
+        _child_cols_present = any(c in df.columns for c in ['E_infant_population', 'E_school_age_population', 'E_adolescent_population'])
+        exposed_children = (
+            (float(df['E_infant_population'].sum())       if 'E_infant_population'     in df.columns else 0.0)
+            + (float(df['E_school_age_population'].sum()) if 'E_school_age_population' in df.columns else 0.0)
+            + (float(df['E_adolescent_population'].sum()) if 'E_adolescent_population' in df.columns else 0.0)
+        ) if _child_cols_present else None
+        in_need_children = float(df['E_children_in_need'].sum()) if ('E_children_in_need' in df.columns and not df['E_children_in_need'].isna().all()) else None
+
+        fig_people   = _make_arc_chart(total_pop,      exposed_pop,      in_need_pop,
+                                       "People At Risk",   "People In Need")
+        fig_children = _make_arc_chart(total_children, exposed_children, in_need_children,
+                                       "Children At Risk", "Children In Need")
+
+        return fig_people, fig_children, _fmt_in_need(in_need_pop), _fmt_in_need(in_need_children)
+
+    except Exception as e:
+        logger.error(f"Error building in-need arc charts: {e}")
+        return _empty

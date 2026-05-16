@@ -1260,7 +1260,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                         
                         # Get deterministic scenario data (member 51)
                         low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == deterministic_member]
-                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
+                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member] if isinstance(high_impact_member, (int, float, np.integer, np.floating)) else pd.DataFrame()
                         
                         # Check if health center data is available for this time slot
                         hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
@@ -1306,11 +1306,15 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
 
         try:
             def _in_need_fmt(v):
-                if v is None or (isinstance(v, float) and (np.isnan(v) or v <= 0)):
+                if v is None or isinstance(v, str):
                     return ""
-                if isinstance(v, (int, float)) and v > 0:
-                    return f"{v:,.0f}"
-                return ""
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    return ""
+                if not np.isfinite(fv) or fv <= 0:
+                    return ""
+                return f"{fv:,.0f}"
 
             def _row_val(row_df, col):
                 if row_df.empty or col not in row_df.columns:
@@ -1333,7 +1337,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                 if not _gdf_for_pin.empty and 'zone_id' in _gdf_for_pin.columns:
                     _hi = high_impact_member
                     det_row   = _gdf_for_pin[_gdf_for_pin['zone_id'] == 51]
-                    worst_row = _gdf_for_pin[_gdf_for_pin['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer)) else pd.DataFrame()
+                    worst_row = _gdf_for_pin[_gdf_for_pin['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer, np.floating)) else pd.DataFrame()
 
                     pin_pop_det        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
                     pin_children_det   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
@@ -1367,7 +1371,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                     if 'zone_id' in df_vuln_tracks.columns:
                         _hi = high_impact_member
                         det_row   = df_vuln_tracks[df_vuln_tracks['zone_id'] == 51]
-                        worst_row = df_vuln_tracks[df_vuln_tracks['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer)) else pd.DataFrame()
+                        worst_row = df_vuln_tracks[df_vuln_tracks['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer, np.floating)) else pd.DataFrame()
 
                         pin_pop_det        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
                         pin_children_det   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
