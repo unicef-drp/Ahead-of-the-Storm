@@ -601,17 +601,22 @@ def make_single_page_appshell(country_options, default_country):
     # -------------------------------------------------------------------------
     impact_summary = dmc.Paper([
         dmc.Group([
-            dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
+            dmc.Text("IMPACT SUMMARY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"}),
         ], justify="flex-start", gap="sm", mb="sm"),
-        dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="md"),
+        dmc.Text("Hurricane impact scenarios and metrics", size="xs", c="dimmed", mb="xs"),
+        html.Span([
+            html.Span("● ", style={"color": "#6c757d", "fontSize": "0.75em"}),
+            html.Span("at risk  ", style={"color": "#6c757d", "fontSize": "0.8em"}),
+            html.Span("● ", style={"color": "#f59f00", "fontSize": "0.75em"}),
+            html.Span("in need", style={"color": "#f59f00", "fontSize": "0.8em"}),
+        ], style={"display": "block", "marginBottom": "12px"}),
         html.Div(style={"overflowX": "auto"}, children=[
             dmc.Table(
                 [
                     dmc.TableThead([
                         dmc.TableTr([
                             dmc.TableTh([
-                                dmc.Text("Metric",    style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                dmc.Text("at Risk",   style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed"),
+                                dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
                             ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                             dmc.TableTh([
                                 dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
@@ -625,12 +630,26 @@ def make_single_page_appshell(country_options, default_country):
                         ])
                     ]),
                     dmc.TableTbody([
-                        dmc.TableTr([dmc.TableTd("Population"),         dmc.TableTd("0",     id="population-count-low",          style={"textAlign": "center"}), dmc.TableTd("2,482",  id="population-count-probabilistic",  style={"textAlign": "center"}), dmc.TableTd("59,678",  id="population-count-high",          style={"textAlign": "center"})]),
+                        dmc.TableTr([dmc.TableTd("Population"),
+                                     dmc.TableTd([html.Span("0", id="population-count-low"), html.Span("", id="population-in-need-low", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"}),
+                                     dmc.TableTd([html.Span("2,482", id="population-count-probabilistic"), html.Span("", id="population-in-need-probabilistic", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"}),
+                                     dmc.TableTd([html.Span("59,678", id="population-count-high"), html.Span("", id="population-in-need-high", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"})]),
                         dmc.TableTr([dmc.TableTd([html.Span("Children"), html.Span(" (total)", style={"fontSize": "0.8em", "color": "#888", "marginLeft": "3px"})]),
-                                     dmc.TableTd("N/A", id="children-total-low",          style={"textAlign": "center"}), dmc.TableTd("N/A", id="children-total-probabilistic",  style={"textAlign": "center"}), dmc.TableTd("N/A", id="children-total-high",          style={"textAlign": "center"})]),
-                        dmc.TableTr([dmc.TableTd("Age 0–4",  style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}), dmc.TableTd("N/A", id="infant-affected-low",       style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="infant-affected-probabilistic",   style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="infant-affected-high",       style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
-                        dmc.TableTr([dmc.TableTd("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}), dmc.TableTd("N/A", id="children-affected-low",     style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="children-affected-probabilistic", style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="children-affected-high",     style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
-                        dmc.TableTr([dmc.TableTd("Age 15–19",style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}), dmc.TableTd("N/A", id="adolescent-affected-low",   style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="adolescent-affected-probabilistic",style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}), dmc.TableTd("N/A", id="adolescent-affected-high",   style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
+                                     dmc.TableTd([html.Span("N/A", id="children-total-low"), html.Span("", id="children-total-in-need-low", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"}),
+                                     dmc.TableTd([html.Span("N/A", id="children-total-probabilistic"), html.Span("", id="children-total-in-need-probabilistic", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"}),
+                                     dmc.TableTd([html.Span("N/A", id="children-total-high"), html.Span("", id="children-total-in-need-high", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center"})]),
+                        dmc.TableTr([dmc.TableTd("Age 0–4",  style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                     dmc.TableTd([html.Span("N/A", id="infant-affected-low"), html.Span("", id="infant-in-need-low", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="infant-affected-probabilistic"), html.Span("", id="infant-in-need-probabilistic", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="infant-affected-high"), html.Span("", id="infant-in-need-high", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
+                        dmc.TableTr([dmc.TableTd("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                     dmc.TableTd([html.Span("N/A", id="children-affected-low"), html.Span("", id="children-in-need-low", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="children-affected-probabilistic"), html.Span("", id="children-in-need-probabilistic", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="children-affected-high"), html.Span("", id="children-in-need-high", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
+                        dmc.TableTr([dmc.TableTd("Age 15–19",style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                     dmc.TableTd([html.Span("N/A", id="adolescent-affected-low"), html.Span("", id="adolescent-in-need-low", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="adolescent-affected-probabilistic"), html.Span("", id="adolescent-in-need-probabilistic", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                     dmc.TableTd([html.Span("N/A", id="adolescent-affected-high"), html.Span("", id="adolescent-in-need-high", style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"})], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})]),
                         dmc.TableTr([dmc.TableTd("Schools"),             dmc.TableTd("0",     id="schools-count-low",             style={"textAlign": "center"}), dmc.TableTd("2",      id="schools-count-probabilistic",     style={"textAlign": "center"}), dmc.TableTd("39",      id="schools-count-high",             style={"textAlign": "center"})]),
                         dmc.TableTr([dmc.TableTd("Health Centers"),      dmc.TableTd("0",     id="health-count-low",              style={"textAlign": "center"}), dmc.TableTd("1",      id="health-count-probabilistic",      style={"textAlign": "center"}), dmc.TableTd("0",       id="health-count-high",              style={"textAlign": "center"})]),
                         dmc.TableTr([dmc.TableTd("Shelters"),            dmc.TableTd("N/A",   id="shelters-count-low",            style={"textAlign": "center"}), dmc.TableTd("N/A",    id="shelters-count-probabilistic",    style={"textAlign": "center"}), dmc.TableTd("N/A",     id="shelters-count-high",            style={"textAlign": "center"})]),
@@ -646,6 +665,28 @@ def make_single_page_appshell(country_options, default_country):
                 horizontalSpacing="xs",
                 style={"tableLayout": "fixed", "width": "100%"},
             )
+        ]),
+    ],
+    p="md", shadow="xs",
+    style={"borderLeft": f"3px solid {PRIMARY_COLOR}", "marginBottom": "16px"},
+    )
+
+    _num_style = {"fontSize": "1.5em", "fontWeight": 700, "color": "#212529", "display": "block", "lineHeight": "1.1", "marginBottom": "2px"}
+
+    in_need_charts = dmc.Paper([
+        dmc.Text("PEOPLE IN NEED", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px", "marginBottom": "2px"}),
+        dmc.Text("Expected exposure vs. need for this forecast run", size="xs", c="dimmed", mb="sm"),
+        # Children chart
+        html.Div([
+            dmc.Text("Children In Need", size="xs", fw=600, c="dark"),
+            html.Span("—", id="in-need-number-children", style=_num_style),
+            dcc.Graph(id="in-need-arc-chart-children", config={"displayModeBar": False}, style={"height": "210px", "width": "100%"}),
+        ], style={"marginBottom": "4px"}),
+        # People chart
+        html.Div([
+            dmc.Text("People In Need", size="xs", fw=600, c="dark"),
+            html.Span("—", id="in-need-number-people", style=_num_style),
+            dcc.Graph(id="in-need-arc-chart-people", config={"displayModeBar": False}, style={"height": "210px", "width": "100%"}),
         ]),
     ],
     p="md", shadow="xs",
@@ -694,7 +735,7 @@ def make_single_page_appshell(country_options, default_country):
     )
 
     right_panel = dmc.GridCol(
-        [dmc.Paper([impact_summary, specific_track_view, exceedance_chart], p="md", shadow="sm")],
+        [dmc.Paper([impact_summary, in_need_charts, specific_track_view, exceedance_chart], p="md", shadow="sm")],
         span=3,
         style={"height": "calc(100vh - 67px - 80px)", "overflow": "auto"},
     )

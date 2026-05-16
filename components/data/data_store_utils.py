@@ -15,11 +15,18 @@ Usage:
     data_store = get_data_store()
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Import GigaSpatial components
 from gigaspatial.core.io.adls_data_store import ADLSDataStore
 from gigaspatial.core.io.local_data_store import LocalDataStore
-from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
 from gigaspatial.core.io.readers import read_dataset
+try:
+    from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
+except ImportError:
+    SnowflakeDataStore = None
 
 # Import centralized configuration
 from components.config import config as app_config
@@ -151,5 +158,5 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
             result.columns = [_norm(c) for c in result.columns]
 
     _elapsed = time.perf_counter() - _t0
-    print(f"[perf] {source_label} → {len(result)} rows in {_elapsed:.2f}s")
+    logger.debug("[perf] %s → %d rows in %.2fs", source_label, len(result), _elapsed)
     return result

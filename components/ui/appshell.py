@@ -1,3 +1,4 @@
+"""AppShell factory: composes header, navbar, main content area, and footer."""
 import dash_mantine_components as dmc
 
 from .footer import footer

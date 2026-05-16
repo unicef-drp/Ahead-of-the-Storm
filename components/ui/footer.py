@@ -1,3 +1,4 @@
+"""Fixed bottom footer: partner logos (FDN/UNICEF, GIGA, OoI) and GitHub link."""
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 

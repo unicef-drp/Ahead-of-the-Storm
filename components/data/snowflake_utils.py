@@ -11,6 +11,7 @@ Key Components:
 - Impact and base layer MAT table queries
 """
 
+import logging
 import time
 import threading
 from functools import lru_cache
@@ -25,20 +26,23 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 # Import centralized configuration
 from components.config import config
 
+logger = logging.getLogger(__name__)
+
 # Per-thread connection storage — each Gunicorn worker thread gets its own connection
 _thread_local = threading.local()
-_connection_verbose = True  # Set to False to suppress connection messages
 _HEALTH_CHECK_INTERVAL = 300  # seconds — recheck liveness at most once every 5 min
 
 def _is_connection_alive(conn):
     """Check if a Snowflake connection is still alive via a lightweight SELECT 1."""
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         cursor.execute("SELECT 1")
-        cursor.close()
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug("Connection liveness check failed: %s", e)
         return False
+    finally:
+        cursor.close()
 
 
 def _run_query(sql: str, params=None) -> pd.DataFrame:
@@ -76,7 +80,6 @@ def get_snowflake_connection():
     2. Password Authentication (default):
        - Requires SNOWFLAKE_USER and SNOWFLAKE_PASSWORD
     """
-    global _connection_verbose
     config.validate_snowflake_config()
 
     conn = getattr(_thread_local, 'connection', None)
@@ -96,12 +99,12 @@ def get_snowflake_connection():
             pass
         _thread_local.connection = None
 
-    # Print once per thread
-    should_print = _connection_verbose and not getattr(_thread_local, 'connection_created', False)
+    # Log once per thread on first connect
+    first_connect = not getattr(_thread_local, 'connection_created', False)
 
     if config.SPCS_RUN:
-        if should_print:
-            print("Connecting to Snowflake with SPCS OAuth authentication...")
+        if first_connect:
+            logger.info("Connecting to Snowflake with SPCS OAuth authentication...")
         try:
             with open(config.SPCS_TOKEN_PATH, 'r') as f:
                 token = f.read().strip()
@@ -117,14 +120,14 @@ def get_snowflake_connection():
                 'schema': config.SNOWFLAKE_SCHEMA,
                 'client_session_keep_alive': True
             }
-            if should_print:
-                print(f"✓ Loaded OAuth token from {config.SPCS_TOKEN_PATH}")
-                print(f"✓ Using SPCS internal network: {conn_params['host']}:{conn_params['port']}")
+            if first_connect:
+                logger.info("Loaded OAuth token from %s", config.SPCS_TOKEN_PATH)
+                logger.info("Using SPCS internal network: %s:%s", conn_params['host'], conn_params['port'])
         except Exception as e:
             raise ValueError(f"Failed to load OAuth token from {config.SPCS_TOKEN_PATH}: {str(e)}")
     else:
-        if should_print:
-            print("Connecting to Snowflake with password authentication...")
+        if first_connect:
+            logger.info("Connecting to Snowflake with password authentication...")
         conn_params = {
             'account': config.SNOWFLAKE_ACCOUNT,
             'user': config.SNOWFLAKE_USER,
@@ -139,18 +142,21 @@ def get_snowflake_connection():
         # SPCS OAuth mode sometimes ignores the warehouse param in the connection
         # string — explicitly set it so every new thread session has a warehouse.
         if config.SPCS_RUN and config.SNOWFLAKE_WAREHOUSE:
+            cur = conn.cursor()
             try:
-                conn.cursor().execute(f"USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE}")
+                cur.execute(f"USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE}")
             except Exception as e:
-                print(f"Warning: USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE} failed: {e}")
-        if should_print:
-            print("✓ Connected to Snowflake (connection will be reused per thread)")
+                logger.warning("USE WAREHOUSE %s failed: %s", config.SNOWFLAKE_WAREHOUSE, e)
+            finally:
+                cur.close()
+        if first_connect:
+            logger.info("Connected to Snowflake (connection will be reused per thread)")
         _thread_local.connection = conn
         _thread_local.connection_created = True
         _thread_local.last_health_check = time.monotonic()
         return conn
     except Exception as e:
-        print(f"✗ Failed to connect to Snowflake: {str(e)}")
+        logger.error("Failed to connect to Snowflake: %s", e)
         raise
 
 
@@ -179,17 +185,17 @@ def get_available_wind_thresholds(storm, forecast_time):
         
         if not df.empty:
             # Convert to list of strings and sort
-            thresholds = [str(int(th)) for th in df['WIND_THRESHOLD'].tolist()]
+            thresholds = [str(int(th)) for th in df['WIND_THRESHOLD'].tolist() if pd.notna(th)]
             thresholds.sort(key=int)  # Sort numerically
-            print(f"Found {len(thresholds)} wind thresholds for {storm} at {forecast_time}: {thresholds}")
+            logger.debug("Found %d wind thresholds for %s at %s: %s", len(thresholds), storm, forecast_time, thresholds)
             return thresholds
         else:
             # Return empty list if no data found - don't use defaults
-            print(f"No wind thresholds found for {storm} at {forecast_time}")
+            logger.debug("No wind thresholds found for %s at %s", storm, forecast_time)
             return []
-            
+
     except Exception as e:
-        print(f"Error getting wind thresholds from Snowflake: {str(e)}")
+        logger.error("Error getting wind thresholds from Snowflake: %s", e)
         # Return empty list on error - don't use defaults
         return []
 
@@ -217,7 +223,7 @@ def get_latest_forecast_time_overall():
             return None
             
     except Exception as e:
-        print(f"Error getting latest forecast time from Snowflake: {str(e)}")
+        logger.error("Error getting latest forecast time from Snowflake: %s", e)
         return None
 
 def get_envelope_data_snowflake(track_id, forecast_time):
@@ -236,10 +242,10 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         df = _run_query(query, params=[track_id, str(forecast_time)])
         if not df.empty:
             df = df.rename(columns={'ENSEMBLE_MEMBER': 'ensemble_member', 'ENVELOPE_REGION': 'geometry', 'WIND_THRESHOLD': 'wind_threshold'})
-            return df
+            return df.copy()
         return pd.DataFrame()
     except Exception as e:
-        print(f"Error getting envelope data from Snowflake: {str(e)}")
+        logger.error("Error getting envelope data from Snowflake: %s", e)
         return pd.DataFrame()
 
 
@@ -272,16 +278,14 @@ def get_active_countries():
         df = _run_query(query)
         
         if not df.empty:
-            print(f"✓ Loaded {len(df)} active countries from PIPELINE_COUNTRIES")
+            logger.info("Loaded %d active countries from PIPELINE_COUNTRIES", len(df))
         else:
-            print("⚠ No active countries found in PIPELINE_COUNTRIES table")
-        
-        return df
-        
+            logger.warning("No active countries found in PIPELINE_COUNTRIES table")
+
+        return df.copy()
+
     except Exception as e:
-        print(f"Error getting active countries from Snowflake: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Error getting active countries from Snowflake: %s", e, exc_info=True)
         return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL', 'IS_REGION', 'MEMBER_CODES'])
 
 
@@ -304,10 +308,10 @@ def get_lat_lons_bulk() -> pd.DataFrame:
         """
         df = _run_query(query)
         df = df.rename(columns={'LATITUDE': 'latitude', 'LONGITUDE': 'longitude'})
-        print(f"✓ Loaded lat/lons for {len(df)} storm/forecast combinations in one query")
-        return df
+        logger.info("Loaded lat/lons for %d storm/forecast combinations in one query", len(df))
+        return df.copy()
     except Exception as e:
-        print(f"Error in get_lat_lons_bulk: {str(e)}")
+        logger.error("Error in get_lat_lons_bulk: %s", e)
         return pd.DataFrame(columns=['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude'])
 
 @lru_cache(maxsize=1)
@@ -328,10 +332,10 @@ def get_snowflake_data():
         
         df = _run_query(query)
         
-        return df
+        return df.copy()
         
     except Exception as e:
-        print(f"Error getting Snowflake data: {str(e)}")
+        logger.error("Error getting Snowflake data: %s", e)
         return pd.DataFrame({'TRACK_ID': [], 'FORECAST_TIME': [], 'ENSEMBLE_COUNT': []})
 
 
@@ -371,10 +375,10 @@ def get_school_impacts(country: str, storm: str, forecast_date: str, wind_thresh
           AND WIND_THRESHOLD = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        print(f"✓ Loaded {len(df)} school impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
-        return df
+        logger.info("Loaded %d school impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying SCHOOL_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying SCHOOL_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -416,10 +420,10 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
           AND WIND_THRESHOLD = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        print(f"✓ Loaded {len(df)} health centre impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
-        return df
+        logger.info("Loaded %d HC impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying HC_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying HC_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -454,10 +458,10 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
           AND WIND_THRESHOLD = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        print(f"✓ Loaded {len(df)} shelter impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
-        return df
+        logger.info("Loaded %d shelter impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying SHELTER_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying SHELTER_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -492,10 +496,10 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
           AND WIND_THRESHOLD = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        print(f"✓ Loaded {len(df)} WASH facility impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
-        return df
+        logger.info("Loaded %d WASH impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying WASH_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying WASH_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -519,32 +523,43 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
     try:
         query = """
         SELECT
-            ZONE_ID,
-            ADMIN_ID,
-            PROBABILITY,
-            E_POPULATION,
-            E_INFANT_POPULATION,
-            E_SCHOOL_AGE_POPULATION,
-            E_ADOLESCENT_POPULATION,
-            E_BUILT_SURFACE_M2,
-            E_NUM_SCHOOLS,
-            E_NUM_HCS,
-            E_NUM_SHELTERS,
-            E_NUM_WASH,
-            E_SMOD_CLASS,
-            E_RWI
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-          AND ZOOM_LEVEL = %s
+            t.ZONE_ID,
+            t.ADMIN_ID,
+            t.PROBABILITY,
+            t.E_POPULATION,
+            t.E_INFANT_POPULATION,
+            t.E_SCHOOL_AGE_POPULATION,
+            t.E_ADOLESCENT_POPULATION,
+            t.E_BUILT_SURFACE_M2,
+            t.E_NUM_SCHOOLS,
+            t.E_NUM_HCS,
+            t.E_NUM_SHELTERS,
+            t.E_NUM_WASH,
+            t.E_SMOD_CLASS,
+            t.E_RWI,
+            v.E_INFANT_IN_NEED,
+            v.E_SCHOOL_AGE_IN_NEED,
+            v.E_ADOLESCENT_IN_NEED,
+            v.E_CHILDREN_IN_NEED,
+            v.E_PEOPLE_IN_NEED
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ZOOM_LEVEL    = t.ZOOM_LEVEL
+            AND v.ZONE_ID       = t.ZONE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+          AND t.ZOOM_LEVEL = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, zoom_level])
-        print(f"✓ Loaded {len(df)} tile impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt zoom={zoom_level})")
-        return df
+        logger.info("Loaded %d tile impact rows (%s/%s/%s/%dkt z=%d)", len(df), country, storm, forecast_date, wind_threshold, zoom_level)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying MERCATOR_TILE_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying MERCATOR_TILE_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -567,33 +582,44 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     try:
         query = """
         SELECT
-            TILE_ID,
-            NAME,
-            ADMIN_LEVEL,
-            PROBABILITY,
-            E_POPULATION,
-            E_INFANT_POPULATION,
-            E_SCHOOL_AGE_POPULATION,
-            E_ADOLESCENT_POPULATION,
-            E_BUILT_SURFACE_M2,
-            E_NUM_SCHOOLS,
-            E_NUM_HCS,
-            E_NUM_SHELTERS,
-            E_NUM_WASH,
-            E_SMOD_CLASS,
-            E_RWI
-        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-          AND ADMIN_LEVEL = %s
+            t.TILE_ID,
+            t.NAME,
+            t.ADMIN_LEVEL,
+            t.PROBABILITY,
+            t.E_POPULATION,
+            t.E_INFANT_POPULATION,
+            t.E_SCHOOL_AGE_POPULATION,
+            t.E_ADOLESCENT_POPULATION,
+            t.E_BUILT_SURFACE_M2,
+            t.E_NUM_SCHOOLS,
+            t.E_NUM_HCS,
+            t.E_NUM_SHELTERS,
+            t.E_NUM_WASH,
+            t.E_SMOD_CLASS,
+            t.E_RWI,
+            v.E_INFANT_IN_NEED,
+            v.E_SCHOOL_AGE_IN_NEED,
+            v.E_ADOLESCENT_IN_NEED,
+            v.E_CHILDREN_IN_NEED,
+            v.E_PEOPLE_IN_NEED
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ADMIN_LEVEL   = t.ADMIN_LEVEL
+            AND v.TILE_ID       = t.TILE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+          AND t.ADMIN_LEVEL = %s
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, admin_level])
-        print(f"✓ Loaded {len(df)} admin impact rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt admin_level={admin_level})")
-        return df
+        logger.info("Loaded %d admin impact rows (%s/%s/%s/%dkt L%d)", len(df), country, storm, forecast_date, wind_threshold, admin_level)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying ADMIN_ALL_IMPACT_MAT: {str(e)}")
+        logger.error("Error querying ADMIN_ALL_IMPACT_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -617,10 +643,10 @@ def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int =
         df.columns = [c.lower() for c in df.columns]   # zone_id, cci_children, E_cci_children
         # Normalise E_ prefix (E_cci_children stays as-is after lower)
         df = df.rename(columns={'e_cci_children': 'E_cci_children'})
-        print(f"✓ Loaded {len(df)} tile CCI rows from SQL ({country}/{storm}/{forecast_date} zoom={zoom_level})")
-        return df
+        logger.info("Loaded %d tile CCI rows (%s/%s/%s z=%d)", len(df), country, storm, forecast_date, zoom_level)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying MERCATOR_TILE_CCI_MAT: {str(e)}")
+        logger.error("Error querying MERCATOR_TILE_CCI_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -642,10 +668,10 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
         df = _run_query(query, params=[country, storm, forecast_date, admin_level])
         df.columns = [c.lower() for c in df.columns]   # tile_id, cci_children, e_cci_children
         df = df.rename(columns={'e_cci_children': 'E_cci_children'})
-        print(f"✓ Loaded {len(df)} admin CCI rows from SQL ({country}/{storm}/{forecast_date} admin_level={admin_level})")
-        return df
+        logger.info("Loaded %d admin CCI rows (%s/%s/%s L%d)", len(df), country, storm, forecast_date, admin_level)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying ADMIN_ALL_CCI_MAT: {str(e)}")
+        logger.error("Error querying ADMIN_ALL_CCI_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -671,24 +697,34 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         from shapely import wkb as shapely_wkb
         query = """
         SELECT
-            ZONE_ID                        AS zone_id,
-            WIND_THRESHOLD                 AS wind_threshold,
-            SEVERITY_POPULATION            AS severity_population,
-            SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
-            SEVERITY_INFANT_POPULATION     AS severity_infant_population,
-            SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
-            SEVERITY_SCHOOLS               AS severity_schools,
-            SEVERITY_HCS                   AS severity_hcs,
-            SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
-            SEVERITY_NUM_WASH              AS severity_num_wash,
-            SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
-            GEOMETRY
-        FROM AOTS.TC_ECMWF.TRACK_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-        ORDER BY ZONE_ID
+            t.ZONE_ID                        AS zone_id,
+            t.WIND_THRESHOLD                 AS wind_threshold,
+            t.SEVERITY_POPULATION            AS severity_population,
+            t.SEVERITY_SCHOOL_AGE_POPULATION AS severity_school_age_population,
+            t.SEVERITY_INFANT_POPULATION     AS severity_infant_population,
+            t.SEVERITY_ADOLESCENT_POPULATION AS severity_adolescent_population,
+            t.SEVERITY_SCHOOLS               AS severity_schools,
+            t.SEVERITY_HCS                   AS severity_hcs,
+            t.SEVERITY_NUM_SHELTERS          AS severity_num_shelters,
+            t.SEVERITY_NUM_WASH              AS severity_num_wash,
+            t.SEVERITY_BUILT_SURFACE_M2      AS severity_built_surface_m2,
+            t.GEOMETRY,
+            v.SEVERITY_PEOPLE_IN_NEED        AS severity_people_in_need,
+            v.SEVERITY_CHILDREN_IN_NEED      AS severity_children_in_need,
+            v.SEVERITY_INFANT_IN_NEED        AS severity_infant_in_need,
+            v.SEVERITY_SCHOOL_AGE_IN_NEED    AS severity_school_age_in_need,
+            v.SEVERITY_ADOLESCENT_IN_NEED    AS severity_adolescent_in_need
+        FROM AOTS.TC_ECMWF.TRACK_MAT t
+        LEFT JOIN AOTS.TC_ECMWF.TRACK_VULNERABILITY_MAT v
+            ON  v.COUNTRY       = t.COUNTRY
+            AND v.STORM         = t.STORM
+            AND v.FORECAST_DATE = t.FORECAST_DATE
+            AND v.ZONE_ID       = t.ZONE_ID
+        WHERE t.COUNTRY = %s
+          AND t.STORM = %s
+          AND t.FORECAST_DATE = %s
+          AND t.WIND_THRESHOLD = %s
+        ORDER BY t.ZONE_ID
         """
         df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
 
@@ -702,10 +738,10 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         df['geometry'] = df['GEOMETRY'].apply(_parse_wkb)
         df = df.drop(columns=['GEOMETRY'])
         gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
-        print(f"✓ Loaded {len(gdf)} track rows from SQL ({country}/{storm}/{forecast_date}/{wind_threshold}kt)")
+        logger.info("Loaded %d track rows (%s/%s/%s/%dkt)", len(gdf), country, storm, forecast_date, wind_threshold)
         return gdf.copy()
     except Exception as e:
-        print(f"Error querying TRACK_MAT: {str(e)}")
+        logger.error("Error querying TRACK_MAT: %s", e)
         return gpd.GeoDataFrame()
 
 
@@ -764,17 +800,52 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
                 t = mercantile.quadkey_to_tile(qk)
                 b = mercantile.bounds(t)
                 return shapely_box(b.west, b.south, b.east, b.north)
-            except Exception:
+            except Exception as e:
+                logger.debug("Invalid quadkey %s: %s", qk, e)
                 return None
 
         df['geometry'] = df['tile_id'].apply(_qk_to_geom)
         df = df.dropna(subset=['geometry'])
         gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
-        print(f"✓ Base tiles {country}/z{zoom_level}: {len(gdf)} tiles in {time.time()-t0:.1f}s")
-        return gdf
+        logger.info("Base tiles %s/z%d: %d tiles in %.1fs", country, zoom_level, len(gdf), time.time() - t0)
+        return gdf.copy()
     except Exception as e:
-        print(f"Error querying BASE_MERCATOR_TILE_MAT: {str(e)}")
+        logger.error("Error querying BASE_MERCATOR_TILE_MAT: %s", e)
         return gpd.GeoDataFrame()
+
+
+@lru_cache(maxsize=32)
+def _get_country_totals_cached(country: str) -> dict:
+    try:
+        query = """
+        SELECT
+            SUM(POPULATION)                                                          AS total_population,
+            SUM(COALESCE(INFANT_POPULATION, 0)
+              + COALESCE(SCHOOL_AGE_POPULATION, 0)
+              + COALESCE(ADOLESCENT_POPULATION, 0))                                  AS total_children
+        FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT
+        WHERE COUNTRY = %s
+        """
+        df = _run_query(query, params=[country])
+        if df.empty or df.iloc[0]["TOTAL_POPULATION"] is None:
+            return {"total_population": None, "total_children": None}
+        row = df.iloc[0]
+        return {
+            "total_population": int(row["TOTAL_POPULATION"]) if pd.notna(row["TOTAL_POPULATION"]) else None,
+            "total_children":   int(row["TOTAL_CHILDREN"])   if pd.notna(row["TOTAL_CHILDREN"])   else None,
+        }
+    except Exception as e:
+        logger.error("Error querying country totals for %s: %s", country, e)
+        return {"total_population": None, "total_children": None}
+
+
+def get_country_totals(country: str) -> dict:
+    """Return total population and total children for a country from BASE_MERCATOR_TILE_MAT.
+
+    Returns dict with keys: total_population, total_children (int or None on error).
+    Each call returns a fresh copy so callers cannot corrupt the cache.
+    """
+    return dict(_get_country_totals_cached(country))
 
 
 @lru_cache(maxsize=32)
@@ -796,10 +867,10 @@ def get_base_schools(country: str) -> pd.DataFrame:
         """
         df = _run_query(query, params=[country])
         df.columns = [c.lower() for c in df.columns]
-        print(f"✓ Base schools {country}: {len(df)} rows in {time.time()-t0:.1f}s")
-        return df
+        logger.info("Base schools %s: %d rows in %.1fs", country, len(df), time.time() - t0)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying BASE_SCHOOL_MAT: {str(e)}")
+        logger.error("Error querying BASE_SCHOOL_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -826,10 +897,10 @@ def get_base_hcs(country: str) -> pd.DataFrame:
         """
         df = _run_query(query, params=[country])
         df.columns = [c.lower() for c in df.columns]
-        print(f"✓ Base HCs {country}: {len(df)} rows in {time.time()-t0:.1f}s")
-        return df
+        logger.info("Base HCs %s: %d rows in %.1fs", country, len(df), time.time() - t0)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying BASE_HC_MAT: {str(e)}")
+        logger.error("Error querying BASE_HC_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -852,10 +923,10 @@ def get_base_shelters(country: str) -> pd.DataFrame:
         """
         df = _run_query(query, params=[country])
         df.columns = [c.lower() for c in df.columns]
-        print(f"✓ Base shelters {country}: {len(df)} rows in {time.time()-t0:.1f}s")
-        return df
+        logger.info("Base shelters %s: %d rows in %.1fs", country, len(df), time.time() - t0)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying BASE_SHELTER_MAT: {str(e)}")
+        logger.error("Error querying BASE_SHELTER_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -878,10 +949,10 @@ def get_base_wash(country: str) -> pd.DataFrame:
         """
         df = _run_query(query, params=[country])
         df.columns = [c.lower() for c in df.columns]
-        print(f"✓ Base WASH {country}: {len(df)} rows in {time.time()-t0:.1f}s")
-        return df
+        logger.info("Base WASH %s: %d rows in %.1fs", country, len(df), time.time() - t0)
+        return df.copy()
     except Exception as e:
-        print(f"Error querying BASE_WASH_MAT: {str(e)}")
+        logger.error("Error querying BASE_WASH_MAT: %s", e)
         return pd.DataFrame()
 
 
@@ -930,14 +1001,15 @@ def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
         def _parse_geojson(s):
             try:
                 return shape(json.loads(s))
-            except Exception:
+            except Exception as e:
+                logger.debug("GeoJSON parse error: %s", e)
                 return None
 
         df['geometry'] = df['geojson'].apply(_parse_geojson)
         df = df.drop(columns=['geojson']).dropna(subset=['geometry'])
         gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
-        print(f"✓ Base admin {country}/L{admin_level}: {len(gdf)} regions in {time.time()-t0:.1f}s")
-        return gdf
+        logger.info("Base admin %s/L%d: %d regions in %.1fs", country, admin_level, len(gdf), time.time() - t0)
+        return gdf.copy()
     except Exception as e:
-        print(f"Error querying BASE_ADMIN_GEOM_MAT: {str(e)}")
+        logger.error("Error querying BASE_ADMIN_GEOM_MAT: %s", e)
         return gpd.GeoDataFrame()

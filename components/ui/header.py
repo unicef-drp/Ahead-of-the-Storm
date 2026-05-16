@@ -1,6 +1,10 @@
+"""Fixed top navigation bar: app title, last-updated timestamp, and page tabs."""
+import logging
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 from components.data.snowflake_utils import get_latest_forecast_time_overall
+
+logger = logging.getLogger(__name__)
 
 def make_header(active_tab="tab-home"):
     # Get the latest forecast time from Snowflake (overall latest, not storm-specific)
@@ -8,7 +12,7 @@ def make_header(active_tab="tab-home"):
         latest_time = get_latest_forecast_time_overall()
         formatted_time = latest_time.strftime("%b %d, %Y %H:%M UTC") if latest_time else "N/A"
     except Exception as e:
-        print(f"Error getting latest forecast time: {e}")
+        logger.error("Error getting latest forecast time: %s", e)
         formatted_time = "N/A"
     
     # Create Last Updated timestamp component
@@ -116,35 +120,6 @@ def make_header(active_tab="tab-home"):
                                 "backgroundColor": "transparent",
                             }
                         }
-                    ),
-                    dmc.Menu(
-                        [
-                            # dmc.MenuTarget(dmc.TabsTab("Account", value="tab-account", leftSection=DashIconify(icon="carbon:user", height=16)),),
-                            dmc.MenuTarget(
-                                dmc.ActionIcon(
-                                    DashIconify(icon="carbon:translate", width=25),
-                                    variant="transparent",
-                                    c="white",
-                                )
-                            ),
-                            dmc.MenuDropdown(
-                                [
-                                    dmc.MenuItem(
-                                        "English",
-                                        id="translate-english",
-                                        color="#1cabe2",
-                                        n_clicks=0,
-                                    ),
-                                    dmc.MenuItem(
-                                        "Spanish",
-                                        id="translate-spanish",
-                                        disabled=True,
-                                        n_clicks=0,
-                                    ),
-                                ]
-                            ),
-                        ],
-                        trigger="hover",
                     ),
                 ]
             ),

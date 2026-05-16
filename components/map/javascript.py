@@ -175,6 +175,11 @@ function(feature, layer) {
     const severity_num_shelters = props.severity_num_shelters;
     const severity_num_wash = props.severity_num_wash;
     const severity_built_surface_m2 = props.severity_built_surface_m2;
+    const severity_people_in_need = props.severity_people_in_need;
+    const severity_children_in_need = props.severity_children_in_need;
+    const severity_infant_in_need = props.severity_infant_in_need;
+    const severity_school_age_in_need = props.severity_school_age_in_need;
+    const severity_adolescent_in_need = props.severity_adolescent_in_need;
 
     const formatNumber = (num) => {
         if (typeof num === 'number') {
@@ -249,6 +254,21 @@ function(feature, layer) {
             Built Surface: ${fmtSurface(severity_built_surface_m2)}
         </div>
     `;
+
+    const _hasInNeed = v => v != null && typeof v === 'number' && !isNaN(v) && v > 0;
+    if (_hasInNeed(severity_people_in_need) || _hasInNeed(severity_children_in_need)) {
+        const sev_chin_all_null = severity_infant_in_need == null && severity_school_age_in_need == null && severity_adolescent_in_need == null;
+        const sev_chin_total = sev_chin_all_null ? null : (severity_infant_in_need || 0) + (severity_school_age_in_need || 0) + (severity_adolescent_in_need || 0);
+        content += `
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
+        <div style="font-size: 11px; color: #f59f00; font-weight: 600; margin-top: 5px;">In Need:</div>
+        <div style="font-size: 11px; color: #f59f00;">Population: ${_hasInNeed(severity_people_in_need) ? formatNumber(severity_people_in_need) : 'N/A'}</div>
+        <div style="font-size: 11px; color: #f59f00;">Children<span style="font-size: 0.85em; margin-left: 3px;">(total)</span>: ${sev_chin_total !== null ? formatNumber(sev_chin_total) : (_hasInNeed(severity_children_in_need) ? formatNumber(severity_children_in_need) : 'N/A')}</div>
+        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 0–4: ${_hasInNeed(severity_infant_in_need) ? formatNumber(severity_infant_in_need) : 'N/A'}</div>
+        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 5–14: ${_hasInNeed(severity_school_age_in_need) ? formatNumber(severity_school_age_in_need) : 'N/A'}</div>
+        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 15–19: ${_hasInNeed(severity_adolescent_in_need) ? formatNumber(severity_adolescent_in_need) : 'N/A'}</div>
+        `;
+    }
 
     layer.bindTooltip(content, {sticky: true});
 }

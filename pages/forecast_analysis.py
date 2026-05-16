@@ -9,10 +9,13 @@ all ensemble members, and exceedance probability charts.
 Data flow:
   load_all_layers (dashboard.py) → writes store selectors (country, storm, date, threshold)
   update_wind_threshold_options  → queries SNOWFLAKE for available thresholds
-  update_impact_metrics          → reads <country>_<storm>_<datetime>_<threshold>_14.csv
+  update_impact_metrics          → IMPACT_DATA_SOURCE=SQL: reads MERCATOR_TILE_IMPACT_MAT (LEFT JOIN
+                                     MERCATOR_TILE_VULNERABILITY_MAT) and TRACK_MAT (LEFT JOIN
+                                     TRACK_VULNERABILITY_MAT); Stage: reads parquet/CSV from giga_store
   update_box_plots               → reads <country>_<storm>_<datetime>_<threshold>.parquet
 """
 import logging
+import math
 
 from dash import html, dcc, Input, Output, State, callback
 import dash
@@ -33,7 +36,7 @@ from components.ui.header import make_header
 from components.ui.footer import footer
 from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds, get_active_countries, get_snowflake_data
 from gigaspatial.core.io.readers import read_dataset
-from components.data.data_store_utils import get_data_store
+from components.data.data_store_utils import get_data_store, get_impact_data
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +240,12 @@ def create_impact_summary(tab_suffix=""):
                                 dmc.TableTr([
                                     dmc.TableTh([
                                         dmc.Text("Metric", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
-                                        dmc.Text("at Risk", style={"margin": 0, "fontSize": "0.85em", "fontWeight": 400, "color": "#6c757d"}, c="dimmed")
+                                        html.Span([
+                                            html.Span("● ", style={"color": "#6c757d", "fontSize": "0.7em"}),
+                                            html.Span("at risk  ", style={"color": "#6c757d", "fontSize": "0.8em"}),
+                                            html.Span("● ", style={"color": "#f59f00", "fontSize": "0.7em"}),
+                                            html.Span("in need", style={"color": "#f59f00", "fontSize": "0.8em"}),
+                                        ], style={"display": "block", "marginTop": "3px"})
                                     ], style={"fontWeight": 700, "backgroundColor": "#f8f9fa", "color": "#495057", "borderBottom": "2px solid #dee2e6", "height": "60px", "verticalAlign": "top", "paddingTop": "8px"}),
                                     dmc.TableTh([
                                         dmc.Text("DET", style={"fontWeight": 700, "margin": 0, "fontSize": "inherit"}),
@@ -252,77 +260,136 @@ def create_impact_summary(tab_suffix=""):
                             ]),
                             dmc.TableTbody([
                                 dmc.TableTr([
-                                    dmc.TableTd("Population", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-population-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-population-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-population-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Population"),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-population-count-low{suffix}"),
+                                        html.Span("", id=f"analysis-population-in-need-det{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-population-count-probabilistic{suffix}"),
+                                        html.Span("", id=f"analysis-population-in-need{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-population-count-high{suffix}"),
+                                        html.Span("", id=f"analysis-population-in-need-worst{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Children (0–19)", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-total-children-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd([html.Span("Children"), html.Span(" (total)", style={"fontSize": "0.8em", "color": "#888", "marginLeft": "3px"})]),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-total-children-count-low{suffix}"),
+                                        html.Span("", id=f"analysis-total-children-in-need-det{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-total-children-count-probabilistic{suffix}"),
+                                        html.Span("", id=f"analysis-total-children-in-need{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-total-children-count-high{suffix}"),
+                                        html.Span("", id=f"analysis-total-children-in-need-worst{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 0–4", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-low{suffix}",
-                                                style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-probabilistic{suffix}",
-                                                style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-infant-affected-high{suffix}",
-                                                style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Age 0–4", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-infant-affected-low{suffix}"),
+                                        html.Span("", id=f"analysis-infant-in-need-det{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-infant-affected-probabilistic{suffix}"),
+                                        html.Span("", id=f"analysis-infant-in-need{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-infant-affected-high{suffix}"),
+                                        html.Span("", id=f"analysis-infant-in-need-worst{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-children-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Age 5–14", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-children-affected-low{suffix}"),
+                                        html.Span("", id=f"analysis-children-in-need-det{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-children-affected-probabilistic{suffix}"),
+                                        html.Span("", id=f"analysis-children-in-need{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-children-affected-high{suffix}"),
+                                        html.Span("", id=f"analysis-children-in-need-worst{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd(dmc.Group([dmc.Text(size="xs", c="dimmed"), dmc.Text("Age 15–19", style={"fontStyle": "italic", "fontSize": "0.95em"})], gap=0), style={"fontWeight": 500, "paddingLeft": "15px"}),
-                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-adolescent-affected-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Age 15–19", style={"fontStyle": "italic", "fontSize": "0.93em", "color": "#888", "paddingLeft": "18px"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-adolescent-affected-low{suffix}"),
+                                        html.Span("", id=f"analysis-adolescent-in-need-det{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-adolescent-affected-probabilistic{suffix}"),
+                                        html.Span("", id=f"analysis-adolescent-in-need{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"}),
+                                    dmc.TableTd([
+                                        html.Span("N/A", id=f"analysis-adolescent-affected-high{suffix}"),
+                                        html.Span("", id=f"analysis-adolescent-in-need-worst{suffix}",
+                                                  style={"color": "#f59f00", "fontSize": "0.8em", "fontWeight": 400, "display": "block", "marginTop": "2px"}),
+                                    ], style={"textAlign": "center", "fontSize": "0.93em", "whiteSpace": "nowrap", "color": "#888"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Schools", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-schools-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-schools-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-schools-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Schools"),
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-low{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-probabilistic{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-schools-count-high{suffix}", style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Health Centers", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-health-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-health-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-health-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Health Centers"),
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-low{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-probabilistic{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-health-count-high{suffix}", style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("Shelters", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("Shelters"),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-low{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-probabilistic{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-shelters-count-high{suffix}", style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
-                                    dmc.TableTd("WASH Facilities", style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-wash-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-wash-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-wash-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    dmc.TableTd("WASH Facilities"),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-low{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-probabilistic{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-wash-count-high{suffix}", style={"textAlign": "center"})
                                 ]),
                                 dmc.TableTr([
                                     dmc.TableTd([
                                         html.Span("Built Surface m"),
                                         html.Sup("2"),
-                                    ], style={"fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-low{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-probabilistic{suffix}", style={"textAlign": "center", "fontWeight": 500}),
-                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-high{suffix}", style={"textAlign": "center", "fontWeight": 500})
+                                    ]),
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-low{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-probabilistic{suffix}", style={"textAlign": "center"}),
+                                    dmc.TableTd("N/A", id=f"analysis-bsm2-count-high{suffix}", style={"textAlign": "center"})
                                 ])
                             ])
                         ],
                         striped=True,
                         highlightOnHover=True,
                         withTableBorder=True,
-                        withColumnBorders=True
+                        withColumnBorders=True,
+                        horizontalSpacing="xs",
+                        style={"tableLayout": "fixed", "width": "100%"},
                     )
                 ],
                 p="sm",
@@ -669,20 +736,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
 @callback(
     # Outputs for population tab
     [Output("analysis-population-count-low-population", "children"),
+     Output("analysis-population-in-need-det-population", "children"),
      Output("analysis-population-count-probabilistic-population", "children"),
+     Output("analysis-population-in-need-population", "children"),
      Output("analysis-population-count-high-population", "children"),
+     Output("analysis-population-in-need-worst-population", "children"),
      Output("analysis-total-children-count-low-population", "children"),
+     Output("analysis-total-children-in-need-det-population", "children"),
      Output("analysis-total-children-count-probabilistic-population", "children"),
+     Output("analysis-total-children-in-need-population", "children"),
      Output("analysis-total-children-count-high-population", "children"),
+     Output("analysis-total-children-in-need-worst-population", "children"),
      Output("analysis-children-affected-low-population", "children"),
+     Output("analysis-children-in-need-det-population", "children"),
      Output("analysis-children-affected-probabilistic-population", "children"),
+     Output("analysis-children-in-need-population", "children"),
      Output("analysis-children-affected-high-population", "children"),
+     Output("analysis-children-in-need-worst-population", "children"),
      Output("analysis-infant-affected-low-population", "children"),
+     Output("analysis-infant-in-need-det-population", "children"),
      Output("analysis-infant-affected-probabilistic-population", "children"),
+     Output("analysis-infant-in-need-population", "children"),
      Output("analysis-infant-affected-high-population", "children"),
+     Output("analysis-infant-in-need-worst-population", "children"),
      Output("analysis-adolescent-affected-low-population", "children"),
+     Output("analysis-adolescent-in-need-det-population", "children"),
      Output("analysis-adolescent-affected-probabilistic-population", "children"),
+     Output("analysis-adolescent-in-need-population", "children"),
      Output("analysis-adolescent-affected-high-population", "children"),
+     Output("analysis-adolescent-in-need-worst-population", "children"),
      Output("analysis-schools-count-low-population", "children"),
      Output("analysis-schools-count-probabilistic-population", "children"),
      Output("analysis-schools-count-high-population", "children"),
@@ -701,20 +783,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-population", "children"),
      # Outputs for children tab
      Output("analysis-population-count-low-children", "children"),
+     Output("analysis-population-in-need-det-children", "children"),
      Output("analysis-population-count-probabilistic-children", "children"),
+     Output("analysis-population-in-need-children", "children"),
      Output("analysis-population-count-high-children", "children"),
+     Output("analysis-population-in-need-worst-children", "children"),
      Output("analysis-total-children-count-low-children", "children"),
+     Output("analysis-total-children-in-need-det-children", "children"),
      Output("analysis-total-children-count-probabilistic-children", "children"),
+     Output("analysis-total-children-in-need-children", "children"),
      Output("analysis-total-children-count-high-children", "children"),
+     Output("analysis-total-children-in-need-worst-children", "children"),
      Output("analysis-children-affected-low-children", "children"),
+     Output("analysis-children-in-need-det-children", "children"),
      Output("analysis-children-affected-probabilistic-children", "children"),
+     Output("analysis-children-in-need-children", "children"),
      Output("analysis-children-affected-high-children", "children"),
+     Output("analysis-children-in-need-worst-children", "children"),
      Output("analysis-infant-affected-low-children", "children"),
+     Output("analysis-infant-in-need-det-children", "children"),
      Output("analysis-infant-affected-probabilistic-children", "children"),
+     Output("analysis-infant-in-need-children", "children"),
      Output("analysis-infant-affected-high-children", "children"),
+     Output("analysis-infant-in-need-worst-children", "children"),
      Output("analysis-adolescent-affected-low-children", "children"),
+     Output("analysis-adolescent-in-need-det-children", "children"),
      Output("analysis-adolescent-affected-probabilistic-children", "children"),
+     Output("analysis-adolescent-in-need-children", "children"),
      Output("analysis-adolescent-affected-high-children", "children"),
+     Output("analysis-adolescent-in-need-worst-children", "children"),
      Output("analysis-schools-count-low-children", "children"),
      Output("analysis-schools-count-probabilistic-children", "children"),
      Output("analysis-schools-count-high-children", "children"),
@@ -733,20 +830,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-children", "children"),
      # Outputs for infants tab
      Output("analysis-population-count-low-infants", "children"),
+     Output("analysis-population-in-need-det-infants", "children"),
      Output("analysis-population-count-probabilistic-infants", "children"),
+     Output("analysis-population-in-need-infants", "children"),
      Output("analysis-population-count-high-infants", "children"),
+     Output("analysis-population-in-need-worst-infants", "children"),
      Output("analysis-total-children-count-low-infants", "children"),
+     Output("analysis-total-children-in-need-det-infants", "children"),
      Output("analysis-total-children-count-probabilistic-infants", "children"),
+     Output("analysis-total-children-in-need-infants", "children"),
      Output("analysis-total-children-count-high-infants", "children"),
+     Output("analysis-total-children-in-need-worst-infants", "children"),
      Output("analysis-children-affected-low-infants", "children"),
+     Output("analysis-children-in-need-det-infants", "children"),
      Output("analysis-children-affected-probabilistic-infants", "children"),
+     Output("analysis-children-in-need-infants", "children"),
      Output("analysis-children-affected-high-infants", "children"),
+     Output("analysis-children-in-need-worst-infants", "children"),
      Output("analysis-infant-affected-low-infants", "children"),
+     Output("analysis-infant-in-need-det-infants", "children"),
      Output("analysis-infant-affected-probabilistic-infants", "children"),
+     Output("analysis-infant-in-need-infants", "children"),
      Output("analysis-infant-affected-high-infants", "children"),
+     Output("analysis-infant-in-need-worst-infants", "children"),
      Output("analysis-adolescent-affected-low-infants", "children"),
+     Output("analysis-adolescent-in-need-det-infants", "children"),
      Output("analysis-adolescent-affected-probabilistic-infants", "children"),
+     Output("analysis-adolescent-in-need-infants", "children"),
      Output("analysis-adolescent-affected-high-infants", "children"),
+     Output("analysis-adolescent-in-need-worst-infants", "children"),
      Output("analysis-schools-count-low-infants", "children"),
      Output("analysis-schools-count-probabilistic-infants", "children"),
      Output("analysis-schools-count-high-infants", "children"),
@@ -765,20 +877,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-infants", "children"),
      # Outputs for adolescents tab
      Output("analysis-population-count-low-adolescents", "children"),
+     Output("analysis-population-in-need-det-adolescents", "children"),
      Output("analysis-population-count-probabilistic-adolescents", "children"),
+     Output("analysis-population-in-need-adolescents", "children"),
      Output("analysis-population-count-high-adolescents", "children"),
+     Output("analysis-population-in-need-worst-adolescents", "children"),
      Output("analysis-total-children-count-low-adolescents", "children"),
+     Output("analysis-total-children-in-need-det-adolescents", "children"),
      Output("analysis-total-children-count-probabilistic-adolescents", "children"),
+     Output("analysis-total-children-in-need-adolescents", "children"),
      Output("analysis-total-children-count-high-adolescents", "children"),
+     Output("analysis-total-children-in-need-worst-adolescents", "children"),
      Output("analysis-children-affected-low-adolescents", "children"),
+     Output("analysis-children-in-need-det-adolescents", "children"),
      Output("analysis-children-affected-probabilistic-adolescents", "children"),
+     Output("analysis-children-in-need-adolescents", "children"),
      Output("analysis-children-affected-high-adolescents", "children"),
+     Output("analysis-children-in-need-worst-adolescents", "children"),
      Output("analysis-infant-affected-low-adolescents", "children"),
+     Output("analysis-infant-in-need-det-adolescents", "children"),
      Output("analysis-infant-affected-probabilistic-adolescents", "children"),
+     Output("analysis-infant-in-need-adolescents", "children"),
      Output("analysis-infant-affected-high-adolescents", "children"),
+     Output("analysis-infant-in-need-worst-adolescents", "children"),
      Output("analysis-adolescent-affected-low-adolescents", "children"),
+     Output("analysis-adolescent-in-need-det-adolescents", "children"),
      Output("analysis-adolescent-affected-probabilistic-adolescents", "children"),
+     Output("analysis-adolescent-in-need-adolescents", "children"),
      Output("analysis-adolescent-affected-high-adolescents", "children"),
+     Output("analysis-adolescent-in-need-worst-adolescents", "children"),
      Output("analysis-schools-count-low-adolescents", "children"),
      Output("analysis-schools-count-probabilistic-adolescents", "children"),
      Output("analysis-schools-count-high-adolescents", "children"),
@@ -797,20 +924,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-adolescents", "children"),
      # Outputs for schools tab
      Output("analysis-population-count-low-schools", "children"),
+     Output("analysis-population-in-need-det-schools", "children"),
      Output("analysis-population-count-probabilistic-schools", "children"),
+     Output("analysis-population-in-need-schools", "children"),
      Output("analysis-population-count-high-schools", "children"),
+     Output("analysis-population-in-need-worst-schools", "children"),
      Output("analysis-total-children-count-low-schools", "children"),
+     Output("analysis-total-children-in-need-det-schools", "children"),
      Output("analysis-total-children-count-probabilistic-schools", "children"),
+     Output("analysis-total-children-in-need-schools", "children"),
      Output("analysis-total-children-count-high-schools", "children"),
+     Output("analysis-total-children-in-need-worst-schools", "children"),
      Output("analysis-children-affected-low-schools", "children"),
+     Output("analysis-children-in-need-det-schools", "children"),
      Output("analysis-children-affected-probabilistic-schools", "children"),
+     Output("analysis-children-in-need-schools", "children"),
      Output("analysis-children-affected-high-schools", "children"),
+     Output("analysis-children-in-need-worst-schools", "children"),
      Output("analysis-infant-affected-low-schools", "children"),
+     Output("analysis-infant-in-need-det-schools", "children"),
      Output("analysis-infant-affected-probabilistic-schools", "children"),
+     Output("analysis-infant-in-need-schools", "children"),
      Output("analysis-infant-affected-high-schools", "children"),
+     Output("analysis-infant-in-need-worst-schools", "children"),
      Output("analysis-adolescent-affected-low-schools", "children"),
+     Output("analysis-adolescent-in-need-det-schools", "children"),
      Output("analysis-adolescent-affected-probabilistic-schools", "children"),
+     Output("analysis-adolescent-in-need-schools", "children"),
      Output("analysis-adolescent-affected-high-schools", "children"),
+     Output("analysis-adolescent-in-need-worst-schools", "children"),
      Output("analysis-schools-count-low-schools", "children"),
      Output("analysis-schools-count-probabilistic-schools", "children"),
      Output("analysis-schools-count-high-schools", "children"),
@@ -829,20 +971,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-schools", "children"),
      # Outputs for health tab
      Output("analysis-population-count-low-health", "children"),
+     Output("analysis-population-in-need-det-health", "children"),
      Output("analysis-population-count-probabilistic-health", "children"),
+     Output("analysis-population-in-need-health", "children"),
      Output("analysis-population-count-high-health", "children"),
+     Output("analysis-population-in-need-worst-health", "children"),
      Output("analysis-total-children-count-low-health", "children"),
+     Output("analysis-total-children-in-need-det-health", "children"),
      Output("analysis-total-children-count-probabilistic-health", "children"),
+     Output("analysis-total-children-in-need-health", "children"),
      Output("analysis-total-children-count-high-health", "children"),
+     Output("analysis-total-children-in-need-worst-health", "children"),
      Output("analysis-children-affected-low-health", "children"),
+     Output("analysis-children-in-need-det-health", "children"),
      Output("analysis-children-affected-probabilistic-health", "children"),
+     Output("analysis-children-in-need-health", "children"),
      Output("analysis-children-affected-high-health", "children"),
+     Output("analysis-children-in-need-worst-health", "children"),
      Output("analysis-infant-affected-low-health", "children"),
+     Output("analysis-infant-in-need-det-health", "children"),
      Output("analysis-infant-affected-probabilistic-health", "children"),
+     Output("analysis-infant-in-need-health", "children"),
      Output("analysis-infant-affected-high-health", "children"),
+     Output("analysis-infant-in-need-worst-health", "children"),
      Output("analysis-adolescent-affected-low-health", "children"),
+     Output("analysis-adolescent-in-need-det-health", "children"),
      Output("analysis-adolescent-affected-probabilistic-health", "children"),
+     Output("analysis-adolescent-in-need-health", "children"),
      Output("analysis-adolescent-affected-high-health", "children"),
+     Output("analysis-adolescent-in-need-worst-health", "children"),
      Output("analysis-schools-count-low-health", "children"),
      Output("analysis-schools-count-probabilistic-health", "children"),
      Output("analysis-schools-count-high-health", "children"),
@@ -861,20 +1018,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-health", "children"),
      # Outputs for shelters tab
      Output("analysis-population-count-low-shelters", "children"),
+     Output("analysis-population-in-need-det-shelters", "children"),
      Output("analysis-population-count-probabilistic-shelters", "children"),
+     Output("analysis-population-in-need-shelters", "children"),
      Output("analysis-population-count-high-shelters", "children"),
+     Output("analysis-population-in-need-worst-shelters", "children"),
      Output("analysis-total-children-count-low-shelters", "children"),
+     Output("analysis-total-children-in-need-det-shelters", "children"),
      Output("analysis-total-children-count-probabilistic-shelters", "children"),
+     Output("analysis-total-children-in-need-shelters", "children"),
      Output("analysis-total-children-count-high-shelters", "children"),
+     Output("analysis-total-children-in-need-worst-shelters", "children"),
      Output("analysis-children-affected-low-shelters", "children"),
+     Output("analysis-children-in-need-det-shelters", "children"),
      Output("analysis-children-affected-probabilistic-shelters", "children"),
+     Output("analysis-children-in-need-shelters", "children"),
      Output("analysis-children-affected-high-shelters", "children"),
+     Output("analysis-children-in-need-worst-shelters", "children"),
      Output("analysis-infant-affected-low-shelters", "children"),
+     Output("analysis-infant-in-need-det-shelters", "children"),
      Output("analysis-infant-affected-probabilistic-shelters", "children"),
+     Output("analysis-infant-in-need-shelters", "children"),
      Output("analysis-infant-affected-high-shelters", "children"),
+     Output("analysis-infant-in-need-worst-shelters", "children"),
      Output("analysis-adolescent-affected-low-shelters", "children"),
+     Output("analysis-adolescent-in-need-det-shelters", "children"),
      Output("analysis-adolescent-affected-probabilistic-shelters", "children"),
+     Output("analysis-adolescent-in-need-shelters", "children"),
      Output("analysis-adolescent-affected-high-shelters", "children"),
+     Output("analysis-adolescent-in-need-worst-shelters", "children"),
      Output("analysis-schools-count-low-shelters", "children"),
      Output("analysis-schools-count-probabilistic-shelters", "children"),
      Output("analysis-schools-count-high-shelters", "children"),
@@ -893,20 +1065,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-shelters", "children"),
      # Outputs for wash tab
      Output("analysis-population-count-low-wash", "children"),
+     Output("analysis-population-in-need-det-wash", "children"),
      Output("analysis-population-count-probabilistic-wash", "children"),
+     Output("analysis-population-in-need-wash", "children"),
      Output("analysis-population-count-high-wash", "children"),
+     Output("analysis-population-in-need-worst-wash", "children"),
      Output("analysis-total-children-count-low-wash", "children"),
+     Output("analysis-total-children-in-need-det-wash", "children"),
      Output("analysis-total-children-count-probabilistic-wash", "children"),
+     Output("analysis-total-children-in-need-wash", "children"),
      Output("analysis-total-children-count-high-wash", "children"),
+     Output("analysis-total-children-in-need-worst-wash", "children"),
      Output("analysis-children-affected-low-wash", "children"),
+     Output("analysis-children-in-need-det-wash", "children"),
      Output("analysis-children-affected-probabilistic-wash", "children"),
+     Output("analysis-children-in-need-wash", "children"),
      Output("analysis-children-affected-high-wash", "children"),
+     Output("analysis-children-in-need-worst-wash", "children"),
      Output("analysis-infant-affected-low-wash", "children"),
+     Output("analysis-infant-in-need-det-wash", "children"),
      Output("analysis-infant-affected-probabilistic-wash", "children"),
+     Output("analysis-infant-in-need-wash", "children"),
      Output("analysis-infant-affected-high-wash", "children"),
+     Output("analysis-infant-in-need-worst-wash", "children"),
      Output("analysis-adolescent-affected-low-wash", "children"),
+     Output("analysis-adolescent-in-need-det-wash", "children"),
      Output("analysis-adolescent-affected-probabilistic-wash", "children"),
+     Output("analysis-adolescent-in-need-wash", "children"),
      Output("analysis-adolescent-affected-high-wash", "children"),
+     Output("analysis-adolescent-in-need-worst-wash", "children"),
      Output("analysis-schools-count-low-wash", "children"),
      Output("analysis-schools-count-probabilistic-wash", "children"),
      Output("analysis-schools-count-high-wash", "children"),
@@ -925,20 +1112,35 @@ def update_threshold_selectors(storm, date, time, current_threshold):
      Output("analysis-high-impact-badge-wash", "children"),
      # Outputs for built-surface tab
      Output("analysis-population-count-low-built-surface", "children"),
+     Output("analysis-population-in-need-det-built-surface", "children"),
      Output("analysis-population-count-probabilistic-built-surface", "children"),
+     Output("analysis-population-in-need-built-surface", "children"),
      Output("analysis-population-count-high-built-surface", "children"),
+     Output("analysis-population-in-need-worst-built-surface", "children"),
      Output("analysis-total-children-count-low-built-surface", "children"),
+     Output("analysis-total-children-in-need-det-built-surface", "children"),
      Output("analysis-total-children-count-probabilistic-built-surface", "children"),
+     Output("analysis-total-children-in-need-built-surface", "children"),
      Output("analysis-total-children-count-high-built-surface", "children"),
+     Output("analysis-total-children-in-need-worst-built-surface", "children"),
      Output("analysis-children-affected-low-built-surface", "children"),
+     Output("analysis-children-in-need-det-built-surface", "children"),
      Output("analysis-children-affected-probabilistic-built-surface", "children"),
+     Output("analysis-children-in-need-built-surface", "children"),
      Output("analysis-children-affected-high-built-surface", "children"),
+     Output("analysis-children-in-need-worst-built-surface", "children"),
      Output("analysis-infant-affected-low-built-surface", "children"),
+     Output("analysis-infant-in-need-det-built-surface", "children"),
      Output("analysis-infant-affected-probabilistic-built-surface", "children"),
+     Output("analysis-infant-in-need-built-surface", "children"),
      Output("analysis-infant-affected-high-built-surface", "children"),
+     Output("analysis-infant-in-need-worst-built-surface", "children"),
      Output("analysis-adolescent-affected-low-built-surface", "children"),
+     Output("analysis-adolescent-in-need-det-built-surface", "children"),
      Output("analysis-adolescent-affected-probabilistic-built-surface", "children"),
+     Output("analysis-adolescent-in-need-built-surface", "children"),
      Output("analysis-adolescent-affected-high-built-surface", "children"),
+     Output("analysis-adolescent-in-need-worst-built-surface", "children"),
      Output("analysis-schools-count-low-built-surface", "children"),
      Output("analysis-schools-count-probabilistic-built-surface", "children"),
      Output("analysis-schools-count-high-built-surface", "children"),
@@ -979,7 +1181,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
     wind_threshold = wind_threshold_store or pop_thresh or children_thresh or infants_thresh or adolescents_thresh or schools_thresh or health_thresh or shelters_thresh or wash_thresh or built_surface_thresh or "34"
 
     if not storm or not wind_threshold or not country or not forecast_date or not forecast_time:
-        na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
+        na_values = ("N/A",) * 46  # 45 metrics + 1 badge = 46 outputs per tab
         return na_values * 9  # Return for all 9 tabs
 
     # Calculate probabilistic impact metrics
@@ -999,12 +1201,19 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         probabilistic_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
         high_results = {"children": "N/A", "infant": "N/A", "adolescent": "N/A", "schools": "N/A", "health": "N/A", "shelters": "N/A", "wash": "N/A", "population": "N/A", "built_surface_m2": "N/A"}
         
-        # Initialize member badge
+        # Initialize member badge and worst-member tracking
         high_member_badge = "N/A"
-        
-        if giga_store.file_exists(filepath):
+        high_impact_member = None
+        df = None
+        gdf_tracks = None
+
+        if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(filepath):
             try:
-                df = read_dataset(giga_store, filepath)
+                df = get_impact_data('tile', giga_store, filepath,
+                                     country=country, storm=storm,
+                                     forecast_date=forecast_datetime,
+                                     wind_threshold=int(wind_threshold),
+                                     zoom_level=ZOOM_LEVEL)
                 
                 # Calculate PROBABILISTIC scenario (from tiles data)
                 if 'E_school_age_population' in df.columns and not df['E_school_age_population'].isna().all():
@@ -1033,9 +1242,12 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                 tracks_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                 tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', tracks_filename)
                 
-                if giga_store.file_exists(tracks_filepath):
-                    gdf_tracks = read_dataset(giga_store, tracks_filepath)
-                    
+                if config.IMPACT_DATA_SOURCE == 'SQL' or giga_store.file_exists(tracks_filepath):
+                    gdf_tracks = get_impact_data('track', giga_store, tracks_filepath,
+                                                  country=country, storm=storm,
+                                                  forecast_date=forecast_datetime,
+                                                  wind_threshold=int(wind_threshold))
+
                     if 'zone_id' in gdf_tracks.columns and 'severity_population' in gdf_tracks.columns:
                         # Use deterministic member 51 (always member 51)
                         deterministic_member = 51
@@ -1048,77 +1260,183 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                         
                         # Get deterministic scenario data (member 51)
                         low_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == deterministic_member]
-                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member]
+                        high_scenario_data = gdf_tracks[gdf_tracks['zone_id'] == high_impact_member] if isinstance(high_impact_member, (int, float, np.integer, np.floating)) else pd.DataFrame()
                         
                         # Check if health center data is available for this time slot
                         hc_filename = f"{country}_{storm}_{forecast_datetime}_{wind_threshold}.parquet"
                         hc_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'hc_views', hc_filename)
-                        hc_data_available = giga_store.file_exists(hc_filepath)
+                        hc_data_available = (config.IMPACT_DATA_SOURCE == 'SQL') or giga_store.file_exists(hc_filepath)
                         
+                        def _fill_scenario(data, hc_ok):
+                            r = {}
+                            r["population"]       = _col(data, 'severity_population')
+                            r["children"]         = _col(data, 'severity_school_age_population')
+                            r["infant"]           = _col(data, 'severity_infant_population')
+                            r["adolescent"]       = _col(data, 'severity_adolescent_population')
+                            r["schools"]          = _col(data, 'severity_schools')
+                            r["health"]           = _col(data, 'severity_hcs') if hc_ok else "N/A"
+                            r["shelters"]         = _col(data, 'severity_num_shelters')
+                            r["wash"]             = _col(data, 'severity_num_wash')
+                            r["built_surface_m2"] = _col(data, 'severity_built_surface_m2') if hc_ok else "N/A"
+                            if r["population"] == "N/A":
+                                return {k: 0 for k in r}
+                            return r
+
                         # DETERMINISTIC scenario (member 51)
                         if not low_scenario_data.empty:
-                            low_results["children"]       = _col(low_scenario_data, 'severity_school_age_population')
-                            low_results["infant"]         = _col(low_scenario_data, 'severity_infant_population')
-                            low_results["adolescent"]     = _col(low_scenario_data, 'severity_adolescent_population')
-                            low_results["schools"]        = _col(low_scenario_data, 'severity_schools')
-                            low_results["population"]     = _col(low_scenario_data, 'severity_population')
-                            low_results["health"]         = _col(low_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
-                            low_results["shelters"]       = _col(low_scenario_data, 'severity_num_shelters')
-                            low_results["wash"]           = _col(low_scenario_data, 'severity_num_wash')
-                            low_results["built_surface_m2"] = _col(low_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
-                        else:
-                            # Member 51 not found in data (badge will still show #51 as static value)
-                            pass
+                            low_results.update(_fill_scenario(low_scenario_data, hc_data_available))
+                        elif not gdf_tracks.empty:
+                            low_results.update({k: 0 for k in low_results})
 
                         # HIGH scenario
-                        high_results["children"]       = _col(high_scenario_data, 'severity_school_age_population')
-                        high_results["infant"]         = _col(high_scenario_data, 'severity_infant_population')
-                        high_results["adolescent"]     = _col(high_scenario_data, 'severity_adolescent_population')
-                        high_results["schools"]        = _col(high_scenario_data, 'severity_schools')
-                        high_results["population"]     = _col(high_scenario_data, 'severity_population')
-                        high_results["health"]         = _col(high_scenario_data, 'severity_hcs') if hc_data_available else "N/A"
-                        high_results["shelters"]       = _col(high_scenario_data, 'severity_num_shelters')
-                        high_results["wash"]           = _col(high_scenario_data, 'severity_num_wash')
-                        high_results["built_surface_m2"] = _col(high_scenario_data, 'severity_built_surface_m2') if hc_data_available else "N/A"
+                        high_results.update(_fill_scenario(high_scenario_data, hc_data_available))
                 
             except Exception as e:
                 logger.error(f"Analysis Impact metrics: Error reading file {filename}: {e}")
         else:
             logger.warning(f"Analysis Impact metrics: File not found {filename}")
         
-        # Format results
-        def format_value(value):
-            return str(value) if isinstance(value, str) else f"{value:,.0f}"
-        
-        # Compute total children (0-19) = infants + school-age + adolescents
-        def total_children(r):
-            vals = [r["infant"], r["children"], r["adolescent"]]
-            if all(isinstance(v, (int, float)) for v in vals):
-                return sum(vals)
-            return "N/A"
+        # PIN/CHIN sub-lines
+        # SQL: in-need columns already in df (MERCATOR_TILE_VULNERABILITY_MAT LEFT JOIN)
+        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN) — no extra download needed.
+        # Stage: read vulnerability CSV and tracks parquet directly from stage.
+        pin_pop = pin_children = pin_infant = pin_schoolage = pin_adolescent = ""
+        pin_pop_det = pin_children_det = pin_infant_det = pin_schoolage_det = pin_adolescent_det = ""
+        pin_pop_worst = pin_children_worst = pin_infant_worst = pin_schoolage_worst = pin_adolescent_worst = ""
 
-        # Create the single set of values (31 outputs per tab)
+        try:
+            def _in_need_fmt(v):
+                if v is None or isinstance(v, str):
+                    return ""
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    return ""
+                if not np.isfinite(fv) or fv <= 0:
+                    return ""
+                return f"{fv:,.0f}"
+
+            def _row_val(row_df, col):
+                if row_df.empty or col not in row_df.columns:
+                    return None
+                return row_df.iloc[0][col]
+
+            _df_for_pin = df if df is not None else pd.DataFrame()
+            _gdf_for_pin = gdf_tracks if gdf_tracks is not None else pd.DataFrame()
+
+            if config.IMPACT_DATA_SOURCE == 'SQL':
+                # Expected — from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
+                if not _df_for_pin.empty:
+                    pin_pop        = _in_need_fmt(_df_for_pin['E_people_in_need'].sum()       if 'E_people_in_need'       in _df_for_pin.columns else None)
+                    pin_children   = _in_need_fmt(_df_for_pin['E_children_in_need'].sum()     if 'E_children_in_need'     in _df_for_pin.columns else None)
+                    pin_infant     = _in_need_fmt(_df_for_pin['E_infant_in_need'].sum()       if 'E_infant_in_need'       in _df_for_pin.columns else None)
+                    pin_schoolage  = _in_need_fmt(_df_for_pin['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in _df_for_pin.columns else None)
+                    pin_adolescent = _in_need_fmt(_df_for_pin['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in _df_for_pin.columns else None)
+
+                # DET + Worst — from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
+                if not _gdf_for_pin.empty and 'zone_id' in _gdf_for_pin.columns:
+                    _hi = high_impact_member
+                    det_row   = _gdf_for_pin[_gdf_for_pin['zone_id'] == 51]
+                    worst_row = _gdf_for_pin[_gdf_for_pin['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer, np.floating)) else pd.DataFrame()
+
+                    pin_pop_det        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
+                    pin_children_det   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
+                    pin_infant_det     = _in_need_fmt(_row_val(det_row,   'severity_infant_in_need'))
+                    pin_schoolage_det  = _in_need_fmt(_row_val(det_row,   'severity_school_age_in_need'))
+                    pin_adolescent_det = _in_need_fmt(_row_val(det_row,   'severity_adolescent_in_need'))
+
+                    pin_pop_worst        = _in_need_fmt(_row_val(worst_row, 'severity_people_in_need'))
+                    pin_children_worst   = _in_need_fmt(_row_val(worst_row, 'severity_children_in_need'))
+                    pin_infant_worst     = _in_need_fmt(_row_val(worst_row, 'severity_infant_in_need'))
+                    pin_schoolage_worst  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
+                    pin_adolescent_worst = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
+            else:
+                # Stage path — read vulnerability CSV and tracks parquet directly
+                vuln_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability.csv"
+                vuln_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", vuln_filename)
+                if giga_store.file_exists(vuln_filepath):
+                    import io as _io
+                    df_vuln = pd.read_csv(_io.BytesIO(giga_store.read_file(vuln_filepath)))
+                    pin_pop        = _in_need_fmt(df_vuln['E_people_in_need'].sum()       if 'E_people_in_need'       in df_vuln.columns else None)
+                    pin_children   = _in_need_fmt(df_vuln['E_children_in_need'].sum()     if 'E_children_in_need'     in df_vuln.columns else None)
+                    pin_infant     = _in_need_fmt(df_vuln['E_infant_in_need'].sum()       if 'E_infant_in_need'       in df_vuln.columns else None)
+                    pin_schoolage  = _in_need_fmt(df_vuln['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in df_vuln.columns else None)
+                    pin_adolescent = _in_need_fmt(df_vuln['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in df_vuln.columns else None)
+
+                vuln_tracks_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability_tracks.parquet"
+                vuln_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "track_views", vuln_tracks_filename)
+                if giga_store.file_exists(vuln_tracks_filepath):
+                    import io as _io
+                    df_vuln_tracks = pd.read_parquet(_io.BytesIO(giga_store.read_file(vuln_tracks_filepath)))
+                    if 'zone_id' in df_vuln_tracks.columns:
+                        _hi = high_impact_member
+                        det_row   = df_vuln_tracks[df_vuln_tracks['zone_id'] == 51]
+                        worst_row = df_vuln_tracks[df_vuln_tracks['zone_id'] == _hi] if isinstance(_hi, (int, float, np.integer, np.floating)) else pd.DataFrame()
+
+                        pin_pop_det        = _in_need_fmt(_row_val(det_row,   'severity_people_in_need'))
+                        pin_children_det   = _in_need_fmt(_row_val(det_row,   'severity_children_in_need'))
+                        pin_infant_det     = _in_need_fmt(_row_val(det_row,   'severity_infant_in_need'))
+                        pin_schoolage_det  = _in_need_fmt(_row_val(det_row,   'severity_school_age_in_need'))
+                        pin_adolescent_det = _in_need_fmt(_row_val(det_row,   'severity_adolescent_in_need'))
+
+                        pin_pop_worst        = _in_need_fmt(_row_val(worst_row, 'severity_people_in_need'))
+                        pin_children_worst   = _in_need_fmt(_row_val(worst_row, 'severity_children_in_need'))
+                        pin_infant_worst     = _in_need_fmt(_row_val(worst_row, 'severity_infant_in_need'))
+                        pin_schoolage_worst  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
+                        pin_adolescent_worst = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
+        except Exception as e:
+            logger.warning(f"Could not load vulnerability in-need data: {e}")
+
+        def format_value(value):
+            if isinstance(value, str):
+                return value
+            ceiled = math.ceil(value)
+            formatted = f"{ceiled:,}"
+            if ceiled >= 100_000_000:
+                return html.Span(formatted, style={"fontSize": "0.85em"})
+            return formatted
+
+        def total_children(r):
+            parts = [v for v in [r["infant"], r["children"], r["adolescent"]] if v != "N/A"]
+            return sum(parts) if parts else "N/A"
+
+        # Create the single set of values (46 outputs per tab)
         tab_values = (
             # Population count
             format_value(low_results["population"]),
+            pin_pop_det,                                          # DET PIN
             format_value(probabilistic_results["population"]),
+            pin_pop,                                              # Expected PIN
             format_value(high_results["population"]),
+            pin_pop_worst,                                        # Worst PIN
             # Total children (0-19)
             format_value(total_children(low_results)),
+            pin_children_det,                                     # DET PIN
             format_value(total_children(probabilistic_results)),
+            pin_children,                                         # Expected PIN
             format_value(total_children(high_results)),
+            pin_children_worst,                                   # Worst PIN
             # Children affected (Age 5-14)
             format_value(low_results["children"]),
+            pin_schoolage_det,                                    # DET PIN
             format_value(probabilistic_results["children"]),
+            pin_schoolage,                                        # Expected PIN
             format_value(high_results["children"]),
+            pin_schoolage_worst,                                  # Worst PIN
             # Infants affected (Age 0-4)
             format_value(low_results["infant"]),
+            pin_infant_det,                                       # DET PIN
             format_value(probabilistic_results["infant"]),
+            pin_infant,                                           # Expected PIN
             format_value(high_results["infant"]),
+            pin_infant_worst,                                     # Worst PIN
             # Adolescents affected (Age 15-19)
             format_value(low_results["adolescent"]),
+            pin_adolescent_det,                                   # DET PIN
             format_value(probabilistic_results["adolescent"]),
+            pin_adolescent,                                       # Expected PIN
             format_value(high_results["adolescent"]),
+            pin_adolescent_worst,                                 # Worst PIN
             # Schools count
             format_value(low_results["schools"]),
             format_value(probabilistic_results["schools"]),
@@ -1143,12 +1461,12 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
             high_member_badge
         )
 
-        # Return the same values for all 9 tabs (9 * 31 = 279 outputs)
+        # Return the same values for all 9 tabs (9 * 46 = 414 outputs)
         return tab_values * 9
 
     except Exception as e:
         logger.error(f"Analysis Impact metrics: Error updating metrics: {e}")
-        na_values = ("N/A",) * 31  # 30 metrics + 1 badge = 31 outputs per tab
+        na_values = ("N/A",) * 46  # 45 metrics + 1 badge = 46 outputs per tab
         return na_values * 9  # Return for all 9 tabs
 
 
