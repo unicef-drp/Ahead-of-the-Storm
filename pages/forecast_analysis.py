@@ -1590,7 +1590,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
             )
         
         # Load track data
-        gdf_tracks = read_dataset(giga_store, tracks_filepath)
+        gdf_tracks = read_dataset(tracks_filepath, giga_store)
         
         if 'zone_id' not in gdf_tracks.columns:
             status_msg = dmc.Alert(
@@ -1667,7 +1667,7 @@ def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_tim
                     higher_tracks_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, 'track_views', higher_tracks_filename)
                     
                     if giga_store.file_exists(higher_tracks_filepath):
-                        higher_gdf_tracks = read_dataset(giga_store, higher_tracks_filepath)
+                        higher_gdf_tracks = read_dataset(higher_tracks_filepath, giga_store)
                         
                         if 'zone_id' in higher_gdf_tracks.columns and len(higher_gdf_tracks) > 0:
                             # Calculate totals per ensemble member for higher threshold

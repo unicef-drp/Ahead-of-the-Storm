@@ -149,7 +149,7 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         source_label = f"SQL/{data_type}"
     else:
         # STAGE path — original behaviour
-        result = read_dataset(giga_store, filepath)
+        result = read_dataset(filepath, giga_store)
         source_label = f"STAGE/{filepath}"
         # Normalize column names to match SQL path convention (E_population, tile_id, probability…).
         # Previously only CCI files were normalized; admin_impact files also need it so the
