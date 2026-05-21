@@ -625,9 +625,9 @@ function applyTileConfig(config) {
         map.addSource('aots-mercator', {
             type: 'raster',
             tiles: [rasterUrl],
-            tileSize: 512,
+            tileSize: 256,
             minzoom: 3,
-            maxzoom: 10,
+            maxzoom: 14,
         });
     }
 

@@ -155,6 +155,16 @@ def _country_in_clause(country: str) -> tuple[str, list[str]]:
     return f"IN ({ph})", codes
 
 
+def _make_transparent_tile() -> bytes:
+    # 512×512 matches the size of data tiles — a 1×1 image may cause MapLibre
+    # to treat the tile as malformed and still fall back to a parent tile.
+    buf = io.BytesIO()
+    Image.new('RGBA', (512, 512), (0, 0, 0, 0)).save(buf, 'WEBP', lossless=True)
+    return buf.getvalue()
+
+_TRANSPARENT_WEBP: bytes = _make_transparent_tile()
+
+
 def _tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     b = mercantile.bounds(x, y, z)
     return b.west, b.south, b.east, b.north
@@ -1158,12 +1168,19 @@ def _fetch_raster_tile(
     # X: longitude is linear in Web Mercator — straightforward.
     # Y: latitude is logarithmic in Web Mercator — must project before scaling
     #    or tiles drift visibly at low zoom levels.
+    #
+    # Use floor() for both edges then +1 for right/bottom. This guarantees that
+    # adjacent display tiles round shared cell boundaries identically (both
+    # floor to the same pixel), preventing 1-pixel transparent gaps where the
+    # basemap bleeds through. The +1 on px1/py1 ensures minimum 1-pixel coverage
+    # without relying on ceil() which can disagree with the neighbouring tile's
+    # floor() when the boundary falls exactly on a pixel.
     px0 = np.floor((ws - tile_w) / tile_dw * 512).astype(np.int32)
-    px1 = np.ceil ((es - tile_w) / tile_dw * 512).astype(np.int32)
+    px1 = np.floor((es - tile_w) / tile_dw * 512).astype(np.int32) + 1
     merc_ns = np.log(np.tan(np.pi / 4 + np.radians(ns) / 2))
     merc_ss = np.log(np.tan(np.pi / 4 + np.radians(ss) / 2))
     py0 = np.floor((1.0 - (merc_ns - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32)
-    py1 = np.ceil ((1.0 - (merc_ss - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32)
+    py1 = np.floor((1.0 - (merc_ss - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32) + 1
 
     for i in range(len(vals)):
         if not np.isfinite(t[i]):
@@ -1180,7 +1197,10 @@ def _fetch_raster_tile(
 
     img = Image.fromarray(img_arr, 'RGBA')
     buf = io.BytesIO()
-    img.save(buf, 'WEBP', quality=80, method=4)
+    # Lossless WebP eliminates DCT block compression artifacts at tile boundaries.
+    # Lossy encoding (quality=80) compresses each tile independently, amplifying
+    # any sub-pixel colour difference at edges into a visible seam line.
+    img.save(buf, 'WEBP', lossless=True, method=4)
     return buf.getvalue()
 
 
@@ -1490,7 +1510,12 @@ def raster_tile(
         log.error("raster_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not webp_bytes:
-        return Response(status_code=204)
+        # Return a transparent 1×1 WebP rather than 204 No Content.
+        # MapLibre falls back to parent (z−1) tiles for non-200 raster responses,
+        # which causes row-level column-boundary misalignment when some tiles have
+        # data and others don't. A transparent image keeps MapLibre in the z-tile
+        # grid and renders as fully transparent (no visible effect).
+        return Response(content=_TRANSPARENT_WEBP, media_type="image/webp")
     return Response(
         content=webp_bytes,
         media_type="image/webp",

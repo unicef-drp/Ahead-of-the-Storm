@@ -65,7 +65,10 @@ def serve_tile_palettes_js():
 
 @server.route("/map-static/<path:filename>")
 def serve_map_static(filename):
-    return send_from_directory(_MAP_COMPONENTS_DIR, filename)
+    from flask import make_response
+    resp = make_response(send_from_directory(_MAP_COMPONENTS_DIR, filename))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 app.layout = dmc.MantineProvider(
