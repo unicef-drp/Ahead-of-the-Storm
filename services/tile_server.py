@@ -128,15 +128,26 @@ def get_connection() -> snowflake.connector.SnowflakeConnection:
 
 
 def _run_query(sql: str, params: list) -> list[dict]:
-    conn = get_connection()
-    with _query_lock:
-        cur = conn.cursor()
+    global _conn
+    for attempt in range(2):
+        conn = get_connection()
         try:
-            cur.execute(sql, params)
-            cols = [d[0].upper() for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-        finally:
-            cur.close()
+            with _query_lock:
+                cur = conn.cursor()
+                try:
+                    cur.execute(sql, params)
+                    cols = [d[0].upper() for d in cur.description]
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+                finally:
+                    cur.close()
+        except snowflake.connector.errors.ProgrammingError as exc:
+            if exc.errno == 390114 and attempt == 0:
+                log.info("SPCS token expired — reconnecting with fresh token…")
+                with _conn_lock:
+                    if _conn is conn:
+                        _conn = None
+                continue
+            raise
 
 
 def _country_in_clause(country: str) -> tuple[str, list[str]]:
