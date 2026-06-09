@@ -25,10 +25,34 @@ import io
 import json
 import logging
 import math
+import functools
 import os
 import threading
+import time
 from functools import lru_cache
 from typing import Optional
+
+# Tile data and rendered tiles expire after this many seconds so new pipeline
+# output is served without a container restart (matches snowflake_utils TTL).
+_TILE_TTL = 15 * 60  # 15 minutes
+
+
+def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
+    """lru_cache with automatic TTL expiry (bucket-based, thread-safe)."""
+    def decorator(func):
+        @functools.lru_cache(maxsize=maxsize)
+        def cached(_bucket, args, kwargs):
+            return func(*args, **dict(kwargs))
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            bucket = int(time.time() // ttl_seconds)
+            return cached(bucket, args, tuple(sorted(kwargs.items())))
+
+        wrapper.cache_clear = cached.cache_clear
+        wrapper.cache_info  = cached.cache_info
+        return wrapper
+    return decorator
 
 from PIL import Image
 
@@ -655,12 +679,14 @@ def _precompute_mercator_bounds(tile_ids: "pd.Series") -> pd.DataFrame:
 
 
 class _DataCache:
-    """Bulk-loads once from Snowflake; serves from pandas DataFrames.
+    """Bulk-loads from Snowflake; serves from pandas DataFrames.
 
     Load: ~2s Snowflake + ~0.5s bounds pre-computation (one-time per country/storm).
     Serve: ~0.5ms vectorised str.startswith at all zoom levels.
     Thread-safe: reads are GIL-protected dict/DataFrame ops; writes use
     double-checked locking.
+    TTL: entries older than _TILE_TTL seconds are reloaded on next access so
+    new pipeline output is served without a container restart.
     """
 
     def __init__(self) -> None:
@@ -669,16 +695,20 @@ class _DataCache:
         self._admin_geoms: dict[tuple, tuple] = {}  # key → (geom_list, strtree, props_list)
         self._facility: dict[tuple, pd.DataFrame] = {}
         self._load_lock = threading.Lock()
+        self._loaded_at: dict[tuple, float] = {}  # key → epoch seconds when loaded
+
+    def _is_fresh(self, key: tuple) -> bool:
+        return key in self._loaded_at and (time.time() - self._loaded_at[key]) < _TILE_TTL
 
     # --- mercator --------------------------------------------------------
 
     def ensure_mercator(self, country: str, storm: str, forecast_date: str,
                         wind_threshold: int) -> None:
         key = (country, storm, forecast_date, wind_threshold)
-        if key in self._mercator:
+        if self._is_fresh(key) and key in self._mercator:
             return
         with self._load_lock:
-            if key in self._mercator:
+            if self._is_fresh(key) and key in self._mercator:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
             all_rows: list[dict] = []
@@ -701,6 +731,7 @@ class _DataCache:
                 df = pd.DataFrame(columns=["TILE_ID", "BW", "BS", "BE", "BN"])
             log.info("  Cache: %d z=14 tiles ready (country=%s)", len(df), country)
             self._mercator[key] = df
+            self._loaded_at[key] = time.time()
 
     def query_mercator(self, country: str, storm: str, forecast_date: str,
                        wind_threshold: int, like_pat: str, z: int) -> list[dict]:
@@ -720,10 +751,10 @@ class _DataCache:
                      wind_threshold: int, admin_level: int) -> None:
         from shapely.strtree import STRtree
         key = (country, storm, forecast_date, wind_threshold, admin_level)
-        if key in self._admin_geoms:
+        if self._is_fresh(key) and key in self._admin_geoms:
             return
         with self._load_lock:
-            if key in self._admin_geoms:
+            if self._is_fresh(key) and key in self._admin_geoms:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
             all_rows_admin: list[dict] = []
@@ -758,6 +789,7 @@ class _DataCache:
                     log.debug("Skip admin geom: %s", e)
             tree = STRtree(geoms)
             self._admin_geoms[key] = (geoms, tree, props_list)
+            self._loaded_at[key] = time.time()
             log.info("  Cache: %d admin regions parsed + indexed", len(geoms))
 
     def query_admin(self, country: str, storm: str, forecast_date: str,
@@ -778,10 +810,10 @@ class _DataCache:
     def ensure_facility(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int) -> None:
         key = (layer_type, country, storm, forecast_date, wind_threshold)
-        if key in self._facility:
+        if self._is_fresh(key) and key in self._facility:
             return
         with self._load_lock:
-            if key in self._facility:
+            if self._is_fresh(key) and key in self._facility:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
             all_rows: list[dict] = []
@@ -803,6 +835,7 @@ class _DataCache:
                 df["PROBABILITY"] = pd.to_numeric(df["PROBABILITY"], errors="coerce").fillna(0.0)
             log.info("  Cache: %d %s points (country=%s)", len(df), layer_type, country)
             self._facility[key] = df
+            self._loaded_at[key] = time.time()
 
     def get_facility_df(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int) -> "pd.DataFrame":
@@ -885,7 +918,7 @@ _FACILITY_BASE_COLORS: dict[str, str] = {
 _SKIP_COLS_MERCATOR = frozenset(("TILE_ID", "BW", "BS", "BE", "BN"))
 
 
-@lru_cache(maxsize=8192)
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
 def _fetch_mercator_tile(
     country: str,
     storm: str,
@@ -930,7 +963,7 @@ def _fetch_mercator_tile(
     return gzip.compress(raw, compresslevel=6)
 
 
-@lru_cache(maxsize=2048)
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
 def _fetch_admin_tile(
     country: str,
     storm: str,
@@ -1022,7 +1055,8 @@ _PALETTE_RGBA: dict[str, list[tuple[int, int, int, int]]] = {
 }
 
 # Cache for (key, col) min/max so we don't recompute per tile.
-_minmax_cache: dict[tuple, tuple[float, float]] = {}
+# Stored as (min_val, max_val, loaded_at) — expires with _TILE_TTL.
+_minmax_cache: dict[tuple, tuple[float, float, float]] = {}
 _minmax_lock = threading.Lock()
 
 
@@ -1034,11 +1068,13 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
     positive value in the data.
     """
     cache_key = (key, col)
-    if cache_key in _minmax_cache:
-        return _minmax_cache[cache_key]
+    cached = _minmax_cache.get(cache_key)
+    if cached and (time.time() - cached[2]) < _TILE_TTL:
+        return (cached[0], cached[1])
     with _minmax_lock:
-        if cache_key in _minmax_cache:
-            return _minmax_cache[cache_key]
+        cached = _minmax_cache.get(cache_key)
+        if cached and (time.time() - cached[2]) < _TILE_TTL:
+            return (cached[0], cached[1])
         df = _cache._mercator.get(key)
         if df is None or df.empty or col not in df.columns:
             return None
@@ -1065,11 +1101,11 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             if max_val <= 0:
                 return None
             result = (min_val, max_val)
-        _minmax_cache[cache_key] = result
+        _minmax_cache[cache_key] = (result[0], result[1], time.time())
         return result
 
 
-@lru_cache(maxsize=8192)
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
 def _fetch_raster_tile(
     country: str,
     storm: str,

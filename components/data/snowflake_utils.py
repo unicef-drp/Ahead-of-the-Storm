@@ -14,6 +14,7 @@ Key Components:
 import logging
 import time
 import threading
+import functools
 from functools import lru_cache
 import pandas as pd
 import geopandas as gpd
@@ -27,6 +28,40 @@ warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy conne
 from components.config import config
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TTL-based cache
+# ---------------------------------------------------------------------------
+# Replaces lru_cache with time-bounded expiry so the Dash app automatically
+# serves fresh Snowflake data without a container restart.
+#
+# Mechanism: bucket = int(time.time() // ttl_seconds) is injected as the
+# first argument of the inner lru_cache. The bucket integer increments every
+# ttl_seconds seconds (at fixed wall-clock boundaries), which forces a cache
+# miss and a fresh Snowflake query at most ttl_seconds after data changes.
+# Thread-safe: inherits lru_cache's internal lock.
+
+_META_TTL    = 15 * 60   # 15 min — storm list, forecast times (new storms appear promptly)
+_IMPACT_TTL  = 15 * 60   # 15 min — impact queries (new pipeline output picked up within 15 min)
+_BASE_TTL    = 60 * 60   # 60 min — base layers (schools/HCs/tiles — change only on re-init)
+
+
+def ttl_cache(ttl_seconds: int, maxsize: int = 128):
+    """lru_cache with automatic TTL-based expiry."""
+    def decorator(func):
+        @functools.lru_cache(maxsize=maxsize)
+        def cached(_bucket, args, kwargs):
+            return func(*args, **dict(kwargs))
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            bucket = int(time.time() // ttl_seconds)
+            return cached(bucket, args, tuple(sorted(kwargs.items())))
+
+        wrapper.cache_clear = cached.cache_clear
+        wrapper.cache_info  = cached.cache_info
+        return wrapper
+    return decorator
 
 # Per-thread connection storage — each Gunicorn worker thread gets its own connection
 _thread_local = threading.local()
@@ -199,7 +234,7 @@ def get_available_wind_thresholds(storm, forecast_time):
         # Return empty list on error - don't use defaults
         return []
 
-@lru_cache(maxsize=1)
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_latest_forecast_time_overall():
     """
     Get the latest forecast issue time from Snowflake across all storms
@@ -249,7 +284,7 @@ def get_envelope_data_snowflake(track_id, forecast_time):
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=1)
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_active_countries():
     """
     Get active countries from PIPELINE_COUNTRIES table in Snowflake
@@ -289,7 +324,7 @@ def get_active_countries():
         return pd.DataFrame(columns=['COUNTRY_CODE', 'COUNTRY_NAME', 'CENTER_LAT', 'CENTER_LON', 'VIEW_ZOOM', 'ZOOM_LEVEL', 'IS_REGION', 'MEMBER_CODES'])
 
 
-@lru_cache(maxsize=1)
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_lat_lons_bulk() -> pd.DataFrame:
     """
     Fetch LATITUDE/LONGITUDE at LEAD_TIME=0 for every storm in TC_TRACKS.
@@ -314,7 +349,7 @@ def get_lat_lons_bulk() -> pd.DataFrame:
         logger.error("Error in get_lat_lons_bulk: %s", e)
         return pd.DataFrame(columns=['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude'])
 
-@lru_cache(maxsize=1)
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
     try:
@@ -343,7 +378,7 @@ def get_snowflake_data():
 # Impact data queries — *_MAT tables
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_school_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query SCHOOL_IMPACT_MAT for school-level impact data.
@@ -382,7 +417,7 @@ def get_school_impacts(country: str, storm: str, forecast_date: str, wind_thresh
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query HC_IMPACT_MAT for health centre impact data.
@@ -427,7 +462,7 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query SHELTER_IMPACT_MAT for shelter-level impact data.
@@ -465,7 +500,7 @@ def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_thres
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
     """
     Query WASH_IMPACT_MAT for WASH facility impact data.
@@ -503,7 +538,7 @@ def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
     """
     Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
@@ -563,7 +598,7 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
     """
     Query ADMIN_ALL_IMPACT_MAT for administrative-unit-level impact data.
@@ -624,7 +659,7 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
 
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:
     """
     Query MERCATOR_TILE_CCI_MAT for tile-level CCI data.
@@ -650,7 +685,7 @@ def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int =
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
     """
     Query ADMIN_ALL_CCI_MAT for admin-level CCI data.
@@ -676,7 +711,7 @@ def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int
 
 
 
-@lru_cache(maxsize=64)
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_track_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> gpd.GeoDataFrame:
     """
     Query TRACK_MAT and return a GeoDataFrame matching the structure of track_views parquet files.
@@ -754,7 +789,7 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
 # Only used when IMPACT_DATA_SOURCE=SQL.
 # =============================================================================
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
     """
     Query BASE_MERCATOR_TILE_MAT and reconstruct tile polygons from quadkeys.
@@ -814,7 +849,7 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
         return gpd.GeoDataFrame()
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def _get_country_totals_cached(country: str) -> dict:
     try:
         query = """
@@ -848,7 +883,7 @@ def get_country_totals(country: str) -> dict:
     return dict(_get_country_totals_cached(country))
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_schools(country: str) -> pd.DataFrame:
     """Query BASE_SCHOOL_MAT — all school locations for a country (no storm required)."""
     try:
@@ -874,7 +909,7 @@ def get_base_schools(country: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_hcs(country: str) -> pd.DataFrame:
     """Query BASE_HC_MAT — all health centre locations for a country (no storm required)."""
     try:
@@ -904,7 +939,7 @@ def get_base_hcs(country: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_shelters(country: str) -> pd.DataFrame:
     """Query BASE_SHELTER_MAT — all shelter locations for a country (no storm required)."""
     try:
@@ -930,7 +965,7 @@ def get_base_shelters(country: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_wash(country: str) -> pd.DataFrame:
     """Query BASE_WASH_MAT — all WASH facility locations for a country (no storm required)."""
     try:
@@ -956,7 +991,7 @@ def get_base_wash(country: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@lru_cache(maxsize=32)
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
     """
     Query BASE_ADMIN_GEOM_MAT — admin boundary polygons with demographics (no storm required).

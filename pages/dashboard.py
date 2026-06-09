@@ -343,8 +343,7 @@ def update_forecast_dates(country, n_intervals):
     """Get available forecast dates; refreshes Snowflake metadata every 15 min via interval."""
     global metadata_df, unique_dates, unique_times
     if n_intervals:
-        get_snowflake_data.cache_clear()
-        metadata_df = get_snowflake_data()
+        metadata_df = get_snowflake_data()  # TTL-based cache returns fresh data automatically
         metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
         metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
         unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
