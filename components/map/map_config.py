@@ -36,7 +36,7 @@ class MapConfig(BaseModel):
     colorscale_font_color: str = "white"
     legend_border_color: str = "#262624"
     legend_border_width: int = 1
-    center: dict = {"lon": -73.967590, "lat": 40.749191}
+    center: dict = {"lon": 20.0, "lat": 15.0}
     zoom: float = 2
 
 

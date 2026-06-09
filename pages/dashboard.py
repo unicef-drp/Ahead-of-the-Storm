@@ -193,8 +193,7 @@ if not countries_df.empty:
     else:
         COUNTRY_OPTIONS = country_items
 
-    all_codes = countries_df['COUNTRY_CODE'].tolist()
-    DEFAULT_COUNTRY = "JAM" if "JAM" in all_codes else (all_codes[0] if all_codes else None)
+    DEFAULT_COUNTRY = None  # No pre-selection — tracks auto-load for latest forecast on startup
 else:
     DEFAULT_COUNTRY = None
     logger.info("No country options available - country dropdown will be empty")
@@ -312,12 +311,88 @@ def update_date_store(date, time):
     Input("active-storm-countries-store", "data"),
     prevent_initial_call=True,
 )
-def update_individual_country_select(country, active_countries):
+def update_individual_country_select(country, _active_countries):
     if country and country in REGION_MEMBERS:
-        active_set = set(active_countries or [])
         members = [{"value": m["value"], "label": m["label"]} for m in REGION_MEMBERS[country]]
         return members, {"display": "block"}, None
     return [], {"display": "none"}, None
+
+# -----------------------------------------------------------------------------
+# Startup tracks — load ALL active hurricane tracks on page load
+# -----------------------------------------------------------------------------
+
+@callback(
+    Output("tracks-data-store", "data", allow_duplicate=True),
+    Input("startup-interval", "n_intervals"),
+    prevent_initial_call=True,
+)
+def load_startup_tracks(_):
+    """
+    On page load (and every 15 min refresh), load tracks for ALL active storms
+    at the latest forecast time, if that forecast is ≤ 24h old.
+    Writes directly to tracks-data-store — completely independent of country
+    selection, load-layers button, and selector state.
+    Overridden by load_all_layers when the user selects a country and loads layers.
+    Only queries TC_TRACKS (no envelopes) for speed.
+    """
+    import datetime as dt
+    try:
+        if metadata_df.empty:
+            return dash.no_update
+
+        # Find the single latest FORECAST_TIME across all storms
+        latest_ft = pd.to_datetime(metadata_df['FORECAST_TIME']).max()
+        if pd.isna(latest_ft):
+            return dash.no_update
+
+        # Only proceed if forecast is ≤ 24h old (covers ECMWF publishing delay of ~6h)
+        latest_ft_utc = latest_ft.replace(tzinfo=dt.timezone.utc) if latest_ft.tzinfo is None else latest_ft
+        hours_ago = (dt.datetime.now(dt.timezone.utc) - latest_ft_utc).total_seconds() / 3600
+        if hours_ago > 24:
+            return dash.no_update
+
+        forecast_datetime = latest_ft.strftime('%Y-%m-%d %H:%M:%S')
+        storms = metadata_df[
+            pd.to_datetime(metadata_df['FORECAST_TIME']) == latest_ft
+        ]['TRACK_ID'].unique().tolist()
+
+        if not storms:
+            return dash.no_update
+
+        conn = get_snowflake_connection()
+        placeholders = ', '.join(['%s'] * len(storms))
+        query = f"""
+            SELECT ENSEMBLE_MEMBER, VALID_TIME, LEAD_TIME,
+                   LATITUDE, LONGITUDE, WIND_SPEED_KNOTS, TRACK_ID
+            FROM TC_TRACKS
+            WHERE TRACK_ID IN ({placeholders}) AND FORECAST_TIME = %s
+            ORDER BY TRACK_ID, ENSEMBLE_MEMBER, LEAD_TIME
+        """
+        df = pd.read_sql(query, conn, params=storms + [forecast_datetime])
+
+        if df.empty:
+            return dash.no_update
+
+        features = []
+        for (track_id, member), grp in df.groupby(['TRACK_ID', 'ENSEMBLE_MEMBER']):
+            coords = [[r['LONGITUDE'], r['LATITUDE']] for _, r in grp.iterrows()]
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "ensemble_member": member,
+                    "track_id": track_id,
+                    "member_type": "control" if member in [51, 52] else "ensemble",
+                }
+            })
+
+        logger.info(f"Startup tracks: loaded {len(features)} tracks for {len(storms)} storm(s) @ {forecast_datetime}")
+        return {"type": "FeatureCollection", "features": features, "_startup": True}
+
+    except Exception as e:
+        logger.warning(f"Startup tracks load failed: {e}")
+        return dash.no_update
+
 
 # -----------------------------------------------------------------------------
 # Active-storm country indicator callbacks
@@ -1011,8 +1086,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         except Exception as e:
             logger.error(f"Error loading envelopes: {e}")
         
-        # Load Impact Data (if files exist)
-        # Check if data files exist for the selected time
+        # Load Impact Data — check if data files exist for the selected time
         date_str = forecast_date.replace('-', '')
         time_str = forecast_time.replace(':', '')
         forecast_datetime_str = f"{date_str}{time_str}00"
@@ -1115,7 +1189,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             logger.info(f"Data availability: Found={data_files_found}, Missing={missing_files}")
         
         load_start_time = time.time()
-        
+
         try:
             # Helper function to load a dataset with retry logic
             def load_dataset(file_path, dataset_name, max_retries=3, retry_delay=1.0):
@@ -1350,7 +1424,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         logger.info(f"=== LOAD ALL LAYERS CALLBACK COMPLETED SUCCESSFULLY in {load_elapsed:.2f}s ===")
 
         # Hurricane/probability/CCI controls require impact data
-        dis_hurricane = using_base_layers   # tracks, envelopes, show-all
+        dis_hurricane = using_base_layers
         dis_prob      = using_base_layers   # probability-tiles-layer, probability-admin-layer
         dis_cci       = using_base_layers   # cci-tiles-layer, cci-admin-layer
 
@@ -1473,15 +1547,23 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     Output("hurricane-tracks-json", "zoomToBounds"),
     Output("hurricane-tracks-json","key"),
     [Input("hurricane-tracks-toggle", "checked"),
-     Input("specific-track-select", "value")],
-    State("tracks-data-store", "data"),
+     Input("specific-track-select", "value"),
+     Input("tracks-data-store", "data")],
     prevent_initial_call=True
 )
 def toggle_tracks_layer(checked, selected_track, tracks_data_in):
-    """Toggle hurricane tracks layer visibility with optional specific track filtering"""
-    if not checked or not tracks_data_in:
+    """Toggle hurricane tracks layer visibility with optional specific track filtering.
+    Also auto-renders on startup when tracks-data-store is populated without a country."""
+    has_data = bool(tracks_data_in and tracks_data_in.get('features'))
+    is_startup = bool(tracks_data_in and tracks_data_in.get('_startup'))
+
+    # Startup global view: auto-render without requiring the toggle
+    # Country-loaded view: respect the toggle
+    if is_startup and has_data:
+        pass  # fall through to render regardless of toggle state
+    elif not checked or not has_data:
         return {"type": "FeatureCollection", "features": []}, False, dash.no_update
-    
+
     tracks_data = copy.deepcopy(tracks_data_in)
     try:
         key = hashlib.md5(json.dumps(tracks_data, sort_keys=True).encode()).hexdigest()

@@ -526,6 +526,7 @@ def make_single_page_appshell(country_options, default_country):
         html.Div([
             dcc.Store(id="effective-country-store", data=default_country),
             dcc.Store(id="active-storm-countries-store", data=[]),
+            dcc.Interval(id="startup-interval", interval=500, max_intervals=1),
             dcc.Store(id="active-countries-style", data=""),
             dcc.Store(id="active-countries-style-dummy", data=None),
             dcc.Interval(id="metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),

@@ -138,12 +138,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const member_raw = props.ensemble_member;
                 const member = member_raw != null ? escapeHtml(String(member_raw)) : null;
                 const type = props.member_type || 'N/A';
+                const storm = props.track_id ? escapeHtml(String(props.track_id)) : null;
 
                 const label = type === 'control' ? 'Control Track' : 'Ensemble Track';
 
                 const content = `
         <div style="font-size: 13px; font-weight: 600; color: #1cabe2; margin-bottom: 5px;">
-            ${label}
+            ${storm ? storm + ' — ' : ''}${label}
         </div>
         <div style="font-size: 12px; color: #555;">
             <strong>Ensemble Member:</strong> ${member !== null ? '#' + member : 'N/A'}
