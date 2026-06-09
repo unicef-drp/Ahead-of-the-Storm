@@ -2,23 +2,15 @@
 import logging
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
-from components.data.snowflake_utils import get_latest_forecast_time_overall
 
 logger = logging.getLogger(__name__)
 
 def make_header(active_tab="tab-home"):
-    # Get the latest forecast time from Snowflake (overall latest, not storm-specific)
-    try:
-        latest_time = get_latest_forecast_time_overall()
-        formatted_time = latest_time.strftime("%b %d, %Y %H:%M UTC") if latest_time else "N/A"
-    except Exception as e:
-        logger.error("Error getting latest forecast time: %s", e)
-        formatted_time = "N/A"
-    
-    # Create Last Updated timestamp component
+    # Timestamp is populated by the update_last_updated_header callback in dashboard.py
+    # which fires on startup and every 15 min — never frozen at container start time.
     last_updated = dmc.Group([
         dmc.Text("Last Updated:", size="xs", c="white", opacity=0.8),
-        dmc.Text(formatted_time, size="sm", fw=500, c="white")
+        dmc.Text("—", id="header-last-updated", size="sm", fw=500, c="white")
     ], align="center", gap="xs")
     
     return dmc.Group(

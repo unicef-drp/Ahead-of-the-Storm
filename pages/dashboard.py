@@ -408,6 +408,20 @@ def refresh_active_storm_countries(_):
 
 
 @callback(
+    Output("header-last-updated", "children"),
+    Input("metadata-refresh-interval", "n_intervals"),
+    prevent_initial_call=False,
+)
+def update_last_updated_header(_):
+    """Update the Last Updated timestamp in the header every 15 min. Never frozen."""
+    try:
+        latest_time = get_latest_forecast_time_overall()
+        return latest_time.strftime("%b %d, %Y %H:%M UTC") if latest_time else "N/A"
+    except Exception:
+        return "N/A"
+
+
+@callback(
     Output("country-storm-indicator", "disabled"),
     Output("active-countries-style", "data"),
     Output("country-select", "data"),
