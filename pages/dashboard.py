@@ -35,7 +35,7 @@ components/ui/styling.py   — colour palettes and shared CSS constants
 components/map/map_config.py — MapLibre tile layer URL construction and map defaults
 components/map/javascript.py — client-side JS callbacks for map event handling
 components/data/snowflake_utils.py — thread-local Snowflake connection pool and
-                                     all @lru_cache query helpers (TC_TRACKS,
+                                     all TTL-cached query helpers (TC_TRACKS,
                                      TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES, etc.)
 components/data/data_store_utils.py — data-store factory (LOCAL / BLOB / SNOWFLAKE)
                                       for reading AOTS_ANALYSIS stage Parquet/CSV files
@@ -57,7 +57,7 @@ AOTS_ANALYSIS stage Parquet/CSV files; FastAPI tile server on port 8001.
 import logging
 import pandas as pd
 import dash
-from dash import Output, Input, State, callback, callback_context
+from dash import Output, Input, State, callback, callback_context, no_update, clientside_callback
 import dash_mantine_components as dmc
 import geopandas as gpd
 import os
@@ -88,6 +88,7 @@ from components.data.snowflake_utils import (
     get_snowflake_connection, get_envelope_data_snowflake, get_snowflake_data,
     get_lat_lons_bulk,
     get_base_tiles, get_base_admin,
+    get_active_storm_countries,
 )
 
 ZOOM_LEVEL = 14  # tile zoom level baked into mercator CSV filenames
@@ -145,7 +146,7 @@ REGION_MEMBERS = {}  # {'ECA': [{'value': 'AIA', 'label': 'Anguilla'}, ...]}
 def _get_base_multi(fn, country, *args):
     """Call a get_base_* function for a country or each member of a region, then concat.
 
-    Individual per-country results are lru_cached, so repeated calls are free.
+    Individual per-country results are TTL-cached (60 min), so repeated calls are free.
     Returns same type as the single-country function (DataFrame or GeoDataFrame).
     """
     codes = ([item['value'] for item in REGION_MEMBERS[country]]
@@ -308,12 +309,98 @@ def update_date_store(date, time):
     Output("individual-country-select", "style"),
     Output("individual-country-select", "value"),
     Input("country-select", "value"),
+    Input("active-storm-countries-store", "data"),
     prevent_initial_call=True,
 )
-def update_individual_country_select(country):
+def update_individual_country_select(country, active_countries):
     if country and country in REGION_MEMBERS:
-        return REGION_MEMBERS[country], {"display": "block"}, None
+        active_set = set(active_countries or [])
+        members = [{"value": m["value"], "label": m["label"]} for m in REGION_MEMBERS[country]]
+        return members, {"display": "block"}, None
     return [], {"display": "none"}, None
+
+# -----------------------------------------------------------------------------
+# Active-storm country indicator callbacks
+# -----------------------------------------------------------------------------
+
+@callback(
+    Output("active-storm-countries-store", "data"),
+    Input("metadata-refresh-interval", "n_intervals"),
+)
+def refresh_active_storm_countries(_):
+    """Refresh the set of countries with pipeline output in the last 12h (UTC)."""
+    return get_active_storm_countries()
+
+
+@callback(
+    Output("country-storm-indicator", "disabled"),
+    Output("active-countries-style", "data"),
+    Output("country-select", "data"),
+    Input("active-storm-countries-store", "data"),
+)
+def update_country_storm_ui(active_countries):
+    """
+    1. Pulse the red corner indicator on the Select when any country has an active storm.
+    2. Sort COUNTRY_OPTIONS with active countries (and regions with active members) first.
+    3. Inject CSS that adds a right-aligned "ACTIVE" badge (red, bold) to each active
+       country's dropdown option via [data-combobox-option][value="{code}"]::after.
+       Also flags region entries (e.g. ECA) if any member country is active.
+    """
+    active_set = set(active_countries or [])
+
+    # Also flag any region whose members contain an active country
+    active_with_regions = set(active_set)
+    for region_code, members in REGION_MEMBERS.items():
+        if any(m["value"] in active_set for m in members):
+            active_with_regions.add(region_code)
+
+    css_rules = [
+        "[data-combobox-option] { display: flex !important; align-items: center; }",
+    ]
+    for code in active_with_regions:
+        safe = code.replace("'", "\\'")
+        css_rules.append(
+            f'[data-combobox-option][value="{safe}"]::after '
+            f'{{ content: "ACTIVE"; margin-left: auto; padding-left: 8px; flex-shrink: 0; '
+            f'color: #e03131; font-weight: 700; font-size: 10px; letter-spacing: 0.5px; }}'
+        )
+
+    def sort_key(item):
+        return (item.get("value", "") not in active_with_regions, item.get("label", ""))
+
+    try:
+        if COUNTRY_OPTIONS and isinstance(COUNTRY_OPTIONS[0], dict) and "group" in COUNTRY_OPTIONS[0]:
+            sorted_data = [
+                {"group": opt["group"], "items": sorted(opt.get("items", []), key=sort_key)}
+                for opt in COUNTRY_OPTIONS
+            ]
+        else:
+            sorted_data = sorted(COUNTRY_OPTIONS, key=sort_key)
+    except Exception:
+        sorted_data = COUNTRY_OPTIONS
+
+    indicator_disabled = len(active_set) == 0
+    return indicator_disabled, "\n".join(css_rules), sorted_data
+
+
+clientside_callback(
+    """
+    function(css) {
+        var id = 'active-storm-countries-dynamic-style';
+        var el = document.getElementById(id);
+        if (!el) {
+            el = document.createElement('style');
+            el.id = id;
+            document.head.appendChild(el);
+        }
+        el.textContent = css || '';
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("active-countries-style-dummy", "data"),
+    Input("active-countries-style", "data"),
+)
+
 
 # Callback to update map view based on country selection
 @callback(

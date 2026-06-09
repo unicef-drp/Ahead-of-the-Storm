@@ -375,6 +375,45 @@ def get_snowflake_data():
 
 
 # ---------------------------------------------------------------------------
+# Active storm indicator
+# ---------------------------------------------------------------------------
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
+def get_active_storm_countries() -> list:
+    """
+    Return ISO3 country codes with meaningful storm impact in the last 12 hours (UTC).
+
+    Criteria: most recent FORECAST_DATE within 12h of now AND MAX(PROBABILITY) > 0
+    for that specific forecast date (not all-time). Timezone-independent — comparison
+    always done in UTC via CONVERT_TIMEZONE.
+    """
+    query = """
+        WITH latest AS (
+            SELECT COUNTRY, MAX(FORECAST_DATE) AS latest_forecast
+            FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
+            GROUP BY COUNTRY
+            HAVING DATEDIFF('hour',
+                TO_TIMESTAMP(MAX(FORECAST_DATE), 'YYYYMMDDHH24MISS'),
+                CONVERT_TIMEZONE('UTC', CURRENT_TIMESTAMP())
+            ) <= 12
+        )
+        SELECT l.COUNTRY
+        FROM latest l
+        JOIN AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT m
+            ON m.COUNTRY = l.COUNTRY
+           AND m.FORECAST_DATE = l.latest_forecast
+        GROUP BY l.COUNTRY
+        HAVING MAX(m.PROBABILITY) > 0
+    """
+    try:
+        rows = _run_query(query)
+        return [r['COUNTRY'] for r in rows.to_dict('records')] if not rows.empty else []
+    except Exception as e:
+        logger.warning("get_active_storm_countries failed: %s", e)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Impact data queries — *_MAT tables
 # ---------------------------------------------------------------------------
 

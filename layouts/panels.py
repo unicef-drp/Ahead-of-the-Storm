@@ -54,12 +54,22 @@ def make_single_page_appshell(country_options, default_country):
             dmc.Badge("1", size="sm", color=PRIMARY_COLOR, variant="filled"),
             dmc.Text("COUNTRY", size="sm", fw=700, c="dark", style={"letterSpacing": "0.5px"})
         ], mb="xs", justify="flex-start"),
-        dmc.Select(
-            id="country-select",
-            placeholder="Select country...",
-            data=country_options,
-            value=default_country,
-            mb="xs"
+        dmc.Indicator(
+            dmc.Select(
+                id="country-select",
+                placeholder="Select country...",
+                data=country_options,
+                value=default_country,
+                mb="xs",
+            ),
+            id="country-storm-indicator",
+            processing=True,
+            color="red",
+            size=10,
+            position="top-end",
+            offset=3,
+            disabled=True,
+            zIndex=10,
         ),
         dmc.Select(
             id="individual-country-select",
@@ -72,7 +82,7 @@ def make_single_page_appshell(country_options, default_country):
     ],
     p="sm",
     shadow="xs",
-    style={"borderLeft": f"3px solid {PRIMARY_COLOR}", "marginBottom": "12px"}
+    style={"borderLeft": f"3px solid {PRIMARY_COLOR}", "marginBottom": "12px", "overflow": "visible"}
     )
 
     # -------------------------------------------------------------------------
@@ -515,6 +525,9 @@ def make_single_page_appshell(country_options, default_country):
     center_panel = dmc.GridCol(
         html.Div([
             dcc.Store(id="effective-country-store", data=default_country),
+            dcc.Store(id="active-storm-countries-store", data=[]),
+            dcc.Store(id="active-countries-style", data=""),
+            dcc.Store(id="active-countries-style-dummy", data=None),
             dcc.Interval(id="metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
             dcc.Store(id="map-state-store",               data={}),
             dcc.Store(id="envelope-data-store",           data={}),
