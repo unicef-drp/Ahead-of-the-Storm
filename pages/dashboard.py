@@ -337,11 +337,14 @@ def load_startup_tracks(_):
     """
     import datetime as dt
     try:
-        if metadata_df.empty:
+        # Always fetch fresh metadata (TTL-cached per worker) so stale startup globals
+        # don't cause the hours_ago check to reject a recently-published forecast.
+        fresh = get_snowflake_data()
+        if fresh.empty:
             return dash.no_update
 
         # Find the single latest FORECAST_TIME across all storms
-        latest_ft = pd.to_datetime(metadata_df['FORECAST_TIME']).max()
+        latest_ft = pd.to_datetime(fresh['FORECAST_TIME']).max()
         if pd.isna(latest_ft):
             return dash.no_update
 
@@ -352,8 +355,8 @@ def load_startup_tracks(_):
             return dash.no_update
 
         forecast_datetime = latest_ft.strftime('%Y-%m-%d %H:%M:%S')
-        storms = metadata_df[
-            pd.to_datetime(metadata_df['FORECAST_TIME']) == latest_ft
+        storms = fresh[
+            pd.to_datetime(fresh['FORECAST_TIME']) == latest_ft
         ]['TRACK_ID'].unique().tolist()
 
         if not storms:
@@ -516,17 +519,17 @@ def update_map_view(country):
     prevent_initial_call=False
 )
 def update_forecast_dates(country, n_intervals):
-    """Get available forecast dates; refreshes Snowflake metadata every 15 min via interval."""
+    """Get available forecast dates; each worker refreshes independently via TTL cache."""
     global metadata_df, unique_dates, unique_times
-    if n_intervals:
-        metadata_df = get_snowflake_data()  # TTL-based cache returns fresh data automatically
+    fresh = get_snowflake_data()
+    if not fresh.empty:
+        metadata_df = fresh
         metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date
         metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
         unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
         unique_times = sorted(metadata_df['TIME'].unique())
-        logger.info(f"Metadata refreshed: {len(unique_dates)} dates, triggered by interval tick {n_intervals}")
 
-    logger.info(f"update_forecast_dates called with country: {country}")
+    logger.info(f"update_forecast_dates called with country: {country}, dates: {len(unique_dates)}")
 
     if not metadata_df.empty:
         # Format dates and create options (like hurricanes page)
@@ -565,13 +568,17 @@ def update_forecast_dates(country, n_intervals):
 )
 def update_forecast_times(selected_date):
     """Get available forecast times for selected date, with most recent time as default"""
-    if not selected_date or metadata_df.empty:
-        # Return all possible times with unavailable ones grayed out
-        all_times = ["00:00", "06:00", "12:00", "18:00"]
+    all_times = ["00:00", "06:00", "12:00", "18:00"]
+    if not selected_date:
         return [{"value": t, "label": f"{t} UTC", "disabled": True} for t in all_times], "00:00"
-    
+
+    # Use fresh TTL-cached data so this callback is not affected by stale worker globals.
+    fresh = get_snowflake_data()
+    if fresh.empty:
+        return [{"value": t, "label": f"{t} UTC", "disabled": True} for t in all_times], "00:00"
+
     # Filter metadata for selected date
-    df = metadata_df.copy()
+    df = fresh.copy()
     df['DATE'] = pd.to_datetime(df['FORECAST_TIME']).dt.date.astype(str)
     df['TIME'] = pd.to_datetime(df['FORECAST_TIME']).dt.strftime('%H:%M')
     
@@ -608,11 +615,15 @@ def update_forecast_times(selected_date):
 )
 def update_storm_options(country, forecast_date, forecast_time):
     """Update available storms based on country, date, and time selection - show only available storms and set most recent as default"""
-    if not forecast_date or not forecast_time or metadata_df.empty:
+    if not forecast_date or not forecast_time:
         return [], None
-    
+
+    fresh = get_snowflake_data()
+    if fresh.empty:
+        return [], None
+
     # Filter metadata for selected date and time
-    df = metadata_df.copy()
+    df = fresh.copy()
     df['DATE'] = pd.to_datetime(df['FORECAST_TIME']).dt.date.astype(str)
     df['TIME'] = pd.to_datetime(df['FORECAST_TIME']).dt.strftime('%H:%M')
     
