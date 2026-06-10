@@ -348,10 +348,14 @@ def load_startup_tracks(_):
         if pd.isna(latest_ft):
             return dash.no_update
 
-        # Only proceed if forecast is ≤ 11h old (covers ECMWF publishing delay of ~6h)
+        # Only proceed if forecast is ≤ 20h old.
+        # ECMWF runs at 00Z and 12Z; publication delay is ~6h. The 00Z forecast
+        # (issued 00:00 UTC) is the latest available until the 12Z forecast arrives
+        # at ~18-20 UTC — a gap of up to 20h from issue time. 11h was too tight and
+        # caused a daily ~7-9h window where tracks disappeared mid-cycle.
         latest_ft_utc = latest_ft.replace(tzinfo=dt.timezone.utc) if latest_ft.tzinfo is None else latest_ft
         hours_ago = (dt.datetime.now(dt.timezone.utc) - latest_ft_utc).total_seconds() / 3600
-        if hours_ago > 11:
+        if hours_ago > 20:
             return dash.no_update
 
         forecast_datetime = latest_ft.strftime('%Y-%m-%d %H:%M:%S')
