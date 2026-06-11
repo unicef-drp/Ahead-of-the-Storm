@@ -383,9 +383,10 @@ def get_active_storm_countries() -> list:
     """
     Return ISO3 country codes with meaningful storm impact in the last 12 hours (UTC).
 
-    Criteria: most recent FORECAST_DATE within 12h of now AND MAX(PROBABILITY) > 0
-    for that specific forecast date (not all-time). Timezone-independent — comparison
-    always done in UTC via CONVERT_TIMEZONE.
+    Criteria: most recent FORECAST_DATE within 12h of now AND at least one tile has
+    non-zero expected impact (population, schools, or HCs) for that specific forecast
+    date. Pure probability hits on uninhabited ocean tiles are excluded.
+    Timezone-independent — comparison always done in UTC via CONVERT_TIMEZONE.
     """
     query = """
         WITH latest AS (
@@ -403,7 +404,9 @@ def get_active_storm_countries() -> list:
             ON m.COUNTRY = l.COUNTRY
            AND m.FORECAST_DATE = l.latest_forecast
         GROUP BY l.COUNTRY
-        HAVING MAX(m.PROBABILITY) > 0
+        HAVING SUM(m.E_POPULATION) > 0
+            OR SUM(m.E_NUM_SCHOOLS) > 0
+            OR SUM(m.E_NUM_HCS) > 0
     """
     try:
         rows = _run_query(query)
