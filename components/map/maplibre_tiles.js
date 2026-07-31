@@ -77,6 +77,19 @@ window._aots_maplibre = new maplibregl.Map({
         attributionControl: false,
     });
 
+    // Drives window._aots_map_tiles_loading (see _initGlobalLoadingIndicator
+    // below) — 'dataloading' fires for every tile/source fetch MapLibre
+    // kicks off (raster hazard tiles, MVT vector tiles), 'idle' fires once
+    // everything currently requested has actually finished rendering.
+    window._aots_maplibre.on('dataloading', function () {
+        window._aots_map_tiles_loading = true;
+        if (window._aots_checkLoadingIndicator) window._aots_checkLoadingIndicator();
+    });
+    window._aots_maplibre.on('idle', function () {
+        window._aots_map_tiles_loading = false;
+        if (window._aots_checkLoadingIndicator) window._aots_checkLoadingIndicator();
+    });
+
     window._aots_maplibre_ready = false;
     window._aots_maplibre.on('load', function () {
         window._aots_maplibre_ready = true;
@@ -85,6 +98,12 @@ window._aots_maplibre = new maplibregl.Map({
         if (window._aots_pending_tile_config) {
             applyTileConfig(window._aots_pending_tile_config);
             window._aots_pending_tile_config = null;
+        }
+        // Global raw layers (precip-raw/river-raw) — independent of the
+        // country-scoped tile config above, see applyGlobalRawConfig below.
+        if (window.applyGlobalRawConfig && window._aots_pending_global_raw_config) {
+            window.applyGlobalRawConfig(window._aots_pending_global_raw_config);
+            window._aots_pending_global_raw_config = null;
         }
     });
 }
@@ -162,7 +181,10 @@ function _smodLabel(v) {
 function _buildTileTooltip(feature) {
     var p = feature.properties || {};
     var G = function(name) { return _getP(p, name); };
-    var isAdmin = feature.layer && feature.layer.id === 'aots-admin-layer';
+    // Admin layer ids are hazard-suffixed (aots-admin-layer-wind / -gust /
+    // -river / -rain) since hazards became independently toggleable layers —
+    // match by prefix rather than an exact id that no longer exists.
+    var isAdmin = !!(feature.layer && feature.layer.id && feature.layer.id.indexOf('aots-admin-layer') === 0);
 
     var prob   = G('PROBABILITY') || 0;
     var pop    = G('POPULATION');
@@ -273,6 +295,34 @@ function _getTooltipEl() {
     return _aots_tooltip_el;
 }
 
+// Admin layer ids are hazard-suffixed (aots-admin-layer-wind/-gust/-river/-rain).
+// Only pass ids that actually exist in the current style to
+// queryRenderedFeatures — MapLibre throws if asked to query an id that isn't
+// in the style. queryRenderedFeatures only ever returns features from
+// currently-visible layers, so passing every hazard's id here is safe even
+// when several hazards are simultaneously toggled on.
+function _AOTS_ADMIN_LAYER_IDS(map) {
+    return _AOTS_HAZARDS
+        .map(function (hz) { return 'aots-admin-layer-' + hz; })
+        .filter(function (id) { return !!map.getLayer(id); });
+}
+
+// Several hazards can be visible at once (independently toggleable), but the
+// /tile-value raster hover lookup below is a single fetch — pick the first
+// visible hazard in this fixed priority order (wind > gust > river > rain)
+// deterministically rather than guessing "the" hazard from a single ambient
+// config field that no longer exists post-redesign.
+function _firstVisibleRasterHazard(map, config) {
+    for (var i = 0; i < _AOTS_HAZARDS.length; i++) {
+        var hz = _AOTS_HAZARDS[i];
+        var id = 'aots-tiles-layer-' + hz;
+        if (map.getLayer(id) && map.getLayoutProperty(id, 'visibility') === 'visible') {
+            return hz;
+        }
+    }
+    return null;
+}
+
 function _setupHoverTooltips(lMap) {
     if (lMap._aots_tooltip_attached) return;
     lMap._aots_tooltip_attached = true;
@@ -297,7 +347,7 @@ function _setupHoverTooltips(lMap) {
         if (_last_lon !== null && Math.abs(lon - _last_lon) < 0.001 && Math.abs(lat - _last_lat) < 0.001) {
             // Still check the admin layer via queryRenderedFeatures (vector layer, works fine)
             var pt = e.containerPoint;
-            var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: ['aots-admin-layer'] });
+            var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
             if (adminFeatures && adminFeatures.length > 0) {
                 el.innerHTML = _buildTileTooltip(adminFeatures[0]);
                 el.style.display = 'block';
@@ -316,7 +366,7 @@ function _setupHoverTooltips(lMap) {
 
         // Check admin vector layer first (queryRenderedFeatures works for vector layers)
         var pt = e.containerPoint;
-        var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: ['aots-admin-layer'] });
+        var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
         if (adminFeatures && adminFeatures.length > 0) {
             el.innerHTML = _buildTileTooltip(adminFeatures[0]);
             el.style.display = 'block';
@@ -331,10 +381,12 @@ function _setupHoverTooltips(lMap) {
             return;
         }
 
-        // For the raster tile layer, use the API endpoint
-        var tilesLayerVisible = map.getLayer('aots-tiles-layer') &&
-            map.getLayoutProperty('aots-tiles-layer', 'visibility') === 'visible';
-        if (!tilesLayerVisible) {
+        // For the raster tile layer, use the API endpoint. Several hazards can be
+        // visible simultaneously — pick the first one actually showing a raster
+        // layer right now (fixed wind > gust > river > rain priority, see
+        // _firstVisibleRasterHazard's own comment).
+        var hoverHazard = _firstVisibleRasterHazard(map, config);
+        if (!hoverHazard) {
             el.style.display = 'none';
             return;
         }
@@ -345,14 +397,17 @@ function _setupHoverTooltips(lMap) {
         var req = { _cancelled: false };
         _pending_request = req;
 
+        var hoverParts = _hazardUrlParts(hoverHazard, config);
+        var tilesLayerId = 'aots-tiles-layer-' + hoverHazard;
         var url = (config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001')
             + '/tile-value/'
             + encodeURIComponent(config.country) + '/'
-            + encodeURIComponent(config.storm) + '/'
-            + encodeURIComponent(config.forecast_date)
+            + encodeURIComponent(hoverParts.storm) + '/'
+            + encodeURIComponent(hoverParts.forecast_date)
             + '?lon=' + lon.toFixed(6)
             + '&lat=' + lat.toFixed(6)
-            + '&wind_threshold=' + config.wind_threshold;
+            + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+            + hoverParts.qs;
 
         fetch(url)
             .then(function(r) { return r.json(); })
@@ -363,7 +418,7 @@ function _setupHoverTooltips(lMap) {
                     return;
                 }
                 // Build a fake feature object compatible with _buildTileTooltip
-                var feature = { properties: props, layer: { id: 'aots-tiles-layer' } };
+                var feature = { properties: props, layer: { id: tilesLayerId } };
                 el.innerHTML = _buildTileTooltip(feature);
                 el.style.display = 'block';
                 var x = e.originalEvent.clientX + 16;
@@ -567,6 +622,230 @@ function buildColorExpression(prop, stats) {
 // ---------------------------------------------------------------------------
 // 5. Apply tile config (core function)
 // ---------------------------------------------------------------------------
+// Hazards are independently toggleable layers — each gets its own suffixed
+// MapLibre source/layer pair (aots-mercator-wind vs aots-mercator-gust vs
+// aots-mercator-river vs aots-mercator-rain, etc.) so any combination can be
+// visible on the map at once (e.g. Wind + River together).
+var _AOTS_HAZARDS = ['wind', 'gust', 'river', 'rain'];
+
+// `suffix` (optional) — distinguishes EXTRA per-storm-group layers (see
+// "MULTI-STORM GROUPS" section below) from the primary/default set, so a
+// country hit by Storm B (not the primary-resolved Storm A) still gets its
+// own real map tiles instead of silently reusing Storm A's. Omit/empty for
+// the primary group — produces the exact same ids as before this existed.
+function _hazardLayerIds(hazardKey, suffix) {
+    var suf = suffix ? ('-' + suffix) : '';
+    return {
+        mercatorSource: 'aots-mercator-' + hazardKey + suf,
+        tilesLayer:     'aots-tiles-layer-' + hazardKey + suf,
+        adminSource:    'aots-admin-' + hazardKey + suf,
+        adminLayer:     'aots-admin-layer-' + hazardKey + suf,
+    };
+}
+
+// Per-hazard path-segment + query-string values. River/rain are NOT
+// storm-scoped at all (see tile_server.py's MERCATOR_TILE_RIVER_MAT/
+// MERCATOR_TILE_PRECIP_MAT comments — keyed by COUNTRY + FORECAST_TIME(+
+// RP_TIER / +THRESHOLD_MM+WINDOW_H), no STORM/TRACK_ID column exists for
+// them) — but every tile-server endpoint still has a {storm} URL path
+// segment for structural consistency with wind/gust, so river/rain requests
+// fill it with an inert placeholder (config.storm, already a real non-empty
+// string whenever a country/storm is resolved — reused rather than adding a
+// second required config field only to populate an ignored path segment).
+// The real identity for river/rain comes entirely from their own
+// forecast_date (river_forecast_date/rain_forecast_date) + hazard-specific
+// query params.
+function _hazardUrlParts(hazardKey, config) {
+    var placeholderStorm = config.storm || 'NONE';
+    if (hazardKey === 'gust') {
+        return {
+            storm: config.storm, forecast_date: config.forecast_date,
+            qs: '&hazard=gust&gust_threshold=' + config.gust_threshold,
+        };
+    }
+    if (hazardKey === 'river') {
+        return {
+            storm: placeholderStorm, forecast_date: config.river_forecast_date,
+            qs: '&hazard=river&rp_tier=' + encodeURIComponent(config.rp_tier),
+        };
+    }
+    if (hazardKey === 'rain') {
+        return {
+            storm: placeholderStorm, forecast_date: config.rain_forecast_date,
+            qs: '&hazard=rain&threshold_mm=' + config.threshold_mm + '&window_h=' + config.window_h,
+        };
+    }
+    return { storm: config.storm, forecast_date: config.forecast_date, qs: '&hazard=wind' };
+}
+
+// `group` (optional — see "MULTI-STORM GROUPS" below): a
+// {country, storm, forecast_date, stats, admin_stats, suffix} bundle
+// overriding the primary config's own country/storm/forecast_date/stats for
+// this one extra layer pair, when a country is affected by a DIFFERENT real
+// storm than the one the primary group already resolved (wind/gust only —
+// river/rain aren't storm-scoped, see _hazardUrlParts's own comment, so a
+// single shared forecast_date/rp_tier/threshold_mm already covers every
+// selected country there... except when countries genuinely have different
+// river/rain forecast_dates too, not yet handled by groups — same scope
+// decision as the docstring in pages/map_shell_concept.py's
+// _build_hazard_tile_config: wind/gust groups only for this round).
+function applyHazardLayer(map, config, hazardKey, group) {
+    var ids           = _hazardLayerIds(hazardKey, group && group.suffix);
+    var parts         = group
+        ? { storm: group.storm, forecast_date: group.forecast_date, qs: _hazardUrlParts(hazardKey, config).qs }
+        : _hazardUrlParts(hazardKey, config);
+    var country       = group ? group.country : config.country;
+    // Real bug found+fixed here: for Wind/Gust specifically, the MapLibre
+    // probability raster used to render regardless of tc-view-as ("Envelopes"
+    // vs "Probability Raster" — pages/map_shell_concept.py's tc-view-as
+    // SegmentedControl), even while "Envelopes" was selected — so both the
+    // raster AND the Leaflet envelope polygons showed at once, when the
+    // toggle's own labeling implies they're the two alternate, mutually
+    // exclusive ways to view the SAME hazard. River/Rain have no envelope
+    // concept at all (tc_view_as is a Tropical-Cyclone-only control) and
+    // always render as raster regardless.
+    var isTcHazard    = hazardKey === 'wind' || hazardKey === 'gust';
+    var tcViewAs      = config.tc_view_as || 'envelopes';
+    var visible       = !!config[hazardKey + '_visible'] && (!isTcHazard || tcViewAs === 'raster');
+    var base          = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
+    // Vector tiles are fetched inside a MapLibre Web Worker which cannot resolve relative
+    // URLs. Use window.location.origin as fallback when base is '' (SPCS proxy mode).
+    var absBase       = base !== '' ? base : window.location.origin;
+    var stats         = (group ? group.stats : config['stats_' + hazardKey]) || {};
+    var adminStats    = (group ? group.admin_stats : config['admin_stats_' + hazardKey]) || stats;
+    var tileProp      = config.tile_prop  || null;
+    var adminProp     = config.admin_prop || null;
+    var _defaultProp  = 'population';
+
+    // River/rain requests have no real forecast_date to run without — skip
+    // entirely (leave any existing layer hidden) rather than firing a request
+    // that can only 404/return empty (e.g. river_forecast_date not yet
+    // resolved because the country has no river data at all).
+    if (!country || !parts.forecast_date) {
+        if (map.getLayer(ids.tilesLayer)) map.setLayoutProperty(ids.tilesLayer, 'visibility', 'none');
+        if (map.getLayer(ids.adminLayer)) map.setLayoutProperty(ids.adminLayer, 'visibility', 'none');
+        return;
+    }
+
+    var adminUrl = absBase
+        + '/tiles/admin/'
+        + encodeURIComponent(country) + '/'
+        + encodeURIComponent(parts.storm) + '/'
+        + encodeURIComponent(parts.forecast_date)
+        + '/{z}/{x}/{y}.pbf'
+        + '?wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+        + '&admin_level=1'
+        + parts.qs;
+
+    var rasterUrl = base
+        + '/tiles/raster/'
+        + encodeURIComponent(country) + '/'
+        + encodeURIComponent(parts.storm) + '/'
+        + encodeURIComponent(parts.forecast_date)
+        + '/' + (tileProp ? tileProp.toUpperCase() : 'POPULATION')
+        + '/{z}/{x}/{y}.webp'
+        + '?wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+        + parts.qs;
+
+    if (map.getSource(ids.mercatorSource)) {
+        map.getSource(ids.mercatorSource).setTiles([rasterUrl]);
+    } else {
+        map.addSource(ids.mercatorSource, {
+            type: 'raster',
+            tiles: [rasterUrl],
+            tileSize: 256,
+            minzoom: 3,
+            maxzoom: 14,
+        });
+    }
+
+    if (map.getSource(ids.adminSource)) {
+        map.getSource(ids.adminSource).setTiles([adminUrl]);
+    } else {
+        map.addSource(ids.adminSource, {
+            type: 'vector', tiles: [adminUrl], minzoom: 4, maxzoom: 10,
+        });
+    }
+
+    if (!map.getLayer(ids.tilesLayer)) {
+        map.addLayer({
+            id: ids.tilesLayer,
+            type: 'raster',
+            source: ids.mercatorSource,
+            layout: { visibility: (tileProp && visible) ? 'visible' : 'none' },
+            paint: {
+                'raster-opacity': 0.8,
+                'raster-fade-duration': 0,
+                'raster-resampling': 'nearest',
+            }
+        });
+    }
+
+    if (!map.getLayer(ids.adminLayer)) {
+        map.addLayer({
+            id: ids.adminLayer,
+            type: 'fill',
+            source: ids.adminSource,
+            'source-layer': 'admin',
+            layout: { visibility: 'none' },
+            paint: {
+                'fill-color': buildColorExpression(adminProp || _defaultProp, adminStats),
+                'fill-opacity': 0.6,
+                'fill-outline-color': 'rgba(0,0,0,0.2)',
+            }
+        });
+    } else if (adminProp) {
+        map.setPaintProperty(ids.adminLayer, 'fill-color', buildColorExpression(adminProp, adminStats));
+    }
+
+    // Only show layers if a prop was explicitly selected AND this hazard is
+    // visible, gated by the Tiles/Regions view switch (cmdbar-detail in
+    // map_shell_concept.py's command bar) — Tiles (raster) and Regions
+    // (admin polygons) are mutually exclusive, never shown at once.
+    var viewMode = config.view_mode || 'tiles';
+    if (tileProp && viewMode === 'tiles') setTileLayerProp(ids.tilesLayer, 'tiles', tileProp, stats, hazardKey, group);
+    else setTileLayerVisibility(ids.tilesLayer, false);
+    if (adminProp && visible && viewMode === 'admin') setTileLayerProp(ids.adminLayer, 'admin', adminProp, adminStats, hazardKey, group);
+    else setTileLayerVisibility(ids.adminLayer, false);
+}
+
+// ---------------------------------------------------------------------------
+// MULTI-STORM GROUPS: when selected countries are hit by genuinely
+// DIFFERENT real storms on the same date (rare but real — confirmed via
+// _build_hazard_tile_config's own multi-country resolution, which used to
+// silently pick only the first-resolved storm for every selected country),
+// each additional storm gets its own suffixed wind/gust source+layer pair
+// so its own country's map tiles render for real instead of the primary
+// group's storm being force-applied everywhere. config.extra_wind_groups /
+// config.extra_gust_groups (arrays, possibly absent/empty — the overwhelming
+// common case of one shared storm) drive this; the primary/default
+// wind/gust layers above are completely unaffected when they're empty.
+function _applyExtraHazardGroups(map, config) {
+    ['wind', 'gust'].forEach(function (hazardKey) {
+        var groups = config['extra_' + hazardKey + '_groups'] || [];
+        var prevCount = (window._aots_extra_group_counts && window._aots_extra_group_counts[hazardKey]) || 0;
+        groups.forEach(function (group, i) {
+            group.suffix = 'x' + i;
+            applyHazardLayer(map, config, hazardKey, group);
+        });
+        // Remove any surplus extra-group layers/sources left over from a
+        // previous render with MORE groups than this one (e.g. a country
+        // whose distinct storm was just deselected) — same-index suffixes
+        // are reused across renders, so anything from `groups.length` up to
+        // the old `prevCount` is now stale.
+        for (var i = groups.length; i < prevCount; i++) {
+            var ids = _hazardLayerIds(hazardKey, 'x' + i);
+            [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
+                if (map.getLayer(id)) map.removeLayer(id);
+            });
+            [ids.mercatorSource, ids.adminSource].forEach(function (id) {
+                if (map.getSource(id)) map.removeSource(id);
+            });
+        }
+        window._aots_extra_group_counts = window._aots_extra_group_counts || {};
+        window._aots_extra_group_counts[hazardKey] = groups.length;
+    });
+}
 
 function applyTileConfig(config) {
     var map = window._aots_maplibre;
@@ -578,138 +857,103 @@ function applyTileConfig(config) {
         return;
     }
 
-    var layerIds = ['aots-tiles-layer', 'aots-admin-layer'];
-
     if (!config || !config.country) {
-        layerIds.forEach(function (id) {
-            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+        _AOTS_HAZARDS.forEach(function (hazardKey) {
+            var ids = _hazardLayerIds(hazardKey);
+            [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
+                if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+            });
         });
         return;
     }
 
-    var country       = config.country;
-    var storm         = config.storm;
-    var forecast_date = config.forecast_date;
-    var wind_threshold = config.wind_threshold;
-    var base          = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
-    // Vector tiles are fetched inside a MapLibre Web Worker which cannot resolve relative
-    // URLs. Use window.location.origin as fallback when base is '' (SPCS proxy mode).
-    var absBase       = base !== '' ? base : window.location.origin;
-    var stats         = config.stats || {};
-    var adminStats    = config.admin_stats || stats;
-    var tileProp      = config.tile_prop  || null;
-    var adminProp     = config.admin_prop || null;
+    // Real bug found+fixed here: this assignment used to happen AFTER the
+    // applyHazardLayer loop below. setTileLayerProp (called from inside
+    // applyHazardLayer) doesn't receive `config` as a parameter — it reads
+    // window._aots_tile_config directly to compute each layer's visibility
+    // (`config[hazardKey + '_visible']`). With the assignment still pointing
+    // at the PREVIOUS config at that moment, a hazard whose visibility flips
+    // from off to on in this exact render (e.g. checking "Gust" for the
+    // first time) got its layer set back to 'none' using the stale
+    // pre-toggle value — confirmed live via Playwright: the Gust checkbox
+    // stayed checked and the raster URL was correctly rebuilt, but the
+    // layer's own visibility never flipped to 'visible', so nothing ever
+    // rendered. Wind never showed this bug only because it's already
+    // visible=true from the very first render. Moving this assignment BEFORE
+    // the loop means every call this render already sees its own fresh
+    // config, not last render's.
+    window._aots_tile_config = config;
 
-    var adminUrl = absBase
-        + '/tiles/admin/'
-        + encodeURIComponent(country) + '/'
-        + encodeURIComponent(storm) + '/'
-        + encodeURIComponent(forecast_date)
-        + '/{z}/{x}/{y}.pbf'
-        + '?wind_threshold=' + wind_threshold
-        + '&admin_level=1';
-
-    // --- Mercator (quadkey) raster tile source ---
-    var rasterUrl = base
-        + '/tiles/raster/'
-        + encodeURIComponent(country) + '/'
-        + encodeURIComponent(storm) + '/'
-        + encodeURIComponent(forecast_date)
-        + '/' + (tileProp ? tileProp.toUpperCase() : 'POPULATION')
-        + '/{z}/{x}/{y}.webp'
-        + '?wind_threshold=' + wind_threshold;
-
-    if (map.getSource('aots-mercator')) {
-        map.getSource('aots-mercator').setTiles([rasterUrl]);
-    } else {
-        map.addSource('aots-mercator', {
-            type: 'raster',
-            tiles: [rasterUrl],
-            tileSize: 256,
-            minzoom: 3,
-            maxzoom: 14,
-        });
-    }
-
-    // --- Admin tile source ---
-    if (map.getSource('aots-admin')) {
-        map.getSource('aots-admin').setTiles([adminUrl]);
-    } else {
-        map.addSource('aots-admin', {
-            type: 'vector', tiles: [adminUrl], minzoom: 4, maxzoom: 10,
-        });
-    }
-
-    var _defaultProp = 'population';
-
-    // --- Mercator raster layer ---
-    if (!map.getLayer('aots-tiles-layer')) {
-        map.addLayer({
-            id: 'aots-tiles-layer',
-            type: 'raster',
-            source: 'aots-mercator',
-            layout: { visibility: tileProp ? 'visible' : 'none' },
-            paint: {
-                'raster-opacity': 0.8,
-                'raster-fade-duration': 0,
-                'raster-resampling': 'nearest',
-            }
-        });
-    }
-
-    // --- Admin fill layer ---
-    if (!map.getLayer('aots-admin-layer')) {
-        map.addLayer({
-            id: 'aots-admin-layer',
-            type: 'fill',
-            source: 'aots-admin',
-            'source-layer': 'admin',
-            layout: { visibility: 'none' },
-            paint: {
-                'fill-color': buildColorExpression(adminProp || _defaultProp, adminStats),
-                'fill-opacity': 0.6,
-                'fill-outline-color': 'rgba(0,0,0,0.2)',
-            }
-        });
-    } else if (adminProp) {
-        map.setPaintProperty('aots-admin-layer', 'fill-color', buildColorExpression(adminProp, adminStats));
-    }
+    _AOTS_HAZARDS.forEach(function (hazardKey) {
+        applyHazardLayer(map, config, hazardKey);
+    });
+    _applyExtraHazardGroups(map, config);
 
     console.log('[AoTS] applyTileConfig done — layers in map:', map.getStyle().layers.map(function(l){return l.id;}));
-
-    // Only show layers if a prop was explicitly selected (not null).
-    // When tile_prop is null (no layer selected), the layer stays hidden until
-    // the user selects a layer via the radio buttons → visibility callback.
-    if (tileProp) setTileLayerProp('aots-tiles-layer', 'tiles', tileProp, stats);
-    if (adminProp) setTileLayerProp('aots-admin-layer', 'admin', adminProp, adminStats);
 
     // Sync to current Leaflet viewport (Leaflet is the source of truth for position)
     var lMap = window._leaflet_maps && window._leaflet_maps['main-map'];
     if (lMap) {
         _syncMaplibreToLeaflet(lMap);
     }
-
-    window._aots_tile_config = config;
 }
 
 window.applyTileConfig = applyTileConfig;
+
+// Temporary, purely-visual "hide all hazards" preview (see the HAZARDS label
+// click handler in pages/map_shell_concept.py) — never touches
+// window._aots_tile_config itself, so un-hiding just re-applies it verbatim.
+function setHazardsHiddenOverride(hidden) {
+    var map = window._aots_maplibre;
+    if (!map) return;
+    if (hidden) {
+        _AOTS_HAZARDS.forEach(function (hazardKey) {
+            var ids = _hazardLayerIds(hazardKey);
+            [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
+                if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+            });
+        });
+    } else if (window._aots_tile_config) {
+        applyTileConfig(window._aots_tile_config);
+    }
+}
+window.setHazardsHiddenOverride = setHazardsHiddenOverride;
 
 // ---------------------------------------------------------------------------
 // 6. Layer toggle helpers
 // ---------------------------------------------------------------------------
 
-function setTileLayerProp(layerId, sourceLayer, prop, stats) {
+// `hazardKey`/`group` (optional, passed explicitly by applyHazardLayer) —
+// falls back to deriving hazardKey from the layerId's own suffix (the
+// original behavior, still correct for the PRIMARY/default group's plain
+// ids like "aots-tiles-layer-wind") when omitted, for any other caller.
+// Deliberately NOT derived this way when a `group` is given: an extra
+// group's layer id (e.g. "aots-tiles-layer-wind-x0") has a numbered suffix
+// as its last '-'-token, which isn't a real hazard key at all and would
+// silently fall back to 'wind' even for a gust group — explicit params
+// avoid that ambiguity entirely.
+function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
     var map = window._aots_maplibre;
     if (!map) { console.warn('[AoTS] setTileLayerProp: no map'); return; }
 
-    if (layerId === 'aots-tiles-layer') {
+    if (!hazardKey) {
+        // Layer ids never contain another '-' inside the hazard key itself,
+        // so the last '-'-separated token is always exactly the hazard key
+        // — true only for the primary/default (non-grouped) id shape.
+        var _idParts = layerId.split('-');
+        hazardKey = _idParts[_idParts.length - 1];
+        if (_AOTS_HAZARDS.indexOf(hazardKey) === -1) hazardKey = 'wind';
+    }
+
+    if (layerId.indexOf('aots-tiles-layer') === 0) {
         // Raster layer: change the tile URL to the new property
         var config = window._aots_tile_config || {};
         var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
-        var country = config.country;
-        var storm = config.storm;
-        var forecast_date = config.forecast_date;
-        var wind_threshold = config.wind_threshold;
+        var country = group ? group.country : config.country;
+        var parts = group
+            ? { storm: group.storm, forecast_date: group.forecast_date, qs: _hazardUrlParts(hazardKey, config).qs }
+            : _hazardUrlParts(hazardKey, config);
+        var mercatorSource = 'aots-mercator-' + hazardKey + (group ? ('-' + group.suffix) : '');
 
         if (!country || !prop) return;
 
@@ -746,17 +990,24 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats) {
         var newUrl = base
             + '/tiles/raster/'
             + encodeURIComponent(country) + '/'
-            + encodeURIComponent(storm) + '/'
-            + encodeURIComponent(forecast_date)
+            + encodeURIComponent(parts.storm) + '/'
+            + encodeURIComponent(parts.forecast_date)
             + '/' + colName
             + '/{z}/{x}/{y}.webp'
-            + '?wind_threshold=' + wind_threshold;
+            + '?wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+            + parts.qs;
 
-        var src = map.getSource('aots-mercator');
+        var src = map.getSource(mercatorSource);
         if (src) src.setTiles([newUrl]);
 
+        // Same tc-view-as gate as applyHazardLayer's own `visible` — Wind/
+        // Gust's raster only shows in "Probability Raster" mode, not
+        // "Envelopes" (see applyHazardLayer's own comment on this).
+        var isTcHazard = hazardKey === 'wind' || hazardKey === 'gust';
+        var tcViewAs = config.tc_view_as || 'envelopes';
+        var hazardVisible = !!config[hazardKey + '_visible'] && (!isTcHazard || tcViewAs === 'raster');
         if (map.getLayer(layerId)) {
-            map.setLayoutProperty(layerId, 'visibility', prop ? 'visible' : 'none');
+            map.setLayoutProperty(layerId, 'visibility', (prop && hazardVisible) ? 'visible' : 'none');
         }
         console.log('[AoTS] setTileLayerProp (raster)', layerId, prop, '→', colName);
         return;
@@ -790,5 +1041,173 @@ window.dash_clientside.maplibre = {
     updateTileConfig: function (config) {
         applyTileConfig(config);
         return window.dash_clientside.no_update;
+    },
+    updateGlobalRawConfig: function (config) {
+        applyGlobalRawConfig(config);
+        return window.dash_clientside.no_update;
     }
 };
+
+// ---------------------------------------------------------------------------
+// 8. Global raw layers — raw precip-rate raster + raw river-discharge raster
+// ---------------------------------------------------------------------------
+// UNLIKE every hazard in section 5 above (applyTileConfig/applyHazardLayer),
+// these two layers are GLOBAL and country/storm-INDEPENDENT — a single
+// worldwide tp/dis24 Zarr file covers the whole map for one forecast cycle
+// (see services/tile_server.py's own "Global raw precipitation-rate
+// endpoints"/"Global raw river-discharge endpoints" sections). They must
+// keep rendering with no country selected at all (the default Global view),
+// so this is deliberately a fully separate function/config/pending-config
+// path from applyTileConfig — NOT folded into _AOTS_HAZARDS or gated by
+// config.country the way every other hazard layer is.
+//
+// Visibility is driven by the EXISTING ms-river-on ("River Flooding")/
+// ms-rain-on ("Rainfall") checkboxes (config.precip_visible/river_visible,
+// resolved by _build_global_raw_config in pages/map_shell_concept.py) — no
+// dedicated raw-layer checkboxes anymore. config.mode ("mean"|"probability",
+// from the flood-view-as SegmentedControl there) selects which server-side
+// aggregation both raster endpoints render; both endpoints are fully
+// pre-colored server-side (fixed breakpoint ramps per mode), so there is no
+// client-side color/radius styling needed for either layer.
+//
+// River-raw used to be a sparse vector/circle layer (one point per discharge
+// cell) — the user explicitly flagged that as wrong ("I only see points not
+// proper rasters this doesn't look right"). It's now a real interpolated
+// raster from the same /tiles/raster/{precip-raw,river-raw}/... family as
+// precip-raw, just with source id 'river' vs 'precip'.
+
+var _AOTS_GLOBAL_RAW_IDS = {
+    precipSource: 'aots-precip-raw-source',
+    precipLayer:  'aots-precip-raw-layer',
+    riverSource:  'aots-river-raw-source',
+    riverLayer:   'aots-river-raw-layer',
+};
+
+function applyGlobalRawConfig(config) {
+    var map = window._aots_maplibre;
+    if (!map || !window._aots_maplibre_ready) {
+        window._aots_pending_global_raw_config = config;
+        return;
+    }
+    if (!config) return;
+    window._aots_global_raw_config = config;
+
+    var ids  = _AOTS_GLOBAL_RAW_IDS;
+    var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
+    var mode = (config.mode === 'probability') ? 'probability' : 'mean';
+
+    // --- Precip-raw raster (radar-style rain-rate / exceedance-probability tiles) ---
+    var precipTime = config.precip_forecast_time;
+    if (precipTime) {
+        var precipUrl = base + '/tiles/raster/precip-raw/' + encodeURIComponent(precipTime)
+            + '/{z}/{x}/{y}.webp?mode=' + mode;
+        var precipSrc = map.getSource(ids.precipSource);
+        if (precipSrc) {
+            precipSrc.setTiles([precipUrl]);
+        } else {
+            map.addSource(ids.precipSource, {
+                type: 'raster', tiles: [precipUrl], tileSize: 256, minzoom: 0, maxzoom: 14,
+            });
+        }
+        if (!map.getLayer(ids.precipLayer)) {
+            map.addLayer({
+                id: ids.precipLayer,
+                type: 'raster',
+                source: ids.precipSource,
+                layout: { visibility: config.precip_visible ? 'visible' : 'none' },
+                paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0, 'raster-resampling': 'nearest' },
+            });
+        } else {
+            map.setLayoutProperty(ids.precipLayer, 'visibility', config.precip_visible ? 'visible' : 'none');
+        }
+    } else if (map.getLayer(ids.precipLayer)) {
+        // No real tp data at all (genuinely empty environment) — hide rather
+        // than point at a forecast_time that doesn't exist.
+        map.setLayoutProperty(ids.precipLayer, 'visibility', 'none');
+    }
+
+    // --- River-raw raster (interpolated discharge / exceedance-probability tiles) ---
+    var riverTime = config.river_forecast_time;
+    if (riverTime) {
+        var riverUrl = base + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
+            + '/{z}/{x}/{y}.webp?mode=' + mode;
+        var riverSrc = map.getSource(ids.riverSource);
+        if (riverSrc) {
+            riverSrc.setTiles([riverUrl]);
+        } else {
+            map.addSource(ids.riverSource, {
+                type: 'raster', tiles: [riverUrl], tileSize: 256, minzoom: 0, maxzoom: 14,
+            });
+        }
+        if (!map.getLayer(ids.riverLayer)) {
+            map.addLayer({
+                id: ids.riverLayer,
+                type: 'raster',
+                source: ids.riverSource,
+                layout: { visibility: config.river_visible ? 'visible' : 'none' },
+                paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0, 'raster-resampling': 'nearest' },
+            });
+        } else {
+            map.setLayoutProperty(ids.riverLayer, 'visibility', config.river_visible ? 'visible' : 'none');
+        }
+    } else if (map.getLayer(ids.riverLayer)) {
+        // No real dis24 data at all — hide rather than point at a
+        // forecast_time that doesn't exist.
+        map.setLayoutProperty(ids.riverLayer, 'visibility', 'none');
+    }
+}
+
+window.applyGlobalRawConfig = applyGlobalRawConfig;
+
+// ---------------------------------------------------------------------------
+// Global loading indicator (top bar, next to the country selector — see
+// pages/map_shell_concept.py's _ms_loading_badge). Real bug found+fixed
+// here: dcc.Loading's own target_components mechanism never actually shows
+// a spinner for ms-tile-config-store, even nested as a direct child of the
+// Loading component (confirmed live via Playwright — polled the DOM every
+// 150ms through multiple genuinely-slow, 1.6-3.0s measured real callback
+// round-trips and it never appeared). Dash's OWN generic top-level
+// indicator (a `._dash-loading-callback`-classed div Dash itself inserts
+// directly under #react-entry-point while ANY callback is in flight) DID
+// reliably appear for the exact same requests in the same test — so this
+// reuses that already-proven signal via a plain MutationObserver instead of
+// trusting target_components again.
+// Real gap found+fixed here: the Dash-callback signal above never covers
+// MapLibre's OWN tile network activity (raster WebP hazard tiles, MVT
+// vector tiles) — those load via MapLibre GL's internal networking, kicked
+// off directly from applyHazardLayer/setTileLayerProp with no Dash
+// callback (server OR clientside) involved at all. That's exactly what a
+// user watching colours paint onto the map calls "the layers loading", so
+// the badge needs to reflect it too, not just Dash's own request/response
+// cycle. window._aots_map_tiles_loading is toggled by MapLibre's own
+// 'dataloading'/'idle' events (wired up right after the map is constructed
+// in initMaplibre above) and OR'd into the same check.
+window._aots_map_tiles_loading = false;
+function _initGlobalLoadingIndicator() {
+    var badge = document.getElementById('ms-global-loading-indicator');
+    var root = document.getElementById('react-entry-point');
+    if (!badge || !root) {
+        // Layout not mounted yet on first DOMContentLoaded fire — retry
+        // shortly rather than silently giving up (same "poll until ready"
+        // pattern initMaplibre already uses above for the map container).
+        setTimeout(_initGlobalLoadingIndicator, 200);
+        return;
+    }
+    var check = function () {
+        var isLoading = !!root.querySelector('._dash-loading-callback')
+            || !!window._aots_map_tiles_loading
+            || (window._aots_pending_fetches || 0) > 0;
+        badge.style.display = isLoading ? '' : 'none';
+    };
+    // Exposed globally so the MapLibre 'dataloading'/'idle' handlers (which
+    // don't mutate the Dash-rendered DOM the MutationObserver below
+    // watches) can force an immediate re-check instead of waiting for an
+    // unrelated DOM mutation to happen to fire it.
+    window._aots_checkLoadingIndicator = check;
+    new MutationObserver(check).observe(root, { attributes: true, childList: true, subtree: true });
+    check();
+}
+document.addEventListener('DOMContentLoaded', _initGlobalLoadingIndicator);
+// Also try immediately (same reasoning as initMaplibre above — dash-render
+// may have already fired DOMContentLoaded by the time this script runs).
+_initGlobalLoadingIndicator();

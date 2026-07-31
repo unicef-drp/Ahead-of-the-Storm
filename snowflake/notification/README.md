@@ -1,6 +1,6 @@
 # Alert Agent — Storm Email Alerts
 
-SQL scripts for the automated storm alert email system. When `REFRESH_MATERIALIZED_VIEWS()` completes a MAT table update, it calls `SEND_NEW_STORM_ALERT()` automatically — no separate polling task or additional warehouse cost.
+SQL scripts for the automated alert email system. When `REFRESH_MATERIALIZED_VIEWS()` completes a MAT table update, it calls `SEND_ALERT()` automatically — no separate polling task or additional warehouse cost.
 
 ---
 
@@ -9,12 +9,12 @@ SQL scripts for the automated storm alert email system. When `REFRESH_MATERIALIZ
 | File | Purpose |
 |---|---|
 | `01_map_udf.sql` | `GENERATE_ADMIN_MAP_PNG(VARCHAR)` — Python UDF that renders a choropleth map of admin-level impact as a base64 PNG, embedded in the email |
-| `02_send_alert_procedure.sql` | `SEND_NEW_STORM_ALERT()` — Python stored procedure; one `CORTEX.COMPLETE` call per country, builds HTML email, fans out to `ALERT_SUBSCRIBERS` via `AOTS_EMAIL_INTEGRATION` |
+| `02_send_alert_procedure.sql` | `SEND_ALERT()` — Python stored procedure; one `CORTEX.COMPLETE` call per country, builds HTML email, fans out to `ALERT_SUBSCRIBERS` via `AOTS_EMAIL_INTEGRATION` |
 | `03_monitoring.sql` | Read-only queries: delivery log, Cortex LLM token usage, warehouse compute, combined cost view, rolling totals |
 
 ---
 
-## How SEND_NEW_STORM_ALERT() Works
+## How SEND_ALERT() Works
 
 The procedure is implemented in **Python** and builds the email deterministically:
 

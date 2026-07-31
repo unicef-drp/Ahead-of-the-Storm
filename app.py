@@ -98,4 +98,26 @@ def navbar_is_open(opened, navbar):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # dev_tools_ui=False: several pages (map_shell_concept.py) inject
+    # components into controls-body reactively (Country Analysis mode only) —
+    # callbacks referencing their ids are legitimately absent from the very
+    # first layout snapshot, which the renderer flags as a "nonexistent
+    # object" ReferenceError even though the components mount and work
+    # correctly once that mode is entered (confirmed: zero such errors once
+    # Country Analysis mode has rendered once, and every control keeps
+    # working). dev_tools_props_check (prop type/value validation) and
+    # dev_tools_validate_callbacks (circular-dependency checks) are separate
+    # flags that don't gate this specific renderer warning or its overlay —
+    # only dev_tools_ui does. Hot reload/dev_tools_hot_reload is untouched.
+    # dev_tools_ui=False: several pages (map_shell_concept.py) inject
+    # components into controls-body reactively (Country Analysis mode only) —
+    # callbacks referencing their ids are legitimately absent from the very
+    # first layout snapshot, which the renderer flags as a "nonexistent
+    # object" ReferenceError even though the components mount and work
+    # correctly once that mode is entered (confirmed: zero such errors once
+    # Country Analysis mode has rendered once, and every control keeps
+    # working). dev_tools_props_check (prop type/value validation) and
+    # dev_tools_validate_callbacks (circular-dependency checks) are separate
+    # flags that don't gate this specific renderer warning or its overlay —
+    # only dev_tools_ui does. Hot reload/dev_tools_hot_reload is untouched.
+    app.run(debug=True, dev_tools_ui=False)

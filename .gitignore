@@ -54,3 +54,5 @@ snowflake_spcs/
 !services/README.md
 !snowflake/intelligence/README.md
 !snowflake/mat_tables/README.md
+
+.map_shell_backups

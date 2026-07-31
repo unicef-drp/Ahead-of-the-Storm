@@ -21,7 +21,7 @@
 --         clon/clat: centroid coordinates for label placement
 -- Output: base64-encoded PNG string (embed as data:image/png;base64,...)
 --
--- Called by: SEND_NEW_STORM_ALERT() in 02_send_alert_procedure.sql
+-- Called by: SEND_ALERT() in 02_send_alert_procedure.sql
 --   SELECT AOTS.TC_ECMWF.GENERATE_ADMIN_MAP_PNG(<json>) AS png_b64
 --
 -- Fallback: if this UDF errors or returns NULL, the map section is omitted from the email.

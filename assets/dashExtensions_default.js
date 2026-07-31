@@ -70,17 +70,33 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const props = feature.properties || {};
                 const severity_population = props.severity_population || 0;
                 const max_population = props.max_population || 1;
-                const is_stacked = props.is_stacked || false;
+                const isGust = props.hazard === 'gust';
 
-                // Gray for no data or zero impact
+                // "Consensus" rendering — used whenever there's no real per-member
+                // severity_population to color by, whether because there's no single
+                // country to attribute population severity to at all (Global mode —
+                // see _build_ms_envelope_geojson's own is_global comment) OR because a
+                // specific member genuinely has zero/unknown impact for the selected
+                // country (Country Analysis mode — real bug found+fixed here: this used
+                // to fall back to a flat, unrelated gray instead of reusing the exact
+                // same real-data consensus treatment). A low, uniform, near-borderless
+                // fill so the real per-member envelope polygons (up to 51 of them, all
+                // real geometry) alpha-blend into a natural density gradient where they
+                // overlap — darker = more members agree this area is threatened,
+                // lighter = fewer. This is a genuine union-with-overlap-count effect
+                // achieved via the browser's own alpha compositing, not a separate
+                // computed grid. Gust uses its own lighter orange (#ffa94d, matching
+                // its GUST color constant in pages/map_shell_concept.py) so Wind and
+                // Gust envelopes stay visually distinguishable when both are shown at
+                // once (both hazards share one combined FeatureCollection).
                 if (!severity_population || severity_population === 0) {
-                    // Higher opacity for stacked envelopes
-                    const baseOpacity = is_stacked ? 0.6 : 0.3;
+                    const c = isGust ? '#ffa94d' : '#e8590c';
                     return {
-                        color: '#808080',
-                        weight: 2,
-                        fillColor: '#808080',
-                        fillOpacity: baseOpacity
+                        color: c,
+                        weight: 0.5,
+                        opacity: 0.25,
+                        fillColor: c,
+                        fillOpacity: 0.09
                     };
                 }
 
@@ -101,31 +117,22 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                     return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
                 };
 
-                // Interpolate between yellow (#FFFF00) and dark red (#8B0000)
-                const color = interpolateColor('#FFFF00', '#8B0000', easedSeverity);
+                // Wind: yellow (#FFFF00) -> dark red (#8B0000). Gust: pale yellow
+                // (#FFF3BF) -> burnt orange (#D9480F) — a visually distinct gradient
+                // family so a user can tell which hazard a colored envelope belongs to
+                // at a glance, not just via the tooltip.
+                const color = isGust ?
+                    interpolateColor('#FFF3BF', '#D9480F', easedSeverity) :
+                    interpolateColor('#FFFF00', '#8B0000', easedSeverity);
 
-                // Opacity increases with severity
-                // Stacked envelopes: make more transparent to reveal basemap/country layers beneath
-                //   -> 0.15 to 0.50 range
-                // Regular envelopes: 0.3 to 0.9 opacity range
-                if (is_stacked) {
-                    const fillOpacity = 0.15 + (easedSeverity * 0.35); // Range: 0.15 to 0.50
-                    return {
-                        color: color,
-                        weight: 3,
-                        fillColor: color,
-                        fillOpacity: fillOpacity,
-                        opacity: 0.6
-                    };
-                } else {
-                    const fillOpacity = 0.3 + (easedSeverity * 0.6); // Range: 0.3 to 0.9 (original)
-                    return {
-                        color: color,
-                        weight: 2,
-                        fillColor: color,
-                        fillOpacity: fillOpacity
-                    };
-                }
+                // Opacity increases with severity — 0.3 to 0.9 range
+                const fillOpacity = 0.3 + (easedSeverity * 0.6);
+                return {
+                    color: color,
+                    weight: 2,
+                    fillColor: color,
+                    fillOpacity: fillOpacity
+                };
             }
 
             ,
@@ -163,6 +170,7 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                     if (typeof s !== 'string') return s;
                     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
                 };
+                const isGust = props.hazard === 'gust';
                 const wind_threshold = escapeHtml(String(props.wind_threshold ?? props.WIND_THRESHOLD ?? 'N/A'));
                 const ensemble_member_raw = props.ensemble_member ?? props.ENSEMBLE_MEMBER;
                 const ensemble_member = ensemble_member_raw != null ? escapeHtml(String(ensemble_member_raw)) : 'N/A';
@@ -203,10 +211,10 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 // Always show same structure, use N/A when data not available
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
-            Hurricane Envelope
+            ${isGust ? 'Gust Envelope' : 'Hurricane Envelope'}
         </div>
         <div style="font-size: 12px; color: #555;">
-            <strong>Wind Threshold:</strong> ${wind_threshold}
+            <strong>${isGust ? 'Gust Threshold' : 'Wind Threshold'}:</strong> ${wind_threshold}
         </div>
         <div style="font-size: 12px; color: #555;">
             <strong>Ensemble Member:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : 'N/A'}

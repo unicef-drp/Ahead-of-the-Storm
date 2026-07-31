@@ -2351,5 +2351,9 @@ def trigger_tile_preload(country, storm, forecast_date, forecast_time, wind_thre
 # Register callback modules — importing them causes @callback decorators to fire
 from callbacks import overlays, tiles_and_admin, metrics  # noqa: F401, E402
 
-dash.register_page(__name__, path="/", name="Ahead of the Storm")
+# Relegated from "/" to "/legacy" — pages/map_shell_concept.py is now the root
+# dashboard. Kept here unlinked (same as /concept and /map-shell were before
+# they had their own reasons to exist) as a working reference/fallback, not
+# routed from any nav.
+dash.register_page(__name__, path="/legacy", name="Ahead of the Storm (Legacy)")
 

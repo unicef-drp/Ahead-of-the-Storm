@@ -261,12 +261,275 @@ def get_latest_forecast_time_overall():
         logger.error("Error getting latest forecast time from Snowflake: %s", e)
         return None
 
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_latest_river_forecast_time(country: str):
+    """Latest FORECAST_TIME available in MERCATOR_TILE_RIVER_MAT for a country.
+
+    River-flood data is NOT storm-scoped (see MERCATOR_TILE_RIVER_MAT's own schema —
+    keyed by COUNTRY + FORECAST_TIME + RP_TIER only, no STORM/TRACK_ID column at all)
+    so, unlike wind/gust, it can't be resolved from get_latest_forecast_time_overall()
+    (that's TC_TRACKS-specific). Real production data can genuinely lag behind the
+    latest wind storm cycle (confirmed live: PHL's only river data on 2026-07-30 was
+    still the 2026-07-02 GloFAS run) — returns None (not a fallback date) when a
+    country has no river data at all, same "don't paper over a real gap" convention
+    as get_latest_forecast_time_overall's own None return.
+    """
+    try:
+        df = _run_query(
+            "SELECT MAX(FORECAST_TIME) AS MAX_FORECAST_TIME FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT WHERE COUNTRY = %s",
+            params=[country],
+        )
+        if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
+            return str(df['MAX_FORECAST_TIME'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting latest river forecast time for %s: %s", country, e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_latest_rain_forecast_time(country: str):
+    """Latest FORECAST_TIME available in MERCATOR_TILE_PRECIP_MAT for a country.
+
+    Rainfall sibling of get_latest_river_forecast_time — same independence from
+    storm/TC_TRACKS (keyed by COUNTRY + FORECAST_TIME + THRESHOLD_MM + WINDOW_H only).
+    Returns None when the country has no precip data at all.
+    """
+    try:
+        df = _run_query(
+            "SELECT MAX(FORECAST_TIME) AS MAX_FORECAST_TIME FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT WHERE COUNTRY = %s",
+            params=[country],
+        )
+        if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
+            return str(df['MAX_FORECAST_TIME'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting latest rain forecast time for %s: %s", country, e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
+def get_latest_precip_forecast_time():
+    """Latest FORECAST_TIME + STAGE_PATH for the raw global precip-rate Zarr.
+
+    Unlike get_latest_river_forecast_time/get_latest_rain_forecast_time (both
+    per-country, MAT-table-backed), this reads MET_FORECASTS directly — the
+    raw tp Zarr is a single GLOBAL file per forecast cycle, not scoped to any
+    country or storm at all (no COUNTRY/STORM column on MET_FORECASTS), so
+    there's no country argument here. maxsize=1 matches get_latest_forecast_time_overall's
+    own no-argument convention. Returns None (not a fallback date) when no
+    PARAM='tp' row exists at all, same "don't paper over a real gap"
+    convention as its per-country siblings.
+
+    Returns:
+        tuple[str, str] | None: (forecast_time, stage_path) for the most
+        recent PARAM='tp' row, or None if no data found.
+    """
+    try:
+        df = _run_query(
+            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.MET_FORECASTS "
+            "WHERE PARAM = 'tp' ORDER BY FORECAST_TIME DESC LIMIT 1"
+        )
+        if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
+            return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting latest precip forecast time: %s", e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
+def get_latest_river_raw_forecast_time():
+    """Latest FORECAST_TIME + STAGE_PATH for the raw global river-discharge Zarr.
+
+    NOT to be confused with get_latest_river_forecast_time (per-country, reads
+    MERCATOR_TILE_RIVER_MAT for the pre-processed impact/flood-extent tiles).
+    This one reads RIVER_FORECASTS directly, PARAM='dis24' only — the raw
+    discharge Zarr is a single GLOBAL file per forecast cycle covering the
+    whole world's river network cells, not scoped to any country or storm
+    (mirrors get_latest_precip_forecast_time's own global/no-country
+    convention for the tp Zarr).
+
+    *** LEGACY (2026-07-31): services/tile_server.py's actual "river-raw"
+    raster endpoint (/tiles/raster/river-raw/...) no longer uses PARAM='dis24'
+    at all — it was switched to PARAM='extent_rp10_bymember' (see
+    get_latest_river_extent_forecast_time below), a real RP10-matched
+    flood-extent product instead of raw, unthresholded discharge. This
+    function is kept only because it may still back other/legacy callers
+    reading the raw dis24 series directly; it is NOT what the current
+    river-raw map layer is keyed by any more. ***
+
+    Deliberately excludes the 'extent_rp{N}_bymember' PARAM rows. maxsize=1
+    matches get_latest_precip_forecast_time's own no-argument convention.
+    Returns None (not a fallback date) when no PARAM='dis24' row exists at
+    all, same "don't paper over a real gap" convention as its siblings.
+
+    Returns:
+        tuple[str, str] | None: (forecast_time, stage_path) for the most
+        recent PARAM='dis24' row, or None if no data found.
+    """
+    try:
+        df = _run_query(
+            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
+            "WHERE PARAM = 'dis24' ORDER BY FORECAST_TIME DESC LIMIT 1"
+        )
+        if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
+            return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting latest river-raw forecast time: %s", e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
+def get_latest_river_extent_forecast_time():
+    """Latest FORECAST_TIME + STAGE_PATH for the raw global river
+    flood-extent per-member Parquet (PARAM='extent_rp10_bymember').
+
+    This is the data source actually behind services/tile_server.py's
+    current "river-raw" raster layer (/tiles/raster/river-raw/...) as of
+    2026-07-31 — it REPLACES get_latest_river_raw_forecast_time's own
+    PARAM='dis24' raw discharge with GloFAS discharge already matched
+    against the real JRC historical flood-extent raster at the RP10 (10-year
+    return period) tier. RP10 is used because it is the only tier confirmed
+    genuinely computed (IS_STANDIN=False); RP2/RP5 are confirmed
+    IS_STANDIN=True placeholder/extrapolated data and are deliberately never
+    queried here.
+
+    Unlike PARAM='dis24' (keyed by a full datetime FORECAST_TIME), this data
+    is keyed by a plain DATE (e.g. "2026-07-14") — callers should not assume
+    a time-of-day component is present.
+
+    Like get_latest_river_raw_forecast_time/get_latest_precip_forecast_time,
+    this is a single GLOBAL file per forecast cycle (no COUNTRY/STORM
+    scoping), so there is no country argument; maxsize=1 matches their same
+    no-argument convention. Returns None (not a fallback date) when no
+    PARAM='extent_rp10_bymember' row exists at all.
+
+    Returns:
+        tuple[str, str] | None: (forecast_time, stage_path) for the most
+        recent PARAM='extent_rp10_bymember' row, or None if no data found.
+    """
+    try:
+        df = _run_query(
+            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
+            "WHERE PARAM = 'extent_rp10_bymember' ORDER BY FORECAST_TIME DESC LIMIT 1"
+        )
+        if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
+            return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting latest river-extent forecast time: %s", e)
+        return None
+
+
+# How far the single closest real PARAM='tp' cycle is allowed to be from the
+# requested topbar date/run before get_precip_forecast_time_near gives up and
+# reports "not available" instead of silently showing a very stale cycle as
+# if it were current. 3 days is generous enough to bridge tp's own irregular
+# real cadence (confirmed live: cycles land at varying hours, sometimes days
+# apart) while still refusing a cycle that's clearly unrelated to what was
+# asked for.
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_precip_forecast_time_near(target_date: str, target_time: str = "00"):
+    """Real FORECAST_TIME + STAGE_PATH in MET_FORECASTS (PARAM='tp') for the
+    EXACT topbar date/run requested, for the raw global precip-rate raster
+    layer.
+
+    Despite the function's own name (kept for caller-compatibility -- "near"
+    is now a misnomer left over from an earlier fuzzy-matching design),
+    matching is now EXACT date+time only, per explicit product decision: a
+    real tp cycle either exists for precisely the selected date+run or the
+    layer reports "not available" and gets greyed out/deselected -- no
+    silent substitution of the nearest different cycle, which would show
+    data for a time the user didn't actually select without any indication.
+
+    Args:
+        target_date: 'YYYY-MM-DD' (topbar-date's own value format).
+        target_time: '00'/'06'/'12'/'18' (topbar-time's own run value
+            format). Defaults to '00' only as a defensive floor — callers
+            should always pass the live topbar-time value.
+
+    Returns:
+        tuple[str, str] | None: (forecast_time, stage_path) for the exact
+        real PARAM='tp' row at this date+run, or None if no real cycle
+        exists at exactly that timestamp.
+    """
+    target_dt = f"{target_date} {target_time}:00:00"
+    try:
+        df = _run_query(
+            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.MET_FORECASTS "
+            "WHERE PARAM = 'tp' AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s) "
+            "LIMIT 1",
+            params=[target_dt],
+        )
+        if df.empty or pd.isna(df['FORECAST_TIME'].iloc[0]):
+            return None
+        return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
+    except Exception as e:
+        logger.error("Error getting exact precip-raw forecast time for %s: %s", target_dt, e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_river_extent_forecast_time_for_date(target_date: str):
+    """Real FORECAST_TIME + STAGE_PATH in RIVER_FORECASTS
+    (PARAM='extent_rp10_bymember') for a given topbar date, for the raw
+    global river flood-extent raster layer.
+
+    Unlike precip's irregular cycle hours (see get_precip_forecast_time_near
+    above), extent_rp10_bymember cycles are DAILY only (confirmed live: one
+    real cycle per calendar day, e.g. 2026-07-02, 2026-07-13, 2026-07-14) —
+    so all four topbar-time values (00Z/06Z/12Z/18Z) for a given topbar-date
+    resolve to that SAME day's single real cycle when one exists; there's no
+    "nearest hour" concept needed the way precip has. Matches on calendar
+    date (CAST(...AS DATE), not a hardcoded literal list) so this keeps
+    working generally as more real dates land, not just for today's three
+    known ones.
+
+    Args:
+        target_date: 'YYYY-MM-DD' (topbar-date's own value format).
+
+    Returns:
+        tuple[str, str] | None: (forecast_time, stage_path) — forecast_time
+        is the EXACT value stored in RIVER_FORECASTS (a plain date string,
+        e.g. '2026-07-14', matching get_latest_river_extent_forecast_time's
+        own convention so tile_server.py's exact-match by-time lookup keeps
+        working unchanged) for the real extent_rp10_bymember row matching
+        target_date's calendar day, or None if no such real row exists.
+    """
+    try:
+        df = _run_query(
+            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
+            "WHERE PARAM = 'extent_rp10_bymember' AND CAST(FORECAST_TIME AS DATE) = TO_DATE(%s) "
+            "ORDER BY FORECAST_TIME DESC LIMIT 1",
+            params=[target_date],
+        )
+        if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
+            return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
+        return None
+    except Exception as e:
+        logger.error("Error getting river-extent forecast time for date %s: %s", target_date, e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_envelope_data_snowflake(track_id, forecast_time):
-    """Get envelope data directly from Snowflake"""
+    """Get envelope data directly from Snowflake.
+
+    Real perf bug found+fixed here: this query is NOT threshold-scoped — it
+    always fetches every WIND_THRESHOLD x ENSEMBLE_MEMBER row for the given
+    track/forecast_time (the caller, _build_ms_envelope_geojson, filters to
+    one threshold client-side afterward) — yet had no caching at all, so
+    every single threshold-slider tick re-ran this same full-dataset
+    ST_ASWKT() query against Snowflake instead of reusing the identical
+    already-fetched rows. Caching on (track_id, forecast_time) is exactly
+    correct since the result never depends on the threshold at all.
+    """
     try:
         # Use ST_ASWKT() to ensure we get WKT format, not raw GEOGRAPHY type
         query = '''
-        SELECT 
+        SELECT
             ENSEMBLE_MEMBER,
             WIND_THRESHOLD,
             ST_ASWKT(ENVELOPE_REGION) AS ENVELOPE_REGION
@@ -282,6 +545,65 @@ def get_envelope_data_snowflake(track_id, forecast_time):
     except Exception as e:
         logger.error("Error getting envelope data from Snowflake: %s", e)
         return pd.DataFrame()
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_gust_envelope_data_snowflake(track_id, forecast_time):
+    """Real per-member GUST envelope polygons — TC_GUST_ENVELOPES_COMBINED,
+    exact mirror of get_envelope_data_snowflake/TC_ENVELOPES_COMBINED above
+    but keyed by GUST_THRESHOLD (confirmed live: a genuinely real, separately
+    deployed table — 1804 rows, real BAVI/PHL rows at gust thresholds
+    17-70kt — not a gap that was ever missing, just not queried by this app
+    before now). Cached on (track_id, forecast_time) for the same reason as
+    get_envelope_data_snowflake above — not threshold-scoped, so every
+    gust-slider tick was re-fetching the identical full dataset."""
+    try:
+        query = '''
+        SELECT
+            ENSEMBLE_MEMBER,
+            GUST_THRESHOLD,
+            ST_ASWKT(ENVELOPE_REGION) AS ENVELOPE_REGION
+        FROM TC_GUST_ENVELOPES_COMBINED
+        WHERE TRACK_ID = %s AND FORECAST_TIME = %s
+        ORDER BY ENSEMBLE_MEMBER, GUST_THRESHOLD
+        '''
+        df = _run_query(query, params=[track_id, str(forecast_time)])
+        if not df.empty:
+            df = df.rename(columns={'ENSEMBLE_MEMBER': 'ensemble_member', 'ENVELOPE_REGION': 'geometry', 'GUST_THRESHOLD': 'gust_threshold'})
+            return df.copy()
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error("Error getting gust envelope data from Snowflake: %s", e)
+        return pd.DataFrame()
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_gust_track_ids_for_date(forecast_time: str) -> list:
+    """DISTINCT TRACK_IDs with real TC_GUST_ENVELOPES_COMBINED data at this
+    exact forecast_time — the gust-availability sibling of
+    get_track_ids_for_date (TC_TRACKS). Gust is storm-scoped (unlike River/
+    Rain, which are country+date-scoped with no storm dimension at all), so
+    "is gust available" means "does THIS storm at THIS forecast_time have
+    any real gust envelope rows", not a country-wide latest-date lookup.
+
+    Confirmed live: gust data only exists for BAVI/MAYSAK/DOUGLAS between
+    2026-07-02 and 2026-07-05 — the latest real forecast cycle (2026-07-31)
+    has zero TC_GUST_ENVELOPES_COMBINED rows for either active storm
+    (DOLPHIN/GENEVIEVE), so Gust must show as genuinely unavailable there,
+    not just "unchecked".
+
+    Returns [] when there's genuinely no real gust data at this exact
+    timestamp.
+    """
+    try:
+        df = _run_query(
+            "SELECT DISTINCT TRACK_ID FROM TC_GUST_ENVELOPES_COMBINED WHERE FORECAST_TIME = %s ORDER BY TRACK_ID",
+            params=[forecast_time],
+        )
+        return df['TRACK_ID'].tolist() if not df.empty else []
+    except Exception as e:
+        logger.warning("get_gust_track_ids_for_date failed for %s: %s", forecast_time, e)
+        return []
 
 
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
@@ -349,6 +671,142 @@ def get_lat_lons_bulk() -> pd.DataFrame:
         logger.error("Error in get_lat_lons_bulk: %s", e)
         return pd.DataFrame(columns=['TRACK_ID', 'FORECAST_TIME', 'latitude', 'longitude'])
 
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_multi_storm_tracks(storm_forecast_pairs) -> pd.DataFrame:
+    """Fetch TC_TRACKS rows for MULTIPLE (storm, forecast_time) pairs in a
+    single Snowflake round trip — the Global-mode ("no country selected")
+    replacement for looping a single-storm TC_TRACKS query once per active
+    storm.
+
+    Real perf bug found+fixed here: uncached, so every Global-mode callback
+    re-fire (e.g. a threshold-slider tick, which doesn't change which
+    tracks exist at all) re-ran this query from scratch. Callers MUST pass
+    a tuple, not a list, for storm_forecast_pairs — @ttl_cache's underlying
+    lru_cache needs every arg hashable.
+
+    Args:
+        storm_forecast_pairs: tuple of (track_id, forecast_time) tuples.
+            track_id is TC_TRACKS' own TRACK_ID (the storm name). forecast_time
+            is "YYYY-MM-DD HH:MM:SS" (TC_TRACKS' own FORECAST_TIME column
+            format). Each storm carries its OWN forecast_time here rather than
+            one shared timestamp for all of them — different storms are not
+            guaranteed to share one real forecast cycle even when both are
+            "active" on the same selected calendar date/run.
+
+    Builds one compound WHERE ((TRACK_ID = %s AND FORECAST_TIME = %s) OR ...)
+    rather than issuing one query per storm, so this stays a single query
+    regardless of how many storms are active at once.
+
+    Returns:
+        pandas.DataFrame with columns TRACK_ID, ENSEMBLE_MEMBER, VALID_TIME,
+        LEAD_TIME, LATITUDE, LONGITUDE, WIND_SPEED_KNOTS, PRESSURE_HPA — the
+        extra TRACK_ID column (vs. the single-storm track query used
+        elsewhere, which doesn't need it since it's already scoped to one
+        storm) lets callers attribute each row back to its own storm when
+        combining several storms' tracks into one FeatureCollection.
+        Empty DataFrame (not an exception) when storm_forecast_pairs is empty
+        or the query fails.
+    """
+    if not storm_forecast_pairs:
+        return pd.DataFrame(columns=['TRACK_ID', 'ENSEMBLE_MEMBER', 'VALID_TIME', 'LEAD_TIME',
+                                      'LATITUDE', 'LONGITUDE', 'WIND_SPEED_KNOTS', 'PRESSURE_HPA'])
+    conditions = []
+    params = []
+    for track_id, forecast_time in storm_forecast_pairs:
+        conditions.append("(TRACK_ID = %s AND FORECAST_TIME = %s)")
+        params.extend([track_id, forecast_time])
+    query = f'''
+    SELECT
+        TRACK_ID,
+        ENSEMBLE_MEMBER,
+        VALID_TIME,
+        LEAD_TIME,
+        LATITUDE,
+        LONGITUDE,
+        WIND_SPEED_KNOTS,
+        PRESSURE_HPA
+    FROM TC_TRACKS
+    WHERE {" OR ".join(conditions)}
+    ORDER BY TRACK_ID, ENSEMBLE_MEMBER, VALID_TIME
+    '''
+    try:
+        df = _run_query(query, params=params)
+        logger.info("Loaded %d track rows for %d storm(s) in one query", len(df), len(storm_forecast_pairs))
+        return df.copy()
+    except Exception as e:
+        logger.error("Error in get_multi_storm_tracks for %d storm(s): %s", len(storm_forecast_pairs), e)
+        return pd.DataFrame(columns=['TRACK_ID', 'ENSEMBLE_MEMBER', 'VALID_TIME', 'LEAD_TIME',
+                                      'LATITUDE', 'LONGITUDE', 'WIND_SPEED_KNOTS', 'PRESSURE_HPA'])
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_tracks_for_storm(storm: str, forecast_time: str) -> pd.DataFrame:
+    """Single-storm TC_TRACKS query — the Country-Analysis-mode counterpart
+    of get_multi_storm_tracks above (that one batches several storms into
+    one query for Global mode; this is the single-storm case used once a
+    country is selected).
+
+    Real perf bug found+fixed here: this query used to be inlined directly
+    in _load_ms_tracks_and_envelopes (pages/map_shell_concept.py) as a bare
+    pd.read_sql call with no caching at all — tracks don't depend on the
+    wind/gust threshold slider in any way, yet every slider tick re-fired
+    this exact same query for the identical (storm, forecast_time), on top
+    of the identically-uncached envelope queries (get_envelope_data_
+    snowflake / get_gust_envelope_data_snowflake, also fixed alongside this
+    one). Caching on (storm, forecast_time) is exactly correct since the
+    result never depends on threshold at all.
+    """
+    try:
+        query = '''
+        SELECT
+            ENSEMBLE_MEMBER,
+            VALID_TIME,
+            LEAD_TIME,
+            LATITUDE,
+            LONGITUDE,
+            WIND_SPEED_KNOTS,
+            PRESSURE_HPA
+        FROM TC_TRACKS
+        WHERE TRACK_ID = %s AND FORECAST_TIME = %s
+        ORDER BY ENSEMBLE_MEMBER, VALID_TIME
+        '''
+        return _run_query(query, params=[storm, forecast_time])
+    except Exception as e:
+        logger.error("Error in get_tracks_for_storm (%s/%s): %s", storm, forecast_time, e)
+        return pd.DataFrame()
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_track_ids_for_date(forecast_time: str) -> list:
+    """DISTINCT TRACK_IDs with real TC_TRACKS data at this exact forecast_time
+    ("YYYY-MM-DD HH:MM:SS") -- deliberately queries TC_TRACKS directly with NO
+    impact-data requirement, unlike get_storms_and_countries_for_date (which
+    requires real nonzero MERCATOR_TILE_IMPACT_MAT impact and is correctly
+    scoped for the Active Storms alert-worthy list, not "does this storm
+    exist"). A storm can have completely real ensemble track data while still
+    being far out at sea with zero measurable country impact yet (confirmed
+    live: 2026-07-31 00:00:00 has 2 real storms, DOLPHIN and GENEVIEVE, with
+    zero MERCATOR_TILE_IMPACT_MAT rows for either) -- the Global-mode "show
+    every real track" feature needs exactly this track-existence question,
+    matching /legacy's own real precedent (load_startup_tracks, pages/
+    dashboard.py:324-397, queries TC_TRACKS directly with no impact join at
+    all).
+
+    Returns [] when there's genuinely no real track data at this exact
+    timestamp.
+    """
+    try:
+        df = _run_query(
+            "SELECT DISTINCT TRACK_ID FROM TC_TRACKS WHERE FORECAST_TIME = %s ORDER BY TRACK_ID",
+            params=[forecast_time],
+        )
+        return df['TRACK_ID'].tolist() if not df.empty else []
+    except Exception as e:
+        logger.warning("get_track_ids_for_date failed for %s: %s", forecast_time, e)
+        return []
+
+
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_snowflake_data():
     """Get hurricane metadata directly from Snowflake"""
@@ -413,6 +871,84 @@ def get_active_storm_countries() -> list:
         return [r['COUNTRY'] for r in rows.to_dict('records')] if not rows.empty else []
     except Exception as e:
         logger.warning("get_active_storm_countries failed: %s", e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=256)
+def get_storms_for_country_date(country: str, forecast_date: str) -> list:
+    """DISTINCT STORM values with real tile-impact data for `country` at
+    `forecast_date` ("YYYYMMDDHH24MISS" string, e.g. "20251028000000").
+
+    Answers "what storm/forecast applies to THIS selected country + date/run"
+    reactively — a different question from get_active_storm_countries() above
+    (which only ever answers "what's active in the last 12h", used for the
+    Global-mode Active Storms list). This is the one to use for anything
+    scoped to the currently-selected country + topbar date/run, including
+    historical dates with no currently-active storm at all (e.g. a demo
+    scenario or the date picker pointed at a past event).
+
+    Returns [] (not a fallback) when there's genuinely no real data for that
+    country/date combination.
+    """
+    try:
+        df = _run_query(
+            "SELECT DISTINCT STORM FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT "
+            "WHERE COUNTRY = %s AND FORECAST_DATE = %s",
+            params=[country, forecast_date],
+        )
+        return [r['STORM'] for r in df.to_dict('records')] if not df.empty else []
+    except Exception as e:
+        logger.warning("get_storms_for_country_date failed for %s/%s: %s", country, forecast_date, e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=256)
+def get_storms_and_countries_for_date(forecast_date: str, wind_threshold: int = 50) -> list:
+    """DISTINCT (STORM, COUNTRY) pairs with MEANINGFUL real tile-impact data
+    at `forecast_date` ("YYYYMMDDHH24MISS" string) AND a single, specific
+    `wind_threshold` (kt) — every storm affecting any country on this exact
+    date/threshold, in one query, not looped per-country.
+
+    Powers a date-reactive "Active Storms" list: unlike
+    get_active_storm_countries() (always "last 12h", used only for the
+    genuinely-live signal), this answers "what storms have real data on
+    THIS specific date" for any date at all — including a historical one
+    with nothing currently live (e.g. a Demo Scenario or the date picker
+    pointed at a past event) — so the same bordered storm-row UI can show
+    real historical storms too, not just live ones.
+
+    `wind_threshold` MUST be pinned to a single value, not summed/grouped
+    across every threshold this table has (34/40/50/64/83/96/113/137kt) —
+    each is its own separate exceedance estimate (population exposed to AT
+    LEAST that wind speed), so summing across all of them isn't a real
+    total, it's 8 overlapping estimates added together (confirmed live: this
+    inflated MELISSA/2025-10-28's Jamaica figure to a fabricated ~3.05M
+    instead of the real ~237K at 50kt). Defaults to 50kt, this page's own
+    established "today's baseline" convention (_resolve_wind_kt's default)
+    — not reactive to ms-wind-slider here, since threading that in would
+    create a circular Dash dependency (the slider itself is rendered INSIDE
+    this same section's own output).
+
+    Same non-zero-impact HAVING clause as get_active_storm_countries() above
+    (SUM(E_population) > 0 OR SUM(E_num_schools) > 0 OR SUM(E_num_hcs) > 0) —
+    without it, a wide low-probability forecast-cone tile technically exists
+    for many nearby countries even when the real impact there is negligible
+    (confirmed live: at 50kt this still correctly excludes Nicaragua, whose
+    only nonzero signal was at the much looser 34kt threshold).
+
+    Returns [] when there's genuinely no real data for this date/threshold.
+    """
+    try:
+        df = _run_query(
+            "SELECT STORM, COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT "
+            "WHERE FORECAST_DATE = %s AND WIND_THRESHOLD = %s "
+            "GROUP BY STORM, COUNTRY "
+            "HAVING SUM(E_population) > 0 OR SUM(E_num_schools) > 0 OR SUM(E_num_hcs) > 0",
+            params=[forecast_date, wind_threshold],
+        )
+        return df.to_dict('records') if not df.empty else []
+    except Exception as e:
+        logger.warning("get_storms_and_countries_for_date failed for %s: %s", forecast_date, e)
         return []
 
 
@@ -640,6 +1176,105 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         return pd.DataFrame()
 
 
+def get_gust_tile_impacts(country: str, storm: str, forecast_date: str, gust_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
+    """
+    Real per-tile GUST impact totals — MERCATOR_TILE_GUST_MAT, same shape as
+    get_tile_impacts (wind) above but keyed by GUST_THRESHOLD instead of
+    WIND_THRESHOLD. No vulnerability join: E_PEOPLE_IN_NEED/E_CHILDREN_IN_NEED
+    are computed from wind-ensemble envelope data specifically and don't exist
+    for gust (mirrors services/tile_server.py's own MERCATOR_TILE_GUST_MAT
+    comment on why that join is deliberately omitted there too).
+
+    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION,
+    E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
+    E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH.
+    """
+    try:
+        query = """
+        SELECT
+            ZONE_ID, PROBABILITY, E_POPULATION, E_INFANT_POPULATION,
+            E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
+            E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_GUST_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
+          AND GUST_THRESHOLD = %s AND ZOOM_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, gust_threshold, zoom_level])
+        logger.info("Loaded %d gust tile impact rows (%s/%s/%s/%dkt z=%d)",
+                    len(df), country, storm, forecast_date, gust_threshold, zoom_level)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying MERCATOR_TILE_GUST_MAT: %s", e)
+        return pd.DataFrame()
+
+
+def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd.DataFrame:
+    """
+    Real per-tile RIVER flood-extent impact totals — MERCATOR_TILE_RIVER_MAT,
+    keyed by COUNTRY + FORECAST_TIME + RP_TIER (not storm-scoped at all, see
+    services/tile_server.py's own _MERCATOR_RIVER_SQL comment). MAX(...)-
+    aggregated across STEP_H (multiple lead-time rows per tile for the same RP
+    tier) — same "at least this severity, at some point in the forecast
+    horizon" semantics the map's own river raster already uses server-side.
+
+    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION,
+    E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
+    E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH.
+    """
+    try:
+        query = """
+        SELECT
+            ZONE_ID,
+            MAX(PROBABILITY)             AS PROBABILITY,
+            MAX(E_POPULATION)            AS E_POPULATION,
+            MAX(E_INFANT_POPULATION)     AS E_INFANT_POPULATION,
+            MAX(E_SCHOOL_AGE_POPULATION) AS E_SCHOOL_AGE_POPULATION,
+            MAX(E_ADOLESCENT_POPULATION) AS E_ADOLESCENT_POPULATION,
+            MAX(E_NUM_SCHOOLS)           AS E_NUM_SCHOOLS,
+            MAX(E_NUM_HCS)               AS E_NUM_HCS,
+            MAX(E_NUM_SHELTERS)          AS E_NUM_SHELTERS,
+            MAX(E_NUM_WASH)              AS E_NUM_WASH
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+        GROUP BY ZONE_ID
+        """
+        df = _run_query(query, params=[country, forecast_time, rp_tier])
+        logger.info("Loaded %d river tile impact rows (%s/%s/%s)", len(df), country, forecast_time, rp_tier)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying MERCATOR_TILE_RIVER_MAT: %s", e)
+        return pd.DataFrame()
+
+
+def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window_h) -> pd.DataFrame:
+    """
+    Real per-tile RAINFALL impact totals — MERCATOR_TILE_PRECIP_MAT, keyed by
+    COUNTRY + FORECAST_TIME + THRESHOLD_MM + WINDOW_H. Only E_POPULATION is a
+    real hazard-conditional exposure column on this table (confirmed live —
+    every other exposure column there is a bare, hazard-UNCONDITIONAL
+    duplicate of the base layer, not a real rain-specific exposed count, see
+    services/tile_server.py's own MERCATOR_TILE_PRECIP_MAT comment) — schools/
+    health centers/shelters/WASH are deliberately NOT selected here; callers
+    must treat rain as having no real facility-exposure signal at all, not
+    silently substitute the unconditional base count.
+
+    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION.
+    """
+    try:
+        query = """
+        SELECT ZONE_ID, PROBABILITY, E_POPULATION
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
+        """
+        df = _run_query(query, params=[country, forecast_time, threshold_mm, window_h])
+        logger.info("Loaded %d rain tile impact rows (%s/%s/%smm/%sh)",
+                    len(df), country, forecast_time, threshold_mm, window_h)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying MERCATOR_TILE_PRECIP_MAT: %s", e)
+        return pd.DataFrame()
+
+
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
     """
@@ -820,6 +1455,50 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
     except Exception as e:
         logger.error("Error querying TRACK_MAT: %s", e)
         return gpd.GeoDataFrame()
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_gust_track_impacts(country: str, storm: str, forecast_date: str, gust_threshold: int) -> pd.DataFrame:
+    """
+    Real per-member GUST severity — TRACK_GUST_MAT, the gust mirror of
+    get_track_impacts/TRACK_MAT above (confirmed live: a genuinely real,
+    separately deployed table, e.g. 780 rows, real BAVI/PHL rows).
+
+    Real perf bug found+fixed here: get_track_impacts (wind's own sibling,
+    just above) already has this same @ttl_cache — this one was missing it,
+    so every gust threshold change re-queried TRACK_GUST_MAT from scratch
+    even on a cache hit for the identical (country, storm, forecast_date,
+    gust_threshold) tuple (e.g. flicking a slider back and forth).
+
+    Only ZONE_ID (member number) + SEVERITY_POPULATION are needed by this
+    app's one real caller (_build_ms_envelope_geojson's severity-by-member
+    lookup, which never reads geometry from this function at all — the
+    real envelope polygon geometry comes from get_gust_envelope_data_snowflake
+    instead) — a plain DataFrame, no WKB/GeoDataFrame parsing needed.
+
+    No vulnerability join: there is no TRACK_GUST_VULNERABILITY_MAT (confirmed
+    live — no such table exists), matching the same "no PIN/CHIN for gust"
+    pattern already established for every other gust-specific table in this
+    app (MERCATOR_TILE_GUST_MAT etc.).
+    """
+    try:
+        query = """
+        SELECT
+            ZONE_ID              AS zone_id,
+            SEVERITY_POPULATION  AS severity_population
+        FROM AOTS.TC_ECMWF.TRACK_GUST_MAT
+        WHERE COUNTRY = %s
+          AND STORM = %s
+          AND FORECAST_DATE = %s
+          AND GUST_THRESHOLD = %s
+        ORDER BY ZONE_ID
+        """
+        df = _run_query(query, params=[country, storm, forecast_date, gust_threshold])
+        logger.info("Loaded %d gust track rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, gust_threshold)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying TRACK_GUST_MAT: %s", e)
+        return pd.DataFrame()
 
 
 # =============================================================================

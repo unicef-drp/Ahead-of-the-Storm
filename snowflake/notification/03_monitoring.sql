@@ -6,7 +6,7 @@
 -- Sections:
 --   1. Delivery log         — what was sent, to how many recipients, when
 --   2. Cortex LLM usage     — token consumption per alert window
---   3. Warehouse compute    — credits consumed by SEND_NEW_STORM_ALERT()
+--   3. Warehouse compute    — credits consumed by SEND_ALERT()
 --   4. Combined cost view   — LLM + compute joined to alert log by timestamp
 --   5. Rolling totals       — spend by day / week / month
 --
@@ -66,7 +66,7 @@ ORDER BY 1 DESC;
 
 -- ==============================================================================
 -- SECTION 2: Cortex LLM usage
--- Token consumption from CORTEX.COMPLETE calls made by SEND_NEW_STORM_ALERT().
+-- Token consumption from CORTEX.COMPLETE calls made by SEND_ALERT().
 -- ACCOUNT_USAGE lag: up to 45 minutes.
 -- ==============================================================================
 
@@ -115,7 +115,7 @@ GROUP BY 1;
 
 -- ==============================================================================
 -- SECTION 3a: Warehouse compute — ACCOUNT_USAGE (45-min lag, 365-day history)
--- Finds queries belonging to SEND_NEW_STORM_ALERT() by procedure name + warehouse.
+-- Finds queries belonging to SEND_ALERT() by procedure name + warehouse.
 -- ==============================================================================
 
 SELECT
@@ -128,7 +128,7 @@ SELECT
 FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
 WHERE START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP())
   AND (
-      QUERY_TEXT ILIKE '%SEND_NEW_STORM_ALERT%'
+      QUERY_TEXT ILIKE '%SEND_ALERT%'
       OR QUERY_TEXT ILIKE '%ALERT_SENT_LOG%'
       OR QUERY_TEXT ILIKE '%AOTS_EMAIL_INTEGRATION%'
   )
@@ -155,7 +155,7 @@ FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(
 ))
 WHERE WAREHOUSE_NAME = 'AOTS_WH'
   AND (
-      QUERY_TEXT ILIKE '%SEND_NEW_STORM_ALERT%'
+      QUERY_TEXT ILIKE '%SEND_ALERT%'
       OR QUERY_TEXT ILIKE '%ALERT_SENT_LOG%'
       OR QUERY_TEXT ILIKE '%AOTS_EMAIL_INTEGRATION%'
   )

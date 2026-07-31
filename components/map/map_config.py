@@ -36,7 +36,10 @@ class MapConfig(BaseModel):
     colorscale_font_color: str = "white"
     legend_border_color: str = "#262624"
     legend_border_width: int = 1
-    center: dict = {"lon": 20.0, "lat": 15.0}
+    # lat nudged north from the true equatorial-ish midpoint (0-15 range) so
+    # the default Global zoom-2 view sits ~60S behind the footer bar instead
+    # of showing empty ocean/Antarctica edge there.
+    center: dict = {"lon": 20.0, "lat": -6.0}
     zoom: float = 2
 
 
