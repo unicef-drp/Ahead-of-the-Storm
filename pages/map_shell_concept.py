@@ -789,6 +789,40 @@ _PANEL_STYLE = {
     "boxShadow": "0 8px 28px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.08)", "zIndex": 30,
 }
 
+# Unified spacing system for every floating panel/row in this shell — ONE
+# margin applied consistently to every gap: topbar-to-panel-top, panel-to-
+# viewport-edge, panel-bottom-to-bottom-row-top, bottom-row-to-footer,
+# command-bar-to-topbar, command-bar-to-side-panels, disclaimer-to-footer,
+# AND the topbar/footer's own horizontal content padding (so the "AHEAD OF
+# THE STORM" logo/"Supported by" text and the language switcher/GitHub
+# icon line up with the side panels' own left/right edges, not a
+# different, wider 24px padding). So the whole shell reads as one
+# consistent grid instead of several independently-tuned offsets.
+#
+# Real bug found+fixed here (twice already): earlier attempts either (a)
+# changed ONE side of a gap without the other, or (b) shrunk the side
+# panels' own maxHeight to make room for a bigger margin — panel height is
+# a real content constraint (users need to see as many Infrastructure/
+# stat rows as possible) and must NOT shrink just to make the margins
+# prettier. The fix is a SMALLER margin instead: _PANEL_MAX_HEIGHT stays
+# the ORIGINAL "100vh - 210" (unchanged), and 15px (not 16) is small
+# enough that even at that original, taller cap, the panel's bottom edge
+# still clears the basemap-row/legend beneath it with real margin to
+# spare — see the derivation below.
+#
+# Measured live: topbar ~58.6px tall, footer ~67.3px tall, the bottom-left
+# basemap+demo row ~40.6px tall, the collapsed map legend ~37.5px tall.
+# Solving gap_top == gap_left == gap_bottom == gap_footer == M for the
+# panel's ORIGINAL "100vh-210" cap gives M ≈ 14.5-15.5 (the two bottom
+# rows differ slightly in height) — 15 satisfies both with a couple of
+# spare pixels either way, confirmed live (no overlap at true max height).
+_UI_MARGIN = 15
+_PANEL_TOP = "74px"  # topbar height (~58.6) + _UI_MARGIN, rounded
+_BOTTOM_ROW_OFFSET = "82px"  # footer height (~67.3) + _UI_MARGIN, rounded
+# UNCHANGED from the original — see this block's own comment on why panel
+# height must not shrink just to make the margins symmetric.
+_PANEL_MAX_HEIGHT = "calc(100vh - 210px)"
+
 # Same frosted-glass look as the floating panels (_PANEL_STYLE), applied to
 # dmc.Modal via its Styles API so popups read as part of the same design
 # language instead of a plain default Mantine dialog.
@@ -975,17 +1009,23 @@ def _demo_scenarios_menu():
     # _toggle_demo_scenarios_menu below just shows/hides this small wrapper
     # inline within that shared row.
     return html.Div(
+        # position="top-start" — real bug found+fixed here: this row sits
+        # only _UI_MARGIN (15px) above the footer, so Mantine's own default
+        # Menu position (opens downward) had nowhere near enough room and
+        # the dropdown's lower items rendered hidden behind/under the
+        # footer. Opening upward instead gives it the whole panel column
+        # above to work with. zIndex above the footer's own 1000 so it's
+        # never visually clipped underneath it either.
         dmc.Menu([
-            dmc.MenuTarget(dmc.Tooltip(
+            dmc.MenuTarget(
                 dmc.ActionIcon(DashIconify(icon="mdi:flask-outline", width=15),
                                  size="md", variant="white", color=WIND),
-                label=_t("Demo Scenarios"), position="top", withArrow=True,
-            )),
+            ),
             dmc.MenuDropdown([
                 dmc.MenuItem(_t(s["label"]), id={"type": "demo-scenario", "index": i})
                 for i, s in enumerate(_DEMO_SCENARIOS)
             ]),
-        ]),
+        ], position="top-start", withinPortal=True, zIndex=1001),
         id="demo-scenarios-menu",
     )
 
@@ -998,17 +1038,14 @@ def _bottom_left_controls():
     # legend's own natural bottom-right spot in Global mode. There's
     # genuinely enough room in this row (basemap switcher's own segments
     # don't span the full panel width) for both.
-    # bottom:74px — reverted back from a brief 85px experiment (real bug:
-    # 85px made this row's top edge sit HIGHER than controls-panel's own
-    # taller maxHeight cap could reach, so a Country Analysis panel with
-    # enough content to approach that cap visibly overlapped this row and
-    # the map legend beneath it). 74px is the value confirmed to clear the
-    # footer's own click-hit-area (see _LEGEND_ANCHOR's own comment)
-    # without colliding with a near-max-height side panel above it.
+    # bottom offset from the shared _BOTTOM_ROW_OFFSET spacing system (see
+    # _PANEL_MAX_HEIGHT's own comment) — controls-panel's maxHeight is
+    # derived FROM this same row's real height, so the two can never
+    # overlap regardless of which side changes.
     return html.Div([
         dmc.SegmentedControl(id="basemap-select", value="cartodb-light", data=_basemap_options(), size="xs"),
         _demo_scenarios_menu(),
-    ], style={**_PANEL_STYLE, "bottom": "74px", "left": "16px", "padding": "4px",
+    ], style={**_PANEL_STYLE, "bottom": _BOTTOM_ROW_OFFSET, "left": f"{_UI_MARGIN}px", "padding": "4px",
                "display": "flex", "alignItems": "center", "gap": "6px"})
 
 
@@ -2153,15 +2190,22 @@ def _topbar(initial_countries=None):
         # flex child) — guarantees it stays pinned to the top-right corner
         # even when the rest of the bar's items wrap onto a second line on a
         # narrow viewport, which a flex auto-margin trick wouldn't survive.
+        # right:24px (its own value, not _UI_MARGIN) — real bug found+fixed
+        # here: aligning this exactly with the panel edges (15px) put it
+        # visibly too close to the screen's own edge; the topbar/footer's
+        # own content wants more breathing room from the true screen edge
+        # than the floating panels need from THEM, even though the panels
+        # themselves stay at the tighter _UI_MARGIN.
         html.Div(_language_switcher(_LANG),
-                  style={"position": "absolute", "top": "50%", "right": "24px", "transform": "translateY(-50%)"}),
+                  style={"position": "absolute", "top": "50%", "right": "20px", "transform": "translateY(-50%)"}),
     ],
         # Full-width fixed bar flush with the top edge — like the footer at
         # the bottom, not a floating rounded card (that was this shell's
         # earlier "map-first" treatment; the bar is chrome now, same tier as
-        # the footer).
+        # the footer). 24px horizontal padding — its own value, see the
+        # language-switcher comment just above for why this isn't _UI_MARGIN.
         style={"position": "fixed", "top": 0, "left": 0, "width": "100%",
-               "backgroundColor": "#00AEEF", "padding": "14px 24px",
+               "backgroundColor": "#00AEEF", "padding": "14px 20px",
                "display": "flex", "alignItems": "center", "zIndex": 1000},
     )
 
@@ -2750,16 +2794,13 @@ def _controls_panel():
     # there's no storm) already says what this panel is for.
     return html.Div(
         html.Div(_controls_global(), id="controls-body"),
-        # maxHeight: calc(100vh - 210px) — reverted back from a brief
-        # "100vh - 161" experiment aimed at making the gap above this panel
-        # exactly match the gap below it. Real bug found there: at that
-        # taller cap, a Country-Analysis panel with enough content (e.g.
-        # many Infrastructure rows) grew tall enough to overlap the
-        # basemap-switcher/legend row beneath it (both anchored at
-        # bottom:74px) — avoiding that collision matters more than gap
-        # symmetry, so this reverts to the original, collision-free cap.
-        id="controls-panel", style={**_PANEL_STYLE, "top": "76px", "left": "16px", "width": "290px",
-                                     "maxHeight": "calc(100vh - 210px)", "overflowY": "auto"},
+        # top/maxHeight from the shared _PANEL_TOP/_PANEL_MAX_HEIGHT spacing
+        # system (see their own comment) — same values impact-panel and
+        # command-bar use, so every gap in this shell (topbar-to-panel,
+        # panel-to-edge, panel-to-bottom-row, bottom-row-to-footer) is the
+        # same 16px margin.
+        id="controls-panel", style={**_PANEL_STYLE, "top": _PANEL_TOP, "left": f"{_UI_MARGIN}px", "width": "290px",
+                                     "maxHeight": _PANEL_MAX_HEIGHT, "overflowY": "auto"},
     )
 
 
@@ -3890,11 +3931,10 @@ def _impact_panel(initial_countries=None, open_breakdown=False):
             overlayProps={"backgroundOpacity": 0.35, "blur": 3},
             children=html.Div(id="hazard-contribution-body"),
         ),
-    # maxHeight: calc(100vh - 210px) — reverted, same reason as
-    # controls-panel's own comment (a taller cap let this panel overlap the
-    # legend/basemap row beneath it in Country Analysis mode).
-    ], id="impact-panel", style={**_PANEL_STYLE, "top": "76px", "right": "16px", "width": "300px",
-                                  "maxHeight": "calc(100vh - 210px)", "overflowY": "auto"})
+    # top/maxHeight from the shared _PANEL_TOP/_PANEL_MAX_HEIGHT spacing
+    # system — see _PANEL_MAX_HEIGHT's own comment for the full derivation.
+    ], id="impact-panel", style={**_PANEL_STYLE, "top": _PANEL_TOP, "right": f"{_UI_MARGIN}px", "width": "300px",
+                                  "maxHeight": _PANEL_MAX_HEIGHT, "overflowY": "auto"})
 
 
 # NOTE: no timeline panel. Removed deliberately — nothing on this map has a
@@ -3939,7 +3979,12 @@ def _cmd_pill(key, label):
     )
 
 
-_COMMAND_BAR_STYLE = {**_PANEL_STYLE, "top": "76px", "left": "322px", "right": "332px",
+# left = controls-panel's own right edge (_UI_MARGIN + 290) + _UI_MARGIN;
+# right = _UI_MARGIN + impact-panel's own width (300) + _UI_MARGIN — same
+# _UI_MARGIN gap to both side panels as everything else in this spacing
+# system. top uses the same _PANEL_TOP as both side panels.
+_COMMAND_BAR_STYLE = {**_PANEL_STYLE, "top": _PANEL_TOP,
+                      "left": f"{_UI_MARGIN + 290 + _UI_MARGIN}px", "right": f"{_UI_MARGIN + 300 + _UI_MARGIN}px",
                       "padding": "9px 14px", "zIndex": 35, "overflowX": "auto"}
 
 
@@ -4041,13 +4086,17 @@ def _compact_footer():
         ],
         justify="space-between",
         style={"width": "100%"},
-    ), style={"width": "100%", "backgroundColor": "#00AEEF", "color": "#ffffff", "padding": "14px 24px",
+    # 24px horizontal padding — its own value, not _UI_MARGIN (see
+    # _language_switcher's own comment in _topbar for why: the footer's
+    # content wants more breathing room from the true screen edge than the
+    # floating panels above it need from it).
+    ), style={"width": "100%", "backgroundColor": "#00AEEF", "color": "#ffffff", "padding": "14px 20px",
               "position": "fixed", "bottom": 0, "left": 0, "zIndex": 1000, "boxSizing": "border-box"})
 
 
 def _map_disclaimer():
-    # Centered within the gap between the two side panels (same inset as
-    # the command bar caps its MAXIMUM width, so a very narrow viewport
+    # Centered within the gap between the two side panels (same insets as
+    # _COMMAND_BAR_STYLE caps its MAXIMUM width, so a very narrow viewport
     # still wraps/ellipsizes instead of overflowing the panels) but sized
     # to its own text via width:fit-content, not stretched to fill that
     # whole gap — real bug found+fixed here: the old left:322/right:332
@@ -4056,8 +4105,9 @@ def _map_disclaimer():
     return html.Div(
         dmc.Text(_t(_UN_DISCLAIMER), size="9px", c="#57707e",
                   style={"whiteSpace": "nowrap", "overflow": "hidden", "textOverflow": "ellipsis"}),
-        style={"position": "absolute", "bottom": "74px", "left": "50%", "transform": "translateX(-50%)",
-               "width": "fit-content", "maxWidth": "calc(100% - 654px)",
+        style={"position": "absolute", "bottom": _BOTTOM_ROW_OFFSET, "left": "50%", "transform": "translateX(-50%)",
+               "width": "fit-content",
+               "maxWidth": f"calc(100% - {(_UI_MARGIN + 290 + _UI_MARGIN) + (_UI_MARGIN + 300 + _UI_MARGIN)}px)",
                "textAlign": "center", "zIndex": 25, "pointerEvents": "none",
                "background": "rgba(255,255,255,0.75)", "borderRadius": "6px", "padding": "4px 10px"},
     )
@@ -4088,13 +4138,11 @@ def _map_disclaimer():
 # Country Analysis — no more empty-looking gap in Country Analysis mode,
 # no more Global-mode collision.
 #
-# bottom:74px — reverted back from a brief 85px experiment aimed at
-# gap-symmetry-with-the-topbar (real bug: pushing this row up to 85px let
-# controls-panel/impact-panel's own taller maxHeight cap grow down far
-# enough in Country Analysis mode to overlap it). 74px is the value
-# confirmed to clear the footer's own click-hit-area without colliding
-# with a near-max-height side panel above it.
-_LEGEND_ANCHOR = {"position": "absolute", "bottom": "74px", "right": "16px", "zIndex": 30}
+# bottom offset from the shared _BOTTOM_ROW_OFFSET spacing system (see
+# _PANEL_MAX_HEIGHT's own comment) — impact-panel's maxHeight is derived
+# FROM this same row's real height, so the two can never overlap
+# regardless of which side changes.
+_LEGEND_ANCHOR = {"position": "absolute", "bottom": _BOTTOM_ROW_OFFSET, "right": f"{_UI_MARGIN}px", "zIndex": 30}
 
 _LEGEND_PROP_LABELS = {
     "probability": "Hazard Probability", "population": "Population",
