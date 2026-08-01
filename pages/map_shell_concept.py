@@ -315,6 +315,19 @@ _TRIPLE_OVERLAP_PATTERN = (
 PIN_COLOR = "#7c5cbf"
 PIN_COLOR_LIGHT = "#a78bda"
 
+# Same tile_palettes.json app.py's own /map-static/tile_palettes.js route
+# serves to the browser (window._AOTS_PALETTES) — loaded here too so the map
+# legend's raster-hazard gradient swatches (_map_legend_body below) can reuse
+# the EXACT real colors MapLibre paints with, rather than a second
+# hand-copied color list that could silently drift out of sync.
+try:
+    with open(os.path.join(os.path.dirname(__file__), "..", "components", "map", "tile_palettes.json")) as _f:
+        _TILE_PALETTES_DATA = json.load(_f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    logger.error("Could not load tile_palettes.json for map legend: %s", e)
+    _TILE_PALETTES_DATA = {"palettes": {}, "prop_map": {}, "e_prop_map": {}, "in_need_map": {}}
+_AOTS_PALETTES = _TILE_PALETTES_DATA["palettes"]
+
 # ---------------------------------------------------------------------------
 # i18n — module-level current language, set once per request by layout()
 # (a function, so Dash's page router can pass ?lang=es as a kwarg) and read
@@ -421,6 +434,11 @@ _TRANSLATIONS = {
         # Impact panel
         "Impact Summary": "Resumen de Impacto",
         "Global — worldwide totals across visible hazards": "Global — totales mundiales de los peligros visibles",
+        "Global — worldwide totals across all hazards": "Global — totales mundiales combinando todos los peligros",
+        "Reflects only countries currently initialized in the database.":
+            "Solo incluye los países actualmente inicializados en la base de datos.",
+        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
+            "Ningún país inicializado está actualmente afectado. Esto no significa que no haya un impacto real: los países potencialmente afectados pueden no estar aún en la base de datos.",
         "Full Impact Breakdown": "Desglose Completo de Impacto", "Hazard Contribution": "Contribución por Peligro",
         "Alert Email": "Correo de Alerta", "Open in new tab ↗": "Abrir en nueva pestaña ↗",
         "Total: {value}": "Total: {value}",
@@ -564,6 +582,11 @@ _TRANSLATIONS = {
         "Currently tracking {names}.": "Suivi actuel : {names}.",
         "Impact Summary": "Résumé de l'impact",
         "Global — worldwide totals across visible hazards": "Mondial — totaux mondiaux des risques visibles",
+        "Global — worldwide totals across all hazards": "Mondial — totaux mondiaux combinant tous les risques",
+        "Reflects only countries currently initialized in the database.":
+            "Ne reflète que les pays actuellement initialisés dans la base de données.",
+        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
+            "Aucun pays initialisé n'est actuellement touché. Cela ne signifie pas qu'il n'y a pas d'impact réel : des pays potentiellement touchés peuvent ne pas encore figurer dans la base de données.",
         "Full Impact Breakdown": "Répartition complète de l'impact", "Hazard Contribution": "Contribution par risque",
         "Alert Email": "E-mail d'alerte", "Open in new tab ↗": "Ouvrir dans un nouvel onglet ↗",
         "Total: {value}": "Total : {value}",
@@ -696,6 +719,11 @@ _TRANSLATIONS = {
         "Currently tracking {names}.": "বর্তমানে ট্র্যাক করা হচ্ছে: {names}।",
         "Impact Summary": "প্রভাবের সারসংক্ষেপ",
         "Global — worldwide totals across visible hazards": "বৈশ্বিক — দৃশ্যমান ঝুঁকিসমূহের বিশ্বব্যাপী মোট",
+        "Global — worldwide totals across all hazards": "বৈশ্বিক — সকল ঝুঁকির সম্মিলিত বিশ্বব্যাপী মোট",
+        "Reflects only countries currently initialized in the database.":
+            "শুধুমাত্র ডেটাবেসে বর্তমানে যুক্ত দেশগুলো প্রতিফলিত করে।",
+        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
+            "যুক্ত দেশগুলোর কোনোটিই বর্তমানে প্রভাবিত নয়। এর অর্থ এই নয় যে প্রকৃত কোনো প্রভাব নেই — সম্ভাব্য প্রভাবিত দেশগুলো এখনও ডেটাবেসে যুক্ত নাও হতে পারে।",
         "Full Impact Breakdown": "সম্পূর্ণ প্রভাব বিভাজন", "Hazard Contribution": "ঝুঁকির অবদান",
         "Alert Email": "সতর্কতা ইমেইল", "Open in new tab ↗": "নতুন ট্যাবে খুলুন ↗",
         "Total: {value}": "মোট: {value}",
@@ -843,6 +871,46 @@ else:
     _DEFAULT_FORECAST_DATE = pd.Timestamp.utcnow().strftime("%Y-%m-%d")
     _DEFAULT_FORECAST_RUN = "00"
 
+# "Future" here means later than the latest REAL forecast_time in the
+# database (_LATEST_FORECAST_TIME/_DEFAULT_FORECAST_DATE+RUN above), not
+# later than wall-clock "now" — real forecast data can genuinely lag behind
+# today's actual date, so wall-clock time would be the wrong reference and
+# would incorrectly greyed out/allow the wrong runs.
+_RUN_VALUES = ["00", "06", "12", "18"]
+
+
+def _max_allowed_run_for_date(date_str):
+    """Highest run ('00'/'06'/'12'/'18') selectable for date_str without
+    going past the latest real forecast_time in the database. Returns None
+    when date_str is entirely past the latest available date (nothing on
+    it is selectable) or when there's no known latest date at all (fresh/
+    empty environment — nothing to restrict against)."""
+    if _LATEST_FORECAST_TIME is None or not date_str:
+        return _RUN_VALUES[-1]
+    if date_str < _DEFAULT_FORECAST_DATE:
+        return _RUN_VALUES[-1]
+    if date_str == _DEFAULT_FORECAST_DATE:
+        return _DEFAULT_FORECAST_RUN
+    return None
+
+
+def _time_options_for_date(date_str):
+    """topbar-time's SegmentedControl `data` — runs later than
+    _max_allowed_run_for_date(date_str) get a dimmed, non-interactive-
+    looking label (Mantine's SegmentedControl has no native per-item
+    disabled state; _guard_future_forecast_run below is what actually
+    blocks selecting one, this just makes that same boundary visible)."""
+    max_run = _max_allowed_run_for_date(date_str)
+    data = []
+    for r in _RUN_VALUES:
+        if max_run is not None and int(r) <= int(max_run):
+            data.append({"value": r, "label": f"{r}Z"})
+        else:
+            data.append({"value": r, "label": html.Span(
+                f"{r}Z", style={"opacity": 0.35, "cursor": "not-allowed"})})
+    return data
+
+
 # NOTE: the two GLOBAL, country/storm-INDEPENDENT raw hazard layers (raw
 # precip-rate raster + raw river flood-extent raster — see
 # services/tile_server.py's own "Global raw precipitation-rate endpoints"/
@@ -898,14 +966,20 @@ _DEMO_SCENARIOS = [
 
 
 def _demo_scenarios_menu():
-    # Floating, bottom-right — kept out of the top bar entirely (it was
-    # competing for space with the real controls); mirrors the basemap
-    # switcher's bottom-left floating-button treatment.
+    # Icon-only now, living inside _bottom_left_controls() right next to the
+    # basemap switcher — used to be its own separate bottom-right floating
+    # button (own dmc.Button with a text label), but that meant an entire
+    # empty-looking gap opened up at bottom-right in Country Analysis mode
+    # (where this is hidden) and it competed with the map legend for the
+    # same corner in Global mode. No id/absolute style of its own anymore;
+    # _toggle_demo_scenarios_menu below just shows/hides this small wrapper
+    # inline within that shared row.
     return html.Div(
         dmc.Menu([
-            dmc.MenuTarget(dmc.Button(
-                _t("Demo Scenarios"), size="xs", variant="white", color=WIND,
-                leftSection=DashIconify(icon="carbon:play-filled-alt", width=13),
+            dmc.MenuTarget(dmc.Tooltip(
+                dmc.ActionIcon(DashIconify(icon="mdi:flask-outline", width=15),
+                                 size="md", variant="white", color=WIND),
+                label=_t("Demo Scenarios"), position="top", withArrow=True,
             )),
             dmc.MenuDropdown([
                 dmc.MenuItem(_t(s["label"]), id={"type": "demo-scenario", "index": i})
@@ -913,8 +987,29 @@ def _demo_scenarios_menu():
             ]),
         ]),
         id="demo-scenarios-menu",
-        style={**_PANEL_STYLE, "bottom": "74px", "right": "16px", "padding": "4px"},
     )
+
+
+def _bottom_left_controls():
+    # Basemap switcher + Demo Scenarios icon share one floating row — real
+    # bug found+fixed here: giving Demo Scenarios its own separate
+    # bottom-right panel left an empty-looking gap there whenever it was
+    # hidden (Country Analysis mode) and directly collided with the map
+    # legend's own natural bottom-right spot in Global mode. There's
+    # genuinely enough room in this row (basemap switcher's own segments
+    # don't span the full panel width) for both.
+    # bottom:74px — reverted back from a brief 85px experiment (real bug:
+    # 85px made this row's top edge sit HIGHER than controls-panel's own
+    # taller maxHeight cap could reach, so a Country Analysis panel with
+    # enough content to approach that cap visibly overlapped this row and
+    # the map legend beneath it). 74px is the value confirmed to clear the
+    # footer's own click-hit-area (see _LEGEND_ANCHOR's own comment)
+    # without colliding with a near-max-height side panel above it.
+    return html.Div([
+        dmc.SegmentedControl(id="basemap-select", value="cartodb-light", data=_basemap_options(), size="xs"),
+        _demo_scenarios_menu(),
+    ], style={**_PANEL_STYLE, "bottom": "74px", "left": "16px", "padding": "4px",
+               "display": "flex", "alignItems": "center", "gap": "6px"})
 
 
 _LANGUAGES = [
@@ -1999,6 +2094,13 @@ def _topbar(initial_countries=None):
                 dmc.DatePickerInput(
                     id="topbar-date", value=_DEFAULT_FORECAST_DATE, valueFormat="D MMM YYYY", size="xs", w=130,
                     leftSection=DashIconify(icon="carbon:calendar", width=13),
+                    # Greys out/disables any calendar day later than the
+                    # latest REAL forecast_time in the database (not
+                    # wall-clock "today" — see _max_allowed_run_for_date's
+                    # own docstring) so a date with no real data can't be
+                    # picked at all, rather than silently resolving to an
+                    # empty page.
+                    maxDate=_DEFAULT_FORECAST_DATE,
                     # The top bar itself sits at zIndex 1000 (_topbar's
                     # style) so it layers over the map/panels below it — but
                     # that also meant it was cutting into this popover's own
@@ -2008,8 +2110,7 @@ def _topbar(initial_countries=None):
                 ),
                 dmc.SegmentedControl(
                     id="topbar-time", value=_DEFAULT_FORECAST_RUN,
-                    data=[{"value": "00", "label": "00Z"}, {"value": "06", "label": "06Z"},
-                          {"value": "12", "label": "12Z"}, {"value": "18", "label": "18Z"}],
+                    data=_time_options_for_date(_DEFAULT_FORECAST_DATE),
                     size="xs",
                 ),
             ], gap=8, wrap="nowrap"),
@@ -2649,6 +2750,14 @@ def _controls_panel():
     # there's no storm) already says what this panel is for.
     return html.Div(
         html.Div(_controls_global(), id="controls-body"),
+        # maxHeight: calc(100vh - 210px) — reverted back from a brief
+        # "100vh - 161" experiment aimed at making the gap above this panel
+        # exactly match the gap below it. Real bug found there: at that
+        # taller cap, a Country-Analysis panel with enough content (e.g.
+        # many Infrastructure rows) grew tall enough to overlap the
+        # basemap-switcher/legend row beneath it (both anchored at
+        # bottom:74px) — avoiding that collision matters more than gap
+        # symmetry, so this reverts to the original, collision-free cap.
         id="controls-panel", style={**_PANEL_STYLE, "top": "76px", "left": "16px", "width": "290px",
                                      "maxHeight": "calc(100vh - 210px)", "overflowY": "auto"},
     )
@@ -3454,7 +3563,7 @@ _HAZARD_MULTI_FRAC = 0.20
 _HAZARD_TRIPLE_FRAC = 0.3
 
 
-def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=None):
+def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=None, is_global=False):
     # Grouped under Tropical Cyclone/Flood (icon + bold, own subtotal) with
     # each family's actual hazards indented underneath (icon + lighter) —
     # a flat list of 4 colored dots didn't make clear that Sustained Wind
@@ -3471,6 +3580,21 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # overlap bar/caption only appears when BOTH are active.
     tc_active, flood_active = breakdown["tc_active"], breakdown["flood_active"]
     total = _parse_stat_number(value)
+    # Global scope now always forces every hazard "on" for this popup's own
+    # breakdown (_open_hazard_contribution, matching _update_impact_
+    # summary's Global branch, which is independent of the sidebar
+    # checkboxes) — so tc_active/flood_active are effectively always True
+    # here and "toggle a hazard" below never fires for Global. A genuinely
+    # zero Global total means no INITIALIZED country is impacted right now,
+    # which is a real but different fact from "nothing is toggled" and
+    # needs its own message so it isn't misread as "there's no real
+    # impact anywhere" — some potentially-affected countries may simply not
+    # be in the database yet.
+    if is_global and total == 0:
+        return html.Div(dmc.Text(
+            _t("None of the initialized countries are currently impacted. This does not mean "
+                "there is no real impact — potentially affected countries may not yet be in the database."),
+            size="sm", c="dimmed", fs="italic"))
     if not tc_active and not flood_active:
         return html.Div(dmc.Text(_t("None — toggle a hazard on the map to see impact numbers."),
                                     size="sm", c="dimmed", fs="italic"))
@@ -3766,6 +3890,9 @@ def _impact_panel(initial_countries=None, open_breakdown=False):
             overlayProps={"backgroundOpacity": 0.35, "blur": 3},
             children=html.Div(id="hazard-contribution-body"),
         ),
+    # maxHeight: calc(100vh - 210px) — reverted, same reason as
+    # controls-panel's own comment (a taller cap let this panel overlap the
+    # legend/basemap row beneath it in Country Analysis mode).
     ], id="impact-panel", style={**_PANEL_STYLE, "top": "76px", "right": "16px", "width": "300px",
                                   "maxHeight": "calc(100vh - 210px)", "overflowY": "auto"})
 
@@ -3919,22 +4046,441 @@ def _compact_footer():
 
 
 def _map_disclaimer():
-    # Spans the gap between the two side panels (same inset as the command
-    # bar) so the full sentence fits on one line instead of wrapping.
+    # Centered within the gap between the two side panels (same inset as
+    # the command bar caps its MAXIMUM width, so a very narrow viewport
+    # still wraps/ellipsizes instead of overflowing the panels) but sized
+    # to its own text via width:fit-content, not stretched to fill that
+    # whole gap — real bug found+fixed here: the old left:322/right:332
+    # pairing forced the background pill to span the entire gap width
+    # regardless of how short the sentence actually was.
     return html.Div(
         dmc.Text(_t(_UN_DISCLAIMER), size="9px", c="#57707e",
                   style={"whiteSpace": "nowrap", "overflow": "hidden", "textOverflow": "ellipsis"}),
-        style={"position": "absolute", "bottom": "74px", "left": "322px", "right": "332px",
+        style={"position": "absolute", "bottom": "74px", "left": "50%", "transform": "translateX(-50%)",
+               "width": "fit-content", "maxWidth": "calc(100% - 654px)",
                "textAlign": "center", "zIndex": 25, "pointerEvents": "none",
                "background": "rgba(255,255,255,0.75)", "borderRadius": "6px", "padding": "4px 10px"},
     )
 
 
-def _basemap_switcher():
-    return html.Div(
-        dmc.SegmentedControl(id="basemap-select", value="cartodb-light", data=_basemap_options(), size="xs"),
-        style={**_PANEL_STYLE, "bottom": "74px", "left": "16px", "padding": "4px"},
-    )
+# _basemap_switcher() used to live here as its own standalone function —
+# folded into _bottom_left_controls() (near _demo_scenarios_menu(), which
+# now shares this same row) so the basemap SegmentedControl and the Demo
+# Scenarios icon can sit in one flex row together.
+
+
+# ---------------------------------------------------------------------------
+# Map legend — real, reactive (see the removed-mockup NOTE above this
+# function for why a static one was deliberately deleted instead of kept).
+# Small pill by default (Google Maps' own weather-legend convention),
+# click-to-expand into a full card; anchored bottom-right, BELOW where the
+# Global-only Demo Scenarios menu sits (bottom:74) so it never collides with
+# it, and below where nothing else sits at all in Country Analysis mode —
+# the one corner genuinely free in both modes without conditional styling.
+# ---------------------------------------------------------------------------
+# bottom:74px (not 20px) — real bug found+fixed here (confirmed live via
+# Playwright hit-testing): the fixed, zIndex:1000 _compact_footer spans the
+# full viewport width and, despite looking empty at the far right, its own
+# invisible Group element still captures clicks there, so anything below
+# roughly bottom:60px collides with it. Demo Scenarios moved into
+# _bottom_left_controls() (an icon now, next to the basemap switcher)
+# specifically so bottom-right is free for this in BOTH modes, not just
+# Country Analysis — no more empty-looking gap in Country Analysis mode,
+# no more Global-mode collision.
+#
+# bottom:74px — reverted back from a brief 85px experiment aimed at
+# gap-symmetry-with-the-topbar (real bug: pushing this row up to 85px let
+# controls-panel/impact-panel's own taller maxHeight cap grow down far
+# enough in Country Analysis mode to overlap it). 74px is the value
+# confirmed to clear the footer's own click-hit-area without colliding
+# with a near-max-height side panel above it.
+_LEGEND_ANCHOR = {"position": "absolute", "bottom": "74px", "right": "16px", "zIndex": 30}
+
+_LEGEND_PROP_LABELS = {
+    "probability": "Hazard Probability", "population": "Population",
+    "children_total": "Children (total)", "infant_population": "Infants",
+    "school_age_population": "School-age", "adolescent_population": "Adolescents",
+    "built_surface_m2": "Built-up Area", "cci_children": "Child Climate Index",
+    "smod_class": "Settlement Type", "rwi": "Relative Wealth Index",
+    "moderate_poverty_prob": "Moderate Poverty Probability", "severe_poverty_prob": "Severe Poverty Probability",
+    "E_population": "Expected Population Impact", "E_children_total": "Expected Children Impact",
+    "E_infant_population": "Expected Infant Impact", "E_school_age_population": "Expected School-age Impact",
+    "E_adolescent_population": "Expected Adolescent Impact", "E_built_surface_m2": "Expected Built-up Impact",
+    "E_cci_children": "Expected Child Climate Index Impact",
+    "E_people_in_need": "People in Need", "E_children_in_need": "Children in Need",
+    "E_num_shelters": "Shelters at Risk", "E_num_wash": "WASH Facilities at Risk",
+    "E_num_schools": "Schools at Risk", "E_num_hcs": "Health Centers at Risk",
+}
+
+_LEGEND_HAZARD_LABELS = {"wind": "Sustained Wind", "gust": "Gust", "river": "River Flooding", "rain": "Rainfall"}
+
+
+def _legend_format_value(val, prop_key, palette):
+    if val is None:
+        return "—"
+    if palette.get("fixed_max") == 1.0 or prop_key.endswith("_prob") or prop_key == "probability":
+        return f"{val * 100:.0f}%"
+    if prop_key == "rwi":
+        return f"{val:+.2f}"
+    return _format_stat_number(val)
+
+
+def _legend_swatch_row(color, label, shape="square"):
+    swatch_style = {"width": "12px", "height": "12px", "flexShrink": 0,
+                      "background": color, "border": "1px solid rgba(0,0,0,0.1)"}
+    if shape == "circle":
+        swatch_style["borderRadius"] = "50%"
+    elif shape == "line":
+        swatch_style = {"width": "16px", "height": "3px", "flexShrink": 0, "background": color, "borderRadius": "2px"}
+    return dmc.Group([html.Span(style=swatch_style), dmc.Text(label, size="11px", c="#455a64")],
+                       gap=8, wrap="nowrap", mb=5)
+
+
+_LEGEND_LAYER_ORDER = ["wind", "gust", "river", "rain", "tracks"]
+
+
+def _legend_color_swatch(color):
+    # Compact-only — a plain color patch, deliberately with NO embedded
+    # text label (unlike _legend_swatch_row, built for the full card's
+    # stacked rows). Real bug found+fixed here: reusing _legend_swatch_row
+    # for the compact strip duplicated the hazard name (already shown as
+    # the strip's own title) right next to it, and that second copy wrapped
+    # onto 2 lines in the available width — the compact strip is supposed
+    # to stay ONE short row no matter what.
+    return html.Div(style={"height": "10px", "borderRadius": "5px", "background": color})
+
+
+def _legend_raster_info(hazard, tile_config):
+    """Info dict for hazard's ('wind'/'gust'/'river'/'rain') MapLibre
+    raster color scale, or None if that raster isn't actually visible —
+    real min/max from the SAME stats ms-tile-config-store already fetched
+    (stats_<hazard>[tile_prop]), so this never describes numbers that don't
+    match what's actually painted on the map."""
+    if not tile_config.get(f"{hazard}_visible"):
+        return None
+    prop = tile_config.get("tile_prop") or "population"
+    stats = tile_config.get(f"stats_{hazard}") or {}
+    prop_stats = stats.get(prop) or {}
+    palette = _AOTS_PALETTES.get(prop) or _AOTS_PALETTES.get("population", {"colors": ["#ffffcc", "#800026"]})
+    colors = palette.get("colors", ["#ffffcc", "#800026"])
+    min_v, max_v = prop_stats.get("min"), prop_stats.get("max")
+    prop_label = _t(_LEGEND_PROP_LABELS.get(prop, prop.replace("_", " ").title()))
+    hazard_name = _t(_LEGEND_HAZARD_LABELS[hazard])
+    return {
+        "title": f"{hazard_name} — {prop_label}",
+        # Short version for the compact strip — the full "Hazard —
+        # Property" title comfortably fits the full card's own 300px width
+        # on its own line, but not squeezed onto the same row as the bar
+        # and chevron too.
+        "compact_title": hazard_name,
+        "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
+                                 "background": f"linear-gradient(to right, {', '.join(colors)})"}),
+        "labels": (_legend_format_value(min_v, prop, palette), _legend_format_value(max_v, prop, palette)),
+        "caption": None if min_v is not None else "No real data for this exact selection yet.",
+    }
+
+
+def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global):
+    """The single shared source of "what does this layer's color mean" for
+    BOTH the always-visible compact strip and the full expanded card — one
+    definition per layer so the two views can never say something
+    different about the same layer. Returns None when `layer` isn't
+    actually active/visible right now."""
+    if layer == "tracks":
+        if not tracks_on:
+            return None
+        return {
+            "title": "Tracks",
+            "bar": html.Div([
+                _legend_swatch_row("#ff0000", _t("Control member"), shape="line"),
+                _legend_swatch_row("#1cabe2", _t("Ensemble member"), shape="line"),
+            ]),
+            # Compact strip shows ONE representative color, not both rows —
+            # the ensemble member color (the vast majority of drawn tracks,
+            # ~50 vs. 1-2 control members) — full detail (both colors) is
+            # one click away in the full card via "bar" above. A solid bar
+            # filling the available width (matching the gradient bars'
+            # own height/shape), not a short fixed-width line floating in
+            # empty space — same pill-shaped, edge-to-edge treatment
+            # Google's own compact weather-layer strip uses.
+            "compact_bar": html.Div(style={"height": "10px", "borderRadius": "5px", "background": "#1cabe2"}),
+            "labels": None, "caption": None,
+        }
+    if layer in ("wind", "gust"):
+        on = wind_on if layer == "wind" else gust_on
+        if not on:
+            return None
+        if tc_view_as == "raster":
+            return _legend_raster_info(layer, tile_config)
+        # Envelopes. Real bug found+fixed here: this used to always show
+        # the full severity gradient, even in Global mode — but
+        # _build_ms_envelope_geojson never has a country to attribute
+        # per-member population severity to there (no get_track_impacts
+        # call at all without one), so EVERY Global-mode envelope actually
+        # renders as style_envelopes' flat low-opacity fallback (WIND/GUST
+        # at ~10% fillOpacity), never the gradient. Country Analysis mode
+        # genuinely earns the gradient (some members have real severity
+        # data, some don't).
+        name = _t(_LEGEND_HAZARD_LABELS[layer])
+        if is_global:
+            color = WIND if layer == "wind" else GUST
+            return {
+                "title": f"{name} Envelope",
+                "compact_title": name,
+                "bar": _legend_swatch_row(color, name, shape="square"),
+                "compact_bar": _legend_color_swatch(color),
+                "labels": None,
+                "caption": "Flat fill only — no single country to attribute per-member impact to in Global mode.",
+            }
+        gradient = ["#FFFF00", "#8B0000"] if layer == "wind" else ["#FFF3BF", "#D9480F"]
+        return {
+            "title": f"{name} Envelope Severity",
+            "compact_title": name,
+            "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
+                                     "background": f"linear-gradient(to right, {', '.join(gradient)})"}),
+            "labels": (_t("Lower impact"), _t("Higher impact")),
+            "caption": "Color = that ensemble member's own population impact. Faint fill = no impact data for that member.",
+        }
+    if layer in ("river", "rain"):
+        on = river_on if layer == "river" else rain_on
+        return _legend_raster_info(layer, tile_config) if on else None
+    return None
+
+
+def _legend_section(title, children):
+    # Generic version for sections that don't participate in the compact
+    # strip's "one active layer" concept (Facilities — a set of point
+    # layers, not a single color-scale/gradient layer).
+    return html.Div([
+        dmc.Text(_t(title), size="10px", fw=700, c="dimmed", tt="uppercase", mb=6),
+        html.Div(children),
+    ], style={"marginBottom": "14px"})
+
+
+def _legend_section_from_info(info):
+    children = [dmc.Text(_t(info["title"]), size="10px", fw=700, c="dimmed", tt="uppercase", mb=6), info["bar"]]
+    if info["labels"]:
+        children.append(dmc.Group([
+            dmc.Text(info["labels"][0], size="9px", c="dimmed", ff="monospace"),
+            dmc.Text(info["labels"][1], size="9px", c="dimmed", ff="monospace"),
+        ], justify="space-between", mt=2))
+    if info["caption"]:
+        children.append(dmc.Text(_t(info["caption"]), size="9px", c="dimmed", fs="italic", mt=6))
+    return html.Div(children, style={"marginBottom": "14px"})
+
+
+def _legend_compact_from_info(info):
+    # No labels/caption here on purpose — the whole point of the compact
+    # strip (always visible, per user request) is staying ONE short row
+    # that never grows taller, not a second copy of the full card. Uses
+    # "compact_title"/"compact_bar" when a layer defines a shorter one
+    # (real bug found+fixed here: the full title, e.g. "Sustained Wind
+    # Envelope", truncated mid-word here, AND _legend_swatch_row's own
+    # embedded text label — meant for the full card's stacked rows —
+    # duplicated the hazard name a second time right next to it and wrapped
+    # onto 2 lines, silently growing this row's height) — falls back to
+    # "title"/"bar" for layers short enough to not need a shorter version.
+    title = info.get("compact_title", info["title"])
+    bar = info.get("compact_bar", info["bar"])
+    return dmc.Group([
+        dmc.Text(_t(title), size="11px", fw=600, c="#455a64",
+                   style={"whiteSpace": "nowrap", "flexShrink": 0}),
+        html.Div(bar, style={"flex": 1, "minWidth": "50px"}),
+    ], gap=10, wrap="nowrap", align="center", style={"width": "100%"})
+
+
+def _map_legend():
+    # Two-tier, like Google's own weather-layer legend: a compact ALWAYS-
+    # VISIBLE strip by default (real bug found+fixed: this used to require
+    # a click just to see anything at all, and separately never fired in
+    # Global mode — see _update_map_legend's own docstring) showing just
+    # the most-recently-toggled-on layer's color bar, one click (chevron)
+    # away from the full multi-layer card. Both tiers share the exact same
+    # width as the Impact Summary panel (300px, right:16px) directly above
+    # them, and the compact strip stays a single short row — no expanding
+    # in height until the user actually asks for the full card.
+    return html.Div([
+        html.Div([
+            DashIconify(icon="mdi:map-legend", width=14, color="#57707e"),
+            html.Div(id="ms-legend-compact-body", style={"flex": 1, "marginLeft": "10px", "minWidth": 0}),
+            html.Span("▾", style={"fontSize": "10px", "color": "#8ea0ab", "marginLeft": "8px"}),
+        ], id="ms-legend-collapsed", n_clicks=0,
+            style={**_PANEL_STYLE, **_LEGEND_ANCHOR, "width": "300px", "padding": "10px 14px",
+                    "cursor": "pointer", "display": "flex", "alignItems": "center", "boxSizing": "border-box"}),
+        html.Div([
+            html.Div(dmc.Group([
+                dmc.Text(_t("Legend"), fw=700, size="sm"),
+                html.Span("▴", style={"fontSize": "10px", "color": "#8ea0ab"}),
+            ], justify="space-between"), id="ms-legend-header", n_clicks=0,
+                style={"cursor": "pointer", "marginBottom": "10px"}),
+            html.Div(id="ms-legend-body"),
+        ], id="ms-legend-card", style={**_PANEL_STYLE, **_LEGEND_ANCHOR, "width": "300px",
+                                          "maxHeight": "50vh", "overflowY": "auto",
+                                          "padding": "14px 16px", "display": "none", "boxSizing": "border-box"}),
+    ])
+
+
+@callback(
+    Output("ms-legend-collapsed", "style"),
+    Output("ms-legend-card", "style"),
+    Input("ms-legend-collapsed", "n_clicks"),
+    Input("ms-legend-header", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _toggle_map_legend(_collapsed_clicks, _header_clicks):
+    # Header click always collapses back to the compact strip; clicking the
+    # strip always expands — whichever was actually clicked decides the new
+    # state (both exist in the DOM at once, one hidden via style), so
+    # callback_context.triggered_id is the reliable signal, not a stored
+    # open/closed flag.
+    expanded = dash.callback_context.triggered_id == "ms-legend-collapsed"
+    collapsed_style = {**_PANEL_STYLE, **_LEGEND_ANCHOR, "width": "300px", "padding": "10px 14px",
+                         "cursor": "pointer", "boxSizing": "border-box",
+                         "display": "none" if expanded else "flex", "alignItems": "center"}
+    card_style = {**_PANEL_STYLE, **_LEGEND_ANCHOR, "width": "300px", "maxHeight": "50vh",
+                   "overflowY": "auto", "padding": "14px 16px", "boxSizing": "border-box",
+                   "display": "block" if expanded else "none"}
+    return collapsed_style, card_style
+
+
+# Mantine's SegmentedControl/etc aside, plain checkboxes don't tell you
+# which ONE of several just changed — this is what lets the compact strip
+# show "whichever layer the user just turned on" (Google's own convention)
+# instead of an arbitrary fixed priority order. Fires on every hazard/
+# tracks checkbox everywhere on the page (both _controls_global and
+# _controls_zoom render the same ids, so this works in both modes — unlike
+# the facility checkboxes, these are never missing from the DOM).
+@callback(
+    Output("ms-legend-last-layer", "data"),
+    Input("ms-wind-on", "checked"),
+    Input("ms-gust-on", "checked"),
+    Input("ms-river-on", "checked"),
+    Input("ms-rain-on", "checked"),
+    Input("ms-tracks-on", "checked"),
+    State("ms-legend-last-layer", "data"),
+)
+def _track_last_toggled_layer(wind_on, gust_on, river_on, rain_on, tracks_on, prev):
+    id_to_layer = {"ms-wind-on": "wind", "ms-gust-on": "gust", "ms-river-on": "river",
+                    "ms-rain-on": "rain", "ms-tracks-on": "tracks"}
+    checked = {"ms-wind-on": wind_on, "ms-gust-on": gust_on, "ms-river-on": river_on,
+                "ms-rain-on": rain_on, "ms-tracks-on": tracks_on}
+    triggered = dash.callback_context.triggered_id
+    if triggered is None:
+        # Initial call — seed with whatever's already checked by default
+        # (ms-tracks-on=True out of the box), highest-priority first.
+        for layer in _LEGEND_LAYER_ORDER:
+            tid = next(k for k, v in id_to_layer.items() if v == layer)
+            if checked.get(tid):
+                return layer
+        return None
+    if checked.get(triggered):
+        return id_to_layer[triggered]
+    # The tracked layer just got switched OFF — fall back to any other
+    # still-checked layer rather than leaving the strip pointed at a layer
+    # that no longer exists on the map.
+    if id_to_layer.get(triggered) == prev:
+        for layer in _LEGEND_LAYER_ORDER:
+            tid = next(k for k, v in id_to_layer.items() if v == layer)
+            if checked.get(tid):
+                return layer
+        return None
+    return prev
+
+
+@callback(
+    Output("ms-legend-compact-body", "children"),
+    Input("ms-legend-last-layer", "data"),
+    Input("ms-tile-config-store", "data"),
+    Input("ms-wind-on", "checked"),
+    Input("ms-gust-on", "checked"),
+    Input("ms-river-on", "checked"),
+    Input("ms-rain-on", "checked"),
+    Input("ms-tracks-on", "checked"),
+    Input("tc-view-as", "value"),
+    Input("selected-country-store", "data"),
+)
+def _update_map_legend_compact(last_layer, tile_config, wind_on, gust_on, river_on, rain_on, tracks_on,
+                                  tc_view_as, countries):
+    tile_config = tile_config or {}
+    tc_view_as = tc_view_as or "envelopes"
+    is_global = not countries
+    args = (wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global)
+    info = _legend_layer_info(last_layer, *args) if last_layer else None
+    if not info:
+        # Fallback covers a timing edge case (this callback and
+        # _track_last_toggled_layer firing in a different order than
+        # expected) by just picking the first genuinely active layer.
+        for layer in _LEGEND_LAYER_ORDER:
+            info = _legend_layer_info(layer, *args)
+            if info:
+                break
+    if not info:
+        return dmc.Text(_t("No layers active"), size="11px", c="dimmed")
+    return _legend_compact_from_info(info)
+
+
+@callback(
+    Output("ms-legend-body", "children"),
+    Input("ms-tile-config-store", "data"),
+    Input("ms-wind-on", "checked"),
+    Input("ms-gust-on", "checked"),
+    Input("ms-river-on", "checked"),
+    Input("ms-rain-on", "checked"),
+    Input("ms-tracks-on", "checked"),
+    Input("tc-view-as", "value"),
+    Input("selected-country-store", "data"),
+    Input("ms-facility-visibility-store", "data"),
+)
+def _update_map_legend(tile_config, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, countries,
+                         facilities_on):
+    tile_config = tile_config or {}
+    tc_view_as = tc_view_as or "envelopes"
+    # ms-facility-visibility-store, NOT the ms-facility-{id}-on checkboxes
+    # directly — real bug found+fixed here: those checkboxes only exist in
+    # the DOM in Country Analysis mode, and a Dash callback never fires at
+    # all while any of its Inputs is missing from the layout (not just
+    # "reads as None"). Referencing them directly meant this ENTIRE
+    # callback — including the Tracks/envelope/raster sections that have
+    # nothing to do with facilities — silently never fired in Global mode
+    # (confirmed live: zero ms-legend-body update requests on a fresh
+    # Global-mode load, despite ms-tracks-on defaulting to checked=True).
+    # This store is always present (see _mirror_facility_visibility).
+    facilities_on = facilities_on or {}
+    is_global = not countries
+    sections = []
+
+    # Storm Category deliberately NOT included — real finding: _CAT_COLORS
+    # only colors the "Cat N" badge in the Active Storms side-panel list
+    # (_cat_badge/_storm_row); nothing on the MAP itself is colored by
+    # category (tracks are colored by ensemble-member type — control vs
+    # regular member — not by storm category). A map legend should only
+    # explain what's actually drawn on the map.
+    for layer in _LEGEND_LAYER_ORDER:
+        info = _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global)
+        if info:
+            sections.append(_legend_section_from_info(info))
+
+    # Facilities — real bug found+fixed here: this used to show
+    # unconditionally, but each facility type only actually renders on the
+    # map while its OWN ms-facility-{id}-on checkbox is checked (see
+    # _register_ms_facility_layer's clientside fetch, gated on exactly that
+    # checkbox — all four default unchecked/off). Only include the ones
+    # genuinely on screen, and drop the whole section when none are.
+    facility_rows = []
+    if facilities_on.get("schools"):
+        facility_rows.append(_legend_swatch_row("#ADD8E6", _t("Schools"), shape="circle"))
+    if facilities_on.get("health"):
+        facility_rows.append(_legend_swatch_row("#90EE90", _t("Health Centers"), shape="circle"))
+    if facilities_on.get("shelters"):
+        facility_rows.append(_legend_swatch_row("#E91E8C", _t("Shelters"), shape="circle"))
+    if facilities_on.get("wash"):
+        facility_rows.append(_legend_swatch_row("#40E0D0", _t("WASH Facilities"), shape="circle"))
+    if facility_rows:
+        facility_rows.append(dmc.Text(_t("Darker red = higher hazard probability at that facility."),
+                                        size="9px", c="dimmed", fs="italic", mt=2))
+        sections.append(_legend_section("Facilities", facility_rows))
+
+    return sections
 
 
 # NOTE: the two GLOBAL, country/storm-INDEPENDENT raw hazard layers (raw
@@ -4179,6 +4725,20 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         # current comment) — the loading badge no longer depends on this
         # store's position in the tree at all.
         dcc.Store(id="ms-tile-config-store", data={}),
+        # Mirrors the 4 ms-facility-{id}-on checkboxes (see
+        # _mirror_facility_visibility below) — always present regardless of
+        # mode, unlike the checkboxes themselves, which only exist in the
+        # DOM in Country Analysis mode (_controls_zoom's Infrastructure
+        # section; _controls_global has no Infrastructure section at all).
+        # _update_map_legend reads THIS store, not the checkboxes directly,
+        # for exactly that reason — see that callback's own docstring.
+        dcc.Store(id="ms-facility-visibility-store",
+                   data={"schools": False, "health": False, "shelters": False, "wash": False}),
+        # Which hazard/tracks layer to show in the compact legend strip —
+        # written by _track_last_toggled_layer, whichever checkbox the user
+        # most recently turned ON (falls back to any other still-checked
+        # layer if that one gets turned back off). None = nothing active.
+        dcc.Store(id="ms-legend-last-layer", data=None),
         # Written only by a clientside debounce wrapper around the 4 hazard
         # sliders (~200ms after the drag settles) — NOT a real Output of any
         # Python callback despite being declared as one (always returns
@@ -4230,8 +4790,8 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         _controls_panel(),
         _command_bar(),
         _impact_panel(initial_countries=initial_countries, open_breakdown=should_open_breakdown),
-        _basemap_switcher(),
-        _demo_scenarios_menu(),
+        _bottom_left_controls(),
+        _map_legend(),
         _map_disclaimer(),
         _alert_email_modal(),
         _compact_footer(),
@@ -4309,14 +4869,11 @@ def _toggle_command_bar(mode):
     return _COMMAND_BAR_STYLE if mode == "zoom" else {**_COMMAND_BAR_STYLE, "display": "none"}
 
 
-@callback(Output("demo-scenarios-menu", "style"), Input("topbar-mode", "value"))
-def _toggle_demo_scenarios_menu(mode):
-    # Global-only — the BAVI/flood preset jumps into Global mode itself, but
-    # once already in Country Analysis (from the MELISSA preset, a real
-    # storm-row click, etc.) this just competed for the same bottom-right
-    # corner as nothing in particular.
-    base = {**_PANEL_STYLE, "bottom": "74px", "right": "16px", "padding": "4px"}
-    return base if mode != "zoom" else {**base, "display": "none"}
+# No mode-based show/hide anymore — Demo Scenarios now stays visible in
+# BOTH Global and Country Analysis mode (used to hide in Country Analysis,
+# which just left an inconsistent-looking gap in that row; every preset
+# already sets its own mode via _apply_demo_scenario regardless of where
+# it's clicked from, so there's no correctness reason to hide it either).
 
 
 @callback(
@@ -4845,6 +5402,66 @@ def _clear_countries_on_global(mode):
     return dash.no_update, dash.no_update
 
 
+# Real bug found+fixed here: _update_map_legend used to read the 4
+# ms-facility-{id}-on checkboxes directly as Inputs — but those only exist
+# in the DOM in Country Analysis mode (_controls_zoom's Infrastructure
+# section), and Dash never fires a callback at all while ANY of its Inputs
+# is missing from the current layout, not just returns None for that one
+# value. Confirmed live: this silently broke the legend in EVERY Global-
+# mode render, including its Tracks/envelope/raster sections that have
+# nothing to do with facilities — zero ms-legend-body update requests ever
+# fired there. Mirroring into this always-present store (only fires when
+# the checkboxes DO exist, i.e. Country Analysis mode) decouples the two.
+@callback(
+    Output("ms-facility-visibility-store", "data"),
+    Input("ms-facility-schools-on", "checked"),
+    Input("ms-facility-health-on", "checked"),
+    Input("ms-facility-shelters-on", "checked"),
+    Input("ms-facility-wash-on", "checked"),
+)
+def _mirror_facility_visibility(schools_on, health_on, shelters_on, wash_on):
+    return {"schools": bool(schools_on), "health": bool(health_on),
+            "shelters": bool(shelters_on), "wash": bool(wash_on)}
+
+
+# The mirror callback above can't reset itself to all-False on switching to
+# Global (its own Inputs no longer exist there to fire it) — this is what
+# keeps a facility checked before leaving Country Analysis from staying
+# "on" in the store (and therefore in the legend) after switching to Global,
+# where nothing about it is even shown.
+@callback(
+    Output("ms-facility-visibility-store", "data", allow_duplicate=True),
+    Input("topbar-mode", "value"),
+    prevent_initial_call=True,
+)
+def _reset_facility_visibility_on_global(mode):
+    if mode == "global":
+        return {"schools": False, "health": False, "shelters": False, "wash": False}
+    return dash.no_update
+
+
+# Mantine's SegmentedControl has no native per-item disabled state, so
+# _time_options_for_date's dimmed labels above are cosmetic only — this is
+# what actually blocks a future run from sticking. Fires on the date
+# changing (rebuilds which runs are dimmed for the new date, and snaps the
+# value down if it's now past the new date's own limit) AND on the run
+# itself changing (covers a user managing to click a dimmed segment
+# directly, snapping straight back to the max allowed run).
+@callback(
+    Output("topbar-time", "data"),
+    Output("topbar-time", "value"),
+    Input("topbar-date", "value"),
+    Input("topbar-time", "value"),
+    prevent_initial_call=True,
+)
+def _guard_future_forecast_run(date, run):
+    data = _time_options_for_date(date)
+    max_run = _max_allowed_run_for_date(date)
+    if max_run is not None and run is not None and int(run) > int(max_run):
+        return data, max_run
+    return data, dash.no_update
+
+
 @callback(
     Output("impact-body", "children"),
     Output("impact-subtitle", "children"),
@@ -4883,23 +5500,54 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
     influencing_factor = influencing_factor or "none"
     if not countries:
         # Global: real worldwide total — sum of every country's own real
-        # wind-based impact (_combined_stats, same combination already used
-        # for multi-country Country Analysis), across every country any
-        # REAL, currently-impactful storm affects (_resolve_storms_for_date,
-        # impact-gated — correct here, unlike get_track_ids_for_date's own
-        # track-existence-only check used for the header dot above).
-        # Replaces the old _DEFAULT_STATS mock (a fixed hardcoded number,
-        # never actually reflecting which storms are real on the selected
-        # date) with a genuinely zero total on a real quiet day, rather than
-        # a fake nonzero placeholder. Wind-only (hz omitted, see
-        # _get_country_stats's own default) — Global mode has no per-country
-        # hazard toggle to combine gust/river/rain against here, unlike
-        # Country Analysis's own hz-aware call sites below.
+        # combined-hazard impact (_combined_stats, same combination already
+        # used for multi-country Country Analysis), across every country
+        # any REAL, currently-impactful storm affects (_resolve_storms_for_
+        # date, impact-gated — correct here, unlike get_track_ids_for_
+        # date's own track-existence-only check used for the header dot
+        # above). Replaces the old _DEFAULT_STATS mock (a fixed hardcoded
+        # number) with a genuinely zero total on a real quiet day.
+        #
+        # Real behavior change here: this used to be wind-only AND reactive
+        # to the sidebar's wind_on/wind_idx (the header even said "across
+        # VISIBLE hazards") — but Global mode's checkboxes/sliders are a map-
+        # display concern (which layers paint on the map), not a "what
+        # counts toward the worldwide total" concern. Global's own total is
+        # now always the real combination of EVERY hazard (wind+gust+river+
+        # rain) at each hazard's own default severity tier, fully
+        # independent of whatever's currently toggled/scrubbed on the map —
+        # matches Country Analysis's single-country/combined blocks in
+        # spirit (a real multi-hazard total) without depending on this
+        # page's map-display selection at all. Country Analysis mode below
+        # is untouched — it still reacts to wind_on/gust_on/.../each
+        # hazard's own slider via the selection-driven `hz` computed above.
         all_storms = _resolve_storms_for_date(date, run)
         all_country_names = sorted({c for s in all_storms for c in s["countries"]})
-        global_stats = _combined_stats(all_country_names, date=date, run=run, wind_kt=wind_kt)
-        return (_stat_grid(global_stats, scope="global"),
-                 _t("Global — worldwide totals across visible hazards"))
+        global_hz = _build_hz(True, True, True, True)
+        global_stats = _combined_stats(all_country_names, date=date, run=run,
+                                         wind_kt=global_hz["wind_kt"], hz=global_hz)
+        # impact-subtitle itself is a dmc.Text (renders a <p>) — its own
+        # "component" prop must stay untouched (setting component="div"
+        # here crashed a Mantine clientside prop-transform on page load),
+        # but plain children (Span/Br/Div) render into it fine. A plain
+        # html.Div pill instead of dmc.Badge — Badge is built for short,
+        # single-line labels (fixed line-height/overflow rules baked into
+        # its own CSS class) and fighting that with inline style overrides
+        # still rendered as an edge-to-edge rectangle, not a contained
+        # pill. "width: fit-content" is what actually keeps it hugging its
+        # own text instead of stretching to the panel's full width.
+        subtitle = [
+            html.Span(_t("Global — worldwide totals across all hazards")),
+            html.Br(),
+            html.Div(_t("Reflects only countries currently initialized in the database."),
+                       style={"marginTop": "6px", "display": "inline-block", "width": "fit-content",
+                               "maxWidth": "100%", "boxSizing": "border-box",
+                               "padding": "4px 10px", "borderRadius": "8px",
+                               "background": "#fff0f0", "color": "#c92a2a",
+                               "fontSize": "11px", "fontWeight": 500, "fontStyle": "normal",
+                               "lineHeight": 1.4, "whiteSpace": "normal"}),
+        ]
+        return _stat_grid(global_stats, scope="global"), subtitle
 
     compare_member = _WORST_MEMBER_BY_FACTOR.get(influencing_factor)
 
@@ -5089,19 +5737,31 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
         return dash.no_update, dash.no_update, dash.no_update
     triggered = dash.callback_context.triggered_id
     metric, scope = triggered["metric"], triggered["scope"]
-    breakdown = _hazard_breakdown(wind_on, river_on, rain_on, surge_on)
+    # Real bug found+fixed here: Global's own Impact Summary total is now
+    # ALWAYS the real combination of every hazard (_update_impact_summary's
+    # Global branch, independent of the sidebar checkboxes) — but this
+    # popup's breakdown still read the LIVE checkbox state regardless of
+    # scope, so clicking a Global stat while every checkbox happened to be
+    # unchecked showed "None — toggle a hazard..." even though the number
+    # just clicked came from a real all-hazard total. Global scope forces
+    # the same all-hazards-on view Global's own total already uses; Country
+    # Analysis scopes (single-country/combined) are untouched — those
+    # totals genuinely still depend on the checkboxes.
+    is_global = (scope == "global")
+    breakdown = _hazard_breakdown(True, True, True, surge_on) if is_global else _hazard_breakdown(wind_on, river_on, rain_on, surge_on)
     # topbar-date/topbar-time are now States too — this popup previously
     # always resolved against the frozen "active right now" storm/50kt
     # default, which could silently disagree with the tile that was clicked
     # to open it (see _resolve_stat_value's own docstring).
     wind_kt = _resolve_wind_kt(wind_idx)
-    hz = _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window)
+    hz = _build_hz(True, True, True, True) if is_global else \
+        _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window)
     value = _resolve_stat_value(metric, scope, countries, scale=breakdown["scale"], date=date, run=run, wind_kt=wind_kt, hz=hz)
     title = f"{_t(metric)} — {_t('Combined')}" if scope == "combined" else (
         f"{_t(metric)} — {_t(scope)}" if scope != "global" else _t(metric))
     hazard_idx = {"Sustained Wind": wind_idx, "River Flooding": river_idx,
                    "Rainfall": rain_idx, "Storm Surge": surge_idx}
-    return True, title, _hazard_contribution_content(value, breakdown, hazard_idx=hazard_idx, rain_window=rain_window)
+    return True, title, _hazard_contribution_content(value, breakdown, hazard_idx=hazard_idx, rain_window=rain_window, is_global=is_global)
 
 
 @callback(
