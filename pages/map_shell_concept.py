@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -188,6 +189,7 @@ def _category_label_from_kt(max_kt):
     return label
 
 
+@ttl_cache(ttl_seconds=900, maxsize=256)
 def _ensemble_max_kt(storm_name, forecast_time_str):
     """Real max wind speed (kt) across ALL ensemble members — worst-case/
     upper-bound statistic (can be driven by a single outlier member; see
@@ -195,7 +197,14 @@ def _ensemble_max_kt(storm_name, forecast_time_str):
     where this differs a lot from a single-member or median reading).
 
     Returns None if TC_TRACKS has no rows at all for this storm/forecast.
-    """
+
+    Was previously uncached — this is a live per-storm/forecast_time query
+    called once per country from _resolve_storm_for_country, which
+    _fetch_real_combined_tile_totals calls, which in turn gets invoked up to
+    ~20x per single Global Hazard Contribution popup open (_resolve_stat_
+    value's global branch calls _combined_stats + _combined_in_need_total
+    twice, each iterating every country) — the dominant cost behind popups
+    taking 6-8s to open."""
     try:
         conn = get_snowflake_connection()
         df = pd.read_sql(
@@ -398,6 +407,18 @@ _TRANSLATIONS = {
         "Envelopes": "Envolventes", "Probability Raster": "Ráster de Probabilidad",
         "Mean": "Media", "Probability": "Probabilidad",
         "River Flooding": "Inundación Fluvial", "Rainfall": "Precipitación", "Proxies": "Aproximaciones",
+        # Map legend
+        "Legend": "Leyenda", "No layers active": "Ninguna capa activa", "Tracks": "Trayectorias",
+        "Control member": "Miembro de control", "Ensemble member": "Miembro del conjunto",
+        "Lower impact": "Menor impacto", "Higher impact": "Mayor impacto",
+        "Intensity": "Intensidad", "Raw global layer": "Capa global cruda",
+        "Source: {source}": "Fuente: {source}",
+        "Facilities": "Instalaciones",
+        "Darker red = higher hazard probability at that facility.": "Rojo más oscuro = mayor probabilidad de riesgo en esa instalación.",
+        "Flat fill only — no single country to attribute per-member impact to in Global mode.":
+            "Relleno plano únicamente — no hay un solo país al que atribuir el impacto por miembro en modo Global.",
+        "No real data for this exact selection yet.": "Aún no hay datos reales para esta selección exacta.",
+        "10% of members": "10% de los miembros", "≥80% of members": "≥80% de los miembros",
         "Coming Soon": "Próximamente",
         "No real forecast data available for this country.": "No hay datos reales de pronóstico disponibles para este país.",
         "No real forecast for this exact date/time (raw layer).": "No hay pronóstico real para esta fecha/hora exacta (capa cruda).",
@@ -475,6 +496,7 @@ _TRANSLATIONS = {
         "1-in-2-year flood": "Inundación de 1 en 2 años", "1-in-5-year flood": "Inundación de 1 en 5 años",
         "1-in-10-year flood": "Inundación de 1 en 10 años", "1-in-20-year flood": "Inundación de 1 en 20 años",
         "1-in-50-year flood": "Inundación de 1 en 50 años", "1-in-100-year flood": "Inundación de 1 en 100 años",
+        "(not natively computed — RP10 used as an upper-bound estimate)": "(no calculado de forma nativa — RP10 usado como estimación de límite superior)",
         # Rain tiers
         "Moderate rain": "Lluvia Moderada", "Heavy rain": "Lluvia Fuerte", "Extreme rain": "Lluvia Extrema",
         # Storm Surge (placeholder hazard + tiers)
@@ -549,6 +571,18 @@ _TRANSLATIONS = {
         "Envelopes": "Enveloppes", "Probability Raster": "Raster de probabilité",
         "Mean": "Moyenne", "Probability": "Probabilité",
         "River Flooding": "Inondation fluviale", "Rainfall": "Précipitations", "Proxies": "Approximations",
+        # Map legend
+        "Legend": "Légende", "No layers active": "Aucune couche active", "Tracks": "Trajectoires",
+        "Control member": "Membre de contrôle", "Ensemble member": "Membre de l'ensemble",
+        "Lower impact": "Impact plus faible", "Higher impact": "Impact plus élevé",
+        "Intensity": "Intensité", "Raw global layer": "Couche brute globale",
+        "Source: {source}": "Source : {source}",
+        "Facilities": "Installations",
+        "Darker red = higher hazard probability at that facility.": "Rouge plus foncé = probabilité de risque plus élevée pour cette installation.",
+        "Flat fill only — no single country to attribute per-member impact to in Global mode.":
+            "Remplissage uni uniquement — aucun pays unique auquel attribuer l'impact par membre en mode Global.",
+        "No real data for this exact selection yet.": "Aucune donnée réelle pour cette sélection exacte pour le moment.",
+        "10% of members": "10 % des membres", "≥80% of members": "≥80 % des membres",
         "Coming Soon": "Bientôt disponible",
         "No real forecast data available for this country.": "Aucune donnée de prévision réelle disponible pour ce pays.",
         "No real forecast for this exact date/time (raw layer).": "Aucune prévision réelle pour cette date/heure exacte (couche brute).",
@@ -619,6 +653,7 @@ _TRANSLATIONS = {
         "1-in-2-year flood": "Crue de type 1 sur 2 ans", "1-in-5-year flood": "Crue de type 1 sur 5 ans",
         "1-in-10-year flood": "Crue de type 1 sur 10 ans", "1-in-20-year flood": "Crue de type 1 sur 20 ans",
         "1-in-50-year flood": "Crue de type 1 sur 50 ans", "1-in-100-year flood": "Crue de type 1 sur 100 ans",
+        "(not natively computed — RP10 used as an upper-bound estimate)": "(non calculé nativement — RP10 utilisé comme estimation de limite supérieure)",
         "Moderate rain": "Pluie modérée", "Heavy rain": "Pluie forte", "Extreme rain": "Pluie extrême",
         "Storm Surge": "Onde de Tempête",
         "Minor surge (0.3–1m)": "Onde mineure (0,3–1m)", "Moderate surge (1–2m)": "Onde modérée (1–2m)",
@@ -686,6 +721,18 @@ _TRANSLATIONS = {
         "Envelopes": "খাম", "Probability Raster": "সম্ভাব্যতা র‍্যাস্টার",
         "Mean": "গড়", "Probability": "সম্ভাব্যতা",
         "River Flooding": "নদীর বন্যা", "Rainfall": "বৃষ্টিপাত", "Proxies": "প্রক্সি",
+        # Map legend
+        "Legend": "সূচক", "No layers active": "কোনো স্তর সক্রিয় নেই", "Tracks": "গতিপথ",
+        "Control member": "কন্ট্রোল সদস্য", "Ensemble member": "এনসেম্বল সদস্য",
+        "Lower impact": "কম প্রভাব", "Higher impact": "বেশি প্রভাব",
+        "Intensity": "তীব্রতা", "Raw global layer": "কাঁচা বৈশ্বিক স্তর",
+        "Source: {source}": "উৎস: {source}",
+        "Facilities": "সুবিধাসমূহ",
+        "Darker red = higher hazard probability at that facility.": "গাঢ় লাল = সেই সুবিধায় ঝুঁকির সম্ভাবনা বেশি।",
+        "Flat fill only — no single country to attribute per-member impact to in Global mode.":
+            "শুধু সমতল ভরাট — গ্লোবাল মোডে প্রতি-সদস্য প্রভাব দায়ী করার মতো কোনো একক দেশ নেই।",
+        "No real data for this exact selection yet.": "এই নির্দিষ্ট নির্বাচনের জন্য এখনও কোনো প্রকৃত তথ্য নেই।",
+        "10% of members": "১০% সদস্য", "≥80% of members": "≥৮০% সদস্য",
         "Coming Soon": "শীঘ্রই আসছে",
         "No real forecast data available for this country.": "এই দেশের জন্য কোনো প্রকৃত পূর্বাভাস তথ্য উপলব্ধ নেই।",
         "No real forecast for this exact date/time (raw layer).": "এই সঠিক তারিখ/সময়ের জন্য কোনো প্রকৃত পূর্বাভাস নেই (কাঁচা স্তর)।",
@@ -756,6 +803,7 @@ _TRANSLATIONS = {
         "1-in-2-year flood": "১-এ-২-বছরের বন্যা", "1-in-5-year flood": "১-এ-৫-বছরের বন্যা",
         "1-in-10-year flood": "১-এ-১০-বছরের বন্যা", "1-in-20-year flood": "১-এ-২০-বছরের বন্যা",
         "1-in-50-year flood": "১-এ-৫০-বছরের বন্যা", "1-in-100-year flood": "১-এ-১০০-বছরের বন্যা",
+        "(not natively computed — RP10 used as an upper-bound estimate)": "(স্বাভাবিকভাবে গণনা করা হয়নি — ঊর্ধ্বসীমা হিসেবে RP10 ব্যবহার করে)",
         "Moderate rain": "মাঝারি বৃষ্টি", "Heavy rain": "ভারী বৃষ্টি", "Extreme rain": "চরম বৃষ্টি",
         "Storm Surge": "ঝড়ের জলোচ্ছ্বাস",
         "Minor surge (0.3–1m)": "সামান্য জলোচ্ছ্বাস (০.৩–১মি)", "Moderate surge (1–2m)": "মাঝারি জলোচ্ছ্বাস (১–২মি)",
@@ -855,6 +903,15 @@ _UN_DISCLAIMER = (
     "The boundaries and names shown and the designations used on this map "
     "do not imply official endorsement or acceptance by the United Nations."
 )
+
+# 1x1 transparent GIF, inlined as a data: URI — used as the `url` for every
+# opacity=0 Leaflet base layer below (MapLibre renders the real, visible
+# basemap; these exist only to drive dl.LayersControl's selection UI/
+# attribution text and fire baselayerchange). dl.TileLayer's own default
+# `url` is the real OpenStreetMap tile server, so leaving it unset meant the
+# currently-selected invisible layer silently fetched real (never-shown) OSM
+# tiles on every pan/zoom — this constant needs no network request at all.
+_BLANK_TILE_URL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 # Same 4 named options as the real app's dl.LayersControl (layouts/panels.py):
 # CartoDB Light (default), CartoDB Dark, Satellite, OpenStreetMap/Mapbox
@@ -980,22 +1037,29 @@ _CAT_COLORS = {
 # Quick-jump presets for testing — sets date, time, country selection, and
 # mode all at once. Both real, verified via a live Snowflake query (not
 # illustrative/mock): MELISSA/Jamaica is a genuine single-storm, wind-only
-# case (17,920 real tiles); BAVI/PHL 2026-07-02 is the one date with real
-# Wind, River, AND Rainfall data all at once, for exercising the flood
-# hazard layers specifically. Kept to just these two rather than the old
-# 5-entry mock list, since every one of those referenced dates/storms that
-# don't actually correspond to real data anymore.
+# case (17,920 real tiles); the BAVI period's own 2026-07-02 06Z cycle is the
+# one date/run with real River AND Rainfall data at once (River resolves by
+# calendar date alone so any run works; 06Z is Rainfall's own real cycle for
+# this date — see get_precip_forecast_time_near/
+# get_river_extent_forecast_time_for_date in snowflake_utils.py). Kept to
+# just these two rather than the old 5-entry mock list, since every one of
+# those referenced dates/storms that don't actually correspond to real data
+# anymore.
 _DEMO_SCENARIOS = [
     {"label": "MELISSA — Jamaica (28 Oct 2025, 00Z)", "date": "2025-10-28", "time": "00",
      "countries": ["Jamaica"], "mode": "zoom"},
-    # Also the one real date with Gust data (MERCATOR_TILE_GUST_MAT has
-    # real, non-empty rows ONLY for BAVI/PHL, both 00Z and 06Z on this exact
-    # date — confirmed live) — Country-Analysis-only, no Global-mode
-    # rendering path exists for Gust at all (unlike Wind, which now has real
-    # Global-mode envelope polygons; Gust has no equivalent envelope data
-    # source, see ms-gust-on's own Global-mode-disabled comment).
-    {"label": "BAVI — Philippines, flood+gust test (2 Jul 2026, 00Z)", "date": "2026-07-02", "time": "00",
-     "countries": ["Philippines"], "mode": "zoom"},
+    # Global mode (countries=[]), not zoomed into a country — replaces the
+    # prior BAVI/Philippines zoom+Gust preset per explicit user request, to
+    # exercise the two GLOBAL, country/storm-independent raw hazard layers
+    # (raw river flood-extent + raw precip-rate rasters — see
+    # _build_global_raw_config's own header comment) instead of a
+    # country-scoped Gust demo. River's real forecast_time resolves by
+    # calendar date alone (any run matches); 06Z specifically is Rainfall's
+    # own real cycle for this date (confirmed live), so this is the one
+    # date/run combination where both raw flood layers show real data at
+    # once in Global mode.
+    {"label": "BAVI period — Global flood hazards preview (2 Jul 2026, 06Z)", "date": "2026-07-02", "time": "06",
+     "countries": [], "mode": "global"},
 ]
 
 
@@ -1335,6 +1399,29 @@ def _wind_only_hz(wind_kt=None):
             "wind_kt": wind_kt, "gust_kt": None, "rp_tier": None, "rain_mm": None, "rain_window": None}
 
 
+def _global_flood_availability(date, run):
+    """Real per-date River/Rain availability for Global scope — every
+    country with ANY real impact data at the resolved topbar date/run
+    (_resolve_storms_for_date), checked against get_latest_river_forecast_
+    time/get_latest_rain_forecast_time DATE-MATCHED to this exact forecast
+    cycle (not just "does this country have river/rain data from ANY date",
+    which is all _fetch_real_combined_tile_totals's own truthiness check
+    verifies on its own — forcing river_on/rain_on True regardless of this
+    availability risked silently merging in a completely different date's
+    river/rain rows for a country that happens to have some, via the outer-
+    join + row-wise MAX in _fetch_real_combined_tile_totals). Returns
+    (all_country_names, river_avail, rain_avail) — shared by both Global's
+    own Impact Summary total and the Hazard Contribution popup so they never
+    disagree on what's real for a given date."""
+    all_storms = _resolve_storms_for_date(date, run)
+    all_country_names = sorted({c for s in all_storms for c in s["countries"]})
+    mat_date = _mat_forecast_date(date, run)
+    codes = [c for c in (_NAME_TO_CODE.get(c) for c in all_country_names) if c]
+    river_avail = any(get_latest_river_forecast_time(c) == mat_date for c in codes)
+    rain_avail = any(get_latest_rain_forecast_time(c) == mat_date for c in codes)
+    return all_country_names, river_avail, rain_avail
+
+
 # Common exposure-column name set every hazard's own tile dataframe gets
 # normalized/renamed into (see _norm_hazard_tile_df) before being merged in
 # _fetch_real_combined_tile_totals — lets wind/gust/river/rain dataframes
@@ -1362,6 +1449,29 @@ def _norm_hazard_tile_df(df):
 
 
 def _fetch_real_combined_tile_totals(country, date=None, run=None, hz=None):
+    """Cached entry point for _fetch_real_combined_tile_totals_impl below.
+
+    `hz` is a plain dict, not hashable, so it can't be passed straight
+    through @ttl_cache — converted here to a sorted tuple-of-items key
+    instead. This closes a real N+1 hotspot found in the 2026-08 performance
+    audit: a single Global Hazard Contribution popup open calls this
+    function (via _combined_stats + _combined_in_need_total, each called
+    twice — once for people, once for children) up to ~5x PER COUNTRY, and
+    previously every one of those calls redid the full outer-join/row-wise-
+    MAX pandas merge from scratch even when every underlying Snowflake query
+    it depends on was already warm in cache.
+    """
+    hz = hz or _wind_only_hz()
+    hz_key = tuple(sorted(hz.items()))
+    return _fetch_real_combined_tile_totals_impl(country, date, run, hz_key)
+
+
+@ttl_cache(ttl_seconds=900, maxsize=512)
+def _fetch_real_combined_tile_totals_impl(country, date, run, hz_key):
+    return _fetch_real_combined_tile_totals_uncached(country, date, run, dict(hz_key))
+
+
+def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=None):
     """Real per-country 'at risk' aggregates COMBINED across every ACTIVE
     hazard (Wind/Gust/River/Rain — Storm Surge has no real backend anywhere,
     see ms-surge-on's own comment, and never contributes here) — the real
@@ -1401,7 +1511,6 @@ def _fetch_real_combined_tile_totals(country, date=None, run=None, hz=None):
     convention as before) when no hazard is active, or none of the active
     hazards resolve to any real data for this country/date.
     """
-    hz = hz or _wind_only_hz()
     code = _NAME_TO_CODE.get(country)
     if not code:
         return None
@@ -2273,6 +2382,72 @@ def _active_storms_section(countries=None, date=None, run=None):
 
 
 
+# Real, verified provenance for every toggleable map layer (not guessed —
+# see each entry's own citation). Proper-noun product/organization names are
+# NOT translated (same convention as this file's numeric legend values):
+# only the "Source: " prefix passes through _t().
+#   - Storm Tracks/Sustained Wind: ECMWF tropical cyclone ensemble track
+#     forecasts, BUFR format, via ECMWF Open Data (Ahead-of-the-Storm-
+#     ORCHESTRATION/04_data/04_tc_ecmwf_tables.sql:14, 42-46 — 51 members +
+#     control, NOT TIGGE).
+#   - Gust: same ECMWF ensemble, 10m wind gust (10fg) field
+#     (.../11_tc_gust_envelope_tables.sql:17-19).
+#   - River Flooding: GloFAS v4.0 ensemble forecast (Copernicus CEMS)
+#     matched against JRC's Global River Flood Hazard Maps v2.1
+#     (.../10_glofas_tables.sql:12,45-46; TC-ECMWF-Forecast-Pipeline/
+#     README.md:254-256).
+#   - Rainfall: same ECMWF ensemble, total precipitation (tp) field
+#     (.../09_met_forecasts_table.sql:19-20,24-27).
+#   - Storm Surge: no real pipeline exists yet (see this hazard's own
+#     "Coming Soon" badge) — no source to cite.
+#   - Schools: UNICEF Giga school-location API (Ahead-of-the-Storm-
+#     DATAPIPELINE/impact_analysis.py:728,76; custom_data/README.md:32).
+#   - Health Centers: HealthSites.io (impact_analysis.py:655,269;
+#     custom_data/README.md:94).
+#   - Shelters: OpenStreetMap, social_facility=shelter tag
+#     (impact_analysis.py:766,788-790; custom_data/README.md:34,113).
+#   - WASH: OpenStreetMap, humanitarian WASH tags (impact_analysis.py:320;
+#     custom_data/README.md:35,139).
+_LAYER_DATA_SOURCES = {
+    "tracks": "ECMWF ensemble tropical cyclone forecast (51 members + control), ECMWF Open Data",
+    "wind": "ECMWF ensemble tropical cyclone forecast (51 members + control), ECMWF Open Data",
+    "gust": "ECMWF ensemble forecast, 10m wind gust (10fg field)",
+    "river": "GloFAS v4.0 ensemble forecast (Copernicus CEMS) x JRC Global River Flood Hazard Maps v2.1",
+    "rain": "ECMWF ensemble forecast, total precipitation (tp field)",
+    "surge": "No real data pipeline yet — preview only",
+    "schools": "UNICEF Giga school-location API",
+    "health": "HealthSites.io",
+    "shelters": "OpenStreetMap (social_facility=shelter tag)",
+    "wash": "OpenStreetMap (humanitarian WASH tags)",
+}
+
+
+def _layer_label_with_info(label_text, source_key):
+    """A layer's translated label text plus a small hover-only info icon
+    surfacing its real data source (_LAYER_DATA_SOURCES) — for use as a
+    dmc.Checkbox's own `label` prop, which accepts any Dash component, not
+    just a string. dmc.Tooltip needs no server round-trip; the hover
+    interaction is handled entirely client-side by Mantine itself."""
+    source = _LAYER_DATA_SOURCES.get(source_key, "")
+    return html.Span([
+        label_text,
+        dmc.Tooltip(
+            label=_t("Source: {source}", source=source),
+            multiline=True,
+            w=230,
+            withArrow=True,
+            position="right",
+            transitionProps={"duration": 0},
+            styles={"tooltip": {"fontSize": "11px", "lineHeight": 1.4}},
+            children=html.Span(
+                DashIconify(icon="mdi:information-outline", width=12),
+                style={"color": "#9aa7b0", "marginLeft": "5px", "cursor": "help",
+                       "verticalAlign": "middle", "display": "inline-flex"},
+            ),
+        ),
+    ], style={"display": "inline-flex", "alignItems": "center"})
+
+
 def _hurricane_family(countries=None, expanded=True, date=None, run=None):
     # No storms list in here anymore — that's _active_storms_section above.
     # When nothing's active, collapse straight to grey: no body at all, not
@@ -2353,7 +2528,8 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
     # "nothing to toggle right now" signal without breaking every callback
     # that reads their state.
     body = html.Div([
-        dmc.Checkbox(id="ms-tracks-on", label=_t("Storm Tracks"), color=TRACKS, size="xs", mb=10, checked=True,
+        dmc.Checkbox(id="ms-tracks-on", label=_layer_label_with_info(_t("Storm Tracks"), "tracks"),
+                      color=TRACKS, size="xs", mb=10, checked=True,
                       disabled=not has_storms),
         # Off by default in Global mode (still checkable — see
         # _load_ms_tracks_and_envelopes's own Global branch, which now
@@ -2362,7 +2538,8 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
         # TC_ENVELOPES_COMBINED data as the Country-Analysis envelope view,
         # just without per-country severity coloring since there's no single
         # country to attribute population severity to here).
-        dmc.Checkbox(id="ms-wind-on", label=_t("Sustained Wind"), color=WIND, size="xs", mb=10,
+        dmc.Checkbox(id="ms-wind-on", label=_layer_label_with_info(_t("Sustained Wind"), "wind"),
+                      color=WIND, size="xs", mb=10,
                       checked=not is_global, disabled=not has_storms),
         _slider_block("wind", WIND, 7, 2, disable_in_global=False),  # index 2 == 26 m/s / 50kt
         # Real bug found+fixed here: this used to stay hard-disabled in
@@ -2374,7 +2551,8 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
         # queried before. Gust now renders real Global-mode envelope
         # polygons exactly like Wind (_load_ms_tracks_and_envelopes), so it
         # follows the same enable/default rule as Wind above.
-        dmc.Checkbox(id="ms-gust-on", label=_t("Gust"), color=GUST, size="xs", mb=10, checked=False,
+        dmc.Checkbox(id="ms-gust-on", label=_layer_label_with_info(_t("Gust"), "gust"),
+                      color=GUST, size="xs", mb=10, checked=False,
                       disabled=(not has_storms) or (not gust_available)),
         # Real bug found+fixed here: gust envelope data is genuinely real
         # but only exists for a handful of historical storms/dates
@@ -2398,7 +2576,7 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
             id="tc-view-as", value="envelopes", fullWidth=True, size="xs",
             disabled=(not has_storms) or is_global,
             data=[{"value": "envelopes", "label": _t("Envelopes")},
-                  {"value": "raster", "label": _t("Probability Raster")}],
+                  {"value": "raster", "label": _t("Probability")}],
         ),
     ], id="ms-hurricane-body", style={"marginTop": "16px"} if (has_storms and expanded) else {"marginTop": "16px", "display": "none"})
 
@@ -2515,7 +2693,8 @@ def _infrastructure_section():
     facilities = [("Schools", "schools"), ("Health Centers", "health"),
                   ("Shelters", "shelters"), ("WASH Facilities", "wash")]
     return _collapsible_section("infra", _t("Infrastructure"), [
-        dmc.Stack([dmc.Checkbox(id=f"ms-facility-{lid}-on", label=_t(label), size="xs", checked=False)
+        dmc.Stack([dmc.Checkbox(id=f"ms-facility-{lid}-on",
+                                  label=_layer_label_with_info(_t(label), lid), size="xs", checked=False)
                    for label, lid in facilities], gap=10),
         dmc.Text(_t("Shown as plain locations with no hazard active; colored by impact probability once a hazard is toggled on below."),
                   size="11px", c="dimmed", mt=10, style={"lineHeight": 1.5}),
@@ -2576,9 +2755,11 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
     # filtering anywhere) — checking one of these boxes there shows the
     # always-global raw backdrop AND the country-scoped impact overlay at
     # once; they are two different things, not a conflict. flood-view-as
-    # below (Mean/Probability) controls ONLY the raw layers' aggregation and
-    # has no effect on the country-scoped system, which stays
-    # probability-only forever.
+    # (Mean/Probability, nested under Rainfall's own controls below) controls
+    # ONLY the raw precip-rate layer's aggregation and has no effect on the
+    # country-scoped system, which stays probability-only forever. River has
+    # no Mean mode at all (see River Flooding's own controls below) — unlike
+    # rain, it has no second independent quantity to toggle to.
     # REACTIVE (same pattern as _hurricane_family's own has_storms check,
     # re-evaluated here every time _switch_mode_content re-renders this
     # panel): River Flooding/Rainfall are NOT storm-scoped — each resolves
@@ -2593,7 +2774,6 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
     # second real query path. No countries selected (Global) — nothing to
     # check against yet, so leave both available (matches _hurricane_
     # family's own "nothing selected" fallback).
-    is_global = not countries
     codes = _resolve_tile_codes(countries) if countries else []
     primary_code = codes[0] if codes else None
     river_available = (get_latest_river_forecast_time(primary_code) is not None) if primary_code else True
@@ -2653,7 +2833,8 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
                           size="10px", c="dimmed", fs="italic", mb=8)
 
     body = html.Div([c for c in [
-        dmc.Checkbox(id="ms-river-on", label=_t("River Flooding"), color=RIVER, size="xs", mb=10,
+        dmc.Checkbox(id="ms-river-on", label=_layer_label_with_info(_t("River Flooding"), "river"),
+                      color=RIVER, size="xs", mb=10,
                       checked=river_available, disabled=not river_available),
         _availability_note(river_available, river_country_available, river_raw_available),
         html.Div([
@@ -2665,12 +2846,19 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
             html.Div(id="ms-river-readout", style={"fontSize": "11px", "color": "#57707e"}),
         ], style={"marginLeft": "22px", "marginBottom": "20px"}),
 
-        dmc.Checkbox(id="ms-rain-on", label=_t("Rainfall"), color=RAIN, size="xs", mb=10,
+        dmc.Checkbox(id="ms-rain-on", label=_layer_label_with_info(_t("Rainfall"), "rain"),
+                      color=RAIN, size="xs", mb=10,
                       checked=rain_available, disabled=not rain_available),
         _availability_note(rain_available, rain_country_available, precip_raw_available),
         html.Div([
             dmc.SegmentedControl(
-                id="ms-rain-window", value="6", fullWidth=True, size="xs", color=RAIN, mb=10,
+                # Default "120" (5 days), not "6" — per explicit user request
+                # for the richest/longest accumulation window as the default
+                # first look. ms-rain-slider's own default (value=1 ==
+                # "Heavy rain", see _RAIN_TIERS) and flood-view-as's own
+                # default ("probability") already matched this request
+                # without needing a change.
+                id="ms-rain-window", value="120", fullWidth=True, size="xs", color=RAIN, mb=10,
                 disabled=not rain_available,
                 data=[{"value": "6", "label": "6h"}, {"value": "24", "label": "24h"},
                       {"value": "72", "label": "72h"}, {"value": "120", "label": _t("5 days")}],
@@ -2679,6 +2867,23 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
                        marks=[{"value": i} for i in range(3)], size="sm", color=RAIN, mb=4,
                        disabled=not rain_available),
             html.Div(id="ms-rain-readout", style={"fontSize": "11px", "color": "#57707e"}),
+            # Nested INSIDE Rainfall's own controls (not a shared control
+            # after Storm Surge, where it used to live) so it's visually
+            # unambiguous that this toggle only affects Rainfall — real bug
+            # found+fixed here: river's raw layer used to render Mean too
+            # (see _fetch_river_extent_raster_tile's own docstring in
+            # services/tile_server.py), which turned out to always describe
+            # the identical probability fraction under a different colour,
+            # not a genuinely different quantity the way rain's real mm-vs-
+            # exceedance-probability split is. River lost its Mean mode
+            # entirely and this control moved here per explicit user request.
+            dmc.Text(_t("View As"), size="10px", fw=700, c="dimmed", tt="uppercase", mt=10, mb=6),
+            dmc.SegmentedControl(
+                id="flood-view-as", value="probability", fullWidth=True, size="xs",
+                disabled=not rain_available,
+                data=[{"value": "mean", "label": _t("Mean")},
+                      {"value": "probability", "label": _t("Probability")}],
+            ),
         ], style={"marginLeft": "22px", "marginBottom": "20px"}),
 
         # Placeholder — no real pipeline/data behind this yet (see
@@ -2694,7 +2899,8 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
         # needed there. See surge_visible's own comment in
         # _build_hazard_tile_config for the matching backend-side flag.
         dmc.Group([
-            dmc.Checkbox(id="ms-surge-on", label=_t("Storm Surge"), color=SURGE, size="xs",
+            dmc.Checkbox(id="ms-surge-on", label=_layer_label_with_info(_t("Storm Surge"), "surge"),
+                          color=SURGE, size="xs",
                           checked=False, disabled=True),
             dmc.Badge(_t("Coming Soon"), size="xs", variant="light", color="gray"),
         ], gap=8, mb=10),
@@ -2705,25 +2911,6 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
             html.Div(id="ms-surge-readout", style={"fontSize": "11px", "color": "#57707e"}),
         ], style={"marginLeft": "22px", "marginBottom": "16px"}),
 
-        # Mirrors _hurricane_family's own tc-view-as toggle exactly (same
-        # label styling + fullWidth/size="xs" SegmentedControl convention).
-        # Unlike tc-view-as (disabled when there's no storm data at all),
-        # this is never disabled — it only affects the always-global raw
-        # precip-raw/river-raw layers (see the header comment above), which
-        # render independent of any per-country River Flooding/Rainfall data
-        # availability check.
-        dmc.Text(_t("View As"), size="10px", fw=700, c="dimmed", tt="uppercase", mb=6),
-        # Locked to Mean in Global mode (explicit product decision — the raw
-        # layer's Probability is mechanically global-safe on its own, but
-        # Global view has no country-scoped combination context, so Mean is
-        # kept as the only Global-mode choice for consistency with the
-        # Tropical Cyclone panel's own Global-mode lock above).
-        dmc.SegmentedControl(
-            id="flood-view-as", value="mean", fullWidth=True, size="xs",
-            disabled=is_global,
-            data=[{"value": "mean", "label": _t("Mean")},
-                  {"value": "probability", "label": _t("Probability")}],
-        ),
         # DATE-based "not available" note for the raw layers specifically —
         # populated reactively by _update_raw_date_availability_note (further
         # down, keyed on ms-global-raw-config-store) rather than computed
@@ -3490,7 +3677,7 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
     return html.Div([hazards_indicator, threshold_preview, main_row, admin1_sections])
 
 
-def _resolve_stat_value(metric, scope, countries=None, scale=1.0, date=None, run=None, wind_kt=None, hz=None):
+def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind_kt=None, hz=None):
     # Recomputes the exact Probabilistic number shown on the clicked
     # card — server-side, from scope+metric — rather than smuggling the
     # display value into the id itself. Always the base (unscaled-by-
@@ -3499,13 +3686,10 @@ def _resolve_stat_value(metric, scope, countries=None, scale=1.0, date=None, run
     # scope=="combined" has no single-country entry to look up — its numbers
     # only exist as the sum of `countries` (the current selection, passed in
     # by the caller), same math as _update_impact_summary's own "Combined
-    # Total" branch.
-    #
-    # `hz` (real multi-hazard state, see _build_hz) makes this the real
-    # combined-across-active-hazards total — no more `scale` post-hoc
-    # multiplication (kept as a param only because Global scope has no real
-    # per-tile data to combine at all, so it still falls back to scaling
-    # _DEFAULT_STATS illustratively).
+    # Total" branch. `hz` (real multi-hazard state, see _build_hz) makes
+    # this the real combined-across-active-hazards total for every scope,
+    # including "global" now (real bug fixed here — see the elif branch's
+    # own comment for what this used to do instead).
     #
     # date/run/wind_kt (threaded through from _open_hazard_contribution)
     # keep this in sync with whatever the tile/panel it was clicked from is
@@ -3520,11 +3704,28 @@ def _resolve_stat_value(metric, scope, countries=None, scale=1.0, date=None, run
             "children": round(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                                 / max(1, _parse_stat_number(stats["Children at Risk"])) * 100),
         }
+    elif scope == "global":
+        # Real bug found+fixed here: this used to read the OLD hardcoded
+        # _DEFAULT_STATS mock (and then illustratively rescale it via
+        # _scale_stats_by_hazard) — completely disconnected from the real
+        # per-hazard-combined system _update_impact_summary's own Global
+        # branch already uses, so the popup showed made-up numbers instead
+        # of either the real total OR the "no initialized country impacted"
+        # explanation, even when the real total genuinely was 0. Same
+        # _resolve_storms_for_date + _combined_stats call, so the popup can
+        # never disagree with the number that was actually clicked.
+        all_storms = _resolve_storms_for_date(date, run)
+        all_country_names = sorted({c for s in all_storms for c in s["countries"]})
+        stats = _combined_stats(all_country_names, date=date, run=run, wind_kt=wind_kt, hz=hz)
+        pin_pct = {
+            "people": round(_combined_in_need_total(all_country_names, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+                             / max(1, _parse_stat_number(stats["People at Risk"])) * 100),
+            "children": round(_combined_in_need_total(all_country_names, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+                                / max(1, _parse_stat_number(stats["Children at Risk"])) * 100),
+        }
     else:
-        stats = _DEFAULT_STATS if scope == "global" else _get_country_stats(scope, date, run, wind_kt, hz=hz)
-        pin_pct = _DEFAULT_PIN_PCT if scope == "global" else _get_country_pin_pct(scope, date, run, wind_kt, hz=hz)
-    if scope == "global":
-        stats = _scale_stats_by_hazard(stats, scale)
+        stats = _get_country_stats(scope, date, run, wind_kt, hz=hz)
+        pin_pct = _get_country_pin_pct(scope, date, run, wind_kt, hz=hz)
     if metric == "People in Need":
         return _format_stat_number(round(_parse_stat_number(stats["People at Risk"]) * pin_pct["people"] / 100))
     if metric == "Children in Need":
@@ -3621,16 +3822,16 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # overlap bar/caption only appears when BOTH are active.
     tc_active, flood_active = breakdown["tc_active"], breakdown["flood_active"]
     total = _parse_stat_number(value)
-    # Global scope now always forces every hazard "on" for this popup's own
-    # breakdown (_open_hazard_contribution, matching _update_impact_
-    # summary's Global branch, which is independent of the sidebar
-    # checkboxes) — so tc_active/flood_active are effectively always True
-    # here and "toggle a hazard" below never fires for Global. A genuinely
-    # zero Global total means no INITIALIZED country is impacted right now,
-    # which is a real but different fact from "nothing is toggled" and
-    # needs its own message so it isn't misread as "there's no real
-    # impact anywhere" — some potentially-affected countries may simply not
-    # be in the database yet.
+    # Global scope's tc_active/flood_active now reflect REAL data
+    # availability for the resolved date (see _open_hazard_contribution's
+    # own comment — river_avail/rain_avail come from a real Snowflake
+    # check, not a blind "always on"), so "toggle a hazard" below CAN still
+    # fire for Global (e.g. wind's own real total is 0 for some other
+    # reason while flood genuinely has no data either). A genuinely zero
+    # Global total is a DIFFERENT, more specific fact — no INITIALIZED
+    # country is impacted right now — and needs its own message so it
+    # isn't misread as "there's no real impact anywhere": some potentially-
+    # affected countries may simply not be in the database yet.
     if is_global and total == 0:
         return html.Div(dmc.Text(
             _t("None of the initialized countries are currently impacted. This does not mean "
@@ -3639,6 +3840,20 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     if not tc_active and not flood_active:
         return html.Div(dmc.Text(_t("None — toggle a hazard on the map to see impact numbers."),
                                     size="sm", c="dimmed", fs="italic"))
+    if is_global and tc_active != flood_active:
+        # Real bug found+fixed here: only ONE family genuinely has real
+        # data behind this Global total (the common case — e.g. a
+        # historical storm with real Wind data but no River/Rain pipeline
+        # coverage yet) — that family IS 100% of the real total, not the
+        # OLD fixed illustrative share (e.g. Wind's own "45%"), which
+        # described a fraction of an assumed-everything-active baseline
+        # that stopped applying once this total became a real, not-
+        # illustrative number. Country Analysis's own popup is untouched —
+        # it can genuinely have multiple real hazards active at once,
+        # where the illustrative split still honestly describes itself as
+        # illustrative (no real per-pixel overlap data exists anywhere).
+        breakdown = {**breakdown, "tc_pct": 100 if tc_active else 0,
+                      "flood_pct": 100 if flood_active else 0}
     by_name = {name: (color, pct, icon) for name, color, pct, icon in _HAZARD_CONTRIBUTION}
     hazard_idx = hazard_idx or {}
 
@@ -3723,7 +3938,14 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # in a card for visual consistency with the multi-member case below.
         members = [(name,) + by_name[name] for name in member_names]  # (name, color, pct, icon)
         if len(members) < 2:
-            name, color, pct, icon = members[0]
+            # family_pct (not the member's own fixed illustrative share) —
+            # a single-member family's displayed share IS the family's own
+            # share by definition; using the member's separately-tracked
+            # constant here let the two silently disagree (this is what
+            # showed a fixed "45%" for Sustained Wind even when it was
+            # overridden to be 100% of a real Global total one level up).
+            name, color, _member_pct, icon = members[0]
+            pct = family_pct
             curve = _hazard_curve_row(name, color, pct)
             card_children = [_hazard_row(name, color, pct, icon, indent=True, mb=None if curve is not None else 0)]
             if curve is not None:
@@ -3814,13 +4036,25 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         dmc.Text(_t("People at Risk"), size="9px", fw=700, tt="uppercase", c="dimmed", w=72, ta="right"),
     ], gap=14, wrap="nowrap", mb=8)
 
+    # The caption only makes sense when a real illustrative SPLIT is being
+    # shown somewhere above — either the TC/Flood overlap bar (both_active)
+    # or 2+ Flood members active at once (River/Rain/Surge sharing Flood's
+    # pct via fixed illustrative weights, see _hazard_breakdown). Tropical
+    # Cyclone only ever has one member (Sustained Wind — Gust is
+    # permanently excluded, see _hazard_breakdown's own comment), so a
+    # single active hazard (the common Global case: only Sustained Wind
+    # has real data) shows a plain, deterministic 100% — not a split of
+    # anything — and calling that "illustrative" was misleading.
+    has_illustrative_split = both_active or len(breakdown["active_flood_members"]) > 1
+    caption = [dmc.Text(_t("Illustrative split — a real implementation would compute this from actual per-hazard overlap."),
+                          size="10px", c="dimmed", mt=18, fs="italic")] if has_illustrative_split else []
+
     return html.Div([
         dmc.Text(_t("Total: {value}", value=value), size="sm", fw=700, mt=6, mb=20),
         *overlap_children,
         column_header,
         html.Div(blocks[:-1]),  # drop the trailing spacer
-        dmc.Text(_t("Illustrative split — a real implementation would compute this from actual per-hazard overlap."),
-                  size="10px", c="dimmed", mt=18, fs="italic"),
+        *caption,
     ])
 
 
@@ -4228,7 +4462,125 @@ def _legend_raster_info(hazard, tile_config):
     }
 
 
-def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global):
+# Legend entries for the GLOBAL, country/storm-independent raw river-extent/
+# precip-rate rasters (see _build_global_raw_config's own header comment —
+# an entirely separate rendering system from the per-country hazard-impact
+# tiles above, sharing only the ms-river-on/ms-rain-on checkboxes as their
+# on/off control). Real bug found+fixed here: the legend previously had NO
+# code path for these at all, so toggling River Flooding/Rainfall on in
+# Global mode (where _build_hazard_tile_config's own river_visible/
+# rain_visible are ALWAYS forced False — see that function's "if not
+# countries" early exit) showed a genuinely-painted flood/rain layer with
+# no legend entry whatsoever. Fixed color ramps copied from
+# services/tile_server.py's own _PRECIP_RATE_COLORS/_PRECIP_PROB_COLORS/
+# _RIVER_EXTENT_PROB_COLORS/_RIVER_EXTENT_MASK_COLOR — these are the exact
+# breakpoint colors the tile server paints, not independently invented ones.
+_RAW_RIVER_PROB_COLORS = ["#B2EBF2", "#4DD0E1", "#00ACC1", "#006992", "#013260"]
+_RAW_PRECIP_RATE_COLORS = ["#A8E691", "#3CB34B", "#FFDD33", "#FF8C00", "#DC143C"]
+_RAW_PRECIP_PROB_COLORS = ["#DECBE4", "#BC95D5", "#9860C6", "#752FB1", "#4C0099"]
+
+# Matches services/tile_server.py's own _PRECIP_RATE_BASE_BREAKS exactly (the
+# base/6h radar ramp before per-window scaling).
+_RAIN_RATE_BASE_BREAKS = [0.5, 5.0, 15.0, 30.0, 60.0]
+
+
+def _rain_rate_range_for_window(window_h):
+    """Real min/max of the Mean-mode radar ramp for this window — mirrors
+    tile_server.py's own _precip_rate_breaks_for_window scaling (same real
+    per-window depth-tier classification numbers, _RAIN_MM_BY_WINDOW below,
+    single source of truth for both). Real bug found+fixed here: this
+    legend used to show a fixed "0.5mm"/"≥60mm" range for every window, even
+    though longer accumulation windows genuinely reach much higher real
+    totals (e.g. 120h/5-day accumulations routinely exceed 150mm — see that
+    dict's own "120" entry) — so most of a 5-day forecast rendered as one
+    saturated "extreme rain" red blob with a legend that still claimed the
+    scale topped out at 60mm."""
+    base_top = _RAIN_MM_BY_WINDOW["6"][-1]
+    window_top = _RAIN_MM_BY_WINDOW.get(str(int(window_h)), _RAIN_MM_BY_WINDOW["6"])[-1]
+    scale = window_top / base_top
+    return _RAIN_RATE_BASE_BREAKS[0] * scale, _RAIN_RATE_BASE_BREAKS[-1] * scale
+
+
+def _legend_raw_flood_info(layer, raw_config):
+    """Info dict for the raw river-extent ('river') or precip-rate ('rain')
+    global raster — or None if that raw layer isn't actually visible right
+    now (checkbox off, or no real forecast cycle resolved for the selected
+    date, per raw_config's own {river,precip}_visible flags)."""
+    if not raw_config:
+        return None
+    visible_key = "river_visible" if layer == "river" else "precip_visible"
+    if not raw_config.get(visible_key):
+        return None
+    hazard_name = _t(_LEGEND_HAZARD_LABELS[layer])
+    title_suffix = _t("Raw global layer")
+
+    # River has NO Mean mode — it always renders the one real per-cell
+    # member-agreement fraction (Probability). A prior revision gave river
+    # its own Mean toggle (first a flat >50%-consensus swatch, then a second
+    # continuous gradient over the identical fraction with a different
+    # colour) — removed per explicit user request: unlike rain (real mm
+    # intensity AND a real exceedance-probability, two genuinely different
+    # quantities), river only ever has this one metric, so a "Mean" option
+    # was always just the same number under a different name. flood-view-as
+    # (raw_config's own rain_mode) is now rain-only.
+    mode = "probability" if layer == "river" else (raw_config.get("rain_mode") or "probability")
+
+    # Rain's active window/threshold (raw_config's own window_h/threshold_mm,
+    # resolved by _build_global_raw_config) is now named ONCE, in the title —
+    # exactly mirroring river's own "(RP10)" pattern below — instead of being
+    # repeated inside BOTH the min and max labels. Real bug found+fixed here:
+    # the old "10% of members >150mm/120h" / "≥80% of members >150mm/120h"
+    # labels duplicated the same threshold/window text twice, which wrapped
+    # onto its own line in the legend card (visibly reported).
+    window_h = raw_config.get("window_h") or 6
+    threshold_mm = raw_config.get("threshold_mm")
+    if threshold_mm is None:
+        threshold_mm = 10.0
+
+    mode_label = (_t("Intensity") if mode == "mean" else _t("Probability"))
+
+    # Active-parameter suffix shown once in the title, right after the
+    # hazard name — same position/format for both hazards.
+    caption = None
+    if layer == "river":
+        rp_tier = raw_config.get("rp_tier") or "rp10"
+        param_label = rp_tier.upper()
+        if raw_config.get("rp_tier_is_standin"):
+            caption = _t("(not natively computed — RP10 used as an upper-bound estimate)")
+    else:
+        param_label = (f"{window_h}h" if mode == "mean"
+                        else f"{window_h}h, >{threshold_mm:g}mm")
+    title = f"{hazard_name} ({param_label}) — {title_suffix} ({mode_label})"
+
+    if layer == "rain" and mode == "mean":
+        # Real, window-scaled range (not a fixed "0.5mm"/"≥60mm" — see
+        # _rain_rate_range_for_window's own docstring). Plain numeric
+        # f-strings, not run through _t(): same precedent as param_label's
+        # own window_h/threshold_mm formatting just above, a unit-suffixed
+        # number needs no language translation.
+        lo, hi = _rain_rate_range_for_window(window_h)
+        colors, unit_labels = _RAW_PRECIP_RATE_COLORS, (f"{lo:g}mm", f"≥{hi:g}mm")
+    else:
+        # River always lands here (mode forced to "probability" above).
+        # Same plain "member agreement" labels for both hazards now that the
+        # threshold/window/RP-tier context lives in the title instead.
+        colors = _RAW_RIVER_PROB_COLORS if layer == "river" else _RAW_PRECIP_PROB_COLORS
+        unit_labels = (_t("10% of members"), _t("≥80% of members"))
+
+    return {
+        "title": title,
+        "compact_title": hazard_name,
+        "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
+                                 "background": f"linear-gradient(to right, {', '.join(colors)})"}),
+        "compact_bar": html.Div(style={"height": "10px", "borderRadius": "5px",
+                                         "background": f"linear-gradient(to right, {', '.join(colors)})"}),
+        "labels": unit_labels,
+        "caption": caption,
+    }
+
+
+def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global,
+                         raw_config=None):
     """The single shared source of "what does this layer's color mean" for
     BOTH the always-visible compact strip and the full expanded card — one
     definition per layer so the two views can never say something
@@ -4291,7 +4643,21 @@ def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc
         }
     if layer in ("river", "rain"):
         on = river_on if layer == "river" else rain_on
-        return _legend_raster_info(layer, tile_config) if on else None
+        stats_info = _legend_raster_info(layer, tile_config) if on else None
+        # Prefer the per-country stats-based layer when it has REAL data
+        # (most specific/relevant to the current selection) — but that path
+        # is unconditionally unavailable in Global mode (tile_config's own
+        # river_visible/rain_visible are always forced False there) and can
+        # also genuinely have no real per-country pipeline coverage for this
+        # date even with a country selected. The exact same checkbox also
+        # drives the completely separate global raw river/precip raster (see
+        # _legend_raw_flood_info's own comment) — fall back to THAT when it's
+        # what's actually painting the map, rather than showing nothing (or
+        # a generic "no real data" placeholder) while a real layer is visible.
+        if stats_info and stats_info.get("caption") != "No real data for this exact selection yet.":
+            return stats_info
+        raw_info = _legend_raw_flood_info(layer, raw_config)
+        return raw_info or stats_info
     return None
 
 
@@ -4439,6 +4805,7 @@ def _track_last_toggled_layer(wind_on, gust_on, river_on, rain_on, tracks_on, pr
     Output("ms-legend-compact-body", "children"),
     Input("ms-legend-last-layer", "data"),
     Input("ms-tile-config-store", "data"),
+    Input("ms-global-raw-config-store", "data"),
     Input("ms-wind-on", "checked"),
     Input("ms-gust-on", "checked"),
     Input("ms-river-on", "checked"),
@@ -4447,12 +4814,13 @@ def _track_last_toggled_layer(wind_on, gust_on, river_on, rain_on, tracks_on, pr
     Input("tc-view-as", "value"),
     Input("selected-country-store", "data"),
 )
-def _update_map_legend_compact(last_layer, tile_config, wind_on, gust_on, river_on, rain_on, tracks_on,
+def _update_map_legend_compact(last_layer, tile_config, raw_config, wind_on, gust_on, river_on, rain_on, tracks_on,
                                   tc_view_as, countries):
     tile_config = tile_config or {}
+    raw_config = raw_config or {}
     tc_view_as = tc_view_as or "envelopes"
     is_global = not countries
-    args = (wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global)
+    args = (wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global, raw_config)
     info = _legend_layer_info(last_layer, *args) if last_layer else None
     if not info:
         # Fallback covers a timing edge case (this callback and
@@ -4470,6 +4838,7 @@ def _update_map_legend_compact(last_layer, tile_config, wind_on, gust_on, river_
 @callback(
     Output("ms-legend-body", "children"),
     Input("ms-tile-config-store", "data"),
+    Input("ms-global-raw-config-store", "data"),
     Input("ms-wind-on", "checked"),
     Input("ms-gust-on", "checked"),
     Input("ms-river-on", "checked"),
@@ -4479,9 +4848,10 @@ def _update_map_legend_compact(last_layer, tile_config, wind_on, gust_on, river_
     Input("selected-country-store", "data"),
     Input("ms-facility-visibility-store", "data"),
 )
-def _update_map_legend(tile_config, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, countries,
+def _update_map_legend(tile_config, raw_config, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, countries,
                          facilities_on):
     tile_config = tile_config or {}
+    raw_config = raw_config or {}
     tc_view_as = tc_view_as or "envelopes"
     # ms-facility-visibility-store, NOT the ms-facility-{id}-on checkboxes
     # directly — real bug found+fixed here: those checkboxes only exist in
@@ -4504,7 +4874,8 @@ def _update_map_legend(tile_config, wind_on, gust_on, river_on, rain_on, tracks_
     # regular member — not by storm category). A map legend should only
     # explain what's actually drawn on the map.
     for layer in _LEGEND_LAYER_ORDER:
-        info = _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config, is_global)
+        info = _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc_view_as, tile_config,
+                                     is_global, raw_config)
         if info:
             sections.append(_legend_section_from_info(info))
 
@@ -4594,12 +4965,26 @@ def _map_stack():
             # transparent; Leaflet shows nothing itself, MapLibre provides the
             # actual basemap tiles. baselayerchange -> swapMaplibreBasemap in
             # maplibre_tiles.js (see sync_basemap_select clientside_callback).
+            #
+            # url=_BLANK_TILE_URL (real bug found in the 2026-08 performance
+            # audit): dl.TileLayer's own default `url` is the real OpenStreetMap
+            # tile server, so leaving it unset meant the currently-selected
+            # opacity=0 layer was silently fetching real (never-shown) OSM
+            # tiles on every pan/zoom — duplicate network traffic against the
+            # tiles MapLibre was ALSO fetching for the real visible basemap,
+            # and unnecessary load against OSM's own public tile servers. A
+            # 1x1 transparent data: URI needs no network request at all and
+            # still gives the LayersControl a real layer object to track
+            # selection/fire baselayerchange, and the attribution text still
+            # renders (Leaflet's attribution control reads the layer's own
+            # `attribution` option, independent of whether any tile loaded).
             dl.Map(
                 [
                     dl.LayersControl(
                         [
                             dl.BaseLayer(
                                 dl.TileLayer(
+                                    url=_BLANK_TILE_URL,
                                     opacity=0,
                                     attribution=(
                                         ('© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> '
@@ -4614,17 +4999,17 @@ def _map_stack():
                                 checked=False,
                             ),
                             dl.BaseLayer(
-                                dl.TileLayer(opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a><br>' + _UN_DISCLAIMER),
+                                dl.TileLayer(url=_BLANK_TILE_URL, opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a><br>' + _UN_DISCLAIMER),
                                 name="CartoDB Light",
                                 checked=True,
                             ),
                             dl.BaseLayer(
-                                dl.TileLayer(opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>' + _UN_DISCLAIMER),
+                                dl.TileLayer(url=_BLANK_TILE_URL, opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>' + _UN_DISCLAIMER),
                                 name="CartoDB Dark",
                                 checked=False,
                             ),
                             dl.BaseLayer(
-                                dl.TileLayer(opacity=0, attribution='Tiles &copy; <a href="https://services.arcgisonline.com/">Esri</a> &mdash; Source: Esri, Maxar, Earthstar Geographics<br>' + _UN_DISCLAIMER),
+                                dl.TileLayer(url=_BLANK_TILE_URL, opacity=0, attribution='Tiles &copy; <a href="https://services.arcgisonline.com/">Esri</a> &mdash; Source: Esri, Maxar, Earthstar Geographics<br>' + _UN_DISCLAIMER),
                                 name="Satellite",
                                 checked=False,
                             ),
@@ -4646,6 +5031,13 @@ def _map_stack():
                                style=style_envelopes, onEachFeature=tooltip_envelopes),
                     dl.GeoJSON(id="ms-tracks-json", data={"type": "FeatureCollection", "features": []}, zoomToBounds=False,
                                style=style_tracks, onEachFeature=tooltip_tracks),
+                    # cluster=True was tried here as a performance fix (2026-08) but
+                    # reverted per explicit user feedback — grouping facility points
+                    # into cluster bubbles doesn't fit how this app wants hazard
+                    # exposure visualized (each facility's own color/radius already
+                    # encodes its individual hazard probability; a cluster bubble
+                    # collapses that per-facility signal into a plain count). Back to
+                    # plain individual circleMarkers.
                     dl.GeoJSON(id="ms-schools-json", data={"type": "FeatureCollection", "features": []}, zoomToBounds=False,
                                pointToLayer=point_to_layer_schools_health, onEachFeature=tooltip_schools),
                     dl.GeoJSON(id="ms-health-json", data={"type": "FeatureCollection", "features": []}, zoomToBounds=False,
@@ -4924,16 +5316,22 @@ def _toggle_command_bar(mode):
 # it's clicked from, so there's no correctness reason to hide it either).
 
 
-@callback(
+# clientside — pure style toggle, no server data dependency (2026-08
+# performance audit).
+clientside_callback(
+    """
+    function(view) {
+        if (view === "hazard") {
+            return [{"display": "none"}, {"display": "block"}];
+        }
+        return [{"display": "block"}, {"display": "none"}];
+    }
+    """,
     Output("controls-exposure-pane", "style"),
     Output("controls-hazard-pane", "style"),
     Input("controls-view-toggle", "value"),
     prevent_initial_call=True,
 )
-def _toggle_controls_view(view):
-    if view == "hazard":
-        return {"display": "none"}, {"display": "block"}
-    return {"display": "block"}, {"display": "none"}
 
 
 # Tropical Cyclone / Flood Hazards headers are pure click-to-collapse now
@@ -5172,6 +5570,15 @@ _RIVER_CATS = ["1-in-2-year flood", "1-in-5-year flood", "1-in-10-year flood",
 # _RIVER_CATS/ms-river-slider so index i's tier label always matches index
 # i's real backend RP_TIER value.
 _RIVER_RP_TIERS = ["rp2", "rp5", "rp10", "rp20", "rp50", "rp100"]
+# IS_STANDIN=True in RIVER_FORECASTS (confirmed live) — the pipeline's own
+# way of flagging "not yet independently computed, this file just reuses
+# rp10's own real extent as a labelled UPPER-BOUND stand-in" until real
+# rp2/rp5 computation exists (flood extent grows monotonically with return
+# period, so RP10's extent conservatively overestimates RP2/RP5's true,
+# smaller extent — confirmed in TC-ECMWF-Forecast-Pipeline's own
+# glofas_extent_masking.py). Mirrors services/tile_server.py's own
+# _RIVER_EXTENT_STANDIN_RP_TIERS exactly.
+_RIVER_STANDIN_RP_TIERS = {"rp2", "rp5"}
 _RAIN_TIERS = ["Moderate rain", "Heavy rain", "Extreme rain"]
 _RAIN_MM_BY_WINDOW = {"6": [25, 50, 75], "24": [35, 70, 103], "72": [45, 90, 133], "120": [50, 100, 150]}
 # Height above normal tide — placeholder categories, no real pipeline behind
@@ -5304,7 +5711,19 @@ def _gust_readout(idx):
 
 @callback(Output("ms-river-readout", "children"), Input("ms-river-slider", "value"))
 def _river_readout(idx):
-    return _t(_RIVER_CATS[idx or 0])
+    idx = idx or 0
+    label = _t(_RIVER_CATS[idx])
+    # Real note added here per explicit user request: rp2/rp5 are
+    # IS_STANDIN=True upstream (confirmed live against RIVER_FORECASTS) —
+    # this tier isn't independently computed yet, the pipeline just reuses
+    # rp10's own real extent as a labelled stand-in/bound. Surfaced right on
+    # the slider's own readout (both the raw global layer AND the
+    # per-country hazard tile system share this same real data quality
+    # limitation, not just the raw layer), so this never silently reads as
+    # a real independent rp2/rp5 result.
+    if _RIVER_RP_TIERS[idx] in _RIVER_STANDIN_RP_TIERS:
+        label += " " + _t("(not natively computed — RP10 used as an upper-bound estimate)")
+    return label
 
 
 @callback(Output("ms-surge-readout", "children"), Input("ms-surge-slider", "value"))
@@ -5523,14 +5942,21 @@ def _guard_future_forecast_run(date, run):
     Input("ms-surge-on", "checked"),
     Input("topbar-date", "value"),
     Input("topbar-time", "value"),
-    Input("ms-wind-slider", "value"),
-    Input("ms-gust-slider", "value"),
-    Input("ms-river-slider", "value"),
-    Input("ms-rain-slider", "value"),
     Input("ms-rain-window", "value"),
+    # Debounced (~200ms after a drag settles, see the clientside wrapper
+    # around ms-slider-debounce-store above) rather than direct Inputs on
+    # the 4 hazard sliders — this callback calls _fetch_real_combined_tile_
+    # totals per country, so an un-debounced slider drag previously re-fired
+    # the real Snowflake-backed combined-hazard fetch on every intermediate
+    # drag tick, not just when the drag settles (2026-08 performance audit).
+    Input("ms-slider-debounce-store", "data"),
+    State("ms-wind-slider", "value"),
+    State("ms-gust-slider", "value"),
+    State("ms-river-slider", "value"),
+    State("ms-rain-slider", "value"),
 )
 def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, gust_on, river_on, rain_on, surge_on,
-                             date, run, wind_idx, gust_idx, river_idx, rain_idx, rain_window):
+                             date, run, rain_window, _debounce_tick, wind_idx, gust_idx, river_idx, rain_idx):
     # Scoped to whichever hazards are toggled on (sidebar checkboxes/
     # command-bar pills) — the at-risk numbers below are now the REAL
     # combined-across-active-hazards total (_build_hz/
@@ -5558,20 +5984,19 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
         #
         # Real behavior change here: this used to be wind-only AND reactive
         # to the sidebar's wind_on/wind_idx (the header even said "across
-        # VISIBLE hazards") — but Global mode's checkboxes/sliders are a map-
-        # display concern (which layers paint on the map), not a "what
-        # counts toward the worldwide total" concern. Global's own total is
-        # now always the real combination of EVERY hazard (wind+gust+river+
-        # rain) at each hazard's own default severity tier, fully
-        # independent of whatever's currently toggled/scrubbed on the map —
-        # matches Country Analysis's single-country/combined blocks in
-        # spirit (a real multi-hazard total) without depending on this
-        # page's map-display selection at all. Country Analysis mode below
-        # is untouched — it still reacts to wind_on/gust_on/.../each
-        # hazard's own slider via the selection-driven `hz` computed above.
-        all_storms = _resolve_storms_for_date(date, run)
-        all_country_names = sorted({c for s in all_storms for c in s["countries"]})
-        global_hz = _build_hz(True, True, True, True)
+        # VISIBLE hazards") — Global mode's checkbox on/off state is still a
+        # pure map-display concern (which layers paint on the map, not what
+        # counts toward the worldwide total — every hazard always
+        # contributes here regardless of checkbox state), but as of this
+        # revision the total DOES react to each hazard's own threshold
+        # slider (explicit user request — confirmed twice, then reversed
+        # the earlier "fully independent of selection" decision) exactly
+        # like Country Analysis's own hz below does. Matches Country
+        # Analysis's single-country/combined blocks in spirit (a real
+        # multi-hazard total) without depending on which checkboxes happen
+        # to be on.
+        all_country_names, river_avail, rain_avail = _global_flood_availability(date, run)
+        global_hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window)
         global_stats = _combined_stats(all_country_names, date=date, run=run,
                                          wind_kt=global_hz["wind_kt"], hz=global_hz)
         # impact-subtitle itself is a dmc.Text (renders a <p>) — its own
@@ -5662,34 +6087,33 @@ def _open_impact_breakdown(_n):
     return True
 
 
-@callback(
+# Consolidated into one clientside_callback (was 3 separate Python
+# @callbacks, each a pure style-dict toggle with zero Snowflake/i18n
+# dependency, all sharing the same single Input) — 2026-08 performance audit
+# found several pure-formatting callbacks paying a full HTTP round trip for
+# work with no server-side dependency at all. Style values copied verbatim
+# from the original Python callbacks.
+clientside_callback(
+    """
+    function(countries) {
+        var hasCountries = !!(countries && countries.length);
+        var breakdownBtnStyle = hasCountries ? {} : {"display": "none"};
+        var controlsRowBase = {"padding": "10px 18px", "borderTop": "1px solid #eef2f5"};
+        var controlsRowStyle = hasCountries ? controlsRowBase
+            : Object.assign({}, controlsRowBase, {"display": "none"});
+        // Only 2+ countries genuinely have anything to sum or split apart —
+        // a single country has nothing for "Total" to do differently from
+        // "Split", so just this control stays hidden until there's a real
+        // choice to make.
+        var aggregationStyle = (countries && countries.length > 1) ? {} : {"display": "none"};
+        return [breakdownBtnStyle, controlsRowStyle, aggregationStyle];
+    }
+    """,
     Output("impact-breakdown-btn", "style"),
-    Input("selected-country-store", "data"),
-)
-def _toggle_breakdown_btn(countries):
-    return {} if countries else {"display": "none"}
-
-
-@callback(
     Output("impact-controls-row", "style"),
-    Input("selected-country-store", "data"),
-)
-def _toggle_controls_row(countries):
-    base = {"padding": "10px 18px", "borderTop": "1px solid #eef2f5"}
-    return base if countries else {**base, "display": "none"}
-
-
-@callback(
     Output("impact-aggregation-wrapper", "style"),
     Input("selected-country-store", "data"),
 )
-def _toggle_aggregation_wrapper(countries):
-    # Only 2+ countries genuinely have anything to sum or split apart — a
-    # single country has nothing for "Total" to do differently from
-    # "Split", so just this one control (not the whole row — the worst-case
-    # factor Select next to it is still useful for a single country) stays
-    # hidden until there's a real choice to make.
-    return {} if countries and len(countries) > 1 else {"display": "none"}
 
 
 @callback(
@@ -5701,17 +6125,22 @@ def _toggle_aggregation_wrapper(countries):
     Input("ms-river-on", "checked"),
     Input("ms-rain-on", "checked"),
     Input("ms-surge-on", "checked"),
-    Input("ms-wind-slider", "value"),
-    Input("ms-gust-slider", "value"),
-    Input("ms-river-slider", "value"),
-    Input("ms-rain-slider", "value"),
-    Input("ms-surge-slider", "value"),
+    Input("ms-surge-slider", "value"),  # no real backend, never queries Snowflake — cheap, stays direct
     Input("ms-rain-window", "value"),
     Input("topbar-date", "value"),
     Input("topbar-time", "value"),
+    # Debounced — see _update_impact_summary's own comment on why the 4
+    # hazard sliders go through ms-slider-debounce-store instead of firing
+    # this Snowflake-backed callback on every intermediate drag tick.
+    Input("ms-slider-debounce-store", "data"),
+    State("ms-wind-slider", "value"),
+    State("ms-gust-slider", "value"),
+    State("ms-river-slider", "value"),
+    State("ms-rain-slider", "value"),
 )
 def _update_impact_breakdown(countries, influencing_factor, wind_on, gust_on, river_on, rain_on, surge_on,
-                                wind_idx, gust_idx, river_idx, rain_idx, surge_idx, rain_window, date, run):
+                                surge_idx, rain_window, date, run, _debounce_tick,
+                                wind_idx, gust_idx, river_idx, rain_idx):
     # Not fed impact-aggregation-toggle — the modal always shows both
     # per-country AND Combined at once (see _impact_breakdown_content), so
     # unlike the compact panel it has nothing to switch between.
@@ -5796,15 +6225,35 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
     # Analysis scopes (single-country/combined) are untouched — those
     # totals genuinely still depend on the checkboxes.
     is_global = (scope == "global")
-    breakdown = _hazard_breakdown(True, True, True, surge_on) if is_global else _hazard_breakdown(wind_on, river_on, rain_on, surge_on)
+    if is_global:
+        # Real bug found+fixed here: this used to force river/rain "on" for
+        # the breakdown regardless of whether either genuinely has real
+        # data for the resolved date — so a historical storm with real WIND
+        # data only (e.g. MELISSA/28 Oct 2025, well before River/Rain
+        # pipeline coverage begins) still showed "Flood only"/"Both"
+        # sections in the popup, implying flood was part of the total when
+        # it contributed nothing. Checks the SAME real per-country latest-
+        # forecast-time functions the Flood Hazards checkboxes themselves
+        # use, just against the countries this Global total actually
+        # resolved (not the — always empty in Global mode — topbar
+        # selection).
+        _, river_avail, rain_avail = _global_flood_availability(date, run)
+        breakdown = _hazard_breakdown(True, river_avail, rain_avail, surge_on)
+    else:
+        breakdown = _hazard_breakdown(wind_on, river_on, rain_on, surge_on)
     # topbar-date/topbar-time are now States too — this popup previously
     # always resolved against the frozen "active right now" storm/50kt
     # default, which could silently disagree with the tile that was clicked
     # to open it (see _resolve_stat_value's own docstring).
     wind_kt = _resolve_wind_kt(wind_idx)
-    hz = _build_hz(True, True, True, True) if is_global else \
+    # Threshold-reactive for Global too now (explicit user request,
+    # reversing the earlier "fully independent of selection" decision) —
+    # same wind_idx/gust_idx/river_idx/rain_idx/rain_window Country
+    # Analysis already uses, just still independent of which hazard
+    # CHECKBOXES are on (every hazard always contributes to Global's total).
+    hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window) if is_global else \
         _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window)
-    value = _resolve_stat_value(metric, scope, countries, scale=breakdown["scale"], date=date, run=run, wind_kt=wind_kt, hz=hz)
+    value = _resolve_stat_value(metric, scope, countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
     title = f"{_t(metric)} — {_t('Combined')}" if scope == "combined" else (
         f"{_t(metric)} — {_t(scope)}" if scope != "global" else _t(metric))
     hazard_idx = {"Sustained Wind": wind_idx, "River Flooding": river_idx,
@@ -6329,9 +6778,11 @@ clientside_callback(
 # on/off control for these two raw layers (this callback is simply an extra,
 # independent Input consumer of those same two checkbox ids — see that
 # function's own header comment for the full rationale), and flood-view-as
-# (also in _flood_hazards_family) resolves which aggregation mode
-# (mean/probability) the now-mode-aware /tiles/raster/{precip-raw,river-raw}
-# endpoints should render.
+# (nested under Rainfall's own controls in _flood_hazards_family, RAIN ONLY)
+# resolves which aggregation mode (mean/probability) the precip-raw endpoint
+# should render. River has no mode toggle at all — it always renders
+# Probability (removed per explicit user request; see
+# _fetch_river_extent_raster_tile's own docstring in services/tile_server.py).
 #
 # (2026-07-31) forecast_time resolution for BOTH raw layers now follows the
 # topbar's own date+time selection (topbar-date/topbar-time) instead of
@@ -6358,14 +6809,19 @@ clientside_callback(
     Input("topbar-date", "value"),
     Input("topbar-time", "value"),
     Input("ms-metadata-refresh-interval", "n_intervals"),
+    Input("ms-rain-window", "value"),
+    Input("ms-slider-debounce-store", "data"),
+    State("ms-rain-slider", "value"),
+    State("ms-river-slider", "value"),
     prevent_initial_call=False,
 )
-def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals):
+def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals, rain_window, _debounce_tick,
+                                rain_idx, river_idx):
     """Resolves the forecast_time for each global raw layer — matched to the
     selected topbar-date/topbar-time, NOT always "latest" (see this block's
-    own header comment above) — plus the shared Mean/Probability aggregation
-    mode from flood-view-as, then hands it all off to the clientside bridge
-    just below.
+    own header comment above) — plus the RAIN-ONLY Mean/Probability
+    aggregation mode from flood-view-as, then hands it all off to the
+    clientside bridge just below.
 
     prevent_initial_call=False so this fires immediately on page load (the
     explicit "shown by default on first load, no country selected" ask) —
@@ -6385,19 +6841,48 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     independent consumer of the same two checkboxes, not a replacement for
     that wiring. "Mean" here is a raw-layer-only visualization concept and is
     never combined with that population-impact system.
+
+    ms-rain-window/ms-rain-slider now ALSO drive the raw precip-rate raster's
+    window_h/threshold_mm (previously hardcoded to 6h/10mm server-side, see
+    services/tile_server.py's _PrecipRawCache — real bug fixed here, these
+    two controls used to do nothing for this layer). Same Input/State split
+    as _build_hazard_tile_config above: ms-rain-window is a direct
+    (un-debounced) Input (a SegmentedControl click, not a drag), while
+    ms-rain-slider is read as State off the shared ms-slider-debounce-store
+    tick so a slider drag doesn't re-push a new tile URL (and re-trigger a
+    MapLibre tile reload) on every intermediate drag position.
+
+    River has NO Mean mode (removed per explicit user request — see
+    _fetch_river_extent_raster_tile's own docstring in
+    services/tile_server.py): it renders Probability unconditionally, so
+    this store carries no river-side mode field at all, only rain's own
+    `rain_mode`.
     """
-    mode = view_as if view_as in ("mean", "probability") else "mean"
+    rain_mode = view_as if view_as in ("mean", "probability") else "probability"
     date = date or _DEFAULT_FORECAST_DATE
     run = run if run is not None else _DEFAULT_FORECAST_RUN
+    rain_window = rain_window or "6"
+    rain_idx = rain_idx if rain_idx is not None else 1
+    threshold_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx]
+    window_h = int(rain_window)
+    # Real bug fixed here: this used to always resolve/request rp10
+    # regardless of ms-river-slider's own value — the raw river layer's
+    # return-period tier is now genuinely selectable, matching rain's own
+    # window/threshold wiring above. Debounced the same way (State off the
+    # shared ms-slider-debounce-store tick) so a slider drag doesn't
+    # re-trigger a real Snowflake lookup + MapLibre tile reload per tick.
+    river_idx = river_idx if river_idx is not None else 2  # index 2 == "rp10", matches ms-river-slider's own default
+    rp_tier = _RIVER_RP_TIERS[river_idx]
+    is_standin_tier = rp_tier in _RIVER_STANDIN_RP_TIERS
     try:
         precip_latest = get_precip_forecast_time_near(date, run)
     except Exception as e:
         logger.warning("Could not resolve precip-raw forecast time near %s %sZ: %s", date, run, e)
         precip_latest = None
     try:
-        river_latest = get_river_extent_forecast_time_for_date(date)
+        river_latest = get_river_extent_forecast_time_for_date(date, rp_tier)
     except Exception as e:
-        logger.warning("Could not resolve river-raw forecast time for %s: %s", date, e)
+        logger.warning("Could not resolve river-raw forecast time for %s (rp_tier=%s): %s", date, rp_tier, e)
         river_latest = None
 
     precip_forecast_time = precip_latest[0] if precip_latest else None
@@ -6405,14 +6890,20 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     base_url = "" if config.SPCS_RUN else config.TILE_SERVER_URL
 
     # Both raster tile endpoints render fully pre-colored server-side (fixed
-    # breakpoint ramps per mode — see _colorize_precip_rate/_colorize_river_extent_*
+    # breakpoint ramps — see _colorize_precip_rate/_RIVER_EXTENT_PROB_COLORS
     # in tile_server.py), so no client-side stats call is needed here for
     # either layer's coloring.
     return {
         "tile_server_url": base_url,
-        "mode": mode,
+        # Rain-only — river has no Mean mode, always renders Probability
+        # server-side regardless of this value.
+        "rain_mode": rain_mode,
         "date": date,
         "run": run,
+        # Rain-only — read by applyGlobalRawConfig in maplibre_tiles.js to
+        # build the precip-raw tile URL's window_h/threshold_mm query params.
+        "window_h": window_h,
+        "threshold_mm": threshold_mm,
         "precip_forecast_time": precip_forecast_time,
         "precip_visible": bool(rain_on) and precip_forecast_time is not None,
         # Checked ON but no real cycle matched within the window — a real,
@@ -6422,6 +6913,12 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
         "river_forecast_time": river_forecast_time,
         "river_visible": bool(river_on) and river_forecast_time is not None,
         "river_date_unavailable": bool(river_on) and river_forecast_time is None,
+        # River-only — the selected return-period tier + whether it's a real,
+        # independently-computed tier or an IS_STANDIN=True placeholder that
+        # reuses rp10's own extent as a labelled bound (see
+        # _RIVER_STANDIN_RP_TIERS's own comment).
+        "rp_tier": rp_tier,
+        "rp_tier_is_standin": is_standin_tier,
     }
 
 
@@ -7020,5 +7517,142 @@ clientside_callback(
     Input("ms-tile-config-store", "data"),
     prevent_initial_call=True,
 )
+
+
+# =============================================================================
+# Demo Scenario tile-cache prewarm — closes the remaining "first load is
+# slow" gap found in the 2026-08 performance diagnostics.
+# =============================================================================
+# The clientside_callback right above already warms EVERY threshold value
+# for whichever country/storm/date is CURRENTLY selected — but only
+# reactively, once ms-tile-config-store updates after a user (or a Demo
+# Scenario click) has already picked it. That still leaves the FIRST combo
+# itself paying a full cold Snowflake fetch inline (measured live at
+# ~2.7-3.9s for a fresh country/storm/date/threshold combo, vs 1-6ms once
+# warm). Since this app ships a small, fixed, known set of Demo Scenario
+# presets (see _DEMO_SCENARIOS), warming exactly those specific combos
+# proactively at process startup — before any real user has had time to
+# click anything — means the app's own one-click demos are already warm by
+# the time anyone actually uses them. Deliberately bounded to just this
+# known list, not an attempt to warm every possible country/storm/date/
+# threshold combination (that would be unbounded/combinatorial).
+def _prewarm_demo_scenario_tile_cache() -> None:
+    """Background, best-effort warm-up of the tile server's per-country
+    pandas DataCache (services/tile_server.py's own /preload/ endpoint) for
+    every REAL country affected by each _DEMO_SCENARIOS entry's storm.
+    Fire-and-forget: runs in its own daemon thread so it never delays Dash
+    startup/readiness, and every failure is logged and swallowed — a
+    Snowflake hiccup here must never crash the app, same convention as
+    tile_server.py's own _prewarm_raw_caches.
+
+    Real bug found+fixed here: this used to only warm _DEMO_SCENARIOS'
+    own hand-listed single "countries" entry (e.g. just Jamaica for
+    MELISSA) — but a multi-country storm's real affected countries (e.g.
+    MELISSA also genuinely impacts Cuba/Nicaragua/Turks and Caicos Islands,
+    all selectable together via the Global-mode Active Storms row click,
+    same as _resolve_storms_for_date's own docstring describes) were never
+    warmed, so selecting the whole storm — not just its one demo-listed
+    country — still paid the full cold-cache tax for every country beyond
+    the first. _resolve_storms_for_date already resolves the real, complete
+    country list for whatever storm is real on this date; using ITS list
+    here instead of _DEMO_SCENARIOS' own hint keeps this correct even if a
+    future demo scenario's storm's real footprint changes."""
+    base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
+    if not base:
+        return
+    wind_kt = _resolve_wind_kt(None)
+    seen_dates = set()
+    for scenario in _DEMO_SCENARIOS:
+        date_key = (scenario["date"], scenario["time"])
+        if date_key in seen_dates:
+            continue  # multiple demo scenarios sharing the same date/run already resolved
+        seen_dates.add(date_key)
+        try:
+            storms = _resolve_storms_for_date(scenario["date"], scenario["time"])
+        except Exception as e:
+            logger.warning("Prewarm: could not resolve storms for demo scenario date %s: %s", scenario["date"], e)
+            continue
+        for storm in storms:
+            for country_name in storm["countries"]:
+                try:
+                    code = _NAME_TO_CODE.get(country_name)
+                    if not code:
+                        continue
+                    url = (f"{base}/preload/{urllib.parse.quote(code)}/{urllib.parse.quote(storm['name'])}"
+                           f"/{urllib.parse.quote(storm['mat_forecast_date'])}?wind_threshold={wind_kt}")
+                    urllib.request.urlopen(url, timeout=15).read()
+                    logger.info("Prewarm: demo scenario %s/%s tile cache warm-up requested",
+                                country_name, storm["name"])
+                except Exception as e:
+                    logger.warning("Prewarm: demo scenario %s/%s tile cache warm-up failed: %s",
+                                    country_name, storm["name"], e)
+
+
+threading.Thread(target=_prewarm_demo_scenario_tile_cache, daemon=True, name="demo-scenario-prewarm").start()
+
+
+def _prewarm_demo_scenario_raw_layers() -> None:
+    """Background, best-effort warm-up of the GLOBAL raw river-extent/
+    precip-rate rasters (services/tile_server.py's own /preload/river-raw/
+    and /preload/precip-raw/ endpoints — see _build_global_raw_config's own
+    header comment for why these are a completely separate system from the
+    per-country tile cache _prewarm_demo_scenario_tile_cache above warms)
+    for each _DEMO_SCENARIOS date, across every real topbar run value
+    (_RUN_VALUES), not just the one run each scenario happens to default to.
+
+    Real gap found+fixed here: the BAVI-period demo scenario's real Rainfall
+    data only exists on the 06Z run for its date (now its own default run,
+    since that scenario was later changed to a Global flood-hazards
+    preview) — a user manually switching to any OTHER run to explore was
+    still paying the full ~1.2GB Zarr cold-download cost inline for that
+    run, since nothing had ever warmed it. get_precip_forecast_time_near
+    resolves several different (date, run) inputs to the SAME underlying
+    forecast cycle, so distinct resolved forecast_times (not raw run
+    values) are de-duplicated before firing the actual expensive download
+    — this stays a small, bounded set
+    (at most 4 runs x 2 demo dates x 2 hazards) rather than an unbounded
+    "every possible time" sweep."""
+    base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
+    if not base:
+        return
+    seen_dates = set()
+    seen_precip_times, seen_river_times = set(), set()
+    for scenario in _DEMO_SCENARIOS:
+        if scenario["date"] in seen_dates:
+            continue
+        seen_dates.add(scenario["date"])
+        for run in _RUN_VALUES:
+            try:
+                resolved = get_precip_forecast_time_near(scenario["date"], run)
+            except Exception as e:
+                logger.warning("Prewarm: could not resolve precip-raw time for %s %sZ: %s", scenario["date"], run, e)
+                continue
+            forecast_time = resolved[0] if resolved else None
+            if not forecast_time or forecast_time in seen_precip_times:
+                continue
+            seen_precip_times.add(forecast_time)
+            try:
+                url = f"{base}/preload/precip-raw/{urllib.parse.quote(forecast_time)}"
+                urllib.request.urlopen(url, timeout=15).read()
+                logger.info("Prewarm: demo scenario precip-raw %s warm-up requested", forecast_time)
+            except Exception as e:
+                logger.warning("Prewarm: demo scenario precip-raw %s warm-up failed: %s", forecast_time, e)
+        try:
+            resolved = get_river_extent_forecast_time_for_date(scenario["date"])
+        except Exception as e:
+            logger.warning("Prewarm: could not resolve river-raw time for %s: %s", scenario["date"], e)
+            resolved = None
+        forecast_time = resolved[0] if resolved else None
+        if forecast_time and forecast_time not in seen_river_times:
+            seen_river_times.add(forecast_time)
+            try:
+                url = f"{base}/preload/river-raw/{urllib.parse.quote(forecast_time)}"
+                urllib.request.urlopen(url, timeout=15).read()
+                logger.info("Prewarm: demo scenario river-raw %s warm-up requested", forecast_time)
+            except Exception as e:
+                logger.warning("Prewarm: demo scenario river-raw %s warm-up failed: %s", forecast_time, e)
+
+
+threading.Thread(target=_prewarm_demo_scenario_raw_layers, daemon=True, name="demo-scenario-raw-prewarm").start()
 
 

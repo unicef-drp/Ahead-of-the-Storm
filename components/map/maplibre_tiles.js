@@ -1064,11 +1064,16 @@ window.dash_clientside.maplibre = {
 // Visibility is driven by the EXISTING ms-river-on ("River Flooding")/
 // ms-rain-on ("Rainfall") checkboxes (config.precip_visible/river_visible,
 // resolved by _build_global_raw_config in pages/map_shell_concept.py) — no
-// dedicated raw-layer checkboxes anymore. config.mode ("mean"|"probability",
-// from the flood-view-as SegmentedControl there) selects which server-side
-// aggregation both raster endpoints render; both endpoints are fully
-// pre-colored server-side (fixed breakpoint ramps per mode), so there is no
-// client-side color/radius styling needed for either layer.
+// dedicated raw-layer checkboxes anymore. config.rain_mode ("mean"|
+// "probability", from the flood-view-as SegmentedControl, now nested under
+// Rainfall's own controls) selects which server-side aggregation the
+// precip-raw endpoint renders — RAIN ONLY. River has no Mean mode (removed
+// per explicit user request: unlike rain, it has no second independent
+// quantity, so a Mean toggle there was always describing the identical
+// per-cell member-agreement fraction under a different name/colour) and
+// always renders Probability, with no mode query param at all. Both
+// endpoints are fully pre-colored server-side (fixed breakpoint ramps), so
+// there is no client-side color/radius styling needed for either layer.
 //
 // River-raw used to be a sparse vector/circle layer (one point per discharge
 // cell) — the user explicitly flagged that as wrong ("I only see points not
@@ -1094,13 +1099,23 @@ function applyGlobalRawConfig(config) {
 
     var ids  = _AOTS_GLOBAL_RAW_IDS;
     var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
-    var mode = (config.mode === 'probability') ? 'probability' : 'mean';
+    var rainMode = (config.rain_mode === 'probability') ? 'probability' : 'mean';
 
     // --- Precip-raw raster (radar-style rain-rate / exceedance-probability tiles) ---
+    // window_h/threshold_mm (resolved by _build_global_raw_config in
+    // pages/map_shell_concept.py from the SAME ms-rain-window/ms-rain-slider
+    // controls the country-scoped rain hazard already uses — see
+    // _hazardUrlParts's own 'rain' branch above for the identical query-param
+    // naming convention) — real bug fixed here: these two controls used to
+    // do nothing for this raw layer, which always rendered a hardcoded
+    // server-side default of 6h/10mm regardless of what was selected.
     var precipTime = config.precip_forecast_time;
     if (precipTime) {
+        var precipWindowH = config.window_h != null ? config.window_h : 6;
+        var precipThresholdMm = config.threshold_mm != null ? config.threshold_mm : 10.0;
         var precipUrl = base + '/tiles/raster/precip-raw/' + encodeURIComponent(precipTime)
-            + '/{z}/{x}/{y}.webp?mode=' + mode;
+            + '/{z}/{x}/{y}.webp?mode=' + rainMode
+            + '&window_h=' + precipWindowH + '&threshold_mm=' + precipThresholdMm;
         var precipSrc = map.getSource(ids.precipSource);
         if (precipSrc) {
             precipSrc.setTiles([precipUrl]);
@@ -1127,10 +1142,15 @@ function applyGlobalRawConfig(config) {
     }
 
     // --- River-raw raster (interpolated discharge / exceedance-probability tiles) ---
+    // rp_tier (resolved by _build_global_raw_config from ms-river-slider) —
+    // real bug fixed here: this used to always request the server's default
+    // rp10 regardless of what the slider was set to. No mode param — the endpoint
+    // always renders Probability.
     var riverTime = config.river_forecast_time;
+    var riverRpTier = config.rp_tier || 'rp10';
     if (riverTime) {
         var riverUrl = base + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
-            + '/{z}/{x}/{y}.webp?mode=' + mode;
+            + '/{z}/{x}/{y}.webp?rp_tier=' + riverRpTier;
         var riverSrc = map.getSource(ids.riverSource);
         if (riverSrc) {
             riverSrc.setTiles([riverUrl]);

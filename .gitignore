@@ -55,4 +55,6 @@ snowflake_spcs/
 !snowflake/intelligence/README.md
 !snowflake/mat_tables/README.md
 
-.map_shell_backups
+.map_shell_backups/
+.perf_scratch_test/
+.perf_prototype_spike/

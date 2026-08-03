@@ -15,6 +15,7 @@ import logging
 import time
 import threading
 import functools
+from collections import OrderedDict
 from functools import lru_cache
 import pandas as pd
 import geopandas as gpd
@@ -32,14 +33,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # TTL-based cache
 # ---------------------------------------------------------------------------
-# Replaces lru_cache with time-bounded expiry so the Dash app automatically
-# serves fresh Snowflake data without a container restart.
+# Time-bounded expiry so the Dash app automatically serves fresh Snowflake
+# data without a container restart.
 #
-# Mechanism: bucket = int(time.time() // ttl_seconds) is injected as the
-# first argument of the inner lru_cache. The bucket integer increments every
-# ttl_seconds seconds (at fixed wall-clock boundaries), which forces a cache
-# miss and a fresh Snowflake query at most ttl_seconds after data changes.
-# Thread-safe: inherits lru_cache's internal lock.
+# Sliding PER-ENTRY TTL, thread-safe LRU. The original version bucketed on
+# int(time.time() // ttl_seconds), which meant every entry across every
+# function decorated with this cache expired at the exact same instant every
+# ttl_seconds — a cache stampede under any real concurrent traffic at that
+# moment (found in the 2026-08 performance audit, already fixed in
+# services/tile_server.py's own copy of this decorator; ported here for
+# consistency since several functions here were newly wired into that same
+# audit's N+1 fix). Each entry now expires ttl_seconds after IT was
+# individually cached, so misses spread out over time instead of
+# synchronizing.
 
 _META_TTL    = 15 * 60   # 15 min — storm list, forecast times (new storms appear promptly)
 _IMPACT_TTL  = 15 * 60   # 15 min — impact queries (new pipeline output picked up within 15 min)
@@ -47,19 +53,40 @@ _BASE_TTL    = 60 * 60   # 60 min — base layers (schools/HCs/tiles — change 
 
 
 def ttl_cache(ttl_seconds: int, maxsize: int = 128):
-    """lru_cache with automatic TTL-based expiry."""
+    """LRU cache with a sliding per-entry TTL, thread-safe."""
     def decorator(func):
-        @functools.lru_cache(maxsize=maxsize)
-        def cached(_bucket, args, kwargs):
-            return func(*args, **dict(kwargs))
+        cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
+        lock = threading.Lock()
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            bucket = int(time.time() // ttl_seconds)
-            return cached(bucket, args, tuple(sorted(kwargs.items())))
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.monotonic()
+            with lock:
+                entry = cache.get(key)
+                if entry is not None and entry[0] > now:
+                    cache.move_to_end(key)
+                    return entry[1]
+            # Computed outside the lock — a slow Snowflake-backed miss on one
+            # key must not block lookups/hits for every other key.
+            value = func(*args, **kwargs)
+            with lock:
+                cache[key] = (now + ttl_seconds, value)
+                cache.move_to_end(key)
+                while len(cache) > maxsize:
+                    cache.popitem(last=False)
+            return value
 
-        wrapper.cache_clear = cached.cache_clear
-        wrapper.cache_info  = cached.cache_info
+        def cache_clear():
+            with lock:
+                cache.clear()
+
+        def cache_info():
+            with lock:
+                return {"size": len(cache), "maxsize": maxsize}
+
+        wrapper.cache_clear = cache_clear
+        wrapper.cache_info  = cache_info
         return wrapper
     return decorator
 
@@ -195,6 +222,7 @@ def get_snowflake_connection():
         raise
 
 
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_available_wind_thresholds(storm, forecast_time):
     """
     Get available wind thresholds for a specific storm and forecast time from Snowflake
@@ -472,10 +500,18 @@ def get_precip_forecast_time_near(target_date: str, target_time: str = "00"):
 
 
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
-def get_river_extent_forecast_time_for_date(target_date: str):
+def get_river_extent_forecast_time_for_date(target_date: str, rp_tier: str = "rp10"):
     """Real FORECAST_TIME + STAGE_PATH in RIVER_FORECASTS
-    (PARAM='extent_rp10_bymember') for a given topbar date, for the raw
+    (PARAM='extent_{rp_tier}_bymember') for a given topbar date, for the raw
     global river flood-extent raster layer.
+
+    `rp_tier` (default "rp10", matching the slider's own default): real bug
+    fixed here — this used to be hardcoded to rp10 regardless of which
+    return-period tier the ms-river-slider was actually set to. All 6 real
+    tiers (rp2/rp5/rp10/rp20/rp50/rp100) are generated together per pipeline
+    run for a given date (confirmed live), so in practice every tier
+    resolves to the same forecast_time for the same date — but this is
+    parameterized properly rather than assuming that always holds.
 
     Unlike precip's irregular cycle hours (see get_precip_forecast_time_near
     above), extent_rp10_bymember cycles are DAILY only (confirmed live: one
@@ -501,15 +537,15 @@ def get_river_extent_forecast_time_for_date(target_date: str):
     try:
         df = _run_query(
             "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
-            "WHERE PARAM = 'extent_rp10_bymember' AND CAST(FORECAST_TIME AS DATE) = TO_DATE(%s) "
+            "WHERE PARAM = %s AND CAST(FORECAST_TIME AS DATE) = TO_DATE(%s) "
             "ORDER BY FORECAST_TIME DESC LIMIT 1",
-            params=[target_date],
+            params=[f"extent_{rp_tier}_bymember", target_date],
         )
         if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
             return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
         return None
     except Exception as e:
-        logger.error("Error getting river-extent forecast time for date %s: %s", target_date, e)
+        logger.error("Error getting river-extent forecast time for date %s (rp_tier=%s): %s", target_date, rp_tier, e)
         return None
 
 
@@ -1176,6 +1212,7 @@ def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshol
         return pd.DataFrame()
 
 
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_gust_tile_impacts(country: str, storm: str, forecast_date: str, gust_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
     """
     Real per-tile GUST impact totals — MERCATOR_TILE_GUST_MAT, same shape as
@@ -1208,6 +1245,7 @@ def get_gust_tile_impacts(country: str, storm: str, forecast_date: str, gust_thr
         return pd.DataFrame()
 
 
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd.DataFrame:
     """
     Real per-tile RIVER flood-extent impact totals — MERCATOR_TILE_RIVER_MAT,
@@ -1246,6 +1284,7 @@ def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd
         return pd.DataFrame()
 
 
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window_h) -> pd.DataFrame:
     """
     Real per-tile RAINFALL impact totals — MERCATOR_TILE_PRECIP_MAT, keyed by

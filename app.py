@@ -67,7 +67,13 @@ def serve_tile_palettes_js():
 def serve_map_static(filename):
     from flask import make_response
     resp = make_response(send_from_directory(_MAP_COMPONENTS_DIR, filename))
-    resp.headers["Cache-Control"] = "no-store"
+    # "no-cache" (not "no-store") — still hits the server on every page load
+    # to revalidate, so active JS edits are never served stale, but Flask's
+    # send_from_directory sets ETag/Last-Modified by default, so an
+    # unchanged file returns a tiny 304 instead of re-transferring the full
+    # ~40KB body every time (2026-08 performance audit found this was
+    # unconditionally re-fetched on every fresh page load).
+    resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

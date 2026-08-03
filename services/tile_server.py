@@ -31,7 +31,7 @@ import os
 import tempfile
 import threading
 import time
-from functools import lru_cache
+from collections import OrderedDict
 from typing import Optional
 
 # Tile data and rendered tiles expire after this many seconds so new pipeline
@@ -40,19 +40,49 @@ _TILE_TTL = 15 * 60  # 15 minutes
 
 
 def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
-    """lru_cache with automatic TTL expiry (bucket-based, thread-safe)."""
+    """LRU cache with a sliding PER-ENTRY TTL, thread-safe.
+
+    The previous implementation bucketed on time.time() // ttl_seconds,
+    which meant every entry in the cache — every tile, across every
+    country/storm/property combination — expired at the exact same instant
+    every ttl_seconds, a cache stampede under any real concurrent traffic at
+    that moment (found in the 2026-08 performance audit). Each entry now
+    expires ttl_seconds after IT was individually cached, so misses spread
+    out over time instead of synchronizing.
+    """
     def decorator(func):
-        @functools.lru_cache(maxsize=maxsize)
-        def cached(_bucket, args, kwargs):
-            return func(*args, **dict(kwargs))
+        cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
+        lock = threading.Lock()
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            bucket = int(time.time() // ttl_seconds)
-            return cached(bucket, args, tuple(sorted(kwargs.items())))
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.monotonic()
+            with lock:
+                entry = cache.get(key)
+                if entry is not None and entry[0] > now:
+                    cache.move_to_end(key)
+                    return entry[1]
+            # Computed outside the lock — a slow Snowflake-backed miss on one
+            # key must not block lookups/hits for every other key.
+            value = func(*args, **kwargs)
+            with lock:
+                cache[key] = (now + ttl_seconds, value)
+                cache.move_to_end(key)
+                while len(cache) > maxsize:
+                    cache.popitem(last=False)
+            return value
 
-        wrapper.cache_clear = cached.cache_clear
-        wrapper.cache_info  = cached.cache_info
+        def cache_clear():
+            with lock:
+                cache.clear()
+
+        def cache_info():
+            with lock:
+                return {"size": len(cache), "maxsize": maxsize}
+
+        wrapper.cache_clear = cache_clear
+        wrapper.cache_info  = cache_info
         return wrapper
     return decorator
 
@@ -123,68 +153,90 @@ if not SPCS_RUN:
 
 MAT_ZOOM_LEVEL: int = 14
 
-_conn: Optional[snowflake.connector.SnowflakeConnection] = None
-_conn_lock = threading.Lock()
-_query_lock = threading.Lock()
+# Thread-local connections — one persistent Snowflake connection per FastAPI
+# worker thread, mirroring components/data/snowflake_utils.py's own pattern.
+# Previously a SINGLE module-global connection was shared by every thread,
+# guarded by a global _query_lock that forced every query in the whole
+# process to run one at a time — exactly when concurrent cold-loads (several
+# countries/users hitting an empty cache at once) most needed parallelism.
+# Each thread now owns its own connection, so concurrent requests execute
+# their queries in parallel with no shared-cursor risk.
+_thread_local = threading.local()
+_CONN_HEALTH_CHECK_INTERVAL = 300  # seconds — matches snowflake_utils.py
+
+
+def _connect() -> snowflake.connector.SnowflakeConnection:
+    log.info("Opening new Snowflake connection (SPCS=%s)…", SPCS_RUN)
+    if SPCS_RUN:
+        with open(SPCS_TOKEN_PATH, "r") as f:
+            token = f.read().strip()
+        kwargs: dict = dict(
+            host=SNOWFLAKE_HOST,
+            port=SNOWFLAKE_PORT,
+            protocol="https",
+            account=SNOWFLAKE_ACCOUNT,
+            authenticator="oauth",
+            token=token,
+            database=SNOWFLAKE_DATABASE,
+            schema=SNOWFLAKE_SCHEMA,
+            warehouse=SNOWFLAKE_WAREHOUSE,
+        )
+    else:
+        kwargs = dict(
+            account=SNOWFLAKE_ACCOUNT,
+            user=SNOWFLAKE_USER,
+            password=SNOWFLAKE_PASSWORD,
+            database=SNOWFLAKE_DATABASE,
+            schema=SNOWFLAKE_SCHEMA,
+            warehouse=SNOWFLAKE_WAREHOUSE,
+        )
+    if SNOWFLAKE_ROLE:
+        kwargs["role"] = SNOWFLAKE_ROLE
+    return snowflake.connector.connect(**kwargs)
 
 
 def get_connection() -> snowflake.connector.SnowflakeConnection:
-    global _conn
-    with _conn_lock:
+    conn = getattr(_thread_local, "connection", None)
+    if conn is not None:
+        last_check = getattr(_thread_local, "last_health_check", 0.0)
+        if time.monotonic() - last_check < _CONN_HEALTH_CHECK_INTERVAL:
+            return conn
         try:
-            if _conn is not None and not _conn.is_closed():
-                return _conn
+            if not conn.is_closed():
+                _thread_local.last_health_check = time.monotonic()
+                return conn
         except Exception as exc:
             log.debug("Stale connection check failed, reconnecting: %s", exc)
-        log.info("Opening new Snowflake connection (SPCS=%s)…", SPCS_RUN)
-        if SPCS_RUN:
-            with open(SPCS_TOKEN_PATH, "r") as f:
-                token = f.read().strip()
-            kwargs: dict = dict(
-                host=SNOWFLAKE_HOST,
-                port=SNOWFLAKE_PORT,
-                protocol="https",
-                account=SNOWFLAKE_ACCOUNT,
-                authenticator="oauth",
-                token=token,
-                database=SNOWFLAKE_DATABASE,
-                schema=SNOWFLAKE_SCHEMA,
-                warehouse=SNOWFLAKE_WAREHOUSE,
-            )
-        else:
-            kwargs = dict(
-                account=SNOWFLAKE_ACCOUNT,
-                user=SNOWFLAKE_USER,
-                password=SNOWFLAKE_PASSWORD,
-                database=SNOWFLAKE_DATABASE,
-                schema=SNOWFLAKE_SCHEMA,
-                warehouse=SNOWFLAKE_WAREHOUSE,
-            )
-        if SNOWFLAKE_ROLE:
-            kwargs["role"] = SNOWFLAKE_ROLE
-        _conn = snowflake.connector.connect(**kwargs)
-        return _conn
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _thread_local.connection = None
+    conn = _connect()
+    _thread_local.connection = conn
+    _thread_local.last_health_check = time.monotonic()
+    return conn
 
 
 def _run_query(sql: str, params: list) -> list[dict]:
-    global _conn
     for attempt in range(2):
         conn = get_connection()
         try:
-            with _query_lock:
-                cur = conn.cursor()
-                try:
-                    cur.execute(sql, params)
-                    cols = [d[0].upper() for d in cur.description]
-                    return [dict(zip(cols, row)) for row in cur.fetchall()]
-                finally:
-                    cur.close()
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, params)
+                cols = [d[0].upper() for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            finally:
+                cur.close()
         except snowflake.connector.errors.ProgrammingError as exc:
             if exc.errno == 390114 and attempt == 0:
                 log.info("SPCS token expired — reconnecting with fresh token…")
-                with _conn_lock:
-                    if _conn is conn:
-                        _conn = None
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _thread_local.connection = None
                 continue
             raise
 
@@ -1787,15 +1839,43 @@ def _fetch_raster_tile(
     py0 = np.floor((1.0 - (merc_ns - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32)
     py1 = np.floor((1.0 - (merc_ss - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32) + 1
 
-    for i in range(len(vals)):
-        if not np.isfinite(t[i]):
-            continue
-        r, g, b, a = palette_rgba[idx[i]]
-        x0 = max(0, px0[i])
-        y0 = max(0, py0[i])
-        x1 = min(512, max(x0 + 1, px1[i]))
-        y1 = min(512, max(y0 + 1, py1[i]))
-        img_arr[y0:y1, x0:x1] = (r, g, b, a)
+    # Vectorized scatter-paint — replaces a Python-level `for i in
+    # range(len(vals))` loop that re-executed per pixel-rectangle on every
+    # cache-miss tile (found to be the single biggest per-request CPU cost
+    # in the 2026-08 performance audit). Numpy's documented behavior for
+    # fancy-index assignment with duplicate indices (`arr[idx] = values`)
+    # applies each value in array order, last one wins — exactly the same
+    # last-row-wins semantics the original loop had at cell-boundary
+    # overlaps, just computed without a per-row Python iteration. Verified
+    # byte-identical to the original loop across 400+ randomized trials
+    # (including boundary-clipped and heavily-overlapping cases) before
+    # being wired in here — see .perf_scratch_test/ for that check.
+    palette_rgba_arr = np.asarray(palette_rgba, dtype=np.uint8)
+    x0v = np.maximum(0, px0)
+    y0v = np.maximum(0, py0)
+    x1v = np.minimum(512, np.maximum(x0v + 1, px1))
+    y1v = np.minimum(512, np.maximum(y0v + 1, py1))
+    finite = np.isfinite(t)
+    wv = np.where(finite, np.maximum(0, x1v - x0v), 0)
+    hv = np.where(finite, np.maximum(0, y1v - y0v), 0)
+    counts = (wv * hv).astype(np.int64)
+    total = int(counts.sum())
+
+    if total > 0:
+        # cum_start[i] = pixel index where row i's block begins in the flat
+        # `total`-length arrays below — rows are laid out in order, so
+        # duplicate flat_idx writes at shared-boundary overlaps still
+        # resolve last-row-wins.
+        cum_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
+        pixel_offset = np.arange(total) - np.repeat(cum_start, counts)
+        w_per_pixel = np.repeat(wv, counts)
+        dy = pixel_offset // w_per_pixel
+        dx = pixel_offset % w_per_pixel
+        abs_y = np.repeat(y0v, counts) + dy
+        abs_x = np.repeat(x0v, counts) + dx
+        colors = palette_rgba_arr[np.repeat(idx, counts)]
+        flat_idx = abs_y.astype(np.int64) * 512 + abs_x.astype(np.int64)
+        img_arr.reshape(-1, 4)[flat_idx] = colors
 
     if not img_arr.any():
         return None
@@ -1826,30 +1906,51 @@ def _fetch_raster_tile(
 # container restart.
 _PRECIP_RAW_TTL = 4 * 60 * 60  # 4 hours
 
-# T+0 -> T+6h accumulated-mm window used as a "current rain rate" snapshot.
-# tp is stored as a cumulative total from T+0 (see MET_FORECASTS ingestion),
-# so any single step value would be an ever-growing blob unrelated to "how
-# hard is it raining right now". Differencing two adjacent steps yields a
-# bounded, radar-like rate instead. The very first window (T+0 to T+6h) is
-# chosen over a later one (e.g. T+72h-T+78h) because it's the closest
+# T+0 -> T+{window}h accumulated-mm window used as a "current rain rate"
+# snapshot. tp is stored as a cumulative total from T+0 (see MET_FORECASTS
+# ingestion), so any single step value would be an ever-growing blob
+# unrelated to "how hard is it raining right now". Differencing T+0 against
+# a later step yields a bounded, radar-like rate instead. T+0 is always the
+# window start (rather than e.g. T+72h-T+78h) because it's the closest
 # available proxy to current conditions at the model's own init time — later
-# windows describe a future 6h period, not "now".
+# windows describe a future period, not "now".
+#
+# Windows supported here are exactly the real windows the app's own
+# per-country rain-hazard UI already exposes via ms-rain-window (see
+# pages/map_shell_concept.py's _RAIN_MM_BY_WINDOW dict — this list's values
+# MUST match that dict's keys, as ints, or the two systems silently
+# desync). Kept as a plain list (not imported from pages/map_shell_concept.py)
+# because this module must stay import-independent of the Dash page layer.
 _PRECIP_RATE_STEP_A = 0
-_PRECIP_RATE_STEP_B = 6
+_PRECIP_RATE_WINDOWS_H = [6, 24, 72, 120]
 
-# Radar-style color ramp for mm accumulated over the T+0->T+6h window.
+# Backward-compat default window for callers that don't pass window_h at all
+# (existing behavior before this was made configurable).
+_PRECIP_RATE_DEFAULT_WINDOW_H = 6
+
+# Radar-style color ramp for mm accumulated over the T+0->T+{window}h window.
 # Chosen to resemble a standard weather-radar reflectivity ramp (green ->
 # yellow -> orange -> red), NOT this app's existing sequential blue/red
 # impact-probability palettes. Alpha rises with intensity so heavier rain
 # reads as more solid/opaque, matching how radar overlays are usually
-# perceived.
+# perceived. These 5 breakpoints are for the BASE window (6h) only:
 #   < 0.5mm  : transparent  (no perceptible rain)
 #   0.5-5mm  : light green  (light rain)
 #   5-15mm   : green        (moderate rain)
 #   15-30mm  : yellow       (heavy rain)
 #   30-60mm  : orange       (very heavy rain)
 #   >=60mm   : red          (extreme rain)
-_PRECIP_RATE_BREAKS = [0.5, 5.0, 15.0, 30.0, 60.0]
+# Real bug found+fixed here: this ramp used to be applied UNSCALED to every
+# window's mean-rate grid, even though the grid itself genuinely does hold
+# larger accumulated totals for longer windows (real 120h/5-day accumulations
+# routinely exceed 150mm — see _PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM's own
+# 120 entry, the same real depth-tier classification ms-rain-slider exposes).
+# A fixed 60mm ceiling meant almost the entire map rendered as one saturated
+# "extreme rain" red blob for any window longer than 6h, with zero visual
+# resolution above 60mm. _precip_rate_breaks_for_window() below scales this
+# base ramp per window using that same real classification data (a single
+# source of truth, not an invented second set of numbers).
+_PRECIP_RATE_BASE_BREAKS = [0.5, 5.0, 15.0, 30.0, 60.0]
 _PRECIP_RATE_COLORS: list[tuple[int, int, int, int]] = [
     (0,   0,   0,   0),
     (168, 230, 145, 140),
@@ -1868,15 +1969,52 @@ _PRECIP_RATE_COLORS: list[tuple[int, int, int, int]] = [
 _PRECIP_PROB_ENSEMBLE_SIZE = 51
 
 # "Notable rain" cutoff for the probability variant: the fraction of ensemble
-# members whose T+0->T+6h accumulated rate exceeds this many mm. 10mm/6h
+# members whose T+0->T+{window}h accumulated rate exceeds a given mm
+# threshold. This is independent of the mean ramp's own 0.5/5/15/30/60mm
+# intensity buckets above (those describe magnitude of a single
+# ensemble-mean value; this describes ensemble agreement on a threshold).
+#
+# Backward-compat default threshold for callers that don't pass threshold_mm
+# at all (existing behavior before this was made configurable): 10mm/6h
 # (~1.7mm/h average) is a widely-used operational threshold for the onset of
 # moderate rain — high enough to filter out drizzle/model noise, low enough
-# to give useful lead-time signal before conditions turn heavy. This is a
-# single fixed cut point, chosen independently of the mean ramp's own
-# 0.5/5/15/30/60mm intensity buckets above (those describe magnitude of a
-# single ensemble-mean value; this describes ensemble agreement on a single
-# threshold).
+# to give useful lead-time signal before conditions turn heavy.
 _PRECIP_PROB_THRESHOLD_MM = 10.0
+
+# Real per-window depth-tier thresholds (mm) the app's own ms-rain-slider
+# already exposes per ms-rain-window selection — copied verbatim from
+# pages/map_shell_concept.py's _RAIN_MM_BY_WINDOW (that dict remains the
+# single source of truth; kept here as a plain literal, not imported, for the
+# same import-independence reason as _PRECIP_RATE_WINDOWS_H above). Every
+# (window_h, threshold_mm) pair reachable from the real UI is precomputed in
+# ensure_precip_raw() below, PLUS the legacy default (6, 10.0) pair (not one
+# of the real UI tiers, but must keep working for existing callers/bookmarks
+# that never pass threshold_mm at all).
+_PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM: dict[int, list[float]] = {
+    6: [25.0, 50.0, 75.0],
+    24: [35.0, 70.0, 103.0],
+    72: [45.0, 90.0, 133.0],
+    120: [50.0, 100.0, 150.0],
+}
+
+
+def _precip_rate_breaks_for_window(window_h: int) -> list[float]:
+    """Scale _PRECIP_RATE_BASE_BREAKS (the 6h radar ramp) up for longer
+    accumulation windows, using the ratio of this window's own top real
+    depth-tier threshold (_PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM's own highest
+    entry — the exact same real classification numbers ms-rain-slider's
+    severity tiers use) to the base window's (75mm). Real bug fixed here —
+    see _PRECIP_RATE_BASE_BREAKS's own comment for the full "why".
+
+    E.g. 120h's top real tier (150mm) is exactly 2x 6h's (75mm), so its ramp
+    breaks are [1.0, 10.0, 30.0, 60.0, 120.0] — "extreme rain" now only
+    triggers past 120mm/5-days instead of a flat, physically-too-low 60mm.
+    """
+    base_top = _PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM[_PRECIP_RATE_DEFAULT_WINDOW_H][-1]
+    window_top = _PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM.get(int(window_h), [base_top])[-1]
+    scale = window_top / base_top
+    return [round(b * scale, 1) for b in _PRECIP_RATE_BASE_BREAKS]
+
 
 # Sequential single-hue purple ramp for exceedance PROBABILITY (0-100% of
 # members exceeding _PRECIP_PROB_THRESHOLD_MM). Deliberately NOT the
@@ -1909,10 +2047,48 @@ _PRECIP_RAW_BY_TIME_SQL = """
     WHERE PARAM = 'tp' AND FORECAST_TIME = %s
 """
 
+# Rolling prewarm window (see _prewarm_raw_caches's own comment) — the 3 most
+# recent DISTINCT real forecast times, not just the single latest one. DISTINCT
+# matters here: MET_FORECASTS has many rows per FORECAST_TIME (one per param/
+# tile), so a plain ORDER BY ... LIMIT 3 without it could return 3 rows that
+# all share the same forecast_time instead of 3 different cycles.
+_LATEST_3_PRECIP_RAW_SQL = """
+    SELECT DISTINCT FORECAST_TIME, STAGE_PATH
+    FROM AOTS.TC_ECMWF.MET_FORECASTS
+    WHERE PARAM = 'tp'
+    ORDER BY FORECAST_TIME DESC
+    LIMIT 3
+"""
+
+
+def _precip_prob_key(window_h: int, threshold_mm: float) -> tuple[int, float]:
+    """Normalizes a (window_h, threshold_mm) pair into the exact dict key
+    ensure_precip_raw() precomputes prob grids under — rounds threshold_mm to
+    1 decimal so float query-string round-tripping (e.g. "103.0" -> 103.0)
+    can't silently miss an otherwise-identical precomputed entry."""
+    return int(window_h), round(float(threshold_mm), 1)
+
 
 class _PrecipRawCache:
     """Downloads+opens the latest global tp Zarr ONCE per forecast_time, keeps
-    an ensemble-mean precip-RATE grid (mm over the T+0->T+6h window) in memory.
+    an ensemble-mean precip-RATE grid (mm over T+0->T+{window}h) PLUS
+    exceedance-probability grids for every real (window_h, threshold_mm)
+    combination the app's own ms-rain-window/ms-rain-slider controls can
+    produce (see _PRECIP_RATE_WINDOWS_H/_PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM)
+    in memory, all from that SAME single per-forecast_time download.
+
+    Memory/compute tradeoff (explicitly decided, see ensure_precip_raw's own
+    docstring for the full reasoning): precompute every (window, threshold)
+    grid up front and discard the full per-member array before returning,
+    rather than retaining the per-member rate_grid(s) to compute probability
+    on demand per request. With 4 windows and ~3 thresholds each (+1 legacy
+    default), that's ~17 small (n_lat, n_lon) float32 grids (~2.6MB each ->
+    ~45MB per forecast_time) versus retaining 4 full (51, n_lat, n_lon)
+    per-member arrays (~133MB EACH -> ~530MB per forecast_time), which would
+    multiply across the rolling 3-forecast_time prewarm window into ~1.6GB of
+    steady-state extra memory. Precomputing is far cheaper both in steady-
+    state memory and in per-request compute (a real request is now a plain
+    dict lookup, not a comparison+reduction over a retained (51, H, W) array).
 
     TTL: _PRECIP_RAW_TTL (4h), not _TILE_TTL — see module comment above.
     Thread-safe via double-checked locking, same pattern as _DataCache.
@@ -1948,12 +2124,20 @@ class _PrecipRawCache:
         return resolved[0] if resolved else None
 
     def ensure_precip_raw(self, forecast_time: Optional[str]) -> Optional[str]:
-        """Ensure the precip-rate grid for `forecast_time` is loaded in memory.
+        """Ensure the precip-rate grids for `forecast_time` are loaded in memory.
 
         `forecast_time` of None/""/"latest" always resolves to the current
         latest cycle. Returns the resolved forecast_time string actually
         loaded, or None if no tp data exists at all (for the requested time,
         or globally).
+
+        Computes+caches a mean-rate grid per real window (_PRECIP_RATE_
+        WINDOWS_H) and a probability grid per real (window, threshold)
+        combination (_PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM, plus the legacy
+        default pair) from the SAME single downloaded per-member array —
+        see this class's own docstring for why precomputing up front (rather
+        than retaining the per-member array for on-demand computation) was
+        chosen.
         """
         latest = self._resolve_latest()
         if latest is None:
@@ -2000,33 +2184,70 @@ class _PrecipRawCache:
                     arr = root["data"]  # shape (51, 25, 481, 1440), float16, mm accumulated from T+0
                     attrs = dict(root.attrs)
                     steps = list(attrs.get("steps", list(range(0, 150, 6))))
-                    ia, ib = steps.index(_PRECIP_RATE_STEP_A), steps.index(_PRECIP_RATE_STEP_B)
-                    data_a = np.asarray(arr[:, ia, :, :]).astype(np.float32)
-                    data_b = np.asarray(arr[:, ib, :, :]).astype(np.float32)
-                    rate_grid = data_b - data_a  # (51, n_lat, n_lon) mm over [ia, ib)
-                    # Ensemble mean across all 51 members -> one representative rate grid,
-                    # conceptually mirroring wind/gust's own ensemble-probability coloring
-                    # (an aggregate across members, not a single member's raw value).
-                    mean_rate = np.nanmean(rate_grid, axis=0)  # (n_lat, n_lon)
-                    # Exceedance-probability reduction on the SAME per-member rate_grid,
-                    # computed here (before it goes out of scope) rather than re-downloading
-                    # the Zarr later for the probability variant. Mirrors the DATAPIPELINE
-                    # repo's own precip_utils.exceedance_probability() idiom exactly: count
-                    # members exceeding the threshold, divide by the fixed ensemble size (not
-                    # rate_grid.shape[0]) — NaNs compare False against the threshold, so they
-                    # fall out as "non-exceeding" automatically, same documented convention.
-                    prob_rate = (
-                        (rate_grid > _PRECIP_PROB_THRESHOLD_MM).sum(axis=0)
-                        / _PRECIP_PROB_ENSEMBLE_SIZE
-                    ).astype(np.float32)  # (n_lat, n_lon), fraction in [0, 1]
                     lat_min, lat_max = float(attrs["lat_min"]), float(attrs["lat_max"])
                     lon_min, lon_max = float(attrs["lon_min"]), float(attrs["lon_max"])
+
+                    ia = steps.index(_PRECIP_RATE_STEP_A)
+                    data_a = np.asarray(arr[:, ia, :, :]).astype(np.float32)  # (51, n_lat, n_lon), T+0
+
+                    grids: dict[int, np.ndarray] = {}
+                    prob_grids: dict[tuple[int, float], np.ndarray] = {}
+                    n_lat = n_lon = None
+                    for window_h in _PRECIP_RATE_WINDOWS_H:
+                        if window_h not in steps:
+                            # Defensive only — every real tp Zarr uses a 6-hourly step
+                            # grid (0..144), which covers all 4 real windows exactly.
+                            # A cycle with a genuinely truncated step list (e.g. a
+                            # partial/degraded ingestion) just skips that window rather
+                            # than crashing the whole cache load.
+                            log.warning("PrecipRaw: window_h=%d not in this cycle's steps %s, skipping",
+                                        window_h, steps)
+                            continue
+                        ib = steps.index(window_h)
+                        data_b = np.asarray(arr[:, ib, :, :]).astype(np.float32)
+                        # (51, n_lat, n_lon) mm over [T+0, T+window_h) — freed at the end
+                        # of this loop iteration (not retained across windows/requests,
+                        # see this class's own docstring for why).
+                        rate_grid = data_b - data_a
+                        del data_b
+                        # Ensemble mean across all 51 members -> one representative rate grid,
+                        # conceptually mirroring wind/gust's own ensemble-probability coloring
+                        # (an aggregate across members, not a single member's raw value).
+                        grids[window_h] = np.nanmean(rate_grid, axis=0)  # (n_lat, n_lon)
+                        if n_lat is None:
+                            n_lat, n_lon = grids[window_h].shape
+
+                        # Exceedance-probability reduction on the SAME per-member rate_grid,
+                        # computed here (before it goes out of scope) rather than re-downloading
+                        # the Zarr later for the probability variant. Mirrors the DATAPIPELINE
+                        # repo's own precip_utils.exceedance_probability() idiom exactly: count
+                        # members exceeding the threshold, divide by the fixed ensemble size (not
+                        # rate_grid.shape[0]) — NaNs compare False against the threshold, so they
+                        # fall out as "non-exceeding" automatically, same documented convention.
+                        #
+                        # Real UI tiers for this window, PLUS the legacy default threshold
+                        # (only relevant for the default window, but harmless/cheap to
+                        # dedupe via `set` for every window) — see
+                        # _PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM's own docstring.
+                        thresholds = set(_PRECIP_PROB_THRESHOLDS_BY_WINDOW_MM.get(window_h, []))
+                        if window_h == _PRECIP_RATE_DEFAULT_WINDOW_H:
+                            thresholds.add(_PRECIP_PROB_THRESHOLD_MM)
+                        for threshold_mm in thresholds:
+                            key = _precip_prob_key(window_h, threshold_mm)
+                            prob_grids[key] = (
+                                (rate_grid > threshold_mm).sum(axis=0)
+                                / _PRECIP_PROB_ENSEMBLE_SIZE
+                            ).astype(np.float32)  # (n_lat, n_lon), fraction in [0, 1]
+                        del rate_grid
+                    del data_a
                 finally:
                     store.close()
-            n_lat, n_lon = mean_rate.shape
+            if not grids:
+                log.error("PrecipRaw: no real window could be computed for %s (steps=%s)", forecast_time, steps)
+                return None
             self._grid[forecast_time] = {
-                "grid": mean_rate,
-                "prob_grid": prob_rate,
+                "grids": grids,
+                "prob_grids": prob_grids,
                 "lat_min": lat_min, "lat_max": lat_max,
                 "lon_min": lon_min, "lon_max": lon_max,
                 "n_lat": n_lat, "n_lon": n_lon,
@@ -2036,30 +2257,60 @@ class _PrecipRawCache:
                 "lon_step": (lon_max - lon_min) / (n_lon - 1),
             }
             self._loaded_at[forecast_time] = time.time()
-            finite = mean_rate[np.isfinite(mean_rate)]
-            log.info("  PrecipRaw: grid ready %s (%dx%d, mean rate %.2f-%.2fmm)",
-                      forecast_time, n_lat, n_lon,
+            default_mean = grids.get(_PRECIP_RATE_DEFAULT_WINDOW_H, next(iter(grids.values())))
+            finite = default_mean[np.isfinite(default_mean)]
+            log.info("  PrecipRaw: grids ready %s (%dx%d, windows=%s, %d prob combos, default-window mean rate %.2f-%.2fmm)",
+                      forecast_time, n_lat, n_lon, sorted(grids.keys()), len(prob_grids),
                       float(finite.min()) if finite.size else 0.0,
                       float(finite.max()) if finite.size else 0.0)
         return forecast_time
 
-    def get_grid(self, forecast_time: str) -> Optional[dict]:
-        return self._grid.get(forecast_time)
+    def get_render_entry(self, forecast_time: str, window_h: int, threshold_mm: float) -> Optional[dict]:
+        """Returns a flat {grid, prob_grid, lat_min, ...} dict for the given
+        (window_h, threshold_mm) — the same shape _render_dense_grid_webp/
+        _sample_global_grid_tile already expect (and that _RiverExtentCache's
+        own get_grid() also returns), so neither of those shared helpers
+        needed to change for this per-window/per-threshold cache to exist.
+
+        Returns None if `forecast_time` isn't loaded, or if the mean grid for
+        `window_h` was never computed (e.g. a genuinely truncated cycle —
+        see ensure_precip_raw's own "not in steps" guard)."""
+        entry = self._grid.get(forecast_time)
+        if entry is None:
+            return None
+        mean_grid = entry["grids"].get(int(window_h))
+        if mean_grid is None:
+            return None
+        prob_grid = entry["prob_grids"].get(_precip_prob_key(window_h, threshold_mm))
+        return {
+            "grid": mean_grid,
+            "prob_grid": prob_grid,
+            "lat_min": entry["lat_min"], "lat_max": entry["lat_max"],
+            "lon_min": entry["lon_min"], "lon_max": entry["lon_max"],
+            "n_lat": entry["n_lat"], "n_lon": entry["n_lon"],
+            "lat_step": entry["lat_step"], "lon_step": entry["lon_step"],
+        }
 
 
 _precip_cache = _PrecipRawCache()
 
 
-def _colorize_precip_rate(vals: np.ndarray) -> np.ndarray:
-    """Map a (H, W) grid of mm-over-6h precip rate to an RGBA radar-style image.
+def _colorize_precip_rate(vals: np.ndarray, breaks: list[float] = _PRECIP_RATE_BASE_BREAKS) -> np.ndarray:
+    """Map a (H, W) grid of mm-over-window_h precip rate to an RGBA
+    radar-style image.
 
-    See _PRECIP_RATE_BREAKS/_PRECIP_RATE_COLORS above for the exact ramp.
+    `breaks` (default the base 6h ramp for backward compatibility) should
+    normally be _precip_rate_breaks_for_window(window_h)'s own per-window
+    scaled breaks — see that function's own docstring for why a fixed ramp
+    doesn't work across every real accumulation window. Colors always come
+    from _PRECIP_RATE_COLORS (only the break POSITIONS scale, not the
+    palette itself).
     """
     h, w = vals.shape
     img = np.zeros((h, w, 4), dtype=np.uint8)
     finite = np.isfinite(vals)
     safe = np.where(finite, vals, -1.0)
-    idx = np.digitize(safe, _PRECIP_RATE_BREAKS)  # 0..len(_PRECIP_RATE_BREAKS)
+    idx = np.digitize(safe, breaks)  # 0..len(breaks)
     for i, color in enumerate(_PRECIP_RATE_COLORS):
         mask = finite & (idx == i)
         if mask.any():
@@ -2172,27 +2423,43 @@ def _render_dense_grid_webp(
 
 
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
-def _fetch_precip_raw_tile(forecast_time: str, z: int, x: int, y: int, mode: str = "mean") -> bytes | None:
+def _fetch_precip_raw_tile(
+    forecast_time: str, z: int, x: int, y: int, mode: str = "mean",
+    window_h: int = _PRECIP_RATE_DEFAULT_WINDOW_H, threshold_mm: float = _PRECIP_PROB_THRESHOLD_MM,
+) -> bytes | None:
     """Render a 512x512 RGBA WebP tile from the cached global precip grid.
 
-    `mode` selects which reduction of the cached data is rendered:
-    - "mean" (default, backward-compatible): ensemble-mean rate, radar-style
-      green/yellow/orange/red ramp (see _colorize_precip_rate).
-    - "probability": fraction of ensemble members exceeding
-      _PRECIP_PROB_THRESHOLD_MM, sequential-purple ramp (see
-      _colorize_precip_probability). Both grids come from the SAME cached
-      per-forecast_time download — selecting "probability" never triggers a
-      second Zarr fetch.
+    `window_h`/`threshold_mm` select WHICH precomputed (window, threshold)
+    grid pair to render (see _PrecipRawCache.get_render_entry) — defaults
+    match the original hardcoded T+0->T+6h/10mm behavior exactly, so existing
+    callers that never pass either param are unaffected.
+
+    `mode` selects which reduction of the selected pair is rendered:
+    - "mean" (default, backward-compatible): ensemble-mean rate for
+      `window_h`, radar-style green/yellow/orange/red ramp (see
+      _colorize_precip_rate). `threshold_mm` is unused for this mode.
+    - "probability": fraction of ensemble members exceeding `threshold_mm`
+      within `window_h`, sequential-purple ramp (see
+      _colorize_precip_probability). All grids come from the SAME cached
+      per-forecast_time download — selecting any (window, threshold)
+      combination never triggers a second Zarr fetch.
 
     Returns None if the tile is entirely outside the grid's -60..60 latitude
-    coverage, if no data exists for `forecast_time`, or if every sampled
-    pixel is transparent (no rain in this tile).
+    coverage, if no data exists for `forecast_time`/`window_h`, or if every
+    sampled pixel is transparent (no rain in this tile).
     """
     resolved = _precip_cache.ensure_precip_raw(forecast_time)
     if resolved is None:
         return None
-    entry = _precip_cache.get_grid(resolved)
-    return _render_dense_grid_webp(entry, mode, _colorize_precip_rate, _colorize_precip_probability, z, x, y)
+    entry = _precip_cache.get_render_entry(resolved, window_h, threshold_mm)
+    # Real bug fixed here: mean_colorize used to always apply the base 6h
+    # ramp regardless of window_h — see _precip_rate_breaks_for_window's own
+    # docstring. Bound via a closure (not a functools.partial default swap)
+    # so _render_dense_grid_webp's generic (vals) -> RGBA colorize signature
+    # stays unchanged for river/other callers.
+    window_breaks = _precip_rate_breaks_for_window(window_h)
+    mean_colorize = lambda vals: _colorize_precip_rate(vals, window_breaks)
+    return _render_dense_grid_webp(entry, mode, mean_colorize, _colorize_precip_probability, z, x, y)
 
 
 # ---------------------------------------------------------------------------
@@ -2231,20 +2498,26 @@ def _fetch_precip_raw_tile(forecast_time: str, z: int, x: int, y: int, mode: str
 # the earliest/most "current-ish" available lead time. Re-applying an
 # already-justified convention rather than deriving a fresh one.
 #
-# RESOLUTION CHOICE: 0.1deg output grid — the SAME resolution/domain as the
-# old dis24 rasterization above (_RIVER_RASTER_RES_DEG/_RIVER_RASTER_LAT/LON_*),
-# reused here for an analogous but distinct reason: native pixel spacing here
-# is ~0.0013-0.0015deg (near-JRC 90-150m resolution) — roughly 65-115x finer
-# per degree than 0.1deg in each dimension. Rendering at anywhere close to
-# native resolution would balloon the output grid to many millions-of-times
-# more cells than dis24's own 0.1deg grid (native data here is dense across
-# the whole flood-relevant domain, unlike dis24's sparse ~457K points) for no
-# visual benefit at the country-analysis zoom levels this map actually
-# renders at, while a much coarser grid would blur distinct river
-# reaches/floodplains into indistinguishable blobs. 0.1deg keeps memory
-# bounded (~4.3M cells, tens of MB per grid) and stays visually consistent
-# with precip/the old river layer's own resolution, without over-investing
-# compute into a needlessly fine grid.
+# RESOLUTION CHOICE (2026-08 revision): zoom-14 Web Mercator TILE granularity
+# — the SAME granularity the real downstream impact-calculation pipeline
+# (Ahead-of-the-Storm-DATAPIPELINE/impact_analysis.py) already intersects
+# this exact per-member pixel data against for population/tile-level
+# exposure. Previously this rendered onto a dense 0.1deg lat/lon grid
+# (_RIVER_EXTENT_RES_DEG et al, since removed) — that binning was GloFAS's
+# own convenient round-number grid, not tied to anything the impact math
+# actually uses, and threw away real resolution for no reason tied to how
+# the data is consumed elsewhere. Native pixel spacing here is
+# ~0.0013-0.0015deg (near-JRC 90-150m resolution); a z14 tile is ~2.45km at
+# the equator, so each tile still collapses a small number of native pixels
+# — but now the map's own displayed granularity matches the real unit the
+# rest of the system reasons about a flooded area in, instead of an
+# arbitrary coarser round-number grid. Because flood coverage is sparse
+# (most of the world's ~2.68e8 possible z14 tiles have zero signal), the
+# per-cycle result is stored as a SPARSE table (one row per distinct
+# non-empty z14 tile — real global counts are expected in the tens-of-
+# thousands-to-low-hundreds-of-thousands range), not a dense (n, n) array,
+# which would be far too much memory (~268M cells) for what is overwhelmingly
+# empty space.
 #
 # AGGREGATION / MEMORY SAFETY: the real per-forecast_time file is ~74M rows
 # (28MB compressed) for the whole world, ALL step_h values combined. Loading
@@ -2253,48 +2526,58 @@ def _fetch_precip_raw_tile(forecast_time: str, z: int, x: int, y: int, mode: str
 # collapses to a tiny footprint. Instead this reads the file via
 # pyarrow.parquet.ParquetFile.read_row_group() in an explicit per-row-group
 # loop (see _RiverExtentCache.ensure_river_extent) — each row group is
-# converted to numpy arrays, filtered to step_h==24, and immediately reduced
-# into a compact (n_cells,) uint64 BITMASK (one bit per ensemble member,
-# dedup-by-OR — see below) before being discarded; no full-file DataFrame or
-# (cells x 51 members) dense array is ever materialized.
+# converted to numpy arrays, filtered to step_h==24, mapped to a real z14
+# tile index per pixel via vectorized Web Mercator math (numpy, not a
+# per-row mercantile.tile() call — that scalar function would be far too
+# slow at these row counts), reduced to a small per-batch (distinct-tiles-
+# in-this-row-group,) uint64 BITMASK via a vectorized groupby (one bit per
+# ensemble member, dedup-by-OR — see below), and merged into the running
+# global sparse dict before the row-group's raw arrays are discarded; no
+# full-file DataFrame or per-pixel/per-tile dense array is ever
+# materialized.
 #
 # DISTINCT-MEMBER COUNTING: one member's flood can span multiple native
-# pixels that collapse into the SAME 0.1deg output cell, so counting raw ROWS
-# per cell would double/triple/... count a single member. Instead each row
-# sets bit (member-1) of a per-cell np.uint64 via np.bitwise_or.at (an
-# idempotent OR — setting the same member's bit twice from two colliding
-# pixels is a no-op), so the final popcount of each cell's bitmask is a REAL
-# count of DISTINCT members (0-51) that flood that cell at step_h=24,
-# regardless of how many raw pixels contributed. 51 members fits comfortably
-# in a uint64's 64 bits, and a single (n_cells,) uint64 array (~34.6MB for
-# the whole 0.1deg grid) is far cheaper than a (n_cells, 51) boolean array
-# (~220MB) while being exactly equivalent.
+# pixels that collapse into the SAME z14 output tile, so counting raw ROWS
+# per tile would double/triple/... count a single member. Instead each row
+# sets bit (member-1) of a per-tile np.uint64 (idempotent OR — setting the
+# same member's bit twice from two colliding pixels is a no-op), so the
+# final popcount of each tile's bitmask is a REAL count of DISTINCT members
+# (0-51) that flood that tile at step_h=24, regardless of how many raw
+# pixels contributed. 51 members fits comfortably in a uint64's 64 bits.
 #
-# MEAN vs PROBABILITY JUDGMENT CALL: this data is inherently a binary
-# per-member flooded/not-flooded fact at a single fixed return period (RP10)
-# — unlike precip's mm or the old dis24 layer's m3/s, there is NO natural
-# continuous "mean intensity" to compute here, and fabricating one (e.g.
-# averaging the member count into some invented "severity score") would
-# misrepresent the data as something it is not. So:
-#   - "probability" mode is the one real, non-fabricated continuous metric:
-#     count-of-flooded-members / 51 (see above) — a TRUE per-cell RP10
-#     exceedance fraction, rendered as a continuous cyan->navy gradient
-#     (_colorize_river_extent_probability). This is a MORE meaningful number
-#     than the old dis24 layer's own "probability" (only ever a fallback
-#     percentile-of-this-cycle's-own-data proxy, never a real return-period
-#     value) — deliberately given its own distinct hue family so it doesn't
-#     look like a continuation of that older, less meaningful metric.
-#   - "mean" mode renders a MAJORITY-VOTE binary consensus mask instead
-#     (>50% of the 51 members agree this cell floods at RP10 => a single
-#     flat solid color; anything else => transparent), rather than reusing
-#     probability's gradient under a different name. This keeps the two
-#     modes visually AND semantically distinct (a discrete "where does the
-#     ensemble majority agree flooding happens" layer vs. a continuous "how
-#     confident is that" layer) while still being an honest reduction of the
-#     real per-member data, not an invented continuous quantity.
+# PROBABILITY ONLY — no Mean mode: river only ever has ONE real per-cell
+# metric, count-of-flooded-members / 51 (see above), a TRUE RP-tier
+# exceedance fraction, no fabricated quantity involved. This is a MORE
+# meaningful number than the old dis24 layer's own "probability" (only ever
+# a fallback percentile-of-this-cycle's-own-data proxy, never a real
+# return-period value). Rendered as a continuous cyan->navy gradient
+# (_RIVER_EXTENT_PROB_COLORS).
+#
+# A prior revision of this code gave river its own Mean/Probability toggle
+# for UI symmetry with precip/wind (first as a flat >50%-consensus mask,
+# then as a second continuous gradient over the exact same fraction with a
+# different hue) — removed per explicit user request: unlike rain (which
+# has both a real mm intensity AND a real exceedance-probability), river has
+# no second independent quantity, so a "Mean" option was always describing
+# the identical number under a different name. River now always renders
+# Probability; the Mean/Probability toggle (flood-view-as) is rain-only.
 # ---------------------------------------------------------------------------
 
-_RIVER_EXTENT_RP_TIER = "rp10"  # only genuinely computed (IS_STANDIN=False) tier available; see module comment
+# Real bug found+fixed here (2026-08): the module comment above used to claim
+# rp10 was "the only genuinely computed (IS_STANDIN=False) tier available" —
+# a live query against AOTS.TC_ECMWF.RIVER_FORECASTS shows this was stale:
+# rp10/rp20/rp50/rp100 are ALL real (IS_STANDIN=False), each its own distinct
+# Parquet file. Only rp2/rp5 are IS_STANDIN=True — the pipeline's own way of
+# flagging "not yet independently computed, this file just reuses rp10's own
+# extent as a labelled UPPER-BOUND stand-in" until real rp2/rp5 computation
+# exists. Confirmed via TC-ECMWF-Forecast-Pipeline's own
+# glofas_extent_masking.py module comment: flood extent grows monotonically
+# with return period, so RP10's (rarer, more extensive) extent is a
+# conservative OVERESTIMATE of RP2/RP5's true (smaller, less severe) extent
+# — not a lower bound/underestimate.
+_RIVER_EXTENT_RP_TIERS = ("rp2", "rp5", "rp10", "rp20", "rp50", "rp100")  # matches ms-river-slider's own _RIVER_RP_TIERS exactly
+_RIVER_EXTENT_STANDIN_RP_TIERS = ("rp2", "rp5")  # IS_STANDIN=True — confirmed live, reuses rp10's own extent
+_RIVER_EXTENT_DEFAULT_RP_TIER = "rp10"  # matches ms-river-slider's own default index (2 == "rp10")
 
 # Hardcoded (not read from the Parquet's own member-count/array shape), same
 # protective rationale as _PRECIP_PROB_ENSEMBLE_SIZE above: guards against a
@@ -2310,22 +2593,20 @@ _RIVER_EXTENT_TTL = _PRECIP_RAW_TTL
 _RIVER_EXTENT_STEP_H = 24
 
 # See module comment above ("RESOLUTION CHOICE") — GloFAS's own native
-# 0.05deg domain (-60..60 lat x -180..180 lon) rendered at a 0.1deg OUTPUT
-# grid (2x the native cell width, ~4.3M cells: 1200 x 3600), thickening each
-# river reach to a visible width across zoom levels while still collapsing
-# at most a handful of native cells per output cell.
-_RIVER_EXTENT_RES_DEG = 0.1
-_RIVER_EXTENT_LAT_MIN = -60.0
+# 0.05deg domain (-60..60 lat x -180..180 lon), rendered at real zoom-14 Web
+# Mercator tile granularity (mirrors _fetch_raster_tile's own z14 quadkey
+# rendering pattern) rather than a dense degree grid — see
+# _RiverExtentCache.ensure_river_extent for the vectorized tile-index math.
+_RIVER_EXTENT_ZOOM = 14  # matches MAT_ZOOM_LEVEL — real impact pipeline's own tile granularity
+_RIVER_EXTENT_LAT_MIN = -60.0  # GloFAS's own native domain, informational only (not used for binning)
 _RIVER_EXTENT_LAT_MAX = 60.0
 _RIVER_EXTENT_LON_MIN = -180.0
 _RIVER_EXTENT_LON_MAX = 180.0
-_RIVER_EXTENT_N_LAT = 1200
-_RIVER_EXTENT_N_LON = 3600
 
 _LATEST_RIVER_EXTENT_SQL = """
     SELECT FORECAST_TIME, STAGE_PATH
     FROM AOTS.TC_ECMWF.RIVER_FORECASTS
-    WHERE PARAM = 'extent_rp10_bymember'
+    WHERE PARAM = %s
     ORDER BY FORECAST_TIME DESC
     LIMIT 1
 """
@@ -2333,19 +2614,37 @@ _LATEST_RIVER_EXTENT_SQL = """
 _RIVER_EXTENT_BY_TIME_SQL = """
     SELECT STAGE_PATH
     FROM AOTS.TC_ECMWF.RIVER_FORECASTS
-    WHERE PARAM = 'extent_rp10_bymember' AND FORECAST_TIME = %s
+    WHERE PARAM = %s AND FORECAST_TIME = %s
 """
 
-# Flat, solid "consensus flood" color for the MEAN/majority-vote mask (see
-# module comment) — deliberately an orange/red, NOT a blue/teal, so it reads
-# as visually distinct at a glance from BOTH the probability ramp immediately
-# below AND the old (now-legacy) dis24 blue/purple + teal ramps.
-_RIVER_EXTENT_MASK_COLOR: tuple[int, int, int, int] = (255, 87, 34, 190)
 
-# Sequential cyan->navy ramp for the PROBABILITY variant (real RP10
-# exceedance fraction — see module comment). Deliberately a different hue
-# family from the OLD (legacy) river-probability teal ramp above and from
-# precip's purple ramp, so all three stay visually distinguishable.
+def _river_extent_param(rp_tier: str) -> str:
+    """RIVER_FORECASTS' own PARAM string for a given rp_tier (e.g. 'rp10' ->
+    'extent_rp10_bymember') — the exact naming convention every real row in
+    that table uses, confirmed live against all 6 real tiers."""
+    return f"extent_{rp_tier}_bymember"
+
+# Rolling prewarm window — see _LATEST_3_PRECIP_RAW_SQL's own comment for why
+# DISTINCT is required (RIVER_FORECASTS has one row per pixel/member, not one
+# per forecast_time). Parameterized by PARAM (rp_tier) — real feature added
+# here: the rolling prewarm now covers all 6 real return-period tiers, not
+# just the default rp10, since the RP-tier slider is a genuine, real,
+# frequently-used control now (previously switching to any other tier paid
+# a full 5-20s cold Parquet download+scan every time, for every user, since
+# nothing else ever warmed it).
+_LATEST_3_RIVER_EXTENT_SQL = """
+    SELECT DISTINCT FORECAST_TIME, STAGE_PATH
+    FROM AOTS.TC_ECMWF.RIVER_FORECASTS
+    WHERE PARAM = %s
+    ORDER BY FORECAST_TIME DESC
+    LIMIT 3
+"""
+
+# Sequential cyan->navy ramp for the PROBABILITY variant (real per-cell
+# exceedance fraction — count of the 51 members whose extent covers this
+# tile / 51). Deliberately a different hue family from the OLD (legacy)
+# river-probability teal ramp and from precip's purple ramp, so all three
+# stay visually distinguishable.
 _RIVER_EXTENT_PROB_BREAKS = [0.10, 0.25, 0.40, 0.60, 0.80]
 _RIVER_EXTENT_PROB_COLORS: list[tuple[int, int, int, int]] = [
     (0,   0,   0,   0),
@@ -2356,100 +2655,76 @@ _RIVER_EXTENT_PROB_COLORS: list[tuple[int, int, int, int]] = [
     (1,   50,  96,  245),
 ]
 
-
-def _colorize_river_extent_probability(vals: np.ndarray) -> np.ndarray:
-    """Map a (H, W) grid of REAL per-cell RP10 flood-exceedance fractions
-    (0-1 = count of the 51 members whose extent covers this cell / 51, see
-    _RiverExtentCache) to an RGBA sequential cyan->navy image. See
-    _RIVER_EXTENT_PROB_BREAKS/_COLORS above for the exact ramp and the
-    module-level comment for why this differs from the old dis24 layer's own
-    (fallback-percentile, not a true return period) probability ramp."""
-    h, w = vals.shape
-    img = np.zeros((h, w, 4), dtype=np.uint8)
-    finite = np.isfinite(vals)
-    safe = np.where(finite, vals, -1.0)
-    idx = np.digitize(safe, _RIVER_EXTENT_PROB_BREAKS)
-    for i, color in enumerate(_RIVER_EXTENT_PROB_COLORS):
-        mask = finite & (idx == i)
-        if mask.any():
-            img[mask] = color
-    return img
-
-
-def _colorize_river_extent_mean(vals: np.ndarray) -> np.ndarray:
-    """"Mean" mode for flood-extent data — see the long MEAN vs PROBABILITY
-    module comment above for the full judgment call. `vals` here is already a
-    MAJORITY-VOTE mask computed by _RiverExtentCache (1.0 = more than half of
-    the 51 members agree this cell floods at RP10, NaN = no data or a
-    minority) — rendered as a single FLAT solid color (no gradient/breaks),
-    deliberately not reusing the probability ramp, so this reads as a
-    discrete "does the ensemble majority agree" layer rather than a
-    continuous intensity that does not actually exist for this data."""
-    h, w = vals.shape
-    img = np.zeros((h, w, 4), dtype=np.uint8)
-    mask = np.isfinite(vals) & (vals > 0.5)
-    img[mask] = _RIVER_EXTENT_MASK_COLOR
-    return img
-
-
 class _RiverExtentCache:
     """Downloads+processes the latest global extent_rp10_bymember Parquet
     ONCE per forecast_time via a memory-conscious pyarrow row-group loop (see
     the module-level comment above for the full memory-safety rationale —
     NEVER materializes the full ~74M-row file as one pandas DataFrame),
-    producing the SAME grid-entry shape as _PrecipRawCache/_RiverRawCache
-    (grid/prob_grid/lat_min/.../lat_step/lon_step) so it can reuse
-    _sample_global_grid_tile/_render_dense_grid_webp unchanged.
+    producing a SPARSE per-zoom-14-tile DataFrame (one row per distinct
+    z14 tile with >=1 flooded member) — the SAME shape _fetch_raster_tile
+    already expects (TILE_ID quadkey + BW/BS/BE/BN bounds), so tile
+    rendering can reuse that function's own vectorized scatter-paint
+    pattern (see _fetch_river_extent_raster_tile below) instead of the old
+    dense-grid sample/colorize path (_sample_global_grid_tile/
+    _render_dense_grid_webp — those remain unchanged and are still used by
+    precip-raw, which stays on a dense global grid).
 
-    `grid` = majority-vote mask (1.0/NaN, see _colorize_river_extent_mean).
-    `prob_grid` = real 0-1 fraction of members flooding each cell (see
-    _colorize_river_extent_probability). Both derived from the SAME per-cell
-    member-bitmask computed in one pass — no second file read for the second
-    mode.
+    Per-tile columns: 'TILE_ID' (str quadkey), 'BW'/'BS'/'BE'/'BN' (float
+    z14 tile bounds), 'member_count' (int 0-51, real distinct-member
+    popcount), 'probability' (float32 member_count/51 — real per-cell RP10
+    exceedance fraction, the one metric this layer renders — see
+    _fetch_river_extent_raster_tile's own docstring below).
 
     TTL: _RIVER_EXTENT_TTL (4h). Thread-safe via double-checked locking, same
     pattern as _PrecipRawCache/_RiverRawCache above.
     """
 
     def __init__(self) -> None:
-        self._grids: dict[str, dict] = {}       # forecast_time -> grid entry
-        self._loaded_at: dict[str, float] = {}   # forecast_time -> epoch seconds
+        self._grids: dict[tuple[str, str], dict] = {}       # (forecast_time, rp_tier) -> grid entry
+        self._loaded_at: dict[tuple[str, str], float] = {}   # (forecast_time, rp_tier) -> epoch seconds
         self._load_lock = threading.Lock()
         self._latest_lock = threading.Lock()
-        self._latest: Optional[tuple[str, str, float]] = None
+        self._latest: dict[str, tuple[str, str, float]] = {}  # rp_tier -> (forecast_time, stage_path, resolved_at)
 
-    def _resolve_latest(self) -> Optional[tuple[str, str]]:
+    def _resolve_latest(self, rp_tier: str) -> Optional[tuple[str, str]]:
         now = time.time()
-        if self._latest and (now - self._latest[2]) < _RIVER_EXTENT_TTL:
-            return self._latest[0], self._latest[1]
+        cached = self._latest.get(rp_tier)
+        if cached and (now - cached[2]) < _RIVER_EXTENT_TTL:
+            return cached[0], cached[1]
         with self._latest_lock:
-            if self._latest and (now - self._latest[2]) < _RIVER_EXTENT_TTL:
-                return self._latest[0], self._latest[1]
-            rows = _run_query(_LATEST_RIVER_EXTENT_SQL, [])
+            cached = self._latest.get(rp_tier)
+            if cached and (now - cached[2]) < _RIVER_EXTENT_TTL:
+                return cached[0], cached[1]
+            rows = _run_query(_LATEST_RIVER_EXTENT_SQL, [_river_extent_param(rp_tier)])
             if not rows:
                 return None
             forecast_time = str(rows[0]["FORECAST_TIME"])
             stage_path = rows[0]["STAGE_PATH"]
-            self._latest = (forecast_time, stage_path, now)
+            self._latest[rp_tier] = (forecast_time, stage_path, now)
             return forecast_time, stage_path
 
-    def resolve_latest_forecast_time(self) -> Optional[str]:
-        """Cheap (SQL-only, no download) lookup of the latest forecast_time."""
-        resolved = self._resolve_latest()
+    def resolve_latest_forecast_time(self, rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> Optional[str]:
+        """Cheap (SQL-only, no download) lookup of the latest forecast_time
+        for a given rp_tier."""
+        resolved = self._resolve_latest(rp_tier)
         return resolved[0] if resolved else None
 
-    def ensure_river_extent(self, forecast_time: Optional[str]) -> Optional[str]:
-        """Ensure the flood-extent grid pair for `forecast_time` is loaded in
-        memory.
+    def ensure_river_extent(self, forecast_time: Optional[str],
+                              rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> Optional[str]:
+        """Ensure the sparse zoom-14-tile flood-extent table for
+        (`forecast_time`, `rp_tier`) is loaded in memory.
 
         `forecast_time` of None/""/"latest" always resolves to the current
-        latest cycle. Returns the resolved forecast_time string actually
-        loaded (a plain date like "2026-07-14" — this data is keyed by DATE,
-        unlike dis24's full datetime FORECAST_TIME), or None if no
-        extent_rp10_bymember data exists at all (for the requested time, or
-        globally).
+        latest cycle FOR THAT TIER (different tiers can, in principle, have
+        different latest dates, though in practice they land together).
+        `rp_tier` defaults to rp10 (the slider's own default) for backward
+        compatibility with every existing caller that doesn't pass it yet.
+        Returns the resolved forecast_time string actually loaded (a plain
+        date like "2026-07-14" — this data is keyed by DATE, unlike dis24's
+        full datetime FORECAST_TIME), or None if no data exists at all for
+        this (forecast_time, rp_tier) combination, or globally for this tier.
         """
-        latest = self._resolve_latest()
+        latest = self._resolve_latest(rp_tier)
         if latest is None:
             return None
         latest_forecast_time, latest_stage_path = latest
@@ -2460,33 +2735,37 @@ class _RiverExtentCache:
         elif forecast_time == latest_forecast_time:
             stage_path = latest_stage_path
         else:
-            rows = _run_query(_RIVER_EXTENT_BY_TIME_SQL, [forecast_time])
+            rows = _run_query(_RIVER_EXTENT_BY_TIME_SQL, [_river_extent_param(rp_tier), forecast_time])
             if not rows:
                 return None
             stage_path = rows[0]["STAGE_PATH"]
 
-        if forecast_time in self._grids and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _RIVER_EXTENT_TTL:
+        key = (forecast_time, rp_tier)
+        if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
             return forecast_time
         with self._load_lock:
-            if forecast_time in self._grids and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _RIVER_EXTENT_TTL:
+            if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
                 return forecast_time
-            if forecast_time in self._grids:
-                self._loaded_at[forecast_time] = time.time()
+            if key in self._grids:
+                self._loaded_at[key] = time.time()
                 return forecast_time
-            log.info("RiverExtent: downloading+processing extent_rp10_bymember parquet for %s (%s)…",
-                      forecast_time, stage_path)
+            log.info("RiverExtent: downloading+processing %s parquet for %s (%s)…",
+                      _river_extent_param(rp_tier), forecast_time, stage_path)
             t0 = time.perf_counter()
             # Local import: same reasoning as _RiverRawCache/_PrecipRawCache above.
             from components.data.data_store_utils import get_data_store
             raw_bytes = get_data_store().read_file(stage_path)
 
-            n_lat, n_lon = _RIVER_EXTENT_N_LAT, _RIVER_EXTENT_N_LON
-            n_cells_flat = n_lat * n_lon
-            # One bit per ensemble member (51 fits comfortably in 64) — see the
+            n14 = 1 << _RIVER_EXTENT_ZOOM  # 16384 tiles per axis at z=14
+            # Running SPARSE per-z14-tile member bitmask — a Python dict
+            # (flat tile id -> uint64 bitmask), NOT a dense (n14, n14) array
+            # (~268M cells — far too much memory for what is overwhelmingly
+            # empty ocean/land-without-flood-signal space). One bit per
+            # ensemble member (51 fits comfortably in 64) — see the
             # module-level "DISTINCT-MEMBER COUNTING" comment for why this is
-            # exactly equivalent to (and far cheaper than) a (cells, 51) bool
+            # exactly equivalent to (and far cheaper than) a (tiles, 51) bool
             # array, and idempotent under colliding native pixels.
-            membership_bits = np.zeros(n_cells_flat, dtype=np.uint64)
+            tile_bits: dict[int, int] = {}
             rows_scanned = 0
             rows_kept = 0
             members_seen: set[int] = set()
@@ -2518,96 +2797,235 @@ class _RiverExtentCache:
                         continue
                     members_seen.update(np.unique(member).tolist())
 
-                    # Nearest-cell assignment onto the 0.1deg output grid — same
-                    # method/convention as the old dis24 _rasterize_river_points
-                    # (row 0 = lat_max, N->S).
-                    row_idx = np.round((_RIVER_EXTENT_LAT_MAX - lat) / _RIVER_EXTENT_RES_DEG).astype(np.int64)
+                    # Vectorized zoom-14 Web Mercator tile-index assignment —
+                    # numpy math over the whole batch at once (NOT a per-row
+                    # mercantile.tile() call, which is a slow scalar function
+                    # and would dominate runtime at these row counts). Mirrors
+                    # the standard slippy-map tile formula; clipping keeps a
+                    # stray near-pole/antimeridian pixel inside the valid
+                    # tile-index range instead of raising, same defensive
+                    # spirit as _fetch_raster_tile's own clip()s.
                     lon_wrapped = ((lon + 180.0) % 360.0) - 180.0
-                    col_idx = np.round((lon_wrapped - _RIVER_EXTENT_LON_MIN) / _RIVER_EXTENT_RES_DEG).astype(np.int64)
-                    in_bounds = (row_idx >= 0) & (row_idx < n_lat) & (col_idx >= 0) & (col_idx < n_lon)
-                    if not in_bounds.all():
-                        row_idx = row_idx[in_bounds]
-                        col_idx = col_idx[in_bounds]
-                        member = member[in_bounds]
-                    if row_idx.size == 0:
-                        continue
-                    flat_idx = row_idx * n_lon + col_idx
+                    x14 = np.floor((lon_wrapped + 180.0) / 360.0 * n14).astype(np.int64)
+                    lat_clipped = np.clip(lat, -85.05112878, 85.05112878)
+                    lat_rad = np.radians(lat_clipped)
+                    y14 = np.floor(
+                        (1.0 - np.log(np.tan(lat_rad) + 1.0 / np.cos(lat_rad)) / np.pi) / 2.0 * n14
+                    ).astype(np.int64)
+                    x14 = np.clip(x14, 0, n14 - 1)
+                    y14 = np.clip(y14, 0, n14 - 1)
+                    tile_flat = y14 * n14 + x14  # fits easily in int64 (max ~2.68e8)
                     bits = np.uint64(1) << (member - 1).astype(np.uint64)
-                    np.bitwise_or.at(membership_bits, flat_idx, bits)
 
-            # Popcount each cell's bitmask -> real distinct-member count (0-51).
-            # A plain 51-iteration bit-shift loop over a single (n_cells,) array
-            # is fast and avoids materializing any (cells, 51) intermediate.
-            member_count = np.zeros(n_cells_flat, dtype=np.int32)
+                    # Per-BATCH reduction first — a single row group can be
+                    # millions of rows spanning a much smaller number of
+                    # distinct z14 tiles, so collapse duplicates within this
+                    # batch via a vectorized groupby (np.unique + bitwise_or.at
+                    # over the batch's own small inverse-index array) BEFORE
+                    # touching the running global dict, then merge the small
+                    # per-batch result in with a bitwise OR — idempotent, same
+                    # "distinct member seen" semantics as a dense
+                    # np.bitwise_or.at would give, just keyed by a real z14
+                    # tile id instead of a dense degree-grid cell.
+                    uniq_tiles, inverse = np.unique(tile_flat, return_inverse=True)
+                    batch_bits = np.zeros(uniq_tiles.size, dtype=np.uint64)
+                    np.bitwise_or.at(batch_bits, inverse, bits)
+                    for tid, b in zip(uniq_tiles.tolist(), batch_bits.tolist()):
+                        tile_bits[tid] = tile_bits.get(tid, 0) | b
+                    del lat, lon, member, tile_flat, bits, uniq_tiles, inverse, batch_bits
+
+            # Popcount each tile's bitmask -> real distinct-member count (0-51).
+            # A plain 51-iteration bit-shift loop over the (n_tiles,) array of
+            # accumulated bitmasks is fast and avoids materializing any
+            # (tiles, 51) intermediate.
+            n_tiles = len(tile_bits)
+            if n_tiles:
+                tile_ids_flat = np.fromiter(tile_bits.keys(), dtype=np.int64, count=n_tiles)
+                bits_arr = np.fromiter(tile_bits.values(), dtype=np.uint64, count=n_tiles)
+            else:
+                tile_ids_flat = np.empty(0, dtype=np.int64)
+                bits_arr = np.empty(0, dtype=np.uint64)
+            del tile_bits
+
+            member_count = np.zeros(n_tiles, dtype=np.int32)
             for b in range(_RIVER_PROB_ENSEMBLE_SIZE):
-                member_count += ((membership_bits >> np.uint64(b)) & np.uint64(1)).astype(np.int32)
-            del membership_bits
+                member_count += ((bits_arr >> np.uint64(b)) & np.uint64(1)).astype(np.int32)
+            del bits_arr
 
-            has_data = member_count > 0
-            prob_flat = member_count.astype(np.float32) / _RIVER_PROB_ENSEMBLE_SIZE
-            prob_flat[~has_data] = np.nan
-            prob_grid = prob_flat.reshape(n_lat, n_lon)
+            y14_arr = (tile_ids_flat // n14).astype(np.int64)
+            x14_arr = (tile_ids_flat % n14).astype(np.int64)
+            probability = member_count.astype(np.float32) / _RIVER_PROB_ENSEMBLE_SIZE
 
-            # MAJORITY-VOTE mask for "mean" mode — see module-level MEAN vs
-            # PROBABILITY comment. > (not >=) half of 51 -> >25.5 -> >=26.
-            majority_flat = np.where(member_count > (_RIVER_PROB_ENSEMBLE_SIZE / 2.0), 1.0, np.nan).astype(np.float32)
-            mean_grid = majority_flat.reshape(n_lat, n_lon)
+            # quadkey + real z14 tile bounds — mercantile has no vectorized
+            # form for these, but this loop is bounded by the real DISTINCT
+            # tile count (tens-of-thousands-to-low-hundreds-of-thousands
+            # globally per the module comment), not the ~195M raw row count,
+            # so it is cheap relative to the row-group scan above.
+            tile_ids: list[str] = []
+            bw: list[float] = []
+            bs: list[float] = []
+            be: list[float] = []
+            bn: list[float] = []
+            for xi, yi in zip(x14_arr.tolist(), y14_arr.tolist()):
+                tile_ids.append(mercantile.quadkey(xi, yi, _RIVER_EXTENT_ZOOM))
+                b = mercantile.bounds(xi, yi, _RIVER_EXTENT_ZOOM)
+                bw.append(b.west)
+                bs.append(b.south)
+                be.append(b.east)
+                bn.append(b.north)
+
+            extent_df = pd.DataFrame({
+                "TILE_ID": tile_ids,
+                "BW": bw, "BS": bs, "BE": be, "BN": bn,
+                "member_count": member_count,
+                "probability": probability,
+            })
 
             elapsed = time.perf_counter() - t0
-            self._grids[forecast_time] = {
-                "grid": mean_grid,
-                "prob_grid": prob_grid,
-                "member_count_grid": member_count.reshape(n_lat, n_lon),
-                "lat_min": _RIVER_EXTENT_LAT_MIN, "lat_max": _RIVER_EXTENT_LAT_MAX,
-                "lon_min": _RIVER_EXTENT_LON_MIN, "lon_max": _RIVER_EXTENT_LON_MAX,
-                "n_lat": n_lat, "n_lon": n_lon,
-                "lat_step": _RIVER_EXTENT_RES_DEG, "lon_step": _RIVER_EXTENT_RES_DEG,
-                "rp_tier": _RIVER_EXTENT_RP_TIER,
+            self._grids[key] = {
+                "df": extent_df,
+                "rp_tier": rp_tier,
+                "is_standin": rp_tier in _RIVER_EXTENT_STANDIN_RP_TIERS,
                 "rows_scanned": rows_scanned,
                 "rows_kept": rows_kept,
                 "n_members_seen": len(members_seen),
                 "load_seconds": elapsed,
             }
-            self._loaded_at[forecast_time] = time.time()
-            n_nonzero_cells = int(has_data.sum())
-            log.info("  RiverExtent: grid ready %s (scanned %d rows, kept %d @step_h=%d, "
-                      "%d members seen, %d/%d cells with >=1 member flooded, %.1fs)",
-                      forecast_time, rows_scanned, rows_kept, _RIVER_EXTENT_STEP_H,
-                      len(members_seen), n_nonzero_cells, n_cells_flat, elapsed)
+            self._loaded_at[key] = time.time()
+            log.info("  RiverExtent: z14 tile table ready %s/%s (scanned %d rows, kept %d @step_h=%d, "
+                      "%d members seen, %d distinct z14 tiles with >=1 member flooded, %.1fs)",
+                      rp_tier, forecast_time, rows_scanned, rows_kept, _RIVER_EXTENT_STEP_H,
+                      len(members_seen), n_tiles, elapsed)
         return forecast_time
 
-    def get_grid(self, forecast_time: str) -> Optional[dict]:
-        return self._grids.get(forecast_time)
+    def get_grid(self, forecast_time: str, rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> Optional[dict]:
+        return self._grids.get((forecast_time, rp_tier))
 
 
 _river_extent_cache = _RiverExtentCache()
 
 
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
-def _fetch_river_extent_raster_tile(forecast_time: str, z: int, x: int, y: int, mode: str = "mean") -> bytes | None:
-    """Render a 512x512 RGBA WebP tile from the cached global RP10
-    flood-extent grid (see _RiverExtentCache) — THE current implementation
-    behind /tiles/raster/river-raw/.../*.webp (see the module-level comment
-    above for the full rationale for replacing the old dis24-based
-    raw-discharge implementation, since removed).
+def _fetch_river_extent_raster_tile(forecast_time: str, z: int, x: int, y: int,
+                                       rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> bytes | None:
+    """Render a 512x512 RGBA WebP tile from the cached sparse zoom-14-tile
+    flood-extent table (see _RiverExtentCache) — THE current implementation
+    behind /tiles/raster/river-raw/.../*.webp.
 
-    ALWAYS renders the continuous per-cell RP10 exceedance fraction
-    (cyan->navy gradient, more member agreement = darker blue — see
-    _colorize_river_extent_probability), regardless of the `mode` param —
-    explicit product decision: unlike rain (a genuine continuous quantity
-    that can be meaningfully averaged), river's "Mean" was a binary
-    majority-vote consensus mask with no real gradient at all, which read as
-    inconsistent with rain's own true continuous Mean under the same shared
-    Mean/Probability toggle. `mode` is kept as a parameter only so the
-    shared flood-view-as-driven call site (which also drives rain) doesn't
-    need a river-specific code path; the majority-vote mask colorizer
-    (_colorize_river_extent_mean) is no longer called from here at all.
+    As of the 2026-08 zoom-14-granularity revision, this mirrors
+    _fetch_raster_tile's OWN quadkey-filter + vectorized scatter-paint
+    pattern almost exactly (same TILE_ID/BW/BS/BE/BN shape, same z14
+    rendering regardless of display zoom `z`) instead of the old
+    dense-grid sample/colorize path (_sample_global_grid_tile/
+    _render_dense_grid_webp — unchanged, still used by precip-raw).
+
+    Always renders the continuous per-tile exceedance fraction (cyan->navy
+    gradient, more member agreement = darker blue — see
+    _RIVER_EXTENT_PROB_BREAKS/_COLORS, applied via np.digitize). River has
+    no Mean/Probability toggle (removed per explicit user request — unlike
+    rain, which has both a real mm intensity AND a real exceedance-
+    probability, river only ever has this ONE real per-cell metric, so a
+    second "Mean" mode was always just describing the identical number
+    under a different name/colour). flood-view-as (Mean/Probability) is now
+    rain-only.
     """
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time)
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
     if resolved is None:
         return None
-    entry = _river_extent_cache.get_grid(resolved)
-    return _render_dense_grid_webp(entry, "probability", _colorize_river_extent_mean, _colorize_river_extent_probability, z, x, y)
+    entry = _river_extent_cache.get_grid(resolved, rp_tier)
+    if entry is None:
+        return None
+    df = entry.get("df")
+    if df is None or df.empty:
+        return None
+
+    # Geographic bounds for the requested display tile — same Web Mercator
+    # setup as _fetch_raster_tile.
+    tile_w, tile_s, tile_e, tile_n = _tile_bounds(z, x, y)
+    tile_dw = tile_e - tile_w
+    _merc_tile_n = math.log(math.tan(math.pi / 4 + math.radians(tile_n) / 2))
+    _merc_tile_s = math.log(math.tan(math.pi / 4 + math.radians(tile_s) / 2))
+    _merc_tile_dh = _merc_tile_n - _merc_tile_s
+
+    # Filter z=14 rows that fall within this display tile via quadkey prefix
+    # — identical helper/pattern to _fetch_raster_tile.
+    like_pat = _quadkey_like_pattern(z, x, y)
+    if like_pat.endswith('%'):
+        prefix = like_pat[:-1]
+        mask = df['TILE_ID'].str.startswith(prefix, na=False)
+    else:
+        mask = df['TILE_ID'] == like_pat
+    sub = df[mask]
+    if sub.empty:
+        return None
+
+    img_arr = np.zeros((512, 512, 4), dtype=np.uint8)
+
+    ws = sub['BW'].to_numpy(dtype=np.float64)
+    ss = sub['BS'].to_numpy(dtype=np.float64)
+    es = sub['BE'].to_numpy(dtype=np.float64)
+    en = sub['BN'].to_numpy(dtype=np.float64)
+    ns = en  # keep the same short local name the rest of this function already uses below
+    _bounds_valid = np.isfinite(ws) & np.isfinite(ss) & np.isfinite(es) & np.isfinite(ns)
+
+    # The one real per-tile member-agreement fraction (see this function's
+    # own docstring) — continuous cyan->navy gradient via np.digitize.
+    probs = pd.to_numeric(sub['probability'], errors='coerce').to_numpy(dtype=np.float64)
+    valid = np.isfinite(probs) & (probs > 0) & _bounds_valid
+    probs, ws, ss, es, ns = probs[valid], ws[valid], ss[valid], es[valid], ns[valid]
+    if len(probs) == 0:
+        return None
+    palette_rgba_arr = np.asarray(_RIVER_EXTENT_PROB_COLORS, dtype=np.uint8)
+    idx = np.digitize(probs, _RIVER_EXTENT_PROB_BREAKS)
+    idx = np.clip(idx, 0, len(palette_rgba_arr) - 1)
+
+    # Map z=14 tile bounds to pixel coordinates — identical formulas to
+    # _fetch_raster_tile (see that function's own comment for the full
+    # floor()/+1 boundary-alignment rationale).
+    px0 = np.floor((ws - tile_w) / tile_dw * 512).astype(np.int32)
+    px1 = np.floor((es - tile_w) / tile_dw * 512).astype(np.int32) + 1
+    merc_ns = np.log(np.tan(np.pi / 4 + np.radians(ns) / 2))
+    merc_ss = np.log(np.tan(np.pi / 4 + np.radians(ss) / 2))
+    py0 = np.floor((1.0 - (merc_ns - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32)
+    py1 = np.floor((1.0 - (merc_ss - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32) + 1
+
+    # Vectorized scatter-paint — copied verbatim from _fetch_raster_tile
+    # (see that function's own comment for the full "why" — verified
+    # byte-identical to a per-row Python loop across 400+ randomized trials
+    # there; reused here rather than rederived).
+    x0v = np.maximum(0, px0)
+    y0v = np.maximum(0, py0)
+    x1v = np.minimum(512, np.maximum(x0v + 1, px1))
+    y1v = np.minimum(512, np.maximum(y0v + 1, py1))
+    # No separate "finite" re-check here — ws/ss/es/ns/idx were already
+    # filtered to fully-valid rows above (per mode), unlike
+    # _fetch_raster_tile's own version of this block (which paints straight
+    # from an unfiltered per-country DataFrame and still needs to skip NaN
+    # values inline).
+    wv = np.maximum(0, x1v - x0v)
+    hv = np.maximum(0, y1v - y0v)
+    counts = (wv * hv).astype(np.int64)
+    total = int(counts.sum())
+
+    if total > 0:
+        cum_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
+        pixel_offset = np.arange(total) - np.repeat(cum_start, counts)
+        w_per_pixel = np.repeat(wv, counts)
+        dy = pixel_offset // w_per_pixel
+        dx = pixel_offset % w_per_pixel
+        abs_y = np.repeat(y0v, counts) + dy
+        abs_x = np.repeat(x0v, counts) + dx
+        colors = palette_rgba_arr[np.repeat(idx, counts)]
+        flat_idx = abs_y.astype(np.int64) * 512 + abs_x.astype(np.int64)
+        img_arr.reshape(-1, 4)[flat_idx] = colors
+
+    if not img_arr.any():
+        return None
+
+    img = Image.fromarray(img_arr, 'RGBA')
+    buf = io.BytesIO()
+    img.save(buf, 'WEBP', lossless=True, method=4)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -2635,29 +3053,97 @@ _PREWARM_INTERVAL_SECONDS = 60 * 60
 
 
 def _prewarm_raw_caches() -> None:
-    """Background loop (single daemon thread): warms the precip-raw and
-    river-raw (now extent_rp10_bymember-based, see _RiverExtentCache) caches
-    immediately on startup, then re-warms every _PREWARM_INTERVAL_SECONDS.
-    Reuses ensure_precip_raw()/ensure_river_extent() directly (same functions
-    the /preload/* endpoints and the raw tile endpoints call) -- no HTTP
-    round-trip within the process. Each call is a fast no-op when the cache
-    is already warm; see _PrecipRawCache/_RiverExtentCache double-checked
-    locking. Errors are logged and swallowed so a warm-up failure (e.g.
-    Snowflake hiccup) never crashes this thread or blocks the server."""
+    """Background loop (single daemon thread): keeps a ROLLING WINDOW of the
+    3 most recent real forecast times for precip-raw and river-raw (now
+    extent_rp10_bymember-based, see _RiverExtentCache) always warm, re-checked
+    every _PREWARM_INTERVAL_SECONDS. Reuses ensure_precip_raw()/
+    ensure_river_extent() directly (same functions the /preload/* endpoints
+    and the raw tile endpoints call) -- no HTTP round-trip within the
+    process. Each call is a fast no-op when the cache is already warm; see
+    _PrecipRawCache/_RiverExtentCache double-checked locking. Errors are
+    logged and swallowed so a warm-up failure (e.g. Snowflake hiccup) never
+    crashes this thread or blocks the server.
+
+    Added per explicit user request ("make sure the latest 3 dates are
+    always pre-warmed, drop the oldest when a new day comes"): previously
+    this only ever warmed the SINGLE latest forecast time, so a user looking
+    at yesterday's or the day-before's real data (still a completely normal,
+    common thing to do — nothing here is Demo-Scenario-specific) always paid
+    a full cold ~1.2GB Zarr / real Parquet download. Each cycle re-resolves
+    the real latest-3-distinct-times set from Snowflake (_LATEST_3_PRECIP_
+    RAW_SQL/_LATEST_3_RIVER_EXTENT_SQL) and evicts any previously-warmed
+    entry that has since aged out of that window, so the process doesn't
+    just grow unbounded — each precip-raw grid alone can be sized in the
+    hundreds of MB once decoded.
+
+    River-raw ALSO now warms all 6 real return-period tiers (rp2/rp5/rp10/
+    rp20/rp50/rp100), not just the default rp10 — real feature added per
+    explicit user request, since the RP-tier slider was made genuinely
+    interactive and switching tiers previously always paid a real 5-20s
+    cold Parquet download (confirmed live) for every user, every time,
+    for any tier beyond the one default. ~18 (date, tier) combinations
+    total per cycle — still a background, non-blocking loop."""
     while True:
-        for label, ensure_fn in (
-            ("precip-raw", lambda: _precip_cache.ensure_precip_raw(None)),
-            ("river-raw", lambda: _river_extent_cache.ensure_river_extent(None)),
-        ):
+        try:
+            rows = _run_query(_LATEST_3_PRECIP_RAW_SQL, [])
+            latest_times = {str(r["FORECAST_TIME"]) for r in rows}
+        except Exception as e:
+            log.error("Prewarm: could not resolve latest-3 precip-raw times: %s", e)
+            latest_times = None
+        if latest_times is not None:
+            if not latest_times:
+                log.info("Prewarm: precip-raw — no data currently available to warm")
+            else:
+                for forecast_time in latest_times:
+                    try:
+                        resolved = _precip_cache.ensure_precip_raw(forecast_time)
+                        if resolved is not None:
+                            log.info("Prewarm: precip-raw cache warm (forecast_time=%s)", resolved)
+                    except Exception as e:
+                        log.error("Prewarm: precip-raw warm-up failed for %s: %s", forecast_time, e)
+                with _precip_cache._load_lock:
+                    stale = set(_precip_cache._grid.keys()) - latest_times
+                    for forecast_time in stale:
+                        _precip_cache._grid.pop(forecast_time, None)
+                        _precip_cache._loaded_at.pop(forecast_time, None)
+                if stale:
+                    log.info("Prewarm: evicted %d stale precip-raw grid(s) outside the latest-3 window: %s",
+                              len(stale), sorted(stale))
+
+        # River-raw: one latest-3 resolution PER real rp_tier — each tier is
+        # its own distinct Parquet file/forecast_time set (confirmed live —
+        # rp2's own file, in particular, has FAR more raw rows than rp10's,
+        # not just a smaller copy of it), so each needs its own query and its
+        # own eviction pass keyed to (forecast_time, that_tier) only.
+        for rp_tier in _RIVER_EXTENT_RP_TIERS:
             try:
-                log.info("Prewarm: checking %s cache…", label)
-                resolved = ensure_fn()
-                if resolved is None:
-                    log.info("Prewarm: %s cache — no data currently available to warm", label)
-                else:
-                    log.info("Prewarm: %s cache warm (forecast_time=%s)", label, resolved)
+                rows = _run_query(_LATEST_3_RIVER_EXTENT_SQL, [_river_extent_param(rp_tier)])
+                latest_times = {str(r["FORECAST_TIME"]) for r in rows}
             except Exception as e:
-                log.error("Prewarm: %s cache warm-up failed: %s", label, e)
+                log.error("Prewarm: could not resolve latest-3 river-raw/%s times: %s", rp_tier, e)
+                continue
+            if not latest_times:
+                log.info("Prewarm: river-raw/%s — no data currently available to warm", rp_tier)
+                continue
+            for forecast_time in latest_times:
+                try:
+                    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+                    if resolved is not None:
+                        log.info("Prewarm: river-raw/%s cache warm (forecast_time=%s)", rp_tier, resolved)
+                except Exception as e:
+                    log.error("Prewarm: river-raw/%s warm-up failed for %s: %s", rp_tier, forecast_time, e)
+            # Evict anything that has aged out of the rolling window for
+            # THIS tier only — under the SAME lock loads use, so an eviction
+            # can never race an in-progress download for that exact key.
+            with _river_extent_cache._load_lock:
+                this_tier_keys = {k for k in _river_extent_cache._grids.keys() if k[1] == rp_tier}
+                stale = {k for k in this_tier_keys if k[0] not in latest_times}
+                for key in stale:
+                    _river_extent_cache._grids.pop(key, None)
+                    _river_extent_cache._loaded_at.pop(key, None)
+            if stale:
+                log.info("Prewarm: evicted %d stale river-raw/%s grid(s) outside the latest-3 window: %s",
+                          len(stale), rp_tier, sorted(k[0] for k in stale))
         time.sleep(_PREWARM_INTERVAL_SECONDS)
 
 
@@ -3427,19 +3913,29 @@ def tile_value(
 def precip_raw_tile(
     forecast_time: str, z: int, x: int, y: int,
     mode: str = Query("mean", pattern="^(mean|probability)$"),
+    window_h: int = Query(_PRECIP_RATE_DEFAULT_WINDOW_H),
+    threshold_mm: float = Query(_PRECIP_PROB_THRESHOLD_MM),
 ) -> Response:
-    """Global precip raster tile (mm over the T+0->T+6h window).
+    """Global precip raster tile (mm over T+0->T+{window_h}h).
 
     `forecast_time` may be the literal string "latest" to always track the
     most recent tp forecast cycle without the caller needing to look it up.
 
-    `mode=mean` (default, backward-compatible): ensemble-mean rate, radar-style
-    ramp. `mode=probability`: fraction of ensemble members exceeding
-    _PRECIP_PROB_THRESHOLD_MM, sequential-purple ramp. Both are derived from
-    the same cached per-forecast_time download.
+    `window_h` (default 6, backward-compatible): accumulation window in
+    hours — must be one of _PRECIP_RATE_WINDOWS_H (the same real windows
+    ms-rain-window exposes) or the tile renders empty (no precomputed grid
+    for it). `threshold_mm` (default 10.0, backward-compatible): only used
+    when `mode=probability` — must be one of _PRECIP_PROB_THRESHOLDS_BY_
+    WINDOW_MM[window_h] (the same real depth tiers ms-rain-slider exposes for
+    that window) or, again, the tile renders empty.
+
+    `mode=mean` (default, backward-compatible): ensemble-mean rate for
+    `window_h`, radar-style ramp. `mode=probability`: fraction of ensemble
+    members exceeding `threshold_mm` within `window_h`, sequential-purple
+    ramp. All are derived from the same cached per-forecast_time download.
     """
     try:
-        webp_bytes = _fetch_precip_raw_tile(forecast_time, z, x, y, mode)
+        webp_bytes = _fetch_precip_raw_tile(forecast_time, z, x, y, mode, window_h, threshold_mm)
     except Exception as exc:
         log.error("precip_raw_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3459,6 +3955,8 @@ def precip_raw_tile(
 def get_precip_raw_stats(
     forecast_time: str,
     mode: str = Query("mean", pattern="^(mean|probability)$"),
+    window_h: int = Query(_PRECIP_RATE_DEFAULT_WINDOW_H),
+    threshold_mm: float = Query(_PRECIP_PROB_THRESHOLD_MM),
 ) -> dict:
     """Legend range for the precip palette.
 
@@ -3466,10 +3964,14 @@ def get_precip_raw_stats(
     /stats/{country}/...), returned without forcing a ~1.2GB grid download
     just to answer a legend request.
 
-    `mode=mean`: physical mm-over-6h scale (unchanged from before). `mode=
-    probability`: fixed [0, 1] fraction scale — no need to compute real
-    min/max from data since exceedance-probability is always in that range
-    by construction.
+    `mode=mean`: physical mm-over-window_h scale, breaks scaled per
+    `window_h` (see _precip_rate_breaks_for_window — real bug fixed here,
+    this used to always echo back the fixed base-6h breaks regardless of
+    window_h). `mode=probability`: fixed [0, 1] fraction scale — no need to
+    compute real min/max from data since exceedance-probability is always
+    in that range by construction; echoes back the requested
+    window_h/threshold_mm rather than the old fixed _PRECIP_PROB_THRESHOLD_MM
+    so the legend can show the ACTUAL selected threshold, not always "10mm".
     """
     resolved = (
         _precip_cache.resolve_latest_forecast_time()
@@ -3481,14 +3983,17 @@ def get_precip_raw_stats(
             "min": 0.0,
             "max": 1.0,
             "breaks": _PRECIP_PROB_BREAKS,
-            "threshold_mm": _PRECIP_PROB_THRESHOLD_MM,
+            "threshold_mm": threshold_mm,
+            "window_h": window_h,
             "forecast_time": resolved,
             "mode": mode,
         }
+    window_breaks = _precip_rate_breaks_for_window(window_h)
     return {
         "min": 0.0,
-        "max": _PRECIP_RATE_BREAKS[-1],
-        "breaks": _PRECIP_RATE_BREAKS,
+        "max": window_breaks[-1],
+        "breaks": window_breaks,
+        "window_h": window_h,
         "forecast_time": resolved,
         "mode": mode,
     }
@@ -3500,9 +4005,9 @@ def preload_precip_raw(forecast_time: str) -> dict:
     download + Zarr open happens in a background thread (same fire-and-forget
     style as /preload/{country}/{storm}/{forecast_date}).
 
-    Warms both the mean and probability grids in one download — both are
-    computed together in ensure_precip_raw() from the same per-member
-    rate_grid, so there is no separate "mode" to pass here."""
+    Warms EVERY real (window_h, threshold_mm) combination in one download —
+    all are computed together in ensure_precip_raw() from the same per-member
+    rate_grid(s), so there is no separate "window"/"mode" to pass here."""
     def _load():
         try:
             _precip_cache.ensure_precip_raw(forecast_time)
@@ -3526,28 +4031,40 @@ def preload_precip_raw(forecast_time: str) -> dict:
 @app.get("/tiles/raster/river-raw/{forecast_time}/{z}/{x}/{y}.webp", response_class=Response)
 def river_raw_raster_tile(
     forecast_time: str, z: int, x: int, y: int,
-    mode: str = Query("mean", pattern="^(mean|probability)$"),
+    rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
 ) -> Response:
-    """Global river FLOOD-EXTENT (RP10, per-member) RASTER tile — THE
-    endpoint the frontend should use. See the _RiverExtentCache module
-    comment above for the full rationale (why extent_rp10_bymember replaces
-    raw dis24 discharge, step_h/resolution/aggregation choices, and the
-    Mean-vs-Probability judgment call).
+    """Global river FLOOD-EXTENT (per-member, real return-period tier)
+    RASTER tile — THE endpoint the frontend should use. See the
+    _RiverExtentCache module comment above for the full rationale (why
+    extent_rpN_bymember replaces raw dis24 discharge, step_h/resolution/
+    aggregation choices, and why there is no Mean/Probability mode split).
 
     `forecast_time` may be the literal string "latest" to always track the
-    most recent extent_rp10_bymember forecast cycle without the caller
-    needing to look it up. Unlike the old dis24 layer, this is a plain DATE
-    string (e.g. "2026-07-14"), not a full datetime.
+    most recent cycle for the requested `rp_tier` without the caller needing
+    to look it up. Unlike the old dis24 layer, this is a plain DATE string
+    (e.g. "2026-07-14"), not a full datetime.
 
-    `mode=mean` (default): majority-vote consensus flood mask — a single
-    flat solid color wherever >50% of the 51 members agree this cell floods
-    at RP10 (see _colorize_river_extent_mean). `mode=probability`: the REAL
-    per-cell fraction of members whose RP10 flood extent covers this cell,
-    cyan->navy gradient (see _colorize_river_extent_probability). Both modes
-    are derived from the same cached per-forecast_time download.
+    `rp_tier` (default rp10, matching ms-river-slider's own default): one of
+    rp2/rp5/rp10/rp20/rp50/rp100 — real bug fixed here, this used to be
+    hardcoded to rp10 regardless of what the slider was set to. rp2/rp5 are
+    IS_STANDIN=True upstream (see _RIVER_EXTENT_STANDIN_RP_TIERS) — they
+    reuse rp10's own real extent as a labelled UPPER-BOUND stand-in (flood
+    extent grows monotonically with return period, so RP10's extent
+    conservatively overestimates RP2/RP5's true, smaller extent — see
+    TC-ECMWF-Forecast-Pipeline's own glofas_extent_masking.py), not an
+    independently-computed rp2/rp5 result; see /stats/river-raw's own
+    `is_standin` field for surfacing this to the frontend.
+
+    Always renders the real per-z14-tile fraction of members whose extent
+    covers that tile at the requested `rp_tier`, cyan->navy gradient — no
+    `mode` query param anymore (removed per explicit user request: river has
+    no second independent quantity the way rain has both real mm and a real
+    exceedance-probability, so an earlier Mean/Probability toggle here was
+    always describing the identical number under a different name/colour;
+    see _fetch_river_extent_raster_tile's own docstring).
     """
     try:
-        webp_bytes = _fetch_river_extent_raster_tile(forecast_time, z, x, y, mode)
+        webp_bytes = _fetch_river_extent_raster_tile(forecast_time, z, x, y, rp_tier)
     except Exception as exc:
         log.error("river_raw_raster_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3566,42 +4083,51 @@ def river_raw_raster_tile(
 @app.get("/stats/river-raw/{forecast_time}")
 def get_river_raw_stats(
     forecast_time: str,
-    mode: str = Query("mean", pattern="^(mean|probability)$"),
+    rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
 ) -> dict:
-    """Legend range for the river flood-extent raster (extent_rp10_bymember —
-    see _RiverExtentCache above).
+    """Legend range for the river flood-extent raster (see _RiverExtentCache
+    above). Not currently called by the frontend (the Dash app builds its
+    own legend text directly — see pages/map_shell_concept.py's
+    _legend_raw_flood_info); kept for API-shape parity with precip's own
+    real stats endpoint.
 
-    ALWAYS returns the continuous per-cell RP10 exceedance fraction shape
-    (fixed [0, 1] scale, `breaks`, `ensemble_size`) regardless of `mode` —
-    matches _fetch_river_extent_raster_tile's own always-probability
-    rendering (see that function's own docstring for why river dropped the
-    separate majority-vote "mean" mode entirely). `mode` is echoed back only
-    for API-shape consistency with rain's own real Mean/Probability stats.
+    Always returns the continuous [0, 1] probability-fraction shape
+    (`breaks`, `ensemble_size`) — river has only ever this one real metric,
+    no Mean/Probability mode split (removed per explicit user request).
+
+    `is_standin` is True for rp2/rp5: the frontend uses this to show a
+    real, data-driven "not natively computed, RP10 used as an upper-bound
+    estimate" note rather than a silently-wrong-looking layer.
     """
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time)
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+    is_standin = rp_tier in _RIVER_EXTENT_STANDIN_RP_TIERS
     if resolved is None:
-        return {"min": None, "max": None, "forecast_time": None, "mode": mode, "rp_tier": _RIVER_EXTENT_RP_TIER}
+        return {"min": None, "max": None, "forecast_time": None,
+                 "rp_tier": rp_tier, "is_standin": is_standin}
     return {
         "min": 0.0,
         "max": 1.0,
         "breaks": _RIVER_EXTENT_PROB_BREAKS,
         "ensemble_size": _RIVER_PROB_ENSEMBLE_SIZE,
         "forecast_time": resolved,
-        "mode": mode,
-        "rp_tier": _RIVER_EXTENT_RP_TIER,
+        "rp_tier": rp_tier,
+        "is_standin": is_standin,
     }
 
 
 @app.get("/preload/river-raw/{forecast_time}")
-def preload_river_raw(forecast_time: str) -> dict:
-    """Pre-warm the river flood-extent cache (both mean/probability grids,
-    computed together in ensure_river_extent() — no separate "mode" to pass
-    here). Returns immediately; the ~28MB parquet download + row-group
-    processing happens in a background thread (same fire-and-forget style as
-    /preload/precip-raw/{forecast_time})."""
+def preload_river_raw(
+    forecast_time: str,
+    rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
+) -> dict:
+    """Pre-warm the river flood-extent cache (the sparse zoom-14-tile
+    probability table, computed once in ensure_river_extent() — no separate
+    "mode" to pass here). Returns immediately; the ~28MB parquet download +
+    row-group processing happens in a background thread (same
+    fire-and-forget style as /preload/precip-raw/{forecast_time})."""
     def _load():
         try:
-            _river_extent_cache.ensure_river_extent(forecast_time)
+            _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
         except Exception as e:
             log.error("Preload river-raw error: %s", e)
     threading.Thread(target=_load, daemon=True).start()
