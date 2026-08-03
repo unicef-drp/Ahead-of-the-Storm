@@ -77,6 +77,25 @@ def serve_map_static(filename):
     return resp
 
 
+@server.route("/alert-email/<track_id>/<forecast_time>/<country_code>")
+def serve_alert_email(track_id, forecast_time, country_code):
+    """Real Alert email HTML (AOTS.TC_ECMWF.ALERT_SENT_LOG.EMAIL_BODY), served
+    as a normal page — backs both the alert-email-modal iframe's `src` and
+    its "Open in new tab" link (pages/map_shell_concept.py's
+    _open_alert_email_detail). Real bug found+fixed here: this used to be a
+    giant `data:text/html;charset=utf-8,<percent-encoded ~700KB body>` URI
+    built client-side — real emails are large enough (embedded base64 map
+    images) that the percent-encoded URI could balloon past practical
+    browser limits for a fresh top-level navigation, so "Open in new tab"
+    opened a blank tab that only rendered after a manual refresh. A real
+    HTTP GET has no such size quirk."""
+    from components.data.snowflake_utils import get_alert_email_body
+    body = get_alert_email_body(track_id, forecast_time, country_code)
+    if body is None:
+        return Response("Alert email not found.", mimetype="text/plain", status=404)
+    return Response(body, mimetype="text/html")
+
+
 app.layout = dmc.MantineProvider(
     [
         dash.page_container,

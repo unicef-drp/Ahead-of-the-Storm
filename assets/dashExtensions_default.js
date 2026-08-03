@@ -68,28 +68,36 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             ,
         function4: function(feature, context) {
                 const props = feature.properties || {};
-                const severity_population = props.severity_population || 0;
+                // Real bug found+fixed here: `props.severity_population || 0` collapsed
+                // TWO genuinely different cases into the same falsy 0 — (a) no real
+                // severity_population attributable at all (Global mode, or no country
+                // selected — the key is entirely ABSENT from properties, see
+                // _build_ms_envelope_geojson's own comment in pages/map_shell_concept.py)
+                // vs (b) a real, CONFIRMED zero for this specific member (Country
+                // Analysis mode, the key IS present with value 0 — TRACK_MAT has one row
+                // per ensemble member, so a member with no real exposure genuinely has
+                // SEVERITY_POPULATION=0, not a missing row). These need different
+                // colors: (a) still gets the orange/yellow "consensus" overlap-density
+                // fill below; (b) now gets a distinct grey instead, so a member
+                // confirmed to have NO impact never looks like it might have some (it
+                // used to render identically to (a), which is what was reported live).
+                const hasSeverityData = props.severity_population !== undefined && props.severity_population !== null;
+                const severity_population = hasSeverityData ? props.severity_population : 0;
                 const max_population = props.max_population || 1;
                 const isGust = props.hazard === 'gust';
 
-                // "Consensus" rendering — used whenever there's no real per-member
-                // severity_population to color by, whether because there's no single
-                // country to attribute population severity to at all (Global mode —
-                // see _build_ms_envelope_geojson's own is_global comment) OR because a
-                // specific member genuinely has zero/unknown impact for the selected
-                // country (Country Analysis mode — real bug found+fixed here: this used
-                // to fall back to a flat, unrelated gray instead of reusing the exact
-                // same real-data consensus treatment). A low, uniform, near-borderless
-                // fill so the real per-member envelope polygons (up to 51 of them, all
-                // real geometry) alpha-blend into a natural density gradient where they
-                // overlap — darker = more members agree this area is threatened,
-                // lighter = fewer. This is a genuine union-with-overlap-count effect
-                // achieved via the browser's own alpha compositing, not a separate
-                // computed grid. Gust uses its own lighter orange (#ffa94d, matching
-                // its GUST color constant in pages/map_shell_concept.py) so Wind and
-                // Gust envelopes stay visually distinguishable when both are shown at
-                // once (both hazards share one combined FeatureCollection).
-                if (!severity_population || severity_population === 0) {
+                // "Consensus" rendering — case (a) above: no real per-member
+                // severity_population to color by at all. A low, uniform,
+                // near-borderless fill so the real per-member envelope polygons (up to
+                // 51 of them, all real geometry) alpha-blend into a natural density
+                // gradient where they overlap — darker = more members agree this area
+                // is threatened, lighter = fewer. This is a genuine union-with-overlap-
+                // count effect achieved via the browser's own alpha compositing, not a
+                // separate computed grid. Gust uses its own lighter orange (#ffa94d,
+                // matching its GUST color constant in pages/map_shell_concept.py) so
+                // Wind and Gust envelopes stay visually distinguishable when both are
+                // shown at once (both hazards share one combined FeatureCollection).
+                if (!hasSeverityData) {
                     const c = isGust ? '#ffa94d' : '#e8590c';
                     return {
                         color: c,
@@ -97,6 +105,23 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                         opacity: 0.25,
                         fillColor: c,
                         fillOpacity: 0.09
+                    };
+                }
+
+                // Case (b) above: real severity data exists for this member and it's
+                // confirmed exactly zero — a plain, muted grey, NOT part of the
+                // yellow->red severity gradient below (that gradient is reserved for
+                // members with SOME real impact, how much of it), and NOT the
+                // orange/yellow consensus fill either (that would misleadingly suggest
+                // this member is just an "unknown" case like Global mode, when it's
+                // actually a confirmed, real zero).
+                if (severity_population === 0) {
+                    return {
+                        color: '#adb5bd',
+                        weight: 0.5,
+                        opacity: 0.4,
+                        fillColor: '#adb5bd',
+                        fillOpacity: 0.12
                     };
                 }
 

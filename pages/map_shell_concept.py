@@ -19,8 +19,10 @@ around.
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -54,6 +56,8 @@ from components.data.snowflake_utils import (
     get_precip_forecast_time_near, get_river_extent_forecast_time_for_date,
     get_multi_storm_tracks, get_track_ids_for_date, get_gust_track_ids_for_date, get_tracks_for_storm,
     get_tile_impacts, get_gust_tile_impacts, get_river_tile_impacts, get_rain_tile_impacts,
+    get_storms_with_alert_emails_at, get_alert_emails_for_storm, get_alert_email_body,
+    get_recent_forecast_dates,
 )
 from components.data.data_store_utils import get_data_store, get_impact_data
 
@@ -452,14 +456,18 @@ _TRANSLATIONS = {
         "Active Storm — {country}": "Tormenta Activa — {country}",
         "Active Storms — {countries}": "Tormentas Activas — {countries}",
         "Currently tracking {names}.": "Actualmente rastreando {names}.",
+        "Alert Emails": "Correos de Alerta", "Alert Emails — {storm}": "Correos de Alerta — {storm}",
+        "No alert emails found for this storm at the selected date/time.": "No se encontraron correos de alerta para esta tormenta en la fecha/hora seleccionada.",
         # Impact panel
         "Impact Summary": "Resumen de Impacto",
         "Global — worldwide totals across visible hazards": "Global — totales mundiales de los peligros visibles",
         "Global — worldwide totals across all hazards": "Global — totales mundiales combinando todos los peligros",
         "Reflects only countries currently initialized in the database.":
             "Solo incluye los países actualmente inicializados en la base de datos.",
-        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
-            "Ningún país inicializado está actualmente afectado. Esto no significa que no haya un impacto real: los países potencialmente afectados pueden no estar aún en la base de datos.",
+        "None of the initialized countries show impact at the currently selected hazard configuration (severity threshold/tier). This does not mean there is no real impact overall — a different threshold may show real impact, and potentially affected countries may not yet be in the database.":
+            "Ningún país inicializado muestra impacto con la configuración de peligro actualmente seleccionada (umbral/nivel de gravedad). Esto no significa que no haya un impacto real en general: un umbral diferente podría mostrar impacto real, y los países potencialmente afectados pueden no estar aún en la base de datos.",
+        "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
+            "Sin impacto con la configuración de peligro actualmente seleccionada (umbral/nivel de gravedad) para esta selección. Esto no significa que no haya un impacto real en general: un umbral diferente podría mostrar impacto real.",
         "Full Impact Breakdown": "Desglose Completo de Impacto", "Hazard Contribution": "Contribución por Peligro",
         "Alert Email": "Correo de Alerta", "Open in new tab ↗": "Abrir en nueva pestaña ↗",
         "Total: {value}": "Total: {value}",
@@ -614,13 +622,17 @@ _TRANSLATIONS = {
         "Active Storm — {country}": "Tempête active — {country}",
         "Active Storms — {countries}": "Tempêtes actives — {countries}",
         "Currently tracking {names}.": "Suivi actuel : {names}.",
+        "Alert Emails": "E-mails d'alerte", "Alert Emails — {storm}": "E-mails d'alerte — {storm}",
+        "No alert emails found for this storm at the selected date/time.": "Aucun e-mail d'alerte trouvé pour cette tempête à la date/heure sélectionnée.",
         "Impact Summary": "Résumé de l'impact",
         "Global — worldwide totals across visible hazards": "Mondial — totaux mondiaux des risques visibles",
         "Global — worldwide totals across all hazards": "Mondial — totaux mondiaux combinant tous les risques",
         "Reflects only countries currently initialized in the database.":
             "Ne reflète que les pays actuellement initialisés dans la base de données.",
-        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
-            "Aucun pays initialisé n'est actuellement touché. Cela ne signifie pas qu'il n'y a pas d'impact réel : des pays potentiellement touchés peuvent ne pas encore figurer dans la base de données.",
+        "None of the initialized countries show impact at the currently selected hazard configuration (severity threshold/tier). This does not mean there is no real impact overall — a different threshold may show real impact, and potentially affected countries may not yet be in the database.":
+            "Aucun pays initialisé ne montre d'impact avec la configuration de danger actuellement sélectionnée (seuil/niveau de gravité). Cela ne signifie pas qu'il n'y a pas d'impact réel en général : un seuil différent pourrait montrer un impact réel, et des pays potentiellement touchés peuvent ne pas encore figurer dans la base de données.",
+        "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
+            "Aucun impact avec la configuration de danger actuellement sélectionnée (seuil/niveau de gravité) pour cette sélection. Cela ne signifie pas qu'il n'y a pas d'impact réel en général : un seuil différent pourrait montrer un impact réel.",
         "Full Impact Breakdown": "Répartition complète de l'impact", "Hazard Contribution": "Contribution par risque",
         "Alert Email": "E-mail d'alerte", "Open in new tab ↗": "Ouvrir dans un nouvel onglet ↗",
         "Total: {value}": "Total : {value}",
@@ -764,13 +776,17 @@ _TRANSLATIONS = {
         "Active Storm — {country}": "সক্রিয় ঝড় — {country}",
         "Active Storms — {countries}": "সক্রিয় ঝড় — {countries}",
         "Currently tracking {names}.": "বর্তমানে ট্র্যাক করা হচ্ছে: {names}।",
+        "Alert Emails": "সতর্কতা ইমেইল", "Alert Emails — {storm}": "সতর্কতা ইমেইল — {storm}",
+        "No alert emails found for this storm at the selected date/time.": "নির্বাচিত তারিখ/সময়ে এই ঝড়ের জন্য কোনো সতর্কতা ইমেইল পাওয়া যায়নি।",
         "Impact Summary": "প্রভাবের সারসংক্ষেপ",
         "Global — worldwide totals across visible hazards": "বৈশ্বিক — দৃশ্যমান ঝুঁকিসমূহের বিশ্বব্যাপী মোট",
         "Global — worldwide totals across all hazards": "বৈশ্বিক — সকল ঝুঁকির সম্মিলিত বিশ্বব্যাপী মোট",
         "Reflects only countries currently initialized in the database.":
             "শুধুমাত্র ডেটাবেসে বর্তমানে যুক্ত দেশগুলো প্রতিফলিত করে।",
-        "None of the initialized countries are currently impacted. This does not mean there is no real impact — potentially affected countries may not yet be in the database.":
-            "যুক্ত দেশগুলোর কোনোটিই বর্তমানে প্রভাবিত নয়। এর অর্থ এই নয় যে প্রকৃত কোনো প্রভাব নেই — সম্ভাব্য প্রভাবিত দেশগুলো এখনও ডেটাবেসে যুক্ত নাও হতে পারে।",
+        "None of the initialized countries show impact at the currently selected hazard configuration (severity threshold/tier). This does not mean there is no real impact overall — a different threshold may show real impact, and potentially affected countries may not yet be in the database.":
+            "যুক্ত দেশগুলোর কোনোটিই বর্তমানে নির্বাচিত ঝুঁকির কনফিগারেশনে (তীব্রতার সীমা/স্তর) প্রভাব দেখাচ্ছে না। এর অর্থ এই নয় যে সামগ্রিকভাবে প্রকৃত কোনো প্রভাব নেই — ভিন্ন একটি সীমা প্রকৃত প্রভাব দেখাতে পারে, এবং সম্ভাব্য প্রভাবিত দেশগুলো এখনও ডেটাবেসে যুক্ত নাও হতে পারে।",
+        "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
+            "এই নির্বাচনের জন্য বর্তমানে নির্বাচিত ঝুঁকির কনফিগারেশনে (তীব্রতার সীমা/স্তর) কোনো প্রভাব নেই। এর অর্থ এই নয় যে সামগ্রিকভাবে প্রকৃত কোনো প্রভাব নেই — ভিন্ন একটি সীমা প্রকৃত প্রভাব দেখাতে পারে।",
         "Full Impact Breakdown": "সম্পূর্ণ প্রভাব বিভাজন", "Hazard Contribution": "ঝুঁকির অবদান",
         "Alert Email": "সতর্কতা ইমেইল", "Open in new tab ↗": "নতুন ট্যাবে খুলুন ↗",
         "Total: {value}": "মোট: {value}",
@@ -1190,12 +1206,21 @@ def _country_options():
         groups.append({"group": _t("Regions"), "items": region_items})
     return groups
 
-# Fallback baseline only — used when there's no real active storm for a
-# country yet (_fetch_real_tile_totals returns None in that case; see
-# below), or for the "Global" scope, which has no single country to query.
-# Not a live number: honestly illustrative, same as the rest of this page's
-# "no real data available" fallbacks (e.g. metrics.py's own _NA_VALUE).
+# Fallback baseline only — used when NOTHING has been selected yet at all
+# (no country picked in Global mode) — an illustrative "here's the shape of
+# this panel" skeleton for that specific pre-selection state, same as the
+# rest of this page's "no real data available" fallbacks (e.g. metrics.py's
+# own _NA_VALUE).
+#
+# Do NOT use this as _get_country_stats/_get_country_pin_pct's own fallback
+# for a REAL, already-selected country/storm/hazard query that happens to
+# produce no frames (e.g. a wind severity threshold this specific storm's
+# forecast never reached) — that's a genuine, real ZERO, not "nothing
+# selected yet," and showing this mock there would fabricate a materially
+# wrong number (real bug found+fixed, see _get_country_stats's own
+# docstring) — _ZERO_STATS/_ZERO_PIN_PCT below are for that case instead.
 _DEFAULT_STATS = {"Children at Risk": "218K", "People at Risk": "640K", "Schools at Risk": "185", "Health Centers at Risk": "46", "Shelters at Risk": "62", "WASH Facilities at Risk": "134"}
+_ZERO_STATS = {k: "0" for k in _DEFAULT_STATS}
 
 # Icon per stat — Material Design Icons (mdi:*) via Iconify, since carbon's
 # set (used for the rest of this page's chrome icons) doesn't cover
@@ -1399,6 +1424,15 @@ def _wind_only_hz(wind_kt=None):
             "wind_kt": wind_kt, "gust_kt": None, "rp_tier": None, "rain_mm": None, "rain_window": None}
 
 
+def _river_only_hz(rp_tier=None):
+    """River-only counterpart to _wind_only_hz — used by _hazard_curve_row's
+    real per-return-period-tier threshold curve (see that function's own
+    docstring for why each hazard's curve isolates that ONE hazard rather
+    than reusing whatever combined hz the popup itself was opened with)."""
+    return {"wind_on": False, "gust_on": False, "river_on": True, "rain_on": False,
+            "wind_kt": None, "gust_kt": None, "rp_tier": rp_tier, "rain_mm": None, "rain_window": None}
+
+
 def _global_flood_availability(date, run):
     """Real per-date River/Rain availability for Global scope — every
     country with ANY real impact data at the resolved topbar date/run
@@ -1531,7 +1565,24 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
         if not numeric:
             return None
         target_kt = target_kt if target_kt is not None else 50
-        return target_kt if target_kt in numeric else numeric[0]
+        # Real bug found+fixed here (2026-08): this used to silently fall
+        # back to numeric[0] (the LOWEST available threshold) whenever the
+        # requested target_kt wasn't one of this storm's own real, computed
+        # thresholds — e.g. selecting Category 5 (137kt) for a storm whose
+        # real envelope data only goes up to Category 4 (113kt, because it
+        # never forecast to reach Cat 5 anywhere) silently returned the
+        # 34kt result MISLABELED as the 137kt one. This is a real, serious
+        # correctness bug, not a display nuance: it fabricates a materially
+        # wrong number (verified live — DOLPHIN/Philippines/2026-08-02 18Z
+        # showed the SAME "42K people at risk" at both Tropical Storm AND
+        # Category 5, an impossible non-monotonic artifact, once this same
+        # resolution was probed across every threshold for the real
+        # per-hazard threshold curve — see _hazard_curve_row). A threshold
+        # this storm's real forecast never reached genuinely has no data to
+        # report — return None (no frame contributed for this hazard at
+        # this specific threshold) rather than substituting a different,
+        # lower threshold's real number under the wrong label.
+        return target_kt if target_kt in numeric else None
 
     if hz["wind_on"] and storm_info:
         wt = _resolve_threshold("wind", hz["wind_kt"])
@@ -1587,16 +1638,16 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     population = _sum('E_population')
     children = _sum('E_infant_population') + _sum('E_school_age_population') + _sum('E_adolescent_population')
     stats = {
-        "Children at Risk": _format_stat_number(round(children)),
-        "People at Risk": _format_stat_number(round(population)),
-        "Schools at Risk": _format_stat_number(round(_sum('E_num_schools'))),
-        "Health Centers at Risk": _format_stat_number(round(_sum('E_num_hcs'))),
-        "Shelters at Risk": _format_stat_number(round(_sum('E_num_shelters'))),
-        "WASH Facilities at Risk": _format_stat_number(round(_sum('E_num_wash'))),
+        "Children at Risk": _format_stat_number(children),
+        "People at Risk": _format_stat_number(population),
+        "Schools at Risk": _format_stat_number(_sum('E_num_schools')),
+        "Health Centers at Risk": _format_stat_number(_sum('E_num_hcs')),
+        "Shelters at Risk": _format_stat_number(_sum('E_num_shelters')),
+        "WASH Facilities at Risk": _format_stat_number(_sum('E_num_wash')),
     }
     pin_pct = {
-        "people": max(0, min(100, round(people_in_need / population * 100))) if population > 0 else 0,
-        "children": max(0, min(100, round(children_in_need / children * 100))) if children > 0 else 0,
+        "people": max(0, min(100, math.ceil(people_in_need / population * 100))) if population > 0 else 0,
+        "children": max(0, min(100, math.ceil(children_in_need / children * 100))) if children > 0 else 0,
     }
     return {"stats": stats, "pin_pct": pin_pct}
 
@@ -1608,16 +1659,34 @@ def _get_country_stats(country, date=None, run=None, wind_kt=None, hz=None):
     `wind_kt` (see _resolve_wind_kt) threads the real wind-severity slider value
     through when `hz` isn't given (wind-only callers). Pass a real multi-hazard
     `hz` dict (see _fetch_real_combined_tile_totals's own docstring) to get the
-    real combined-across-active-hazards total instead of wind-only."""
+    real combined-across-active-hazards total instead of wind-only.
+
+    Real, serious bug found+fixed here (2026-08): this used to fall back to
+    _DEFAULT_STATS — the OLD hardcoded illustrative mock ("218K children",
+    "640K people", etc., left over from before real Snowflake wiring
+    existed) — whenever _fetch_real_combined_tile_totals returned None.
+    That None case is NOT "this country was never wired up" (the only
+    scenario the mock fallback made sense for) — in practice it almost
+    always means "every active hazard genuinely produced zero real rows
+    for this exact query" (e.g. a wind severity threshold this specific
+    storm's real forecast never reached — verified live: selecting
+    Category 5 for DOLPHIN/Philippines, whose real envelope data only goes
+    up to Category 4, silently showed the fake mock "640K people at risk"
+    instead of the true real answer, 0). Falls back to _ZERO_STATS (all
+    real zeros) instead — a country this reactive to real Snowflake data
+    should never show a materially wrong, fabricated illustrative number
+    in place of an honest zero."""
     real = _fetch_real_combined_tile_totals(country, date, run, hz or _wind_only_hz(wind_kt))
-    return real["stats"] if real else _DEFAULT_STATS
+    return real["stats"] if real else _ZERO_STATS
 
 
 def _get_country_pin_pct(country, date=None, run=None, wind_kt=None, hz=None):
     """Real replacement for the old `_PIN_PCT.get(country, _DEFAULT_PIN_PCT)`.
-    See _get_country_stats above re: date/run/wind_kt/hz."""
+    See _get_country_stats above re: date/run/wind_kt/hz, and re: why this
+    falls back to _ZERO_PIN_PCT (real zeros) rather than the old illustrative
+    _DEFAULT_PIN_PCT mock."""
     real = _fetch_real_combined_tile_totals(country, date, run, hz or _wind_only_hz(wind_kt))
-    return real["pin_pct"] if real else _DEFAULT_PIN_PCT
+    return real["pin_pct"] if real else _ZERO_PIN_PCT
 
 
 def _get_data_availability_real(country):
@@ -1673,9 +1742,11 @@ def _ensemble_members():
             + [{"value": f"member-{i}", "label": _t("Member {n}", n=i)} for i in range(1, 11)]},
     ]
 
-# Fallback only (see _get_country_pin_pct above) — % of "at risk" further
-# flagged "in need" when there's no real per-country tile data available yet.
+# Fallback only for the "nothing selected yet" skeleton (see _DEFAULT_STATS's
+# own comment for why this is NOT _get_country_pin_pct's own real-query
+# fallback anymore — that's _ZERO_PIN_PCT below).
 _DEFAULT_PIN_PCT = {"people": 34, "children": 41}
+_ZERO_PIN_PCT = {"people": 0, "children": 0}
 
 # Fallback only (see _get_country_totals below) — population/children
 # denominator for the arc charts' outer "Population" ring, used only when
@@ -1781,7 +1852,7 @@ def _hazard_breakdown(wind_on=True, river_on=True, rain_on=True, surge_on=True):
     tc_pct = _family_pct(_HAZARD_TC_MEMBERS)
     flood_pct = _family_pct(_HAZARD_FLOOD_MEMBERS)
     tc_active, flood_active = tc_pct > 0, flood_pct > 0
-    both_pct = round(_HAZARD_OVERLAP_FRAC * min(tc_pct, flood_pct)) if (tc_active and flood_active) else 0
+    both_pct = math.ceil(_HAZARD_OVERLAP_FRAC * min(tc_pct, flood_pct)) if (tc_active and flood_active) else 0
     tc_only_pct = tc_pct - both_pct
     flood_only_pct = flood_pct - both_pct
     scale = (tc_only_pct + both_pct + flood_only_pct) / 100
@@ -1798,7 +1869,7 @@ def _hazard_breakdown(wind_on=True, river_on=True, rain_on=True, surge_on=True):
 def _scale_stats_by_hazard(base_stats, scale):
     if scale == 1.0:
         return base_stats
-    return {k: _format_stat_number(round(_parse_stat_number(v) * scale)) for k, v in base_stats.items()}
+    return {k: _format_stat_number(_parse_stat_number(v) * scale) for k, v in base_stats.items()}
 
 
 def _active_hazards_indicator(breakdown):
@@ -1872,11 +1943,11 @@ def _hazard_split_line(n, breakdown, font_size="9.5px"):
     if not tc_active and not flood_active:
         return html.Div()
     return html.Div([
-        html.Span(_format_stat_number(round(n * breakdown["tc_only_pct"] / 100)), style={"color": _HAZARD_TC_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(n * breakdown["tc_only_pct"] / 100), style={"color": _HAZARD_TC_COLOR, "fontWeight": 600}),
         html.Span("/", style={"color": "#c3ccd2", "margin": "0 1px"}),
-        html.Span(_format_stat_number(round(n * breakdown["both_pct"] / 100)), style={"color": HAZARD_BOTH_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(n * breakdown["both_pct"] / 100), style={"color": HAZARD_BOTH_COLOR, "fontWeight": 600}),
         html.Span("/", style={"color": "#c3ccd2", "margin": "0 1px"}),
-        html.Span(_format_stat_number(round(n * breakdown["flood_only_pct"] / 100)), style={"color": _HAZARD_FLOOD_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(n * breakdown["flood_only_pct"] / 100), style={"color": _HAZARD_FLOOD_COLOR, "fontWeight": 600}),
     ], style={"fontSize": font_size, "marginTop": "1px"})
 
 
@@ -1962,33 +2033,43 @@ def _parse_stat_number(v):
         return v
     v = v.strip()
     if v.endswith("K"):
-        return round(float(v[:-1]) * 1_000)
+        return math.ceil(float(v[:-1]) * 1_000)
     if v.endswith("M"):
-        return round(float(v[:-1]) * 1_000_000)
-    return round(float(v))
+        return math.ceil(float(v[:-1]) * 1_000_000)
+    return math.ceil(float(v))
 
 
 def _format_stat_number(n):
-    """640000 -> '640K', 185 -> '185'."""
+    """640000 -> '640K', 185 -> '185'.
+
+    Ceils the raw value to the next whole number EXACTLY ONCE (real people/
+    impact counts must never be undercounted, e.g. 42081.2 -> 42082, never
+    42081) — but the K/M abbreviation of that already-ceiled integer uses
+    ordinary nearest-rounding, not a second ceil: real bug found+fixed here
+    — 42082 abbreviates to "42K" (round(42.082) == 42), NOT "43K". Ceiling
+    the abbreviation too would be a second, unwanted round-up on top of the
+    first — abbreviating for compact display isn't itself a population-
+    undercounting concern the way the raw count is."""
+    n = math.ceil(n)
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"{round(n / 1000)}K"
-    return str(round(n))
+    return str(n)
 
 
 def _scaled_stats(stats, member):
     factor = _MEMBER_SCENARIO_FACTOR.get(member, 1.0)  # "combined" (or unknown) -> unscaled
     if factor == 1.0:
         return dict(stats)
-    return {k: _format_stat_number(round(_parse_stat_number(v) * factor)) for k, v in stats.items()}
+    return {k: _format_stat_number(_parse_stat_number(v) * factor) for k, v in stats.items()}
 
 
 def _scaled_pin_pct(pin_pct, member):
     factor = _MEMBER_SCENARIO_FACTOR.get(member, 1.0)
     if factor == 1.0:
         return dict(pin_pct)
-    return {k: max(0, min(100, round(v * factor))) for k, v in pin_pct.items()}
+    return {k: max(0, min(100, math.ceil(v * factor))) for k, v in pin_pct.items()}
 
 
 # "Combined Total" mode for the Impact Summary/Full Breakdown — sums each
@@ -2017,7 +2098,7 @@ def _combined_in_need_total(countries, risk_key, pin_key, member=None, date=None
         else:
             base = _parse_stat_number(base_stats.get(risk_key, "0"))
             pct = pin_pct[pin_key]
-        total += round(base * pct / 100)
+        total += math.ceil(base * pct / 100)
     return total
 
 
@@ -2121,38 +2202,45 @@ def _cat_badge(cat):
                       style={"backgroundColor": _CAT_COLORS.get(label, "#8ea0ab"), "color": "#fff"})
 
 
-# Illustrative only — which storms have a mock alert email available.
-# Real emails are already generated as HTML and stored in Snowflake tables
-# (SEND_ALERT/SEND_WARNING procedures), keyed by storm+country+date; a real
-# implementation would query by that same combination instead of a fixed set.
-# MELISSA included alongside GENEVIEVE so the real Jamaica/28 Oct 2025 demo
-# scenario (a genuine named, classified storm that really did have an alert
-# email sent) shows the same email affordance once storm resolution becomes
-# reactive to historical dates (see the in-progress reactive-storm-resolution
-# fix) — not just whatever happens to be "currently active".
-_ALERT_EMAIL_AVAILABLE = {"GENEVIEVE", "MELISSA"}
-_MOCK_ALERT_EMAIL_URL = "/assets/mock_alert_email.html"
+def _storm_row(s, bordered=False, has_alert_email=False):
+    """Storm entry — used both in the top-bar search dropdown and the
+    Active Storms list (Global mode, or a selected country). No separate
+    'Select' button (matching global_zoom_navigation's row style, not the
+    WeatherLab reference's button-per-row).
 
-
-def _storm_row(s, bordered=False):
-    """Whole-row-clickable storm entry — used both in the top-bar search
-    dropdown and the Active Storms list (Global mode, or a selected
-    country). No separate 'Select' button (matching global_zoom_navigation's
-    row style, not the WeatherLab reference's button-per-row).
+    Only the name/subtitle block itself is the "select this storm" click
+    target (id={"type": "select-storm", ...}) — NOT the whole row anymore.
+    Real bug found+fixed here: the email icon used to be nested INSIDE that
+    same clickable row div, so clicking it also fired select-storm (native
+    DOM click bubbling, which Dash has no simple stopPropagation for) and
+    silently jumped the app into Country Analysis mode as a side effect —
+    reported as "why is it automatically jumping to Country Analysis?" when
+    the user only meant to open the storm's alert emails. Making the email
+    icon a plain SIBLING of the clickable name block (not a descendant)
+    means its click never reaches the select-storm div's own listener at
+    all, so clicking it can no longer trigger storm selection.
     """
-    style = {"padding": "9px 12px", "cursor": "pointer"}
+    style = {"padding": "9px 12px"}
     if bordered:
         style.update({"borderRadius": "8px", "border": "1px solid #eef2f5", "background": "#f6f9fb", "marginBottom": "8px"})
     else:
         style.update({"borderTop": "1px solid #eef2f5", "padding": "10px 14px"})
 
     right_side = [_cat_badge(s["cat"])]
-    # Only in the Active Storms list (bordered=True), not the search dropdown
-    # — avoids cluttering search results with an action button. Clicking it
-    # also selects the storm as a side effect (it's nested inside the same
-    # clickable row, and Dash has no simple stopPropagation) — acceptable
-    # here since "open its alert email" already implies picking that storm.
-    if bordered and s["name"] in _ALERT_EMAIL_AVAILABLE:
+    # Only in the Active Storms list (bordered=True), not the search
+    # dropdown — avoids cluttering search results with an action button.
+    #
+    # Real feature (replaces an old hardcoded {"GENEVIEVE", "MELISSA"} demo
+    # set): has_alert_email is resolved by the caller (_active_storms_section)
+    # via get_storms_with_alert_emails_at(), a ttl_cached real query against
+    # ALERT_SENT_LOG SCOPED TO THE CURRENTLY SELECTED topbar date/run — real
+    # bug found+fixed here too: this used to check "has this storm EVER had
+    # ANY alert," so the icon could appear then open an empty "no emails"
+    # popup for a date/time with nothing real to show. Warning/watch emails
+    # are deliberately NOT part of this check — see
+    # get_storms_with_alert_emails_at's own docstring for why (WATCH_SENT_LOG
+    # has no stored email body to view).
+    if bordered and has_alert_email:
         right_side.append(dmc.ActionIcon(
             DashIconify(icon="carbon:email", width=14),
             id={"type": "alert-email-btn", "name": s["name"]}, n_clicks=0,
@@ -2163,12 +2251,17 @@ def _storm_row(s, bordered=False):
     # at sea) carry an empty `countries` list (see _resolve_storms_for_date)
     # — say so explicitly rather than rendering a blank subtitle line.
     subtitle = ", ".join(s["countries"]) if s["countries"] else _t("No country impact yet")
+    name_block = html.Div(
+        [dmc.Text(s["name"], fw=700, size="sm"), dmc.Text(subtitle, size="xs", c="dimmed")],
+        id={"type": "select-storm", "name": s["name"]}, n_clicks=0,
+        style={"lineHeight": 1.3, "cursor": "pointer"},
+    )
     return html.Div(
         dmc.Group([
-            html.Div([dmc.Text(s["name"], fw=700, size="sm"), dmc.Text(subtitle, size="xs", c="dimmed")], style={"lineHeight": 1.3}),
+            name_block,
             dmc.Group(right_side, gap=6, wrap="nowrap", align="center"),
         ], justify="space-between", align="center"),
-        id={"type": "select-storm", "name": s["name"]}, n_clicks=0, style=style,
+        style=style,
     )
 
 
@@ -2216,8 +2309,21 @@ def _ms_loading_badge():
 def _topbar(initial_countries=None):
     return html.Div([
         dmc.Group([
-            dmc.Text("AHEAD OF THE STORM", c="#ffffff",
-                      style={"fontFamily": "'Handjet', sans-serif", "fontWeight": 800, "fontSize": "17px", "letterSpacing": "0.3px"}),
+            # Plain html.A (real navigation, full reload), not dcc.Link —
+            # deliberate: this page IS "/" itself, so a client-side dcc.Link
+            # to the same pathname wouldn't force anything to reset (Dash's
+            # routing only reacts to an actual pathname change). A real
+            # reload genuinely resets every piece of state back to its
+            # module-level default (topbar date/time/country selection/mode
+            # all come from plain Python constants computed at import time,
+            # e.g. _DEFAULT_FORECAST_DATE), which is what "back to the
+            # start" means here.
+            html.A(
+                dmc.Text("AHEAD OF THE STORM", c="#ffffff",
+                          style={"fontFamily": "'Handjet', sans-serif", "fontWeight": 800,
+                                 "fontSize": "17px", "letterSpacing": "0.3px"}),
+                href="/", style={"textDecoration": "none", "cursor": "pointer"},
+            ),
 
             _vdivider(color="rgba(255,255,255,0.35)"),
 
@@ -2367,7 +2473,12 @@ def _active_storms_section(countries=None, date=None, run=None):
     else:
         label = _t("Active Storms — {countries}", countries=", ".join(_t(c) for c in countries))
 
-    content = html.Div([_storm_row(s, bordered=True) for s in scoped_storms])
+    # Real, date/run-scoped check (see get_storms_with_alert_emails_at's own
+    # docstring) — one query for the whole list, not one per storm row.
+    target_forecast_time = f"{display_date} {display_run}:00:00"
+    storms_with_alerts = get_storms_with_alert_emails_at(target_forecast_time)
+    content = html.Div([_storm_row(s, bordered=True, has_alert_email=(s["name"] in storms_with_alerts))
+                          for s in scoped_storms])
     children = [dmc.Text(label, size="10px", fw=700, c="dimmed", tt="uppercase", mb=10), content]
     if countries:
         names = ", ".join(s["name"] for s in scoped_storms)
@@ -3098,14 +3209,14 @@ def _admin1_table(country, base_stats, pin_pct, breakdown):
         return {"background": "#fafcfd" if i % 2 else "#ffffff", "borderBottom": "1px solid #f1f4f6"}
 
     def _cells(key, region_share, td_style):
-        base_val = round(_parse_stat_number(base_stats.get(key, "0")) * region_share)
+        base_val = math.ceil(_parse_stat_number(base_stats.get(key, "0")) * region_share)
         pin_key = _PIN_KEY.get(key)
         if pin_key is None:
             return [html.Td([
                 html.Div(_format_stat_number(base_val), style={"fontFamily": "monospace"}),
                 _hazard_split_line(base_val, breakdown, font_size="9px"),
             ], style={**td_style, "textAlign": "center"})]
-        in_need = round(base_val * pin_pct[pin_key] / 100)
+        in_need = math.ceil(base_val * pin_pct[pin_key] / 100)
         # Side-by-side At Risk/In Need cells, same hazard-split line as the
         # main table under each number, via the shared _hazard_split_line
         # helper so both tables stay in sync.
@@ -3299,7 +3410,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None)
         return html.Td(children, style={**td_style, "textAlign": "center"})
 
     def _scaled_num(base_val):
-        return round(_parse_stat_number(base_val) * factor)
+        return math.ceil(_parse_stat_number(base_val) * factor)
 
     has_pin = pin_source is not None
     # The Combined column (when present) is always the LAST one in `cols` —
@@ -3349,11 +3460,11 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None)
             cells.append(_value_td(base_n, compare_n, group_style))
             if has_pin:
                 base_pct = pin_source.get(c, _DEFAULT_PIN_PCT)[pin_key]
-                base_in_need = round(base_n * base_pct / 100)
+                base_in_need = math.ceil(base_n * base_pct / 100)
                 compare_in_need = None
                 if has_compare:
                     compare_pct = _scaled_pin_pct(pin_source.get(c, _DEFAULT_PIN_PCT), member)[pin_key]
-                    compare_in_need = round(compare_n * compare_pct / 100)
+                    compare_in_need = math.ceil(compare_n * compare_pct / 100)
                 if pin_key == "children":
                     children_in_need_base[c] = base_in_need
                     children_in_need_compare[c] = compare_in_need
@@ -3371,12 +3482,12 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None)
             is_combined = idx == combined_idx
             group_style = {**td_style, **_group_style(idx, is_combined)}
             base_children = _parse_stat_number(base_stats.get("Children at Risk", "0"))
-            base_age = round(base_children * share)
-            compare_age = round(_scaled_num(base_stats.get("Children at Risk", "0")) * share) if has_compare else None
+            base_age = math.ceil(base_children * share)
+            compare_age = math.ceil(_scaled_num(base_stats.get("Children at Risk", "0")) * share) if has_compare else None
             cells.append(_value_td(base_age, compare_age, group_style))
             if has_pin:
-                base_age_need = round(children_in_need_base.get(c, 0) * share)
-                compare_age_need = (round(children_in_need_compare.get(c, 0) * share)
+                base_age_need = math.ceil(children_in_need_base.get(c, 0) * share)
+                compare_age_need = (math.ceil(children_in_need_compare.get(c, 0) * share)
                                      if has_compare and children_in_need_compare.get(c) is not None else None)
                 cells.append(_value_td(base_age_need, compare_age_need,
                                          {**td_style, **_group_style(idx, is_combined)}))
@@ -3453,15 +3564,15 @@ def _pin_arc_charts_block_from(label, base_stats, pin_pct, totals, member, label
     # the primary number/rings outright.
     exposed_pop = _parse_stat_number(base_stats["People at Risk"])
     exposed_children = _parse_stat_number(base_stats["Children at Risk"])
-    in_need_pop = round(exposed_pop * pin_pct["people"] / 100)
-    in_need_children = round(exposed_children * pin_pct["children"] / 100)
+    in_need_pop = math.ceil(exposed_pop * pin_pct["people"] / 100)
+    in_need_children = math.ceil(exposed_children * pin_pct["children"] / 100)
 
     compare_pop = compare_children = None
     if member:
         scaled = _scaled_stats(base_stats, member)
         scaled_pin = _scaled_pin_pct(pin_pct, member)
-        compare_pop = round(_parse_stat_number(scaled["People at Risk"]) * scaled_pin["people"] / 100)
-        compare_children = round(_parse_stat_number(scaled["Children at Risk"]) * scaled_pin["children"] / 100)
+        compare_pop = math.ceil(_parse_stat_number(scaled["People at Risk"]) * scaled_pin["people"] / 100)
+        compare_children = math.ceil(_parse_stat_number(scaled["Children at Risk"]) * scaled_pin["children"] / 100)
     member_tag = _member_short_label(member) if member else ""
 
     fig_people = _make_arc_chart(totals["population"], exposed_pop, in_need_pop, "People At Risk", "People In Need",
@@ -3523,9 +3634,9 @@ def _pin_arc_charts_block(country, member, show_label=True, scale=1.0, date=None
 def _pin_arc_charts_block_combined(countries, member, show_label=True, scale=1.0, date=None, run=None, wind_kt=None, hz=None):
     combined_base = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
     combined_pin = {
-        "people": round(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+        "people": math.ceil(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
                          / max(1, _parse_stat_number(combined_base["People at Risk"])) * 100),
-        "children": round(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+        "children": math.ceil(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                             / max(1, _parse_stat_number(combined_base["Children at Risk"])) * 100),
     }
     combined_totals = {"population": 0, "children": 0}
@@ -3646,9 +3757,9 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         combined_label = _t("Combined — {n} countries", n=len(countries))
         combined_stats = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
         combined_pin = {
-            "people": round(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "people": math.ceil(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
                              / max(1, _parse_stat_number(combined_stats["People at Risk"])) * 100),
-            "children": round(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "children": math.ceil(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                                 / max(1, _parse_stat_number(combined_stats["Children at Risk"])) * 100),
         }
         cols = cols + [(combined_label, combined_stats)]
@@ -3699,9 +3810,9 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
     if scope == "combined" and countries:
         stats = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
         pin_pct = {
-            "people": round(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "people": math.ceil(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
                              / max(1, _parse_stat_number(stats["People at Risk"])) * 100),
-            "children": round(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "children": math.ceil(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                                 / max(1, _parse_stat_number(stats["Children at Risk"])) * 100),
         }
     elif scope == "global":
@@ -3718,18 +3829,18 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
         all_country_names = sorted({c for s in all_storms for c in s["countries"]})
         stats = _combined_stats(all_country_names, date=date, run=run, wind_kt=wind_kt, hz=hz)
         pin_pct = {
-            "people": round(_combined_in_need_total(all_country_names, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "people": math.ceil(_combined_in_need_total(all_country_names, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
                              / max(1, _parse_stat_number(stats["People at Risk"])) * 100),
-            "children": round(_combined_in_need_total(all_country_names, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "children": math.ceil(_combined_in_need_total(all_country_names, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                                 / max(1, _parse_stat_number(stats["Children at Risk"])) * 100),
         }
     else:
         stats = _get_country_stats(scope, date, run, wind_kt, hz=hz)
         pin_pct = _get_country_pin_pct(scope, date, run, wind_kt, hz=hz)
     if metric == "People in Need":
-        return _format_stat_number(round(_parse_stat_number(stats["People at Risk"]) * pin_pct["people"] / 100))
+        return _format_stat_number(_parse_stat_number(stats["People at Risk"]) * pin_pct["people"] / 100)
     if metric == "Children in Need":
-        return _format_stat_number(round(_parse_stat_number(stats["Children at Risk"]) * pin_pct["children"] / 100))
+        return _format_stat_number(_parse_stat_number(stats["Children at Risk"]) * pin_pct["children"] / 100)
     return stats.get(metric, "—")
 
 
@@ -3779,7 +3890,7 @@ def _hazard_overlap_bar(total, breakdown):
         return dmc.Group([
             html.Span(style=swatch_style),
             dmc.Text(_t(label), size="10px", c="dimmed"),
-            dmc.Text(_format_stat_number(round(total * n / 100)), size="10px", fw=700, ff="monospace"),
+            dmc.Text(_format_stat_number(total * n / 100), size="10px", fw=700, ff="monospace"),
         ], gap=5, wrap="nowrap")
 
     legend = dmc.Group([
@@ -3805,7 +3916,8 @@ _HAZARD_MULTI_FRAC = 0.20
 _HAZARD_TRIPLE_FRAC = 0.3
 
 
-def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=None, is_global=False):
+def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=None, is_global=False,
+                                    metric=None, scope=None, countries=None, date=None, run=None):
     # Grouped under Tropical Cyclone/Flood (icon + bold, own subtotal) with
     # each family's actual hazards indented underneath (icon + lighter) —
     # a flat list of 4 colored dots didn't make clear that Sustained Wind
@@ -3822,36 +3934,63 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # overlap bar/caption only appears when BOTH are active.
     tc_active, flood_active = breakdown["tc_active"], breakdown["flood_active"]
     total = _parse_stat_number(value)
-    # Global scope's tc_active/flood_active now reflect REAL data
-    # availability for the resolved date (see _open_hazard_contribution's
-    # own comment — river_avail/rain_avail come from a real Snowflake
-    # check, not a blind "always on"), so "toggle a hazard" below CAN still
-    # fire for Global (e.g. wind's own real total is 0 for some other
-    # reason while flood genuinely has no data either). A genuinely zero
-    # Global total is a DIFFERENT, more specific fact — no INITIALIZED
-    # country is impacted right now — and needs its own message so it
-    # isn't misread as "there's no real impact anywhere": some potentially-
-    # affected countries may simply not be in the database yet.
-    if is_global and total == 0:
-        return html.Div(dmc.Text(
-            _t("None of the initialized countries are currently impacted. This does not mean "
-                "there is no real impact — potentially affected countries may not yet be in the database."),
-            size="sm", c="dimmed", fs="italic"))
     if not tc_active and not flood_active:
         return html.Div(dmc.Text(_t("None — toggle a hazard on the map to see impact numbers."),
                                     size="sm", c="dimmed", fs="italic"))
-    if is_global and tc_active != flood_active:
+    # Global scope's tc_active/flood_active now reflect REAL data
+    # availability for the resolved date (see _open_hazard_contribution's
+    # own comment — river_avail/rain_avail come from a real Snowflake
+    # check, not a blind "always on"), so "toggle a hazard" above CAN still
+    # fire for Global (e.g. wind's own real total is 0 for some other
+    # reason while flood genuinely has no data either). A genuinely zero
+    # total (Global OR a single country/combined) is a DIFFERENT, more
+    # specific fact than "nothing toggled on" and needs its own message —
+    # real feature added here per explicit user request: BOTH variants now
+    # also spell out that a zero result is scoped to the CURRENTLY SELECTED
+    # hazard configuration (wind/gust severity, river return-period tier,
+    # rain window+threshold) — not "this location/storm has no real impact
+    # at any severity ever." This matters more now that a genuine, real zero
+    # at one specific threshold is expected/correct behavior (e.g. a wind
+    # category a storm's real forecast never reached — see
+    # _get_country_stats's own docstring for the bug this fixed), so seeing
+    # "0" here for a real, active storm should read as "not at this
+    # threshold," not as a suspicious-looking blank result.
+    if total == 0:
+        if is_global:
+            return html.Div(dmc.Text(
+                _t("None of the initialized countries show impact at the currently selected hazard "
+                    "configuration (severity threshold/tier). This does not mean there is no real impact "
+                    "overall — a different threshold may show real impact, and potentially affected "
+                    "countries may not yet be in the database."),
+                size="sm", c="dimmed", fs="italic"))
+        return html.Div(dmc.Text(
+            _t("No impact at the currently selected hazard configuration (severity threshold/tier) for "
+                "this selection. This does not mean there is no real impact overall — a different "
+                "threshold may show real impact."),
+            size="sm", c="dimmed", fs="italic"))
+    if tc_active != flood_active:
         # Real bug found+fixed here: only ONE family genuinely has real
-        # data behind this Global total (the common case — e.g. a
-        # historical storm with real Wind data but no River/Rain pipeline
-        # coverage yet) — that family IS 100% of the real total, not the
-        # OLD fixed illustrative share (e.g. Wind's own "45%"), which
-        # described a fraction of an assumed-everything-active baseline
-        # that stopped applying once this total became a real, not-
-        # illustrative number. Country Analysis's own popup is untouched —
-        # it can genuinely have multiple real hazards active at once,
-        # where the illustrative split still honestly describes itself as
-        # illustrative (no real per-pixel overlap data exists anywhere).
+        # data behind this total (e.g. only Sustained Wind is checked, no
+        # River/Rain/Surge at all) — that family IS 100% of the real total,
+        # not the OLD fixed illustrative share (e.g. Wind's own "45%"),
+        # which described a fraction of an assumed-everything-active
+        # baseline that stopped applying once this total became a real,
+        # not-illustrative number.
+        #
+        # This override used to be Global-only (is_global and tc_active !=
+        # flood_active) on the reasoning that "Country Analysis's own popup
+        # can genuinely have multiple real hazards active at once, where
+        # the illustrative split still honestly describes itself as
+        # illustrative" — true, but beside the point: that reasoning only
+        # applies when BOTH families really are active simultaneously (the
+        # `else` case below, left untouched). When only ONE family is
+        # checked — the common case, and exactly what was reported live
+        # (Country Analysis, only Sustained Wind checked, still showed a
+        # fixed "45% / 95 people" that didn't reconcile with the popup's
+        # own real "Total: 211") — there is no overlap to be illustrative
+        # ABOUT: one active family is unambiguously 100% of the real total
+        # in Country Analysis exactly the same way it already was in
+        # Global, so this now applies universally.
         breakdown = {**breakdown, "tc_pct": 100 if tc_active else 0,
                       "flood_pct": 100 if flood_active else 0}
     by_name = {name: (color, pct, icon) for name, color, pct, icon in _HAZARD_CONTRIBUTION}
@@ -3876,7 +4015,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             # together (barely any gap between them) once real numbers ran
             # bigger (e.g. "273K"), since neither box had room to spare.
             dmc.Text(f"{pct}%", size="xs", c="dimmed", w=42, ta="right", style={"whiteSpace": "nowrap", "flexShrink": 0}),
-            dmc.Text(_format_stat_number(round(total * pct / 100)), size="xs", fw=700, ff="monospace",
+            dmc.Text(_format_stat_number(total * pct / 100), size="xs", fw=700, ff="monospace",
                       w=72, ta="right", style={"whiteSpace": "nowrap", "flexShrink": 0}),
         ], gap=14, wrap="nowrap", mb=mb)
 
@@ -3895,30 +4034,62 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         })
 
     def _hazard_curve_row(name, color, pct):
-        # PREVIEW ONLY (see _WIND_TIER_FACTOR's own comment) — this hazard's
-        # OWN number (round(total*pct/100)) is today's value at its slider's
-        # default position (where its tier-factor is 1.0 by construction), so
-        # it's used as-is as the curve's baseline, scaled by each tier's own
-        # ratio. None if this hazard has no curve data or no live slider
-        # index was passed in (e.g. the print page, which doesn't read
-        # slider state at all).
+        # None if this hazard has no curve data or no live slider index was
+        # passed in (e.g. the print page, which doesn't read slider state at
+        # all).
         idx = hazard_idx.get(name)
         curve_data = _HAZARD_CURVE_DATA.get(name)
         if idx is None or curve_data is None:
             return None
         labels, factors = curve_data
-        base_n = round(total * pct / 100)
-        if name == "Rainfall":
-            # Genuinely 2D (window × tier) — its own multi-line chart, see
-            # _rain_threshold_chart's own comment. Falls back to the flat
-            # single-line chart if no window was passed in (e.g. an older
-            # caller), same as any other hazard.
+        base_n = math.ceil(total * pct / 100)
+        # Real per-tier query (Sustained Wind/River Flooding): re-resolves
+        # the SAME real metric this popup is already showing (metric/scope/
+        # countries/date/run, threaded from _open_hazard_contribution) at
+        # EVERY threshold tier, isolating just this ONE hazard (via
+        # _wind_only_hz/_river_only_hz — ignores whatever else is currently
+        # toggled on, so this is always "this hazard's own real exposure at
+        # each of its tiers", not a blend with other active hazards).
+        #
+        # Real bug found+fixed here: this curve used to be entirely
+        # illustrative (_WIND_TIER_FACTOR/_RIVER_TIER_FACTOR — a fixed ratio
+        # applied to today's own number, NOT independently queried) — for
+        # DOLPHIN/Philippines/2026-08-02 18Z the illustrative curve showed
+        # "45 people at Cat1 (64kt)" even though the real MAT data has ZERO
+        # impact at that threshold (confirmed against the legacy dashboard),
+        # because the ratio curve has no way to know a real threshold
+        # genuinely clears no tiles at all — it can only ever show a nonzero
+        # fraction of a nonzero baseline.
+        can_query_real = metric is not None and scope is not None
+        if name == "Sustained Wind" and can_query_real:
+            real_values = []
+            for _sev, _cat, kt, _ms in _WIND_CATS:
+                v = _resolve_stat_value(metric, scope, countries, date=date, run=run,
+                                          wind_kt=kt, hz=_wind_only_hz(kt))
+                real_values.append(_parse_stat_number(v))
+            chart = _threshold_curve_chart(labels, real_values, idx, color)
+        elif name == "River Flooding" and can_query_real:
+            real_values = []
+            for rp_tier in _RIVER_RP_TIERS:
+                v = _resolve_stat_value(metric, scope, countries, date=date, run=run,
+                                          hz=_river_only_hz(rp_tier))
+                real_values.append(_parse_stat_number(v))
+            chart = _threshold_curve_chart(labels, real_values, idx, color)
+        elif name == "Rainfall":
+            # PREVIEW ONLY still — genuinely 2D (window x tier), no real
+            # per-cell query wired up yet (see _rain_threshold_grid's own
+            # comment). Falls back to the flat illustrative single-line
+            # chart if no window was passed in (e.g. an older caller).
             if rain_window is None:
                 values = [base_n * f for f in factors]
                 chart = _threshold_curve_chart(labels, values, idx, color)
             else:
                 chart = _rain_threshold_grid(labels, base_n, rain_window, idx, color)
         else:
+            # Storm Surge (no real backend at all — always illustrative,
+            # see ms-surge-on's own comment) or a real hazard missing
+            # metric/scope context (defensive only — every real caller of
+            # _hazard_contribution_content now passes both).
             values = [base_n * f for f in factors]
             chart = _threshold_curve_chart(labels, values, idx, color)
         return html.Div(chart, style={"marginTop": "4px"})
@@ -3957,10 +4128,10 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # river flooding and rainfall at once) aren't a separate distinct
         # hazard, they're double-counted across the "only" segments unless
         # pulled out into their own share.
-        multi_pct = round(_HAZARD_MULTI_FRAC * family_pct)
+        multi_pct = math.ceil(_HAZARD_MULTI_FRAC * family_pct)
         remaining_pct = family_pct - multi_pct
         weight_total = sum(m[2] for m in members)
-        only_pcts = [round(remaining_pct * m[2] / weight_total) for m in members]
+        only_pcts = [math.ceil(remaining_pct * m[2] / weight_total) for m in members]
         only_segments = [_segment(p, family_pct, m[1]) for p, m in zip(only_pcts, members)]
         only_cards = []
         for p, m in zip(only_pcts, members):
@@ -3983,7 +4154,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             # Single diagonal hatch for "any 2" vs. a criss-cross (two
             # crossed diagonal directions) for "all 3" — the pattern itself
             # escalates with how many hazards are stacked, not just the color.
-            triple_pct = round(_HAZARD_TRIPLE_FRAC * multi_pct)
+            triple_pct = math.ceil(_HAZARD_TRIPLE_FRAC * multi_pct)
             double_pct = multi_pct - triple_pct
             multi_segments = [_segment(double_pct, family_pct, HAZARD_BOTH_COLOR, pattern=_DOUBLE_OVERLAP_PATTERN),
                                 _segment(triple_pct, family_pct, HAZARD_TRIPLE_COLOR, pattern=_TRIPLE_OVERLAP_PATTERN)]
@@ -4917,11 +5088,41 @@ def _update_map_legend(tile_config, raw_config, wind_on, gust_on, river_on, rain
 # alongside a new flood-view-as Mean/Probability toggle also added there).
 
 
+def _alert_email_list_modal():
+    """Lists a storm's real available Alert emails (ALERT_SENT_LOG) — opened
+    by clicking a storm row's email icon (_storm_row). One entry per real
+    (forecast_time, country_code) pair; clicking an entry opens its full
+    HTML in _alert_email_modal below (_open_alert_email_detail). Warning/
+    watch emails are out of scope — see get_storms_with_alert_emails' own
+    docstring in snowflake_utils.py for why (no stored body to show)."""
+    return dmc.Modal(
+        id="alert-email-list-modal", opened=False, size="md", title=_t("Alert Emails"),
+        centered=True, radius="lg", padding="lg", styles=_MODAL_PANEL_STYLES,
+        overlayProps={"backgroundOpacity": 0.35, "blur": 3},
+        children=html.Div(id="alert-email-list-content"),
+    )
+
+
 def _alert_email_modal():
     # Real emails are full standalone HTML documents (own inline styling,
     # embedded map image) — an iframe respects that instead of re-rendering
-    # the content as Dash components, and "Open in New Tab" is right there
-    # for anyone who'd rather view it outside the modal entirely.
+    # the content as Dash components. `src` (not `srcDoc`) points at the real
+    # /alert-email/<track_id>/<forecast_time>/<country_code> Flask route
+    # (app.py's serve_alert_email) — a real feature/fix: this used to embed
+    # the whole ~700KB HTML directly as this iframe's srcDoc AND separately
+    # re-encode it into a giant data: URI for "Open in new tab". The data:
+    # URI, once percent-encoded, could balloon past practical browser limits
+    # for a fresh top-level navigation — "Open in new tab" opened a blank
+    # tab that only rendered after a manual refresh (reported live). A real
+    # HTTP GET via a normal URL has no such size quirk, and both the iframe
+    # and the link now just point at the SAME URL instead of duplicating the
+    # content two different ways.
+    #
+    # "Open in new tab" is a plain html.A, not dmc.Anchor — real bug found+
+    # fixed here too: dmc.Anchor's href attribute silently never updated in
+    # the browser despite Dash's own callback response containing the
+    # correct value (a dash-mantine-components quirk, not a Dash graph/logic
+    # bug) — switched away from dmc.Anchor entirely rather than chase why.
     return dmc.Modal(
         # The real email's own content is ~640px wide (its <table style=
         # "max-width:640px"> wrapper) — "xl" gives it comfortable margin
@@ -4930,8 +5131,12 @@ def _alert_email_modal():
         centered=True, radius="lg", padding="lg", styles=_MODAL_PANEL_STYLES,
         overlayProps={"backgroundOpacity": 0.35, "blur": 3},
         children=html.Div([
-            dmc.Anchor(_t("Open in new tab ↗"), id="alert-email-new-tab-link", href="", target="_blank",
-                        size="xs", style={"display": "block", "marginBottom": "10px"}),
+            # marginTop separates this from the Modal's own title/divider —
+            # without it the link sat almost flush against that divider line
+            # (visibly reported).
+            html.A(_t("Open in new tab ↗"), id="alert-email-new-tab-link", href="", target="_blank",
+                    style={"display": "block", "marginTop": "10px", "marginBottom": "10px",
+                           "fontSize": "12px", "color": "#1c7ed6"}),
             html.Iframe(id="alert-email-iframe", src="",
                          style={"width": "100%", "height": "70vh", "border": "1px solid #eef2f5",
                                 "borderRadius": "8px"}),
@@ -5233,6 +5438,7 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         _bottom_left_controls(),
         _map_legend(),
         _map_disclaimer(),
+        _alert_email_list_modal(),
         _alert_email_modal(),
         _compact_footer(),
     ], style={"position": "relative", "width": "100%", "height": "100vh", "overflow": "hidden", "background": "#cfe3ee"})
@@ -5470,11 +5676,11 @@ def _threshold_curve_chart(labels, values, active_idx, color):
         if i == active_idx:
             continue
         fig.add_annotation(
-            x=i, y=v, text=_format_stat_number(round(v)),
+            x=i, y=v, text=_format_stat_number(v),
             showarrow=False, yshift=13, font=dict(size=8, color="#8ea0ab"),
         )
     fig.add_annotation(
-        x=active_idx, y=values[active_idx], text=f"<b>{_format_stat_number(round(values[active_idx]))}</b>",
+        x=active_idx, y=values[active_idx], text=f"<b>{_format_stat_number(values[active_idx])}</b>",
         showarrow=False, yshift=16, font=dict(size=11, color="#16232c"),
     )
     fig.update_layout(
@@ -5536,7 +5742,7 @@ def _rain_threshold_grid(labels, base_n, active_window, active_idx, color):
             # but small and gray. The background tint is the only thing left
             # encoding magnitude now.
             rows.append(html.Div(
-                _format_stat_number(round(val)),
+                _format_stat_number(val),
                 style={
                     "fontSize": "10px", "fontWeight": 700 if is_active else 500, "fontFamily": "monospace",
                     "textAlign": "center", "padding": "4px 2px", "borderRadius": "5px",
@@ -5663,7 +5869,7 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
             continue
         color, pct, icon = _HAZARD_BY_NAME[name]
         labels, factors = curve_data
-        base_n = round(total_people_at_risk * pct / 100)
+        base_n = math.ceil(total_people_at_risk * pct / 100)
         if name == "Rainfall" and rain_window is not None:
             chart = _rain_threshold_grid(labels, base_n, rain_window, idx, color)
         else:
@@ -6037,9 +6243,9 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
             scaled_pin = _scaled_pin_pct(base_pin, compare_member)
             compare_stats = dict(scaled)
             compare_stats["People in Need"] = _format_stat_number(
-                round(_parse_stat_number(scaled["People at Risk"]) * scaled_pin["people"] / 100))
+                _parse_stat_number(scaled["People at Risk"]) * scaled_pin["people"] / 100)
             compare_stats["Children in Need"] = _format_stat_number(
-                round(_parse_stat_number(scaled["Children at Risk"]) * scaled_pin["children"] / 100))
+                _parse_stat_number(scaled["Children at Risk"]) * scaled_pin["children"] / 100)
         grid = _stat_grid(base_stats, label=label, scope=scope,
                             compare_stats=compare_stats, compare_member=compare_member)
         return html.Div([grid, arc_charts])
@@ -6060,9 +6266,9 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
         # no more illustrative percentage scaling.
         combined_base = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
         combined_pin = {
-            "people": round(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "people": math.ceil(_combined_in_need_total(countries, "People at Risk", "people", date=date, run=run, wind_kt=wind_kt, hz=hz)
                              / max(1, _parse_stat_number(combined_base["People at Risk"])) * 100),
-            "children": round(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
+            "children": math.ceil(_combined_in_need_total(countries, "Children at Risk", "children", date=date, run=run, wind_kt=wind_kt, hz=hz)
                                 / max(1, _parse_stat_number(combined_base["Children at Risk"])) * 100),
         }
         subtitle = _t("Combined — {n} countries", n=len(countries))
@@ -6258,23 +6464,106 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
         f"{_t(metric)} — {_t(scope)}" if scope != "global" else _t(metric))
     hazard_idx = {"Sustained Wind": wind_idx, "River Flooding": river_idx,
                    "Rainfall": rain_idx, "Storm Surge": surge_idx}
-    return True, title, _hazard_contribution_content(value, breakdown, hazard_idx=hazard_idx, rain_window=rain_window, is_global=is_global)
+    # `countries` is passed through as-is even for scope=="global" — matches
+    # _resolve_stat_value's own behavior (its "global" branch ignores this
+    # argument entirely and recomputes the real affected-country list itself
+    # via _resolve_storms_for_date), so _hazard_curve_row's own real per-tier
+    # _resolve_stat_value calls below stay correct for Global too.
+    return True, title, _hazard_contribution_content(
+        value, breakdown, hazard_idx=hazard_idx, rain_window=rain_window, is_global=is_global,
+        metric=metric, scope=scope, countries=countries, date=date, run=run)
+
+
+@callback(
+    Output("alert-email-list-modal", "opened"),
+    Output("alert-email-list-modal", "title"),
+    Output("alert-email-list-content", "children"),
+    Input({"type": "alert-email-btn", "name": dash.ALL}, "n_clicks"),
+    State("topbar-date", "value"),
+    State("topbar-time", "value"),
+    prevent_initial_call=True,
+)
+def _open_alert_email_list(clicks, date, run):
+    """Storm row's email icon (_storm_row) -> real list of that storm's
+    available Alert emails (get_alert_emails_for_storm, ALERT_SENT_LOG),
+    scoped to the CURRENTLY SELECTED topbar date/run only — real fix here:
+    this used to show every alert ever sent for the storm regardless of
+    what date/time was selected, which read as stale/wrong emails appearing
+    for "now." A multi-country storm can still show several entries here
+    (one per affected country), just all for this one forecast run.
+    Each entry is clickable (_open_alert_email_detail below opens its full
+    HTML). Deliberately shows only the country name per entry — recipient
+    count/sent timestamp are internal operational metadata, not surfaced
+    here (see get_alert_emails_for_storm's own docstring)."""
+    if not clicks or not any(clicks):
+        return dash.no_update, dash.no_update, dash.no_update
+    storm_name = dash.callback_context.triggered_id["name"]
+    date = date or _DEFAULT_FORECAST_DATE
+    run = run if run is not None else _DEFAULT_FORECAST_RUN
+    target_forecast_time = f"{date} {run}:00:00"
+    emails = get_alert_emails_for_storm(storm_name, forecast_time=target_forecast_time)
+    title = _t("Alert Emails — {storm}", storm=storm_name)
+    if not emails:
+        return True, title, dmc.Text(
+            _t("No alert emails found for this storm at the selected date/time."), size="sm", c="dimmed")
+    rows = []
+    for e in emails:
+        country_code = e["COUNTRY_CODE"]
+        forecast_time = str(e["FORECAST_TIME"])
+        rows.append(html.Div(
+            dmc.Group([
+                dmc.Text(_CODE_TO_NAME.get(country_code, country_code), fw=700, size="sm"),
+                DashIconify(icon="carbon:chevron-right", width=16, color="#8ea0ab"),
+            ], justify="space-between", align="center"),
+            id={"type": "alert-email-item", "track_id": storm_name,
+                 "forecast_time": forecast_time, "country_code": country_code},
+            n_clicks=0,
+            style={"padding": "10px 12px", "borderRadius": "8px", "border": "1px solid #eef2f5",
+                    "marginBottom": "8px", "cursor": "pointer", "background": "#f6f9fb"},
+        ))
+    return True, title, html.Div(rows)
 
 
 @callback(
     Output("alert-email-modal", "opened"),
+    Output("alert-email-modal", "title"),
     Output("alert-email-iframe", "src"),
     Output("alert-email-new-tab-link", "href"),
-    Input({"type": "alert-email-btn", "name": dash.ALL}, "n_clicks"),
+    Output("alert-email-list-modal", "opened", allow_duplicate=True),
+    Input({"type": "alert-email-item", "track_id": dash.ALL, "forecast_time": dash.ALL, "country_code": dash.ALL},
+          "n_clicks"),
     prevent_initial_call=True,
 )
-def _open_alert_email(clicks):
+def _open_alert_email_detail(clicks):
+    """Clicking one list entry -> both the iframe's `src` and "Open in new
+    tab"'s `href` point at the SAME real /alert-email/<track_id>/
+    <forecast_time>/<country_code> Flask route (app.py's serve_alert_email,
+    which fetches EMAIL_BODY from ALERT_SENT_LOG). Closes the list modal so
+    the two don't stack.
+
+    Real bug found+fixed here: this used to embed the whole EMAIL_BODY
+    directly as this callback's own Output twice (iframe srcDoc + a
+    data:text/html;... URI re-encoding of the same content for the new-tab
+    link) — real emails can be large enough (embedded base64 map images,
+    ~700KB HTML) that the percent-encoded data: URI could exceed practical
+    browser limits for a fresh top-level navigation, so "Open in new tab"
+    opened a blank tab that only rendered after a manual page refresh
+    (reported live). Pointing both at a real URL instead of embedding the
+    content twice avoids that entirely — this callback no longer needs to
+    fetch EMAIL_BODY itself at all, just confirm the row exists.
+    """
     if not clicks or not any(clicks):
-        return dash.no_update, dash.no_update, dash.no_update
-    # Only one mock email exists right now (_ALERT_EMAIL_AVAILABLE), so every
-    # button currently points at the same URL — a real version would look up
-    # the stored HTML by (storm, country, date) instead.
-    return True, _MOCK_ALERT_EMAIL_URL, _MOCK_ALERT_EMAIL_URL
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    triggered = dash.callback_context.triggered_id
+    track_id, forecast_time, country_code = (
+        triggered["track_id"], triggered["forecast_time"], triggered["country_code"])
+    if get_alert_email_body(track_id, forecast_time, country_code) is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    country_name = _CODE_TO_NAME.get(country_code, country_code)
+    title = f"{track_id} — {country_name} ({forecast_time})"
+    email_url = (f"/alert-email/{urllib.parse.quote(track_id, safe='')}"
+                 f"/{urllib.parse.quote(forecast_time, safe='')}/{urllib.parse.quote(country_code, safe='')}")
+    return True, title, email_url, email_url, False
 
 
 @callback(
@@ -7042,7 +7331,20 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
     (its load_all_layers, ~line 2012-2071) but sourced from Snowflake directly
     instead of a track_views parquet file. No vulnerability join for gust (no
     TRACK_GUST_VULNERABILITY_MAT exists — confirmed live), so gust severity is
-    population-only, same as every other gust-specific table in this app."""
+    population-only, same as every other gust-specific table in this app.
+
+    Every member gets a real severity_population value whenever country/
+    storm/forecast_date are given (attributing_severity below) — defaulting
+    to a CONFIRMED zero for any member absent from the query result or with
+    a NULL SEVERITY_POPULATION (TRACK_MAT/TRACK_GUST_MAT frequently has NULL,
+    not a literal 0, for a member whose envelope simply doesn't intersect
+    the selected country's tiles at all — that IS zero impact for this
+    country). Only when country/storm/forecast_date are ALL absent (Global
+    mode — attribution never even attempted) is severity_population left
+    off entirely. style_envelopes (components/map/javascript.py) renders
+    these three cases distinctly: real nonzero severity (yellow->red
+    gradient), confirmed zero (grey), and no attribution attempted at all
+    (flat orange/yellow consensus fill)."""
     threshold_col = "gust_threshold" if hazard == "gust" else "wind_threshold"
     if envelope_df is None or envelope_df.empty or threshold_col not in envelope_df.columns:
         return dict(_MS_EMPTY_FC)
@@ -7052,7 +7354,8 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
         return dict(_MS_EMPTY_FC)
 
     severity_by_member = {}
-    if country and storm and forecast_date:
+    attributing_severity = bool(country and storm and forecast_date)
+    if attributing_severity:
         try:
             track_impacts = (get_gust_track_impacts(country, storm, forecast_date, int(wind_kt)) if hazard == "gust"
                               else get_track_impacts(country, storm, forecast_date, int(wind_kt)))
@@ -7089,17 +7392,36 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
             "ensemble_member": member_int,
             "wind_threshold": int(row[threshold_col]),
             "hazard": hazard,
-            # severity_population/max_population deliberately absent unless
-            # real (below) — style_envelopes (components/map/javascript.py)
-            # already renders any feature with no severity data as a
-            # low-opacity consensus fill, whether that's because there's no
-            # country to attribute severity to at all (Global mode) or
-            # because this specific member genuinely has zero/unknown impact
-            # for the selected country (Country Analysis mode) — no separate
-            # flag needed to distinguish the two here.
+            # severity_population/max_population deliberately absent when
+            # attribution was never attempted at all (Global mode — no
+            # country to attribute to) — style_envelopes (components/map/
+            # javascript.py) renders that case as a flat orange/yellow
+            # consensus fill. When it WAS attempted (Country Analysis mode,
+            # attributing_severity below), every member gets a real value,
+            # defaulting to a CONFIRMED zero — see that branch's own
+            # comment for the real bug this fixes.
         }
-        if member_int is not None and member_int in severity_by_member:
-            properties["severity_population"] = severity_by_member[member_int]
+        if attributing_severity:
+            # Real bug found+fixed here: this used to only set the property
+            # when member_int was a key in severity_by_member, leaving every
+            # OTHER member (no row at all, or SEVERITY_POPULATION NULL —
+            # TRACK_MAT frequently has NULL, not a literal 0, for a member
+            # whose envelope simply doesn't intersect the selected country's
+            # population tiles at all) with the property entirely absent.
+            # That's indistinguishable from Global mode's "never even tried
+            # to attribute" case to style_envelopes, so these members
+            # rendered the same uninformative flat orange/yellow fill —
+            # confirmed live: DOLPHIN/Philippines/2026-08-02 18Z had 46 of 50
+            # members with NULL SEVERITY_POPULATION (only 2 had an explicit
+            # 0.0, 2 had real nonzero values), so the vast majority of
+            # envelopes stayed orange even though attribution genuinely WAS
+            # attempted and genuinely found zero for them. A NULL/missing
+            # row here means "this member's envelope doesn't reach this
+            # country's tiles at all" — that IS the correct definition of
+            # zero impact for this country, so it defaults to 0.0 (a real,
+            # confirmed zero — style_envelopes now renders this distinctly
+            # grey), not "unknown."
+            properties["severity_population"] = severity_by_member.get(member_int, 0.0) if member_int is not None else 0.0
             properties["max_population"] = max_population
         features.append({
             "type": "Feature",
@@ -7115,10 +7437,14 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
     # (darker red = higher severity) had no bearing on which envelope a
     # user could actually see when several overlapped — a low-severity
     # member drawn last could fully occlude the high-severity one
-    # underneath it. Missing-severity features (country=None/Global mode,
-    # or no real get_track_impacts match for that member) sort first/lowest
-    # via the `or 0` default, same as their own gray/consensus fill already
-    # implies "nothing definitive known here".
+    # underneath it. Missing-severity features (country=None/Global mode —
+    # attribution never attempted at all) sort first/lowest via the `or 0`
+    # default, same as their own orange/yellow consensus fill already
+    # implies "nothing definitive known here". Confirmed-zero features
+    # (attribution WAS attempted, genuinely found 0 — see
+    # attributing_severity above) sort the same way, which is fine: they're
+    # now visually distinct (grey), so z-order among same-zero features
+    # doesn't matter.
     features.sort(key=lambda f: f["properties"].get("severity_population") or 0)
     return {"type": "FeatureCollection", "features": features}
 
@@ -7589,6 +7915,71 @@ def _prewarm_demo_scenario_tile_cache() -> None:
 
 
 threading.Thread(target=_prewarm_demo_scenario_tile_cache, daemon=True, name="demo-scenario-prewarm").start()
+
+
+# Same cadence as services/tile_server.py's own _PREWARM_INTERVAL_SECONDS —
+# not importable across the process boundary (this Dash app and the tile
+# server run as separate processes/services), so redefined here as its own
+# constant rather than sharing one.
+_RECENT_PREWARM_INTERVAL_SECONDS = 60 * 60
+
+
+def _prewarm_recent_tile_cache() -> None:
+    """Background, ROLLING warm-up of the tile server's per-country pandas
+    DataCache for the REAL latest 3 distinct forecast dates (get_recent_
+    forecast_dates), re-run every _RECENT_PREWARM_INTERVAL_SECONDS — added
+    per explicit user request ("make sure the most recent 3 days are also
+    warm for loading, in addition to the demo scenarios").
+
+    _prewarm_demo_scenario_tile_cache above only warms the app's own fixed
+    _DEMO_SCENARIOS presets (MELISSA/28 Oct 2025, BAVI period/2 Jul 2026) —
+    a real, currently-active storm a user actually clicks on (e.g. DOLPHIN
+    today) is neither of those, so it still paid the full cold-cache tax on
+    first click. This is a genuinely ROLLING prewarm (unlike the demo one,
+    a one-shot at startup) since "the latest 3 days" is a moving target —
+    mirrors tile_server.py's own _prewarm_raw_caches rolling-window pattern,
+    just for the per-country wind/gust tile cache instead of the global raw
+    river/precip rasters. No explicit eviction of aged-out dates: unlike
+    the raw layer's own dense global grids, this per-country DataCache
+    entry is small and _DataCache itself has no size bound to protect (see
+    that class's own docstring) — stale entries simply stop being re-warmed
+    and age out via _TILE_TTL (15 min) the next time nobody's actively
+    using them, same as the demo scenario entries already do.
+    """
+    base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
+    if not base:
+        return
+    wind_kt = _resolve_wind_kt(None)
+    while True:
+        try:
+            recent = get_recent_forecast_dates(3)
+        except Exception as e:
+            logger.warning("Prewarm: could not resolve recent forecast dates: %s", e)
+            recent = []
+        for date_str, run_str in recent:
+            try:
+                storms = _resolve_storms_for_date(date_str, run_str)
+            except Exception as e:
+                logger.warning("Prewarm: could not resolve storms for recent date %s: %s", date_str, e)
+                continue
+            for storm in storms:
+                for country_name in storm["countries"]:
+                    try:
+                        code = _NAME_TO_CODE.get(country_name)
+                        if not code:
+                            continue
+                        url = (f"{base}/preload/{urllib.parse.quote(code)}/{urllib.parse.quote(storm['name'])}"
+                               f"/{urllib.parse.quote(storm['mat_forecast_date'])}?wind_threshold={wind_kt}")
+                        urllib.request.urlopen(url, timeout=15).read()
+                        logger.info("Prewarm: recent-date %s/%s/%s tile cache warm-up requested",
+                                     date_str, country_name, storm["name"])
+                    except Exception as e:
+                        logger.warning("Prewarm: recent-date %s/%s/%s tile cache warm-up failed: %s",
+                                        date_str, country_name, storm["name"], e)
+        time.sleep(_RECENT_PREWARM_INTERVAL_SECONDS)
+
+
+threading.Thread(target=_prewarm_recent_tile_cache, daemon=True, name="recent-date-tile-prewarm").start()
 
 
 def _prewarm_demo_scenario_raw_layers() -> None:

@@ -1808,3 +1808,132 @@ def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
     except Exception as e:
         logger.error("Error querying BASE_ADMIN_GEOM_MAT: %s", e)
         return gpd.GeoDataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Real, already-sent Alert emails (AOTS.TC_ECMWF.ALERT_SENT_LOG) — the "view
+# past alert emails" feature on the dashboard's Global view. Deliberately
+# ALERT-only (not Warning/watch): WATCH_SENT_LOG (the Warning dedup table —
+# never renamed from its original "watch" name despite the procedure itself
+# being called SEND_WARNING) has no EMAIL_BODY/HTML column at all — confirmed
+# by reading 07b_alert_agent/02b_send_warning_procedure.sql directly (its
+# CREATE TABLE and only INSERT both list just TRACK_ID/FORECAST_DATE/
+# RECIPIENT_COUNT/COUNTRIES). A Warning's generated HTML is used once to call
+# the email-send API and then discarded — there is nothing to fetch back for
+# a past Warning, so it's out of scope until that changes upstream (needs the
+# ORCHESTRATION repo's own explicit sign-off, not this app's to decide).
+# ---------------------------------------------------------------------------
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_storms_with_alert_emails_at(forecast_time: str) -> set:
+    """Real set of TRACK_ID values with an alert email at this EXACT
+    forecast_time (the topbar's selected date+run, e.g. "2026-08-02
+    18:00:00") — used to decide whether a storm row's "view alert emails"
+    icon should show AT ALL for the currently selected date/time, not just
+    "this storm has ever had any alert" (real bug fixed here: the icon used
+    to appear for a storm with alerts on a totally different date/run than
+    the one currently selected, only to open an empty "no emails" popup —
+    replacing an even older hardcoded demo set, {"GENEVIEVE", "MELISSA"})."""
+    try:
+        df = _run_query(
+            "SELECT DISTINCT TRACK_ID FROM AOTS.TC_ECMWF.ALERT_SENT_LOG WHERE FORECAST_TIME = TO_TIMESTAMP_NTZ(%s)",
+            params=[forecast_time],
+        )
+        return set(df['TRACK_ID'].tolist()) if not df.empty else set()
+    except Exception as e:
+        logger.error("Error querying storms with alert emails at %s: %s", forecast_time, e)
+        return set()
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_alert_emails_for_storm(track_id: str, forecast_time: str = None):
+    """Real list of available alert emails for a storm (ALERT_SENT_LOG), one
+    entry per country — a multi-country storm can genuinely have several
+    (one email per affected country) for the same forecast run.
+
+    `forecast_time` (optional, e.g. "2026-08-02 18:00:00" — the topbar's
+    selected date+run, NOT a free-text filter): when given, scopes results
+    to that EXACT real forecast cycle only, matching the currently selected
+    date/time instead of surfacing every historical alert ever sent for this
+    storm (real feature — the popup used to show every alert regardless of
+    the topbar's own date/time selection, which read as "why is this old
+    email showing right now").
+
+    Returns a list of dicts with keys TRACK_ID/FORECAST_TIME/COUNTRY_CODE/
+    EMAIL_SUBJECT (RECIPIENT_COUNT/SENT_AT deliberately NOT selected —
+    internal operational metadata, not something to surface in the UI.
+    EMAIL_BODY itself is also NOT included here — fetch it separately via
+    get_alert_email_body once a specific entry is picked, so listing a
+    storm's emails stays cheap even when EMAIL_BODY is large)."""
+    try:
+        sql = "SELECT TRACK_ID, FORECAST_TIME, COUNTRY_CODE, EMAIL_SUBJECT FROM AOTS.TC_ECMWF.ALERT_SENT_LOG WHERE TRACK_ID = %s"
+        params = [track_id]
+        if forecast_time:
+            sql += " AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s)"
+            params.append(forecast_time)
+        sql += " ORDER BY COUNTRY_CODE"
+        df = _run_query(
+            sql,
+            params=params,
+        )
+        return df.to_dict('records') if not df.empty else []
+    except Exception as e:
+        logger.error("Error querying alert emails for storm %s: %s", track_id, e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
+    """Real EMAIL_BODY HTML (a complete standalone <!DOCTYPE html> document)
+    for one specific already-sent alert, or None if that exact
+    (track_id, forecast_time, country_code) row doesn't exist. Content is
+    immutable once sent (ALERT_SENT_LOG's own PK), so caching it is safe."""
+    try:
+        df = _run_query(
+            "SELECT EMAIL_BODY FROM AOTS.TC_ECMWF.ALERT_SENT_LOG "
+            "WHERE TRACK_ID = %s AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s) AND COUNTRY_CODE = %s",
+            params=[track_id, forecast_time, country_code],
+        )
+        if df.empty or pd.isna(df['EMAIL_BODY'].iloc[0]):
+            return None
+        return str(df['EMAIL_BODY'].iloc[0])
+    except Exception as e:
+        logger.error("Error querying alert email body for %s/%s/%s: %s", track_id, forecast_time, country_code, e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
+def get_recent_forecast_dates(n: int = 3):
+    """Real, most-recent `n` distinct calendar dates with ANY real storm
+    track in TC_TRACKS, each paired with that date's own latest real
+    forecast cycle (run) — e.g. [("2026-08-02", "18"), ("2026-08-01", "12"),
+    ("2026-07-31", "00")], newest first.
+
+    Used to keep the per-country tile cache warm for whatever storms are
+    ACTUALLY recent, not just the app's fixed demo scenarios — see
+    _prewarm_recent_tile_cache in pages/map_shell_concept.py (added per
+    explicit user request: "make sure the most recent 3 days are also warm
+    for loading, in addition to the demo scenarios")."""
+    try:
+        df = _run_query(
+            "SELECT CAST(FORECAST_TIME AS DATE) AS D, MAX(FORECAST_TIME) AS LATEST_TS "
+            "FROM TC_TRACKS GROUP BY D ORDER BY D DESC LIMIT %s",
+            params=[n],
+        )
+        out = []
+        for _, row in df.iterrows():
+            ts = row['LATEST_TS']
+            if pd.isna(ts):
+                continue
+            ts = pd.Timestamp(ts)
+            # Snap to the nearest synoptic run (00/06/12/18Z, the only real
+            # cycle hours) — real forecast times are always exactly on one
+            # of these already, this is just a defensive floor, same
+            # convention pages/map_shell_concept.py's own
+            # _DEFAULT_FORECAST_RUN resolution uses.
+            run = (ts.hour // 6) * 6
+            out.append((ts.strftime('%Y-%m-%d'), f"{run:02d}"))
+        return out
+    except Exception as e:
+        logger.error("Error querying recent forecast dates: %s", e)
+        return []
