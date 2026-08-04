@@ -39,6 +39,15 @@ from typing import Optional
 # output is served without a container restart (matches snowflake_utils TTL).
 _TILE_TTL = 15 * 60  # 15 minutes
 
+# _DataCache size caps (see its own _evict_oldest_if_over) — generous enough
+# to hold several countries/storms/dates at once (this app's real usage
+# pattern) without ever growing unbounded across a long-running session.
+# Facility entries (points, not a full tile grid) are cheaper per-key than
+# mercator/admin, hence the higher cap.
+_MERCATOR_CACHE_MAX = 24
+_ADMIN_CACHE_MAX = 24
+_FACILITY_CACHE_MAX = 48
+
 
 def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
     """LRU cache with a sliding PER-ENTRY TTL, thread-safe.
@@ -1146,6 +1155,42 @@ class _DataCache:
     def _is_fresh(self, key: tuple) -> bool:
         return key in self._loaded_at and (time.time() - self._loaded_at[key]) < _TILE_TTL
 
+    def _evict_oldest_if_over(self, just_written_key: tuple, cache_dicts: list, max_size: int) -> None:
+        """Bounds a cache dict (or a matched set of dicts sharing the same
+        key space, e.g. _admin + _admin_geoms) to `max_size` entries —
+        evicts the single oldest-loaded entry (by self._loaded_at) whenever
+        a fresh write pushes the primary dict over the cap.
+
+        Real fix (2026-08, multi-agent audit): _is_fresh only ever
+        refreshes a STALE key in place — nothing ever REMOVED an old one,
+        so a long-running multi-country/multi-storm/multi-date session
+        (this app's real usage pattern) grew these dicts unbounded; a
+        single mercator entry alone can be 300k-470k rows plus a parsed
+        admin geometry list + STRtree per key. Mirrors the "keep latest-N"
+        eviction _PrecipRawCache/_RiverExtentCache already do for their own
+        caches, called under the same per-key lock every write already
+        holds, so this never races with a concurrent load.
+        """
+        primary = cache_dicts[0]
+        if len(primary) <= max_size:
+            return
+        # Oldest by _loaded_at among keys actually present in the primary
+        # dict — _loaded_at is shared across every cache in this class (the
+        # different caches' key SHAPES don't collide, see ensure_admin's
+        # own admin_level-suffixed key), so this excludes keys belonging to
+        # a different cache entirely.
+        candidates = [k for k in primary if k in self._loaded_at]
+        if not candidates:
+            return
+        oldest_key = min(candidates, key=lambda k: self._loaded_at[k])
+        if oldest_key == just_written_key:
+            return  # never evict the entry this same call just wrote
+        for d in cache_dicts:
+            d.pop(oldest_key, None)
+        self._loaded_at.pop(oldest_key, None)
+        with self._key_locks_meta_lock:
+            self._key_locks.pop(oldest_key, None)
+
     # --- mercator --------------------------------------------------------
 
     def ensure_mercator(self, country: str, storm: str, forecast_date: str,
@@ -1215,6 +1260,7 @@ class _DataCache:
             log.info("  Cache: %d z=14 tiles ready (country=%s, hazard=%s)", len(df), country, hazard)
             self._mercator[key] = df
             self._loaded_at[key] = time.time()
+            self._evict_oldest_if_over(key, [self._mercator], _MERCATOR_CACHE_MAX)
 
     def query_mercator(self, country: str, storm: str, forecast_date: str,
                        wind_threshold: int, like_pat: str, z: int, hazard: str = "wind",
@@ -1309,6 +1355,7 @@ class _DataCache:
             tree = STRtree(geoms)
             self._admin_geoms[key] = (geoms, tree, props_list)
             self._loaded_at[key] = time.time()
+            self._evict_oldest_if_over(key, [self._admin, self._admin_geoms], _ADMIN_CACHE_MAX)
             log.info("  Cache: %d admin regions parsed + indexed", len(geoms))
 
     def query_admin(self, country: str, storm: str, forecast_date: str,
@@ -1388,6 +1435,7 @@ class _DataCache:
             log.info("  Cache: %d %s points (country=%s, hazard=%s)", len(df), layer_type, country, hazard)
             self._facility[key] = df
             self._loaded_at[key] = time.time()
+            self._evict_oldest_if_over(key, [self._facility], _FACILITY_CACHE_MAX)
 
     def get_facility_df(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int, hazard: str = "wind",
@@ -3330,9 +3378,16 @@ def mercator_tile(
         log.error("mercator_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not pbf:
-        return Response(status_code=204, headers={"Cache-Control": "public, max-age=3600"})
+        # Real perf/correctness fix (2026-08, multi-agent audit): browser
+        # max-age used to be a hardcoded 3600s (1h) while the server's own
+        # _fetch_mercator_tile cache (backing this response) expires after
+        # _TILE_TTL (900s/15min) — meaning a browser could keep serving a
+        # stale tile for up to 45 real minutes after fresher pipeline output
+        # was already available server-side. Aligned to _TILE_TTL directly
+        # (not a second hardcoded number) so the two can never drift again.
+        return Response(status_code=204, headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
     return Response(content=pbf, media_type="application/x-protobuf",
-                    headers={"Content-Encoding": "gzip", "Cache-Control": "public, max-age=3600"})
+                    headers={"Content-Encoding": "gzip", "Cache-Control": f"public, max-age={_TILE_TTL}"})
 
 
 @app.get("/tiles/admin/{country}/{storm}/{forecast_date}/{z}/{x}/{y}.pbf", response_class=Response)
@@ -3354,9 +3409,12 @@ def admin_tile(
         log.error("admin_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not pbf:
-        return Response(status_code=204, headers={"Cache-Control": "public, max-age=3600"})
+        # Same real perf/correctness fix as mercator_tile above — aligned
+        # to _TILE_TTL instead of a hardcoded 3600s that outlived the
+        # server's own 900s cache.
+        return Response(status_code=204, headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
     return Response(content=pbf, media_type="application/x-protobuf",
-                    headers={"Cache-Control": "public, max-age=3600"})
+                    headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
 
 
 @app.get("/preload/{country}/{storm}/{forecast_date}")
@@ -3967,12 +4025,15 @@ def raster_tile(
         # which causes row-level column-boundary misalignment when some tiles have
         # data and others don't. A transparent image keeps MapLibre in the z-tile
         # grid and renders as fully transparent (no visible effect).
+        # Real perf/correctness fix (2026-08, multi-agent audit): aligned to
+        # _TILE_TTL instead of a hardcoded 3600s that outlived the server's
+        # own 900s cache — see mercator_tile's own comment for the full "why".
         return Response(content=_TRANSPARENT_WEBP, media_type="image/webp",
-                        headers={"Cache-Control": "public, max-age=3600"})
+                        headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
     return Response(
         content=webp_bytes,
         media_type="image/webp",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": f"public, max-age={_TILE_TTL}"},
     )
 
 

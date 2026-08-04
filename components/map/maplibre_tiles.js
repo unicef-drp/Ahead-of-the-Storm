@@ -569,7 +569,7 @@ function _setupHoverTooltips(lMap) {
     // point simultaneously, same real multi-hazard combine as the network
     // tile-value path above, just synchronous/local (no fetch needed —
     // queryRenderedFeatures already returns each hazard's own properties).
-    var _showAdminTooltip = function(adminFeatures, clientX, clientY) {
+    var _showAdminTooltipImmediate = function(adminFeatures, clientX, clientY) {
         var hazardResults = adminFeatures.map(function(f) {
             var m = f.layer && f.layer.id && f.layer.id.match(/^aots-admin-layer-(\w+)/);
             return { hazard: m ? m[1] : 'wind', props: f.properties };
@@ -582,6 +582,33 @@ function _setupHoverTooltips(lMap) {
         el.innerHTML = _buildTileTooltip(feature, combined.perHazardProbs);
         el.style.display = 'block';
         _positionTooltipEl(clientX, clientY);
+    };
+
+    // Real perf fix (2026-08, multi-agent audit): this branch was
+    // deliberately left undebounced (no network cost, see its own comment
+    // below) — but _showAdminTooltipImmediate's el.innerHTML write followed
+    // immediately by _positionTooltipEl's el.offsetWidth/offsetHeight read
+    // is a classic write→read layout-thrash pattern, and mousemove can fire
+    // well above 60Hz on some trackpads/mice — every tick forced a
+    // synchronous layout recalculation while hovering an admin region.
+    // Coalesced to at most once per animation frame via requestAnimationFrame
+    // (still feels instant to a human, caps the real DOM/layout cost at the
+    // browser's own paint rate instead of the raw input rate).
+    var _adminTooltipRAF = null;
+    var _adminTooltipPending = null;
+    var _flushAdminTooltip = function() {
+        _adminTooltipRAF = null;
+        if (_adminTooltipPending) {
+            var p = _adminTooltipPending;
+            _adminTooltipPending = null;
+            _showAdminTooltipImmediate(p.adminFeatures, p.clientX, p.clientY);
+        }
+    };
+    var _showAdminTooltip = function(adminFeatures, clientX, clientY) {
+        _adminTooltipPending = { adminFeatures: adminFeatures, clientX: clientX, clientY: clientY };
+        if (_adminTooltipRAF === null) {
+            _adminTooltipRAF = requestAnimationFrame(_flushAdminTooltip);
+        }
     };
 
     // The network-lookup half of the hover handler — deferred via
@@ -753,6 +780,8 @@ function _setupHoverTooltips(lMap) {
 
     lMap.on('mouseout', function() {
         if (_hoverDebounceTimer) { clearTimeout(_hoverDebounceTimer); _hoverDebounceTimer = null; }
+        if (_adminTooltipRAF !== null) { cancelAnimationFrame(_adminTooltipRAF); _adminTooltipRAF = null; }
+        _adminTooltipPending = null;
         if (_pending_request) { _pending_request._cancelled = true; }
         _getTooltipEl().style.display = 'none';
     });
@@ -1209,7 +1238,13 @@ function applyTileConfig(config) {
     });
     _applyExtraHazardGroups(map, config);
 
-    console.log('[AoTS] applyTileConfig done — layers in map:', map.getStyle().layers.map(function(l){return l.id;}));
+    // Real perf fix (2026-08, multi-agent audit) — this used to unconditionally
+    // clone map.getStyle() (MapLibre's ENTIRE internal stylesheet — every
+    // source + layer + compiled paint/layout expression) into a plain JS
+    // object just to log layer ids, on every hazard toggle / debounced-
+    // slider-settle / view-mode switch, regardless of whether devtools was
+    // even open to see it. Removed rather than gated behind a debug flag —
+    // no such flag exists anywhere else in this file to stay consistent with.
 
     // Sync to current Leaflet viewport (Leaflet is the source of truth for position)
     var lMap = window._leaflet_maps && window._leaflet_maps['main-map'];
@@ -1561,9 +1596,31 @@ function _initGlobalLoadingIndicator() {
     // Exposed globally so the MapLibre 'dataloading'/'idle' handlers (which
     // don't mutate the Dash-rendered DOM the MutationObserver below
     // watches) can force an immediate re-check instead of waiting for an
-    // unrelated DOM mutation to happen to fire it.
+    // unrelated DOM mutation to happen to fire it. Deliberately the real,
+    // synchronous `check` (not the coalesced wrapper below) — an explicit
+    // external caller wants an immediate, accurate answer right now, not a
+    // deferred one.
     window._aots_checkLoadingIndicator = check;
-    new MutationObserver(check).observe(root, { attributes: true, childList: true, subtree: true });
+    // Real perf fix (2026-08, multi-agent audit): this MutationObserver
+    // watches all of document.body (deliberately — see the real bug fix
+    // documented above re: Mantine portals rendering outside
+    // #react-entry-point, do NOT narrow the scope back), so it re-fires
+    // `check`'s own full-subtree querySelector scan on every single batch
+    // of DOM mutations anywhere on the page — including this file's own
+    // tooltip repositioning writes (_positionTooltipEl), which compounds
+    // with hover activity. Coalesced to at most once per animation frame
+    // via requestAnimationFrame, same pattern as _showAdminTooltip's own
+    // fix just above — still reflects real state within one paint frame,
+    // just not once per individual mutation record.
+    var _loadingCheckRAF = null;
+    var _scheduledCheck = function() {
+        if (_loadingCheckRAF !== null) return;
+        _loadingCheckRAF = requestAnimationFrame(function() {
+            _loadingCheckRAF = null;
+            check();
+        });
+    };
+    new MutationObserver(_scheduledCheck).observe(root, { attributes: true, childList: true, subtree: true });
     check();
 }
 document.addEventListener('DOMContentLoaded', _initGlobalLoadingIndicator);

@@ -2830,6 +2830,17 @@ def _real_member_age_split(country, date, run, wind_kt, member):
 # of what each country's own tile would show individually.
 def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, hz=None):
     keys = list(_DEFAULT_STATS.keys())
+    # User-requested (2026-08): a genuinely empty `countries` list — no
+    # real countries to even consider — is real "no data available", the
+    # same N/A treatment as a per-country facility-column gap below, not a
+    # confirmed "0" (that reads as "we checked and there are real zero
+    # people/schools/etc," which isn't what this situation actually is).
+    # _hazard_contribution_content's own is_global branch below shows the
+    # SAME "None of the initialized countries show impact..." explanation
+    # for this case as it already does for a real total==0, so clicking any
+    # of these six tiles still lands on a clear, accurate message either way.
+    if not countries:
+        return {k: None for k in keys}
     totals = {k: 0.0 for k in keys}
     # Tracks whether ANY country contributed a real (non-None) value for
     # this metric — People/Children at Risk are always real (per-tile
@@ -2875,6 +2886,11 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
                 continue
             has_real[k] = True
             totals[k] += v
+    # People at Risk/Children at Risk always end up has_real=True here
+    # naturally (every real per-country `scaled` dict always has a real
+    # value for these two — see this function's own top comment), since a
+    # genuinely empty `countries` list is already handled by the early
+    # return above before this loop ever runs.
     return {k: (_format_stat_number(totals[k]) if has_real[k] else None) for k in keys}
 
 
@@ -2949,6 +2965,11 @@ def _combined_in_need_pct(countries, risk_key, pin_key, base_value, member=None,
     report data still correctly returns 0, not None. Factored out of ~6
     near-identical inline call sites across _pin_arc_charts_block_combined/
     _impact_breakdown_content/the Global Impact Summary/the print report."""
+    # User-requested (2026-08): an EMPTY `countries` list is real "no data
+    # available" (None/N/A), same as _combined_stats's own empty-countries
+    # handling above — not a confirmed 0%.
+    if not countries:
+        return None
     any_real = False
     for c in countries:
         scaled_pin = None
@@ -2985,6 +3006,11 @@ def _combined_age_split(countries, member=None, date=None, run=None, wind_kt=Non
     against the (larger) combined at-risk base corrupts the reconstructed
     absolute number; the one real ceil happens where that final
     reconstruction occurs (_value_td)."""
+    # User-requested (2026-08): an EMPTY `countries` list is real "no data
+    # available" (None/N/A) for both fields, same as _combined_stats's own
+    # empty-countries handling above — not a confirmed 0.
+    if not countries:
+        return {label: {"at_risk": None, "in_need_pct": None} for label in _CHILD_AGE_BANDS}
     at_risk_totals = {label: 0.0 for label in _CHILD_AGE_BANDS}
     in_need_totals = {label: 0.0 for label in _CHILD_AGE_BANDS}
     # Tracks whether ANY country contributed real in-need data for this age
@@ -3846,9 +3872,17 @@ def _data_availability_table(countries):
         # doubled up unevenly with a nonzero Group gap.
         return dmc.Group(items, gap=4, wrap="wrap", style={"rowGap": "2px"}), any_custom
 
+    # Real perf fix (2026-08, multi-agent audit): _get_data_availability_real
+    # (get_base_tiles, a full zoom-14 BASE_MERCATOR_TILE_MAT pull) is called
+    # nowhere else in the codebase, so it's never prewarmed — a multi-
+    # country selection's first render used to pay N sequential cold-cache
+    # round-trips here, unlike every sibling per-country loop in this file
+    # that already got this fix. Fetching concurrently, rendering in order.
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
+        availability_per_country = dict(zip(countries, ex.map(_get_data_availability_real, countries)))
     rows = []
     for c in countries:
-        d = _get_data_availability_real(c)
+        d = availability_per_country[c]
         if not d:
             rows.append(dmc.Text(_t("{c}: no availability data.", c=_t(c)), size="11px", c="dimmed", mb=8))
             continue
@@ -4364,19 +4398,20 @@ def _admin1_regions_real(country, date=None, run=None, wind_kt=None):
     codes = _resolve_tile_codes([country])
     if not codes or wind_kt is None:
         return []
-    rows = []
-    for code in codes:
+
+    def _fetch_region_rows(code):
         member_name = _CODE_TO_NAME.get(code, country)
         storm_info = _resolve_storm_for_country(member_name, date, run)
         if not storm_info:
-            continue
+            return []
         try:
             df = get_admin_impacts(code, storm_info["name"], storm_info["mat_forecast_date"], wind_kt, admin_level=1)
         except Exception as e:
             logger.warning("Could not load admin-1 impacts for %s: %s", code, e)
-            continue
+            return []
         if df is None or df.empty:
-            continue
+            return []
+        code_rows = []
         for _, r in df.iterrows():
             population = float(r.get("E_POPULATION") or 0)
             # Sum only the age bands with real data for this region — same
@@ -4396,7 +4431,7 @@ def _admin1_regions_real(country, date=None, run=None, wind_kt=None):
             def _f_or_none(col):
                 val = r.get(col)
                 return float(val) if pd.notna(val) else None
-            rows.append({
+            code_rows.append({
                 "name": r.get("NAME") or member_name,
                 "population": population,
                 "children": children,
@@ -4410,6 +4445,17 @@ def _admin1_regions_real(country, date=None, run=None, wind_kt=None):
                 "people_in_need": (float(r.get("E_PEOPLE_IN_NEED")) if pd.notna(r.get("E_PEOPLE_IN_NEED")) else None),
                 "children_in_need": (float(r.get("E_CHILDREN_IN_NEED")) if pd.notna(r.get("E_CHILDREN_IN_NEED")) else None),
             })
+        return code_rows
+
+    # Real perf fix (2026-08, multi-agent audit): a bundled region (e.g.
+    # "ECA", "Pacific Islands") used to fetch each real ISO3 member's own
+    # admin-1 rows sequentially — this function is itself already called
+    # inside an outer ThreadPoolExecutor (_impact_breakdown_content, per
+    # selected country/region), so a bundled-region selection's own
+    # member fan-out was escaping that outer parallelization and running
+    # serially inside one worker thread. Parallelized here too.
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
+        rows = [row for code_rows in ex.map(_fetch_region_rows, codes) for row in code_rows]
     # User-requested (2026-08-04): alphabetical, not Snowflake's own return
     # order (which followed whatever order ADMIN_ALL_IMPACT_MAT rows came
     # back in — arbitrary from a reader's perspective, and for a bundled
@@ -5402,17 +5448,6 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # overlap bar/caption only appears when BOTH are active.
     tc_active, flood_active = breakdown["tc_active"], breakdown["flood_active"]
     total = _parse_stat_number(value)
-    # None means this metric/scope has no real data at all (a genuine
-    # column-wide gap, e.g. Turks and Caicos Islands' real all-NULL
-    # shelters — see _fetch_real_combined_tile_totals_uncached's own
-    # _sum_or_none comment), distinct from a real, confirmed zero (handled
-    # below) — reachable here since Schools/Health Centers/Shelters/WASH
-    # are real clickable stat-card metrics.
-    if total is None:
-        return html.Div(dmc.Text(
-            _t("No real data available for this metric/selection — this country genuinely has no facility "
-                "data of this type in Snowflake yet, not a confirmed zero."),
-            size="sm", c="dimmed", fs="italic"))
     if not tc_active and not flood_active:
         return html.Div(dmc.Text(_t("None — toggle a hazard on the map to see impact numbers."),
                                     size="sm", c="dimmed", fs="italic"))
@@ -5434,7 +5469,19 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # _get_country_stats's own docstring for the bug this fixed), so seeing
     # "0" here for a real, active storm should read as "not at this
     # threshold," not as a suspicious-looking blank result.
-    if total == 0:
+    #
+    # total is None (not 0) whenever this metric/scope has no real data at
+    # all — either a genuine per-country column gap (e.g. Turks and Caicos
+    # Islands' real all-NULL shelters) or, in Global scope, simply zero
+    # countries reaching the current configuration — see _combined_stats's
+    # own comment for the full None-vs-0 contract that decides what the
+    # TILE itself shows. The message here is deliberately the SAME for
+    # both None and a real 0 (user-requested: keep the 0-vs-N/A distinction
+    # on the tile, but not in this explanation) — either way, the honest
+    # takeaway for a reader is identical: nothing shows up for this
+    # metric/configuration right now, and that's not the same as "there's
+    # no real impact, ever."
+    if total is None or total == 0:
         if is_global:
             return html.Div(dmc.Text(
                 _t("None of the initialized countries show impact at the currently selected hazard "
@@ -6140,14 +6187,26 @@ def _legend_raster_info(hazard, tile_config):
     colors = palette.get("colors", ["#ffffcc", "#800026"])
     min_v, max_v = prop_stats.get("min"), prop_stats.get("max")
     prop_label = _t(_LEGEND_PROP_LABELS.get(prop, prop.replace("_", " ").title()))
+    # Real bug found+fixed here (2026-08, user-reported): this used to
+    # always prefix the title with the hazard name whenever the checkbox
+    # was checked/visible, even when that hazard has no real data for the
+    # current selection (e.g. Sustained Wind checked on a quiet-date
+    # country with no active storm) — the raster painted underneath is then
+    # just the plain Population base layer (see _build_hazard_tile_config's
+    # own any_hazard_on/wind_has_data comment), so labeling it "Sustained
+    # Wind — Population" falsely implied real wind-weighted coloring.
+    # {hazard}_has_data (same real-data signal any_hazard_on now uses) gates
+    # the hazard-name prefix — same underlying bar/stats either way, since
+    # they already correctly show plain Population's own real min/max.
+    has_data = tile_config.get(f"{hazard}_has_data", True)
     hazard_name = _t(_LEGEND_HAZARD_LABELS[hazard])
     return {
-        "title": f"{hazard_name} — {prop_label}",
+        "title": f"{hazard_name} — {prop_label}" if has_data else prop_label,
         # Short version for the compact strip — the full "Hazard —
         # Property" title comfortably fits the full card's own 300px width
         # on its own line, but not squeezed onto the same row as the bar
         # and chevron too.
-        "compact_title": hazard_name,
+        "compact_title": hazard_name if has_data else prop_label,
         "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
                                  "background": f"linear-gradient(to right, {', '.join(colors)})"}),
         "labels": (_legend_format_value(min_v, prop, palette), _legend_format_value(max_v, prop, palette)),
@@ -7156,10 +7215,15 @@ def _toggle_threshold_preview(_n, current_style, current_children):
 
 @callback(
     Output("exposure-view-as", "data"),
+    Output("exposure-view-as", "value"),
     Output("exposure-view-note", "children"),
     Input("exposure-property", "value"),
+    Input("selected-country-store", "data"),
+    Input("topbar-date", "value"),
+    Input("topbar-time", "value"),
+    State("exposure-view-as", "value"),
 )
-def _update_view_as(prop):
+def _update_view_as(prop, countries, date, run, current_view_as):
     # Real fix (2026-08, explicit user request — "why does In Need say
     # Coming Soon, we already have that, just only for wind"): enabled for
     # the five properties it has real data for (population/children/infant/
@@ -7169,11 +7233,41 @@ def _update_view_as(prop):
     # property (settlement/rwi/poverty), which have no real *_in_need
     # column to show at all — not a partial-support gap, a genuine absence
     # of vulnerability data for those properties.
-    supported = prop in _EXPOSURE_IN_NEED_PROP_MAP
+    prop_supported = prop in _EXPOSURE_IN_NEED_PROP_MAP
+
+    # Real bug found+fixed here (2026-08, user-reported, same root cause as
+    # _build_hazard_tile_config's own any_hazard_on fix): In Need is wind-
+    # only (E_people_in_need/E_children_in_need come from Sustained Wind's
+    # own MAT-table columns exclusively, see this function's own note
+    # below) — this used to enable the option purely off the SELECTED
+    # PROPERTY, with no check for whether the CURRENT country/date/run even
+    # has a real storm resolved. A quiet-date country with no active storm
+    # could switch to "In Need" and see a column that's NULL everywhere,
+    # exactly the same silent-NULL trap any_hazard_on had for the map
+    # layer/legend. Same has_storms signal _hurricane_family already
+    # computes to grey out the Sustained Wind checkbox itself.
+    countries = countries or []
+    if countries:
+        has_storms = any(_resolve_storm_for_country(c, date, run) for c in countries)
+    else:
+        _d = date or _DEFAULT_FORECAST_DATE
+        _r = run if run is not None else _DEFAULT_FORECAST_RUN
+        _forecast_time_str = f"{_d} {_r}:00:00" if _d and _r is not None else None
+        has_storms = bool(get_track_ids_for_date(_forecast_time_str)) if _forecast_time_str else False
+
+    supported = prop_supported and has_storms
     data = [
         {"value": "expected", "label": _t("At Risk")},
         {"value": "inneed", "label": _t("In Need"), "disabled": not supported},
     ]
+    # Prevents a stuck "In Need" selection: the segmented control has no
+    # other path back to "expected" once its own option becomes disabled
+    # mid-selection (e.g. switching from a country with a real storm to one
+    # without, while In Need is already active) — falls back automatically
+    # rather than leaving the UI showing a disabled-but-still-selected value.
+    value = dash.no_update
+    if not supported and current_view_as == "inneed":
+        value = "expected"
     if supported:
         # Two real, verified properties of this data (confirmed live via
         # direct tile-server /stats queries, JAM/MELISSA): (1)
@@ -7190,9 +7284,11 @@ def _update_view_as(prop):
         # because more people actually became vulnerable — worth knowing
         # before reading a jump in that percentage as a real change.
         note = _t("In Need reflects Sustained Wind exposure only, and does not change with the wind severity threshold selected.")
+    elif prop_supported and not has_storms:
+        note = _t("In Need is unavailable — no real Sustained Wind data for the current selection.")
     else:
         note = _t("In Need is only available for Population, Children (total), and the age bands.")
-    return data, note
+    return data, value, note
 
 
 # Real fix (2026-08, explicit user request — "when 'view as' in need is
@@ -8528,6 +8624,8 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
             "country": None, "wind_visible": False, "gust_visible": False,
             "river_visible": False, "rain_visible": False, "surge_visible": False,
             "view_mode": view_mode, "tc_view_as": tc_view_as, "any_hazard_on": False,
+            "wind_has_data": False, "gust_has_data": False, "river_has_data": False,
+            "rain_has_data": False, "real_hazard_available": False,
         }
 
     codes = _resolve_tile_codes(countries)
@@ -8536,33 +8634,16 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     resolved_prop = _EXPOSURE_PROP_MAP.get(exposure_prop, "population")
     # Matches /legacy's real "Probability" toggle semantics (callbacks/
     # tiles_and_admin.py's _compute_layer_toggle_outputs): a demographic
-    # property is a plain basis layer (raw count) only while NO hazard is
-    # active; the moment any real hazard is toggled on, it SWITCHES (not
-    # overlays — each hazard's own MapLibre raster source independently
-    # resolves this same prop name from its own table) to the hazard-
-    # weighted "expected impact" column instead. Storm Surge is excluded —
-    # it never carries real hazard state (surge_visible is always False).
-    #
-    # Real bug found+fixed here: this used to ignore ms-hazards-hidden-store
-    # (the command bar's "HAZARDS" eye-icon temporary hide-all toggle)
-    # entirely — clicking it only hid the wind/gust/river/rain MapLibre
-    # layers themselves client-side (see setHazardsHiddenOverride in
-    # maplibre_tiles.js), while the Population/Children/etc exposure layer
-    # kept showing the hazard-weighted E_* column underneath, unchanged.
-    # With hazards visually hidden there is nothing on screen to justify
-    # "weighted by hazard" — the exposure layer should fall back to the raw
-    # base property, exactly as if every hazard checkbox were off.
-    any_hazard_on = bool(wind_on or gust_on or river_on or rain_on) and not hazards_hidden
-    if any_hazard_on:
-        resolved_prop = _EXPOSURE_E_PROP_MAP.get(exposure_prop, resolved_prop)
-    # "In Need" only ever swaps population/children to their real E_*_in_need
-    # column — every other prop (and "At Risk") is untouched, same
-    # eligibility rule _update_view_as already enforces for the segmented
-    # control itself. Takes precedence over the hazard-weighted switch above
-    # (in_need already implies "hazard-weighted", just further vulnerability-
-    # refined) regardless of any_hazard_on.
-    if view_as == "inneed" and exposure_prop in _EXPOSURE_IN_NEED_PROP_MAP:
-        resolved_prop = _EXPOSURE_IN_NEED_PROP_MAP[exposure_prop]
+    # property is a plain basis layer (raw count) only while no hazard is
+    # both checked AND has real resolved data behind it; the moment one
+    # does, it SWITCHES (not overlays — each hazard's own MapLibre raster
+    # source independently resolves this same prop name from its own table)
+    # to the hazard-weighted "expected impact" column instead. Storm Surge
+    # is excluded — it never carries real hazard state (surge_visible is
+    # always False). any_hazard_on itself is computed further below, once
+    # storm/river_forecast_date/rain_forecast_date are all resolved — see
+    # that block's own comment for why checkbox-checked state alone isn't
+    # enough anymore.
 
     # Wind/gust share the same real storm/forecast_date, resolved REACTIVELY
     # (first selected country with real impact data for the CURRENTLY
@@ -8601,6 +8682,28 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     if country_storm_infos:
         storm = country_storm_infos[0][1]["name"]
         forecast_date = country_storm_infos[0][1]["mat_forecast_date"]
+    # Real bug found+fixed here (2026-08, user-reported: selecting a
+    # country with genuinely no active storm at all — e.g. Bangladesh on a
+    # quiet date — showed a completely blank map, not even the raw
+    # Population base layer). The Population/Children/etc EXPOSURE layer
+    # piggybacks on this SAME storm-scoped tile URL (there's no separate
+    # storm-independent raster endpoint) — with storm/forecast_date left
+    # None, maplibre_tiles.js's own applyHazardLayer hides the WHOLE wind
+    # layer, population included (`if (!country || !parts.forecast_date)`).
+    # But the underlying SQL (_MERCATOR_FULL_SQL in tile_server.py) is a
+    # real LEFT JOIN FROM BASE_MERCATOR_TILE_MAT, filtered only on
+    # b.COUNTRY — any non-matching storm/forecast_date is completely safe
+    # to pass (every E_*/impact column just comes back NULL, which is
+    # exactly correct when there's genuinely no real impact). tile_storm/
+    # tile_forecast_date below are this placeholder — used only for URL-
+    # building and the population/exposure color-scale stats query below;
+    # `storm`/`forecast_date` themselves stay real (possibly None) so
+    # anything that means "is there a REAL storm" (gust's own stats gate,
+    # _load_ms_tracks_and_envelopes, etc) still sees the honest answer.
+    # Same "NONE" placeholder convention _hazardUrlParts already uses
+    # client-side for river/rain's own inert storm segment.
+    tile_storm = storm if storm is not None else "NONE"
+    tile_forecast_date = forecast_date if forecast_date is not None else _mat_forecast_date(date, run)
 
     extra_groups_by_storm = {}
     for code, storm_info in country_storm_infos[1:]:
@@ -8637,16 +8740,86 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # from `storm` at all.
     river_forecast_date = get_latest_river_forecast_time(primary_code) if primary_code else None
     rain_forecast_date = get_latest_rain_forecast_time(primary_code) if primary_code else None
+
+    # Real per-hazard "does this hazard have REAL underlying data for the
+    # current selection" — wind/gust share the resolved storm above; river/
+    # rain each resolve their own independent forecast_date just above too.
+    # This mirrors the exact signal _hurricane_family/_flood_hazards_family
+    # already use to grey out their own checkboxes (has_storms/
+    # river_available/rain_available) — any_hazard_on below is the tile-
+    # config-side counterpart of that same "is there something real behind
+    # this checkbox" check, not just whether the checkbox itself is checked.
+    #
+    # Real bug found+fixed here (2026-08, user-reported: map legend showed
+    # "Sustained Wind — Population" for a country with no active storm at
+    # all, e.g. Bangladesh on a quiet date). This used to switch
+    # resolved_prop to the hazard-weighted E_* column the instant ANY
+    # checkbox was checked, regardless of whether that hazard actually
+    # resolved real data. Sustained Wind stays CHECKED by default even
+    # while ms-wind-on is DISABLED (Dash still reports the checkbox's true
+    # `checked` value here — `disabled` only blocks user interaction), so a
+    # quiet-date country with the default-checked Wind box switched the
+    # whole exposure layer to E_population — a column that's NULL
+    # everywhere with no real storm, since MERCATOR_TILE_IMPACT_MAT never
+    # has a matching row. Gating on real-data-per-hazard (not just checked)
+    # keeps the exposure layer, its color-scale stats, and the map legend
+    # all honestly showing plain Population whenever nothing real backs the
+    # checked hazard(s).
+    wind_has_data = bool(storm)
+    gust_has_data = bool(storm)
+    river_has_data = bool(river_forecast_date)
+    rain_has_data = bool(rain_forecast_date)
+    real_hazard_available = wind_has_data or gust_has_data or river_has_data or rain_has_data
+    # Real bug found+fixed here too: this used to ignore ms-hazards-hidden-
+    # store (the command bar's "HAZARDS" eye-icon temporary hide-all
+    # toggle) entirely — clicking it only hid the wind/gust/river/rain
+    # MapLibre layers themselves client-side (see setHazardsHiddenOverride
+    # in maplibre_tiles.js), while the Population/Children/etc exposure
+    # layer kept showing the hazard-weighted E_* column underneath,
+    # unchanged. With hazards visually hidden there is nothing on screen to
+    # justify "weighted by hazard" — the exposure layer should fall back to
+    # the raw base property, exactly as if every hazard checkbox were off.
+    any_hazard_on = bool(
+        (wind_on and wind_has_data) or (gust_on and gust_has_data) or
+        (river_on and river_has_data) or (rain_on and rain_has_data)
+    ) and not hazards_hidden
+    if any_hazard_on:
+        resolved_prop = _EXPOSURE_E_PROP_MAP.get(exposure_prop, resolved_prop)
+    # "In Need" only ever swaps population/children to their real E_*_in_need
+    # column — every other prop (and "At Risk") is untouched, same
+    # eligibility rule _update_view_as already enforces for the segmented
+    # control itself. Takes precedence over the hazard-weighted switch above
+    # (in_need already implies "hazard-weighted", just further vulnerability-
+    # refined) regardless of any_hazard_on.
+    if view_as == "inneed" and exposure_prop in _EXPOSURE_IN_NEED_PROP_MAP:
+        resolved_prop = _EXPOSURE_IN_NEED_PROP_MAP[exposure_prop]
+
     # Path-segment placeholder for hazards with no real "storm" concept —
     # any non-empty string works (ignored server-side), reuses the real
     # storm name when one is resolved rather than adding a second required
-    # config field only to fill an inert URL path segment.
-    placeholder_storm = storm or "NONE"
+    # config field only to fill an inert URL path segment. Same value as
+    # tile_storm above (both exist for the identical reason); kept as its
+    # own name here since river/rain's OWN forecast_date is independent of
+    # wind's, unlike tile_forecast_date.
+    placeholder_storm = tile_storm
 
+    # wind's own stats query now uses tile_storm/tile_forecast_date (the
+    # placeholder-aware pair) and is gated on wind_on alone, not "and
+    # storm" — see tile_storm's own comment above for why: population/
+    # exposure min-max (this function's real purpose even with no storm)
+    # comes from the SAME LEFT JOIN query and is safe/correct to fetch
+    # regardless of whether a real storm resolved.
     stats_wind, admin_stats_wind = _hazard_stats(
-        tile_country, "wind", storm, forecast_date, wind_kt, {}) if (wind_on and storm) else ({}, {})
+        tile_country, "wind", tile_storm, tile_forecast_date, wind_kt, {}) if wind_on else ({}, {})
+    # Same tile_storm/tile_forecast_date + wind_on-style gating as wind's
+    # own stats just above (_MERCATOR_GUST_SQL is the identical LEFT-JOIN-
+    # FROM-BASE_MERCATOR_TILE_MAT shape) — gust's own raster URL
+    # (_hazardUrlParts) already reads the SAME placeholder-aware "storm"/
+    # "forecast_date" config fields, so its stats must use the same pair or
+    # the population layer would render with no color-scale normalization
+    # whenever Gust is checked but no real storm has resolved.
     stats_gust, admin_stats_gust = _hazard_stats(
-        tile_country, "gust", storm, forecast_date, wind_kt, {"gust_threshold": gust_kt}) if (gust_on and storm) else ({}, {})
+        tile_country, "gust", tile_storm, tile_forecast_date, wind_kt, {"gust_threshold": gust_kt}) if gust_on else ({}, {})
     stats_river, admin_stats_river = _hazard_stats(
         tile_country, "river", placeholder_storm, river_forecast_date, wind_kt, {"rp_tier": rp_tier}) if river_on else ({}, {})
     stats_rain, admin_stats_rain = _hazard_stats(
@@ -8697,6 +8870,16 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # icon), so this one flag correctly covers "no hazard checked" AND
         # "hazards temporarily hidden" without duplicating that logic here.
         "any_hazard_on": any_hazard_on,
+        # Real per-hazard "is there actual data behind this, or just a
+        # checked-but-disabled checkbox" — the map legend (_legend_raster_
+        # info) reads these to avoid labeling a plain Population base layer
+        # as e.g. "Sustained Wind — Population" when no real storm exists.
+        # real_hazard_available (independent of checkbox state entirely) is
+        # the client-side signal for whether the HAZARDS eye icon / hazard-
+        # scoped "View As" controls have anything real to act on at all.
+        "wind_has_data": wind_has_data, "gust_has_data": gust_has_data,
+        "river_has_data": river_has_data, "rain_has_data": rain_has_data,
+        "real_hazard_available": real_hazard_available,
         "view_mode": view_mode,
         # "envelopes" (default, today's behavior) or "raster" — gates
         # ms-tracks-json/ms-envelopes-json in _load_ms_tracks_and_envelopes
@@ -8704,8 +8887,16 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # this and keeps rendering off wind_visible/gust_visible as before.
         "tc_view_as": tc_view_as,
 
-        "storm": storm,
-        "forecast_date": forecast_date,
+        # tile_storm/tile_forecast_date (not the possibly-None storm/
+        # forecast_date) — see tile_storm's own comment above: JS's
+        # applyHazardLayer/_hazardUrlParts read these two fields directly to
+        # build the wind (and gust) raster/admin tile URLs, and hide the
+        # WHOLE layer — population/exposure included — whenever
+        # forecast_date is falsy. This keeps the Population base layer
+        # rendering (real data, no hazard weighting) even when no real
+        # storm is active for the selected country/date.
+        "storm": tile_storm,
+        "forecast_date": tile_forecast_date,
         "wind_threshold": wind_kt,
         "wind_visible": bool(wind_on),
         "stats_wind": stats_wind, "admin_stats_wind": admin_stats_wind,
@@ -9288,12 +9479,26 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     Input("topbar-time", "value"),
     Input("ms-tracks-on", "checked"),
     Input("ms-wind-on", "checked"),
-    Input("ms-wind-slider", "value"),
     Input("ms-gust-on", "checked"),
-    Input("ms-gust-slider", "value"),
     Input("ensemble-member-select", "value"),
+    # Real perf fix (2026-08, multi-agent audit): ms-wind-slider/
+    # ms-gust-slider's own raw `value` used to be direct Inputs here
+    # ALONGSIDE ms-tile-config-store — a single drag fired this Snowflake-
+    # backed callback once per raw tick AND again when tile_config settled.
+    # ms-tile-config-store's own producing callback (_build_hazard_tile_
+    # config) is already triggered by ms-slider-debounce-store, so its
+    # Output fires exactly once per debounce settle regardless of Global vs
+    # Country Analysis mode — no separate debounce Input needed here, this
+    # Input alone is the right (already-debounced) trigger. Only the
+    # Global-mode branch below genuinely needs a raw wind_idx/gust_idx
+    # (tile_config carries no wind_threshold/gust_threshold at all once
+    # "country" is None — see _build_hazard_tile_config's own early
+    # return), so those are read via State instead of a second live Input.
+    State("ms-wind-slider", "value"),
+    State("ms-gust-slider", "value"),
 )
-def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, wind_idx, gust_on, gust_idx, member_select):
+def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gust_on, member_select,
+                                     wind_idx, gust_idx):
     """Fetch real track/envelope GeoJSON for the placeholder ms-tracks-json/
     ms-envelopes-json layers whenever the shared ms-tile-config-store
     changes (country/storm selection or wind-threshold slider) — no
@@ -9424,7 +9629,15 @@ def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, wi
     # unchecking "Sustained Wind" while keeping "Gust" checked hid TRACKS
     # and gust's own envelope too, even though gust had nothing to do with
     # that gate. Now proceeds whenever EITHER hazard is on.
-    if not storm or not forecast_date or not (wind_on_cfg or gust_on_cfg):
+    #
+    # storm == "NONE" — _build_hazard_tile_config's own inert placeholder
+    # for when no real storm resolves (see that function's tile_storm
+    # comment for the full "why": it lets the MapLibre Population base
+    # layer keep rendering even with no impact, but there's genuinely no
+    # real track/envelope geometry behind a fake storm name, so this
+    # callback's own real Snowflake-backed fetch must still short-circuit
+    # here exactly as if storm were falsy).
+    if not storm or storm == "NONE" or not forecast_date or not (wind_on_cfg or gust_on_cfg):
         return _MS_EMPTY_FC, dash.no_update, _MS_EMPTY_FC, dash.no_update
 
     # "raster" view-as hides ONLY the envelope Leaflet layer (so the MapLibre
@@ -9617,6 +9830,30 @@ clientside_callback(
     """,
     Output("cmdbar-hazards-eye", "icon"),
     Input("ms-hazards-hidden-store", "data"),
+)
+
+# Real feature added here per explicit user request: when NO real hazard
+# data exists at all for the current selection (real_hazard_available —
+# see _build_hazard_tile_config's own wind_has_data/gust_has_data/
+# river_has_data/rain_has_data comment), any_hazard_on is already forced
+# False there regardless of this eye icon's own hidden/shown state — there
+# is nothing real left for it to hide. This dims the eye icon + "HAZARDS"
+# label and blocks clicks on it (pointerEvents:none — same disabled
+# treatment _PILL_DISABLED_STYLE already gives an individual hazard pill
+# with no real data), so the control itself honestly reflects that
+# "hazards switched off" is already the map's real state, not a togglable
+# choice, for this selection.
+clientside_callback(
+    """
+    function(tileConfig) {
+        var available = tileConfig && tileConfig.real_hazard_available;
+        return available
+            ? {cursor: 'pointer', userSelect: 'none'}
+            : {cursor: 'not-allowed', userSelect: 'none', pointerEvents: 'none', opacity: 0.5};
+    }
+    """,
+    Output("cmdbar-hazards-label", "style"),
+    Input("ms-tile-config-store", "data"),
 )
 
 
