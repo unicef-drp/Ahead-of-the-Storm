@@ -154,37 +154,87 @@ function _getP(props, name) {
     return null;
 }
 
+// Real gap found+fixed here (2026-08, user-reported: are these tooltips
+// translated, or just carried over from the old dashboard? — they were
+// neither): _mapT() is the browser-side counterpart to pages/map_shell_
+// concept.py's own _t() — window.AOTS_MAP_I18N is populated once at page
+// load from that file's _MAP_TOOLTIP_TRANSLATIONS (ms-map-i18n-store's own
+// clientside bridge), covering exactly the vocabulary these tooltip
+// builders need. Falls back to the English key itself when untranslated,
+// same "never show a blank tooltip" contract _t() already has server-side.
+function _mapT(key) {
+    var dict = window.AOTS_MAP_I18N;
+    return (dict && dict[key]) || key;
+}
+
+// Shared design tokens for every map-hover tooltip below — real fix here
+// (2026-08): body text used to mix #555/#777/#888/#333 somewhat
+// interchangeably across the 8 tooltip-building functions with no clear
+// role assigned to each, an artifact of these tooltips having been carried
+// over from the old dashboard.py verbatim rather than redesigned for this
+// page. These 4 values are the SAME hex constants pages/map_shell_
+// concept.py's own Python-side UI already uses pervasively for the
+// equivalent roles (#16232c primary text, #57707e secondary label text,
+// #8ea0ab dimmed/muted text, #eef2f5 divider) — reusing them here is a
+// real, verifiable match to the new page's own palette, not an invented
+// one. Per-feature-type TITLE colors (tracks/envelopes/schools/health/
+// shelters/wash/river-raw/precip-raw each keep their own distinct hue) are
+// intentionally left as-is — those are meaningful visual differentiation
+// between layers, not an inconsistency to fix.
+var _AOTS_TT_LABEL = '#57707e';
+var _AOTS_TT_VALUE = '#16232c';
+var _AOTS_TT_SUB    = '#8ea0ab';
+var _AOTS_TT_DIVIDER = '#eef2f5';
+
 function _fmtN(val) {
-    if (val === null || val === undefined) return 'N/A';
+    if (val === null || val === undefined) return _mapT('N/A');
     if (typeof val === 'number') return new Intl.NumberFormat('en-US').format(Math.ceil(val));
     return String(val);
 }
 
 function _fmtPct(val) {
-    if (val === null || val === undefined) return 'N/A';
+    if (val === null || val === undefined) return _mapT('N/A');
     return (val * 100).toFixed(1) + '%';
 }
 
 function _fmtDec(val) {
-    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return 'N/A';
+    if (val === null || val === undefined || (typeof val === 'number' && isNaN(val))) return _mapT('N/A');
     return Number(val).toFixed(2);
 }
 
 function _smodLabel(v) {
     var n = parseInt(Number(v) >= 10 ? Number(v) / 10 : Number(v));
-    if (n === 1) return 'Rural';
-    if (n === 2) return 'Urban Clusters';
-    if (n === 3) return 'Urban Centers';
-    return 'N/A';
+    if (n === 1) return _mapT('Rural');
+    if (n === 2) return _mapT('Urban Clusters');
+    if (n === 3) return _mapT('Urban Centers');
+    return _mapT('N/A');
 }
 
-function _buildTileTooltip(feature) {
+function _buildTileTooltip(feature, perHazardProbs) {
     var p = feature.properties || {};
     var G = function(name) { return _getP(p, name); };
     // Admin layer ids are hazard-suffixed (aots-admin-layer-wind / -gust /
     // -river / -rain) since hazards became independently toggleable layers —
     // match by prefix rather than an exact id that no longer exists.
     var isAdmin = !!(feature.layer && feature.layer.id && feature.layer.id.indexOf('aots-admin-layer') === 0);
+
+    // Real bug found+fixed here (2026-08, user-reported: "it should be
+    // 'tropical cyclone' instead of hurricane"), then extended into a real
+    // feature (user-requested: show each active hazard's own probability
+    // PLUS a combined one): this label used to hardcode "Hurricane Impact
+    // Probability" regardless of which hazard's data was actually shown,
+    // and only ever fetched ONE hazard even when several were active
+    // (fixed wind > gust > river > rain priority). `perHazardProbs`
+    // (optional — see _combineHazardTileProps/_visibleRasterHazards) is
+    // now passed by the caller whenever more than one hazard is active for
+    // this tile, so BOTH the combined figure (this feature's own real
+    // MAX-combined `p.PROBABILITY`) and each hazard's own individual
+    // number render, instead of silently showing only whichever hazard
+    // happened to win the old fixed priority order.
+    var hazardMatch = feature.layer && feature.layer.id && feature.layer.id.match(/^aots-(?:tiles|admin)-layer-(\w+)/);
+    var hazard = hazardMatch ? hazardMatch[1] : 'wind';
+    var _HAZARD_TT_LABELS = { wind: 'Tropical Cyclone', gust: 'Gust', river: 'River Flooding', rain: 'Rainfall' };
+    var hazardLabel = _mapT(_HAZARD_TT_LABELS[hazard] || _HAZARD_TT_LABELS.wind);
 
     var prob   = G('PROBABILITY') || 0;
     var pop    = G('POPULATION');
@@ -194,7 +244,6 @@ function _buildTileTooltip(feature) {
     var blt    = G('BUILT_SURFACE_M2');
     var smod   = G('SMOD_CLASS');
     var rwi    = G('RWI');
-    var cci    = G('CCI_CHILDREN');
     var modpov = G('MODERATE_POVERTY_PROB');
     var sevpov = G('SEVERE_POVERTY_PROB');
 
@@ -228,47 +277,101 @@ function _buildTileTooltip(feature) {
         return ' <span style="color:#dc143c;font-size:0.88em;">(~' + _fmtN(exp) + ')</span>';
     };
 
+    // Title colors stay per-feature-type (meaningful visual differentiation
+    // between admin/tile layers, not an inconsistency) — only the BODY text
+    // scale below was actually inconsistent (see _AOTS_TT_* tokens' own
+    // comment) and gets normalized here.
     var titleColor = isAdmin ? '#2e7d32' : '#4169E1';
-    var titleLabel = isAdmin ? 'Region Statistics' : 'Tile Statistics';
+    var titleLabel = _mapT(isAdmin ? 'Region Statistics' : 'Tile Statistics');
     var name = G('NAME') || '';
 
     var _esc = function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
     var html = '<div style="font-size:13px;font-weight:600;color:' + titleColor + ';margin-bottom:3px;">' + titleLabel + '</div>';
-    if (name) html += '<div style="font-size:12px;color:#333;font-weight:500;margin-bottom:4px;">' + _esc(name) + '</div>';
+    if (name) html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:500;margin-bottom:4px;">' + _esc(name) + '</div>';
 
     if (prob > 0) {
-        html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">Expected Impact:</div>'
-              + '<div style="font-size:11px;color:#555;">Hurricane Impact Probability: ' + _fmtPct(prob) + '</div>';
-        html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
+        html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">' + _mapT('Expected Impact') + ':</div>';
+        if (perHazardProbs && perHazardProbs.length > 1) {
+            // Multiple hazards active for this tile — show the real
+            // MAX-combined figure first, then each hazard's own real
+            // number as a sub-row (same visual convention the age-band
+            // rows below already use for "detail under a bold parent").
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+            perHazardProbs.forEach(function(hp) {
+                var lbl = _mapT(_HAZARD_TT_LABELS[hp.hazard] || hp.hazard);
+                html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + lbl + ': ' + _fmtPct(hp.prob) + '</div>';
+            });
+        } else {
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + hazardLabel + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+        }
+        html += '<hr style="margin:5px 0;border:none;border-top:1px solid ' + _AOTS_TT_DIVIDER + ';">';
     }
     if (pin !== null && pin !== undefined && pin > 0) {
-        html += '<div style="font-size:11px;color:#f59f00;font-weight:600;margin-top:4px;">In Need (across all wind speeds):</div>'
-              + '<div style="font-size:11px;color:#f59f00;">Population: ' + _fmtN(pin) + '</div>';
+        html += '<div style="font-size:11px;color:#f59f00;font-weight:600;margin-top:4px;">' + _mapT('In Need (across all wind speeds)') + ':</div>'
+              + '<div style="font-size:11px;color:#f59f00;">' + _mapT('Population') + ': ' + _fmtN(pin) + '</div>';
         if (chin !== null && chin !== undefined && chin > 0) {
-            html += '<div style="font-size:11px;color:#f59f00;">Children (total): ' + _fmtN(chin) + '</div>';
+            html += '<div style="font-size:11px;color:#f59f00;">' + _mapT('Children (total)') + ': ' + _fmtN(chin) + '</div>';
         }
-        html += '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">';
+        html += '<hr style="margin:5px 0;border:none;border-top:1px solid ' + _AOTS_TT_DIVIDER + ';">';
     }
 
-    html += '<div style="font-size:11px;color:#777;margin-top:4px;"><strong>' + (isAdmin ? 'Region' : 'Tile') + ' Base Data:</strong></div>'
-          + '<div style="font-size:11px;color:#555;">Population: ' + _fmtN(pop) + fmtE(e_pop, pop, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Children (total): ' + (children !== null ? _fmtN(children) : 'N/A') + fmtE(null, children, prob) + '</div>'
-          + '<div style="font-size:10px;color:#888;padding-left:10px;font-style:italic;">Age 0–4: ' + _fmtN(inf) + fmtE(e_inf, inf, prob) + '</div>'
-          + '<div style="font-size:10px;color:#888;padding-left:10px;font-style:italic;">Age 5–14: ' + _fmtN(sch) + fmtE(e_sch, sch, prob) + '</div>'
-          + '<div style="font-size:10px;color:#888;padding-left:10px;font-style:italic;">Age 15–19: ' + _fmtN(ado) + fmtE(e_ado, ado, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Schools: ' + _fmtN(n_scl) + fmtE(e_scl, n_scl, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Health Centers: ' + _fmtN(n_hcs) + fmtE(e_hcs, n_hcs, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Shelters: ' + _fmtN(n_shlt) + fmtE(e_shlt, n_shlt, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">WASH Facilities: ' + _fmtN(n_wash) + fmtE(e_wash, n_wash, prob) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Built Surface: ' + (blt && blt > 0 ? _fmtN(blt) + ' m²' + fmtE(e_blt, blt, prob) : 'N/A') + '</div>'
-          + '<hr style="margin:5px 0;border:none;border-top:1px solid #ddd;">'
-          + '<div style="font-size:11px;color:#555;">CCI: ' + _fmtDec(cci) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Settlement: ' + (smod !== null ? _smodLabel(smod) : 'N/A') + '</div>'
-          + '<div style="font-size:11px;color:#555;">Wealth Index (RWI): ' + _fmtDec(rwi) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Moderate Child Poverty: ' + _fmtPct(modpov) + '</div>'
-          + '<div style="font-size:11px;color:#555;">Severe Child Poverty: ' + _fmtPct(sevpov) + '</div>';
+    html += '<div style="font-size:11px;color:' + _AOTS_TT_LABEL + ';margin-top:4px;"><strong>' + _mapT(isAdmin ? 'Region' : 'Tile') + ' ' + _mapT('Base Data') + ':</strong></div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Population') + ': ' + _fmtN(pop) + fmtE(e_pop, pop, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Children (total)') + ': ' + (children !== null ? _fmtN(children) : _mapT('N/A')) + fmtE(null, children, prob) + '</div>'
+          + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + _mapT('Age 0–4') + ': ' + _fmtN(inf) + fmtE(e_inf, inf, prob) + '</div>'
+          + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + _mapT('Age 5–14') + ': ' + _fmtN(sch) + fmtE(e_sch, sch, prob) + '</div>'
+          + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + _mapT('Age 15–19') + ': ' + _fmtN(ado) + fmtE(e_ado, ado, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Schools') + ': ' + _fmtN(n_scl) + fmtE(e_scl, n_scl, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Health Centers') + ': ' + _fmtN(n_hcs) + fmtE(e_hcs, n_hcs, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Shelters') + ': ' + _fmtN(n_shlt) + fmtE(e_shlt, n_shlt, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('WASH Facilities') + ': ' + _fmtN(n_wash) + fmtE(e_wash, n_wash, prob) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Built Surface') + ': ' + (blt && blt > 0 ? _fmtN(blt) + ' m²' + fmtE(e_blt, blt, prob) : _mapT('N/A')) + '</div>'
+          + '<hr style="margin:5px 0;border:none;border-top:1px solid ' + _AOTS_TT_DIVIDER + ';">'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Settlement') + ': ' + (smod !== null ? _smodLabel(smod) : _mapT('N/A')) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Wealth Index (RWI)') + ': ' + _fmtDec(rwi) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Moderate Child Poverty') + ': ' + _fmtPct(modpov) + '</div>'
+          + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Severe Child Poverty') + ': ' + _fmtPct(sevpov) + '</div>';
 
     return html;
+}
+
+// Real gap found+fixed here (2026-08, user-reported: "there are no
+// tooltips for the raw layers still... on the map directly, like we had
+// already for the storms"): the two GLOBAL, country-independent raw
+// hazard rasters (river-extent/precip-rate) had NO hover mechanism at all
+// — _buildTileTooltip above is built entirely around the per-country
+// impact-tile schema (population/schools/etc.), which these two layers
+// don't have (see /tile-value/river-raw and /tile-value/precip-raw in
+// services/tile_server.py — {probability, rp_tier} / {mean_mm,
+// probability} only), so a separate, much simpler tooltip is built here
+// instead of trying to force them through that schema.
+function _buildRawLayerTooltip(rawLayer, props, rawConfig) {
+    var _esc = function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+    if (rawLayer === 'river') {
+        var rpTier = (props.rp_tier || (rawConfig && rawConfig.rp_tier) || 'rp10').toUpperCase();
+        var prob = props.probability;
+        return '<div style="font-size:13px;font-weight:600;color:#00ACC1;margin-bottom:3px;">' + _mapT('River Flooding') + '</div>'
+             + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Return period') + ': ' + _esc(rpTier) + '</div>'
+             + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Member agreement') + ': ' + _fmtPct(prob) + '</div>'
+             + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real GloFAS discharge exceeding the return-period threshold, matched against JRC\'s historical flood-extent map — not a simulated depth/extent for this specific event.') + '</div>';
+    }
+    // precip
+    var lines = ['<div style="font-size:13px;font-weight:600;color:#3CB34B;margin-bottom:3px;">' + _mapT('Rainfall') + '</div>'];
+    var windowH = (rawConfig && rawConfig.window_h != null) ? rawConfig.window_h : 6;
+    if (props.mean_mm !== null && props.mean_mm !== undefined) {
+        lines.push('<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Ensemble-mean rate') + ': ' + Number(props.mean_mm).toFixed(1) + 'mm / ' + windowH + 'h</div>');
+    }
+    if (props.probability !== null && props.probability !== undefined) {
+        var thresholdMm = (rawConfig && rawConfig.threshold_mm != null) ? rawConfig.threshold_mm : 10.0;
+        // Real gap found+fixed here (2026-08, user-reported): "100mm" alone
+        // is ambiguous without the accumulation window it's measured over
+        // (100mm over 6h is a very different storm than 100mm over 120h) —
+        // now states the same "Xmm / Yh" window the mean-rate line above
+        // already includes, instead of a bare threshold with no period.
+        lines.push('<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Probability') + ' >' + thresholdMm + 'mm / ' + windowH + 'h: ' + _fmtPct(props.probability) + '</div>');
+    }
+    lines.push('<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real forecasted precipitation — a flood-risk indicator, not a flood forecast.') + '</div>');
+    return lines.join('');
 }
 
 var _aots_tooltip_el = null;
@@ -307,20 +410,124 @@ function _AOTS_ADMIN_LAYER_IDS(map) {
         .filter(function (id) { return !!map.getLayer(id); });
 }
 
-// Several hazards can be visible at once (independently toggleable), but the
-// /tile-value raster hover lookup below is a single fetch — pick the first
-// visible hazard in this fixed priority order (wind > gust > river > rain)
-// deterministically rather than guessing "the" hazard from a single ambient
-// config field that no longer exists post-redesign.
-function _firstVisibleRasterHazard(map, config) {
+// Several hazards can be visible at once (independently toggleable) — real
+// feature added here (2026-08, user-requested, after fixing the "always
+// says Hurricane/wind" mislabeling bug): this used to return only the
+// FIRST visible hazard in a fixed wind > gust > river > rain priority
+// order, so whenever Sustained Wind was active alongside River Flooding/
+// Rainfall, the hover tooltip only ever showed wind's own data — flood's
+// own real probability for that exact tile was silently never fetched or
+// shown at all. Now returns EVERY visible per-country hazard (same fixed
+// order, for stable display order) so the caller can fetch all of them and
+// show each one's own real probability plus a combined figure — see
+// _combineHazardTileProps below.
+function _visibleRasterHazards(map, config) {
+    var out = [];
     for (var i = 0; i < _AOTS_HAZARDS.length; i++) {
         var hz = _AOTS_HAZARDS[i];
         var id = 'aots-tiles-layer-' + hz;
         if (map.getLayer(id) && map.getLayoutProperty(id, 'visibility') === 'visible') {
-            return hz;
+            out.push(hz);
         }
     }
-    return null;
+    return out;
+}
+
+// Base/context fields — identical regardless of which hazard's own query
+// returned them (population/facility counts describe who lives in this
+// tile, not a hazard-specific quantity), so combining just means "fill in
+// from whichever hazard's response happens to have them", not a real
+// MAX/SUM decision.
+var _AOTS_TT_BASE_FIELDS = [
+    'NAME', 'POPULATION', 'INFANT_POPULATION', 'SCHOOL_AGE_POPULATION', 'ADOLESCENT_POPULATION',
+    'BUILT_SURFACE_M2', 'SMOD_CLASS', 'RWI', 'MODERATE_POVERTY_PROB', 'SEVERE_POVERTY_PROB',
+    'NUM_SCHOOLS', 'NUM_HCS', 'NUM_SHELTERS', 'NUM_WASH',
+];
+// PROBABILITY + every real "expected impact" (E_*) field — genuinely
+// hazard-specific, real MAX-combined below (same "MAX not SUM avoids
+// double-counting the same population cell just because two active
+// hazards both threaten it" principle pages/map_shell_concept.py's own
+// _fetch_real_combined_tile_totals_uncached already uses server-side for
+// the country-wide Impact Summary total — applied here at single-tile
+// granularity instead, client-side, since each hazard's own tile-value
+// response is already fetched individually).
+var _AOTS_TT_E_FIELDS = [
+    'E_POPULATION', 'E_INFANT_POPULATION', 'E_SCHOOL_AGE_POPULATION', 'E_ADOLESCENT_POPULATION',
+    'E_BUILT_SURFACE_M2', 'E_NUM_SCHOOLS', 'E_NUM_HCS', 'E_NUM_SHELTERS', 'E_NUM_WASH',
+];
+
+// Real feature added here (2026-08, user-requested): combines multiple
+// per-hazard tile-value responses ({hazard, props} pairs) into ONE props
+// object (real MAX-combined PROBABILITY/E_* fields, base fields filled in
+// from whichever hazard has them) plus a perHazardProbs list (each
+// hazard's OWN real probability, for the individual breakdown rows
+// _buildTileTooltip renders under the combined figure). People/Children In
+// Need stays wind-only (real limitation — no vulnerability pipeline exists
+// for gust/river/rain, same as the country-level function's own
+// docstring), only ever taken from wind's own result.
+function _combineHazardTileProps(hazardResults) {
+    var combined = {};
+    var perHazardProbs = [];
+    hazardResults.forEach(function(r) {
+        if (!r || !r.props) return;
+        var p = r.props;
+        var prob = _getP(p, 'PROBABILITY');
+        if (prob !== null && prob !== undefined) perHazardProbs.push({ hazard: r.hazard, prob: prob });
+
+        _AOTS_TT_BASE_FIELDS.forEach(function(f) {
+            if (combined[f] === undefined) {
+                var v = _getP(p, f);
+                if (v !== null) combined[f] = v;
+            }
+        });
+
+        if (prob !== null && prob !== undefined && (combined.PROBABILITY === undefined || prob > combined.PROBABILITY)) {
+            combined.PROBABILITY = prob;
+        }
+        _AOTS_TT_E_FIELDS.forEach(function(f) {
+            var v = _getP(p, f);
+            if (v === null || v === undefined) return;
+            if (combined[f] === undefined || v > combined[f]) combined[f] = v;
+        });
+
+        if (r.hazard === 'wind') {
+            var pin = _getP(p, 'E_PEOPLE_IN_NEED');
+            var chin = _getP(p, 'E_CHILDREN_IN_NEED');
+            if (pin !== null && pin !== undefined) combined.E_PEOPLE_IN_NEED = pin;
+            if (chin !== null && chin !== undefined) combined.E_CHILDREN_IN_NEED = chin;
+        }
+    });
+    return { combinedProps: combined, perHazardProbs: perHazardProbs };
+}
+
+// Which of the two GLOBAL raw rasters (see _AOTS_GLOBAL_RAW_IDS) are
+// currently visible — these are a completely separate rendering system
+// from the per-country hazard tiles above (no `config.country` dependency
+// at all), so this is checked as its own fallback in the hover handler
+// rather than folded into _visibleRasterHazards.
+//
+// Real bug found+fixed here (2026-08, user-reported: hovering the BAVI
+// demo scenario's own raster — which deliberately shows BOTH raw layers
+// at once, see _DEMO_SCENARIOS' own comment — never showed a tooltip):
+// this used to return a single layer name, always preferring 'river' over
+// 'precip' whenever BOTH were visible, regardless of which one actually
+// had real data under the cursor. River's flood-extent coverage is sparse
+// (most pixels return {} even where precip genuinely has data right
+// there), so a hover over a precip-only spot silently fell through to
+// "river returned nothing" and hid the tooltip — even though the cursor
+// was sitting on real, visibly-painted rain data the whole time. Now
+// returns EVERY visible raw layer so the caller can query all of them and
+// show whichever (or both) actually have data at this point.
+function _visibleRawLayers(map) {
+    var ids = _AOTS_GLOBAL_RAW_IDS;
+    var out = [];
+    if (map.getLayer(ids.riverLayer) && map.getLayoutProperty(ids.riverLayer, 'visibility') === 'visible') {
+        out.push('river');
+    }
+    if (map.getLayer(ids.precipLayer) && map.getLayoutProperty(ids.precipLayer, 'visibility') === 'visible') {
+        out.push('precip');
+    }
+    return out;
 }
 
 function _setupHoverTooltips(lMap) {
@@ -331,62 +538,74 @@ function _setupHoverTooltips(lMap) {
     var _pending_request = null;
     var _last_lon = null;
     var _last_lat = null;
+    // Real perf bug found+fixed here (2026-08, user-reported: "it's very
+    // slow"): the network-lookup half of this handler (raster tile /
+    // raw-layer fetches) used to fire on every single mousemove tick that
+    // cleared the tiny 0.001°-movement threshold — for a fast-moving mouse
+    // that's easily 10-20+ concurrent fetches/sec, most of them immediately
+    // superseded and thrown away, but still real network+JSON-parse work
+    // piling up. _hoverDebounceTimer defers the actual network lookup
+    // until the mouse has been briefly still (80ms) — long enough to feel
+    // instant to a human hovering, short enough to filter out fetches for
+    // positions the cursor has already moved past. The cheap, local,
+    // no-network admin-vector-layer check stays fully immediate (no
+    // debounce) since queryRenderedFeatures has no network cost at all.
+    var _hoverDebounceTimer = null;
+    var _HOVER_DEBOUNCE_MS = 80;
 
-    lMap.on('mousemove', function(e) {
+    var _positionTooltipEl = function(clientX, clientY) {
+        var x = clientX + 16;
+        var y = clientY - 10;
+        var w = el.offsetWidth || 270;
+        var h = el.offsetHeight || 220;
+        if (x + w > window.innerWidth - 10) x = clientX - w - 10;
+        if (y + h > window.innerHeight - 10) y = window.innerHeight - h - 10;
+        el.style.left = x + 'px';
+        el.style.top  = y + 'px';
+    };
+
+    // Admin vector-layer check — several hazards' own admin layers
+    // (aots-admin-layer-{hazard}) can render a feature at the SAME queried
+    // point simultaneously, same real multi-hazard combine as the network
+    // tile-value path above, just synchronous/local (no fetch needed —
+    // queryRenderedFeatures already returns each hazard's own properties).
+    var _showAdminTooltip = function(adminFeatures, clientX, clientY) {
+        var hazardResults = adminFeatures.map(function(f) {
+            var m = f.layer && f.layer.id && f.layer.id.match(/^aots-admin-layer-(\w+)/);
+            return { hazard: m ? m[1] : 'wind', props: f.properties };
+        });
+        var combined = _combineHazardTileProps(hazardResults);
+        var topHazard = hazardResults.reduce(function(best, h) {
+            return (!best || (_getP(h.props, 'PROBABILITY') || 0) > (_getP(best.props, 'PROBABILITY') || 0)) ? h : best;
+        }, null).hazard;
+        var feature = { properties: combined.combinedProps, layer: { id: 'aots-admin-layer-' + topHazard } };
+        el.innerHTML = _buildTileTooltip(feature, combined.perHazardProbs);
+        el.style.display = 'block';
+        _positionTooltipEl(clientX, clientY);
+    };
+
+    // The network-lookup half of the hover handler — deferred via
+    // _hoverDebounceTimer below, never called directly from 'mousemove'.
+    function _runNetworkHoverLookup(lon, lat, clientX, clientY) {
         var map = window._aots_maplibre;
         var config = window._aots_tile_config;
-        if (!map || !window._aots_maplibre_ready || !config || !config.country) {
-            el.style.display = 'none';
-            return;
-        }
-
-        var lon = e.latlng.lng;
-        var lat = e.latlng.lat;
-
-        // Debounce: skip if barely moved
-        if (_last_lon !== null && Math.abs(lon - _last_lon) < 0.001 && Math.abs(lat - _last_lat) < 0.001) {
-            // Still check the admin layer via queryRenderedFeatures (vector layer, works fine)
-            var pt = e.containerPoint;
-            var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
-            if (adminFeatures && adminFeatures.length > 0) {
-                el.innerHTML = _buildTileTooltip(adminFeatures[0]);
-                el.style.display = 'block';
-                var x = e.originalEvent.clientX + 16;
-                var y = e.originalEvent.clientY - 10;
-                var w = el.offsetWidth || 270;
-                var h = el.offsetHeight || 220;
-                if (x + w > window.innerWidth - 10) x = e.originalEvent.clientX - w - 10;
-                if (y + h > window.innerHeight - 10) y = window.innerHeight - h - 10;
-                el.style.left = x + 'px';
-                el.style.top  = y + 'px';
-            }
-            return;
-        }
-        _last_lon = lon; _last_lat = lat;
-
-        // Check admin vector layer first (queryRenderedFeatures works for vector layers)
-        var pt = e.containerPoint;
-        var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
-        if (adminFeatures && adminFeatures.length > 0) {
-            el.innerHTML = _buildTileTooltip(adminFeatures[0]);
-            el.style.display = 'block';
-            var x = e.originalEvent.clientX + 16;
-            var y = e.originalEvent.clientY - 10;
-            var w = el.offsetWidth || 270;
-            var h = el.offsetHeight || 220;
-            if (x + w > window.innerWidth - 10) x = e.originalEvent.clientX - w - 10;
-            if (y + h > window.innerHeight - 10) y = window.innerHeight - h - 10;
-            el.style.left = x + 'px';
-            el.style.top  = y + 'px';
-            return;
-        }
+        var rawConfig = window._aots_global_raw_config;
 
         // For the raster tile layer, use the API endpoint. Several hazards can be
-        // visible simultaneously — pick the first one actually showing a raster
-        // layer right now (fixed wind > gust > river > rain priority, see
-        // _firstVisibleRasterHazard's own comment).
-        var hoverHazard = _firstVisibleRasterHazard(map, config);
-        if (!hoverHazard) {
+        // visible simultaneously — real feature added here (2026-08,
+        // user-requested): query EVERY visible hazard's own tile-value in
+        // parallel and combine them (see _combineHazardTileProps), instead
+        // of the old fixed wind > gust > river > rain priority that only
+        // ever fetched/showed ONE. Per-country hazard tiles need a
+        // selected country; the two GLOBAL raw rasters (river-raw/precip-raw
+        // — see _visibleRawLayers) don't, and are the normal Global-mode
+        // state (real gap found+fixed here, 2026-08: this whole hover
+        // mechanism used to bail out entirely whenever no country was
+        // selected, so those two layers never had ANY hover tooltip, on
+        // the map, at all).
+        var hoverHazards = (config && config.country) ? _visibleRasterHazards(map, config) : [];
+        var rawLayers = hoverHazards.length === 0 ? _visibleRawLayers(map) : [];
+        if (hoverHazards.length === 0 && rawLayers.length === 0) {
             el.style.display = 'none';
             return;
         }
@@ -397,43 +616,144 @@ function _setupHoverTooltips(lMap) {
         var req = { _cancelled: false };
         _pending_request = req;
 
-        var hoverParts = _hazardUrlParts(hoverHazard, config);
-        var tilesLayerId = 'aots-tiles-layer-' + hoverHazard;
-        var url = (config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001')
-            + '/tile-value/'
-            + encodeURIComponent(config.country) + '/'
-            + encodeURIComponent(hoverParts.storm) + '/'
-            + encodeURIComponent(hoverParts.forecast_date)
-            + '?lon=' + lon.toFixed(6)
-            + '&lat=' + lat.toFixed(6)
-            + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
-            + hoverParts.qs;
+        var base = ((hoverHazards.length > 0 ? config : rawConfig) && (hoverHazards.length > 0 ? config : rawConfig).tile_server_url != null)
+            ? (hoverHazards.length > 0 ? config : rawConfig).tile_server_url : 'http://localhost:8001';
 
-        fetch(url)
-            .then(function(r) { return r.json(); })
-            .then(function(props) {
+        if (hoverHazards.length > 0) {
+            var hazardFetches = hoverHazards.map(function(hz) {
+                var hoverParts = _hazardUrlParts(hz, config);
+                var url = base + '/tile-value/'
+                    + encodeURIComponent(config.country) + '/'
+                    + encodeURIComponent(hoverParts.storm) + '/'
+                    + encodeURIComponent(hoverParts.forecast_date)
+                    + '?lon=' + lon.toFixed(6)
+                    + '&lat=' + lat.toFixed(6)
+                    + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+                    + hoverParts.qs;
+                return fetch(url).then(function(r) { return r.json(); })
+                    .then(function(props) { return (props && Object.keys(props).length > 0) ? { hazard: hz, props: props } : null; })
+                    .catch(function() { return null; });
+            });
+            Promise.all(hazardFetches).then(function(results) {
                 if (req._cancelled) return;
-                if (!props || Object.keys(props).length === 0) {
+                var hits = results.filter(Boolean);
+                if (hits.length === 0) {
                     el.style.display = 'none';
                     return;
                 }
+                var combined = _combineHazardTileProps(hits);
                 // Build a fake feature object compatible with _buildTileTooltip
-                var feature = { properties: props, layer: { id: tilesLayerId } };
-                el.innerHTML = _buildTileTooltip(feature);
+                // — layer id tags it with the SINGLE highest-probability
+                // hazard (for the single-hazard label path / title-color
+                // fallback), while perHazardProbs drives the real
+                // multi-hazard breakdown whenever more than one hit.
+                var topHazard = hits.reduce(function(best, h) {
+                    return (!best || (_getP(h.props, 'PROBABILITY') || 0) > (_getP(best.props, 'PROBABILITY') || 0)) ? h : best;
+                }, null).hazard;
+                var feature = { properties: combined.combinedProps, layer: { id: 'aots-tiles-layer-' + topHazard } };
+                el.innerHTML = _buildTileTooltip(feature, combined.perHazardProbs);
                 el.style.display = 'block';
-                var x = e.originalEvent.clientX + 16;
-                var y = e.originalEvent.clientY - 10;
-                var w = el.offsetWidth || 270;
-                var h = el.offsetHeight || 220;
-                if (x + w > window.innerWidth - 10) x = e.originalEvent.clientX - w - 10;
-                if (y + h > window.innerHeight - 10) y = window.innerHeight - h - 10;
-                el.style.left = x + 'px';
-                el.style.top  = y + 'px';
-            })
-            .catch(function() { el.style.display = 'none'; });
+                _positionTooltipEl(clientX, clientY);
+            });
+            return;
+        }
+
+        // Real bug found+fixed here (2026-08, user-reported: hovering the
+        // BAVI demo scenario — which deliberately shows BOTH raw layers at
+        // once — never showed a tooltip): query EVERY visible raw layer in
+        // parallel and combine whichever ones actually have real data at
+        // this point, instead of picking one layer up front and giving up
+        // silently when THAT ONE happens to have no coverage here (river's
+        // flood-extent data is sparse — most pixels return {} even where
+        // precip genuinely has real data right there).
+        var fetches = rawLayers.map(function(layer) {
+            var url = null;
+            if (layer === 'river' && rawConfig && rawConfig.river_forecast_time) {
+                url = base + '/tile-value/river-raw/' + encodeURIComponent(rawConfig.river_forecast_time)
+                    + '?lon=' + lon.toFixed(6) + '&lat=' + lat.toFixed(6)
+                    + '&rp_tier=' + encodeURIComponent(rawConfig.rp_tier || 'rp10');
+            } else if (layer === 'precip' && rawConfig && rawConfig.precip_forecast_time) {
+                // mode=rawConfig.rain_mode — real bug found+fixed here
+                // (2026-08, user-reported: "still showing precipitation
+                // tool-tips everywhere if there is nothing"): the raster
+                // only ever paints ONE of mean/probability at a time (see
+                // precip_raw_tile_value's own docstring for the full
+                // "why" — a real-but-unremarkable mean rate could clear
+                // its own low bar while the map was actually painting,
+                // and showing nothing for, Probability mode).
+                url = base + '/tile-value/precip-raw/' + encodeURIComponent(rawConfig.precip_forecast_time)
+                    + '?lon=' + lon.toFixed(6) + '&lat=' + lat.toFixed(6)
+                    + '&mode=' + encodeURIComponent(rawConfig.rain_mode || 'mean')
+                    + '&window_h=' + (rawConfig.window_h != null ? rawConfig.window_h : 6)
+                    + '&threshold_mm=' + (rawConfig.threshold_mm != null ? rawConfig.threshold_mm : 10.0);
+            }
+            if (!url) return Promise.resolve(null);
+            return fetch(url).then(function(r) { return r.json(); })
+                .then(function(props) { return (props && Object.keys(props).length > 0) ? { layer: layer, props: props } : null; })
+                .catch(function() { return null; });
+        });
+
+        Promise.all(fetches).then(function(results) {
+            if (req._cancelled) return;
+            var hits = results.filter(Boolean);
+            if (hits.length === 0) {
+                el.style.display = 'none';
+                return;
+            }
+            el.innerHTML = hits.map(function(hit) { return _buildRawLayerTooltip(hit.layer, hit.props, rawConfig); }).join('<hr style="margin:5px 0;border:none;border-top:1px solid ' + _AOTS_TT_DIVIDER + ';">');
+            el.style.display = 'block';
+            _positionTooltipEl(clientX, clientY);
+        });
+    }
+
+    lMap.on('mousemove', function(e) {
+        var map = window._aots_maplibre;
+        var config = window._aots_tile_config;
+        if (!map || !window._aots_maplibre_ready) {
+            el.style.display = 'none';
+            return;
+        }
+
+        var lon = e.latlng.lng;
+        var lat = e.latlng.lat;
+        var clientX = e.originalEvent.clientX;
+        var clientY = e.originalEvent.clientY;
+
+        // Debounce: skip if barely moved
+        if (_last_lon !== null && Math.abs(lon - _last_lon) < 0.001 && Math.abs(lat - _last_lat) < 0.001) {
+            // Still check the admin layer via queryRenderedFeatures (vector layer, works fine)
+            if (config && config.country) {
+                var pt = e.containerPoint;
+                var adminFeatures = map.queryRenderedFeatures([pt.x, pt.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
+                if (adminFeatures && adminFeatures.length > 0) {
+                    _showAdminTooltip(adminFeatures, clientX, clientY);
+                }
+            }
+            return;
+        }
+        _last_lon = lon; _last_lat = lat;
+
+        // Check admin vector layer first (queryRenderedFeatures works for
+        // vector layers) — country-scoped only, same as before. Stays
+        // immediate/undebounced — no network cost.
+        if (config && config.country) {
+            var pt2 = e.containerPoint;
+            var adminFeatures2 = map.queryRenderedFeatures([pt2.x, pt2.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
+            if (adminFeatures2 && adminFeatures2.length > 0) {
+                _showAdminTooltip(adminFeatures2, clientX, clientY);
+                return;
+            }
+        }
+
+        if (_hoverDebounceTimer) { clearTimeout(_hoverDebounceTimer); }
+        _hoverDebounceTimer = setTimeout(function() {
+            _runNetworkHoverLookup(lon, lat, clientX, clientY);
+        }, _HOVER_DEBOUNCE_MS);
     });
 
     lMap.on('mouseout', function() {
+        if (_hoverDebounceTimer) { clearTimeout(_hoverDebounceTimer); _hoverDebounceTimer = null; }
+        if (_pending_request) { _pending_request._cancelled = true; }
         _getTooltipEl().style.display = 'none';
     });
 }
@@ -982,6 +1302,9 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
             'E_num_wash': 'E_NUM_WASH',
             'E_people_in_need': 'E_PEOPLE_IN_NEED',
             'E_children_in_need': 'E_CHILDREN_IN_NEED',
+            'E_infant_in_need': 'E_INFANT_IN_NEED',
+            'E_school_age_in_need': 'E_SCHOOL_AGE_IN_NEED',
+            'E_adolescent_in_need': 'E_ADOLESCENT_IN_NEED',
             'cci_children': 'CCI_CHILDREN',
             'E_cci_children': 'E_CCI_CHILDREN',
         };
@@ -1205,14 +1528,30 @@ window.applyGlobalRawConfig = applyGlobalRawConfig;
 window._aots_map_tiles_loading = false;
 function _initGlobalLoadingIndicator() {
     var badge = document.getElementById('ms-global-loading-indicator');
-    var root = document.getElementById('react-entry-point');
-    if (!badge || !root) {
+    var mountCheck = document.getElementById('react-entry-point');
+    if (!badge || !mountCheck) {
         // Layout not mounted yet on first DOMContentLoaded fire — retry
         // shortly rather than silently giving up (same "poll until ready"
         // pattern initMaplibre already uses above for the map container).
         setTimeout(_initGlobalLoadingIndicator, 200);
         return;
     }
+    // Real bug found+fixed here (2026-08, user-reported: "when a pop-up is
+    // loading, why do the loading indicators not appear?"): this used to
+    // scope both the querySelector AND the MutationObserver to just
+    // #react-entry-point's own subtree. dmc.Modal/dmc.Popover/dmc.Tooltip
+    // all render their content through a Mantine Portal, which by default
+    // (no withinPortal=False anywhere on this page's Modals) appends
+    // directly to <body> as a SIBLING of #react-entry-point, not a
+    // descendant of it. Dash still inserts its `_dash-loading-callback`
+    // marker on the ancestor of whatever DOM node owns the loading
+    // Output — for the Hazard Contribution popup and the Full Impact
+    // Breakdown modal, that ancestor is inside the portaled subtree, so it
+    // was structurally invisible to a querySelector/observer scoped to
+    // #react-entry-point alone, no matter how long the real callback took.
+    // Watching document.body instead covers both #react-entry-point AND
+    // every Mantine portal mounted alongside it.
+    var root = document.body;
     var check = function () {
         var isLoading = !!root.querySelector('._dash-loading-callback')
             || !!window._aots_map_tiles_loading

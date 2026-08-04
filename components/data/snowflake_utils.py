@@ -1612,12 +1612,22 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
 @ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def _get_country_totals_cached(country: str) -> dict:
     try:
+        # Real bug found+fixed here (2026-08): summing
+        # COALESCE(INFANT_POPULATION,0) + COALESCE(SCHOOL_AGE_POPULATION,0) +
+        # COALESCE(ADOLESCENT_POPULATION,0) inside one row-level expression
+        # collapsed NULLs to 0 BEFORE the outer SUM ever ran — a country
+        # whose age-breakdown columns are 100% NULL (live-verified: real for
+        # Curaçao's own E_ADOLESCENT_POPULATION) still produced a real SQL
+        # 0.0, indistinguishable from a genuine zero. Three separate SUMs
+        # let SQL's own NULL-skipping SUM propagate a true NULL when a whole
+        # column is empty for this country, while still correctly summing
+        # whichever age bands DO have real per-tile data (see below).
         query = """
         SELECT
-            SUM(POPULATION)                                                          AS total_population,
-            SUM(COALESCE(INFANT_POPULATION, 0)
-              + COALESCE(SCHOOL_AGE_POPULATION, 0)
-              + COALESCE(ADOLESCENT_POPULATION, 0))                                  AS total_children
+            SUM(POPULATION)              AS total_population,
+            SUM(INFANT_POPULATION)       AS total_infant,
+            SUM(SCHOOL_AGE_POPULATION)   AS total_school_age,
+            SUM(ADOLESCENT_POPULATION)   AS total_adolescent
         FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT
         WHERE COUNTRY = %s
         """
@@ -1625,9 +1635,15 @@ def _get_country_totals_cached(country: str) -> dict:
         if df.empty or df.iloc[0]["TOTAL_POPULATION"] is None:
             return {"total_population": None, "total_children": None}
         row = df.iloc[0]
+        # Sum only the age bands with real data for this country — a band
+        # that's genuinely all-NULL is excluded from the sum (not treated
+        # as a real 0), and total_children itself is None only when ALL
+        # THREE bands are missing, not just one.
+        age_parts = [float(row[c]) for c in ("TOTAL_INFANT", "TOTAL_SCHOOL_AGE", "TOTAL_ADOLESCENT")
+                      if pd.notna(row[c])]
         return {
             "total_population": int(row["TOTAL_POPULATION"]) if pd.notna(row["TOTAL_POPULATION"]) else None,
-            "total_children":   int(row["TOTAL_CHILDREN"])   if pd.notna(row["TOTAL_CHILDREN"])   else None,
+            "total_children":   int(sum(age_parts)) if age_parts else None,
         }
     except Exception as e:
         logger.error("Error querying country totals for %s: %s", country, e)
@@ -1751,6 +1767,45 @@ def get_base_wash(country: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+_FACILITY_SOURCE_TABLE = {"schools": "BASE_SCHOOL_MAT", "health": "BASE_HC_MAT",
+                          "shelters": "BASE_SHELTER_MAT", "wash": "BASE_WASH_MAT"}
+
+
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=64)
+def get_facility_source(country: str, layer: str):
+    """Real per-country facility data-source label — SOURCE column added
+    2026-08 to BASE_SCHOOL_MAT/BASE_HC_MAT/BASE_SHELTER_MAT/BASE_WASH_MAT
+    (impact_analysis.py's fetch_schools/fetch_health_centers/fetch_shelters/
+    fetch_wash now populate it: the real custom-CSV source when a custom
+    override is used, else the standard API/OSM source name).
+
+    Returns the most common non-null SOURCE value for this country/layer
+    (should be one consistent value per country in practice — a single
+    country's facility file uses one source, not several), or None when the
+    pipeline hasn't been re-run for this country since the SOURCE column
+    was added (existing rows from before then read back as real NULL, not
+    an error). Callers should fall back to a generic/static description
+    when this returns None, not treat it as a failure.
+    """
+    table = _FACILITY_SOURCE_TABLE.get(layer)
+    if not table:
+        return None
+    try:
+        query = f"""
+        SELECT SOURCE, COUNT(*) AS N
+        FROM AOTS.TC_ECMWF.{table}
+        WHERE COUNTRY = %s AND SOURCE IS NOT NULL
+        GROUP BY SOURCE
+        ORDER BY N DESC
+        LIMIT 1
+        """
+        df = _run_query(query, params=[country])
+        return str(df.iloc[0]["SOURCE"]) if not df.empty else None
+    except Exception as e:
+        logger.warning("Error querying facility source for %s/%s: %s", country, layer, e)
+        return None
+
+
 @ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
     """
@@ -1864,14 +1919,33 @@ def get_alert_emails_for_storm(track_id: str, forecast_time: str = None):
     internal operational metadata, not something to surface in the UI.
     EMAIL_BODY itself is also NOT included here — fetch it separately via
     get_alert_email_body once a specific entry is picked, so listing a
-    storm's emails stays cheap even when EMAIL_BODY is large)."""
+    storm's emails stays cheap even when EMAIL_BODY is large).
+
+    Real bug found+fixed here: ALERT_SENT_LOG's declared PRIMARY KEY
+    (TRACK_ID, FORECAST_TIME, COUNTRY_CODE) is NOT actually enforced by
+    Snowflake (PK/UNIQUE constraints there are informational only, never
+    enforced) — confirmed live, MELISSA/JAM/2025-10-28 00:00:00 alone has
+    20 real duplicate rows, all from repeated ORCHESTRATION test-harness
+    runs over several months (SENT_AT ranging 2026-06-08 through
+    2026-07-02), not 20 genuinely distinct alerts. Without dedup this
+    listed "Jamaica" 20 times for one storm. QUALIFY + ROW_NUMBER keeps
+    only the single most-recently-sent row per (track_id, forecast_time,
+    country_code) — "if there are multiple versions from testing, only use
+    the latest one", per explicit user request."""
     try:
-        sql = "SELECT TRACK_ID, FORECAST_TIME, COUNTRY_CODE, EMAIL_SUBJECT FROM AOTS.TC_ECMWF.ALERT_SENT_LOG WHERE TRACK_ID = %s"
+        sql = (
+            "SELECT TRACK_ID, FORECAST_TIME, COUNTRY_CODE, EMAIL_SUBJECT FROM AOTS.TC_ECMWF.ALERT_SENT_LOG "
+            "WHERE TRACK_ID = %s"
+        )
         params = [track_id]
         if forecast_time:
             sql += " AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s)"
             params.append(forecast_time)
-        sql += " ORDER BY COUNTRY_CODE"
+        sql += (
+            " QUALIFY ROW_NUMBER() OVER "
+            "(PARTITION BY TRACK_ID, FORECAST_TIME, COUNTRY_CODE ORDER BY SENT_AT DESC) = 1"
+            " ORDER BY COUNTRY_CODE"
+        )
         df = _run_query(
             sql,
             params=params,
@@ -1886,12 +1960,21 @@ def get_alert_emails_for_storm(track_id: str, forecast_time: str = None):
 def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
     """Real EMAIL_BODY HTML (a complete standalone <!DOCTYPE html> document)
     for one specific already-sent alert, or None if that exact
-    (track_id, forecast_time, country_code) row doesn't exist. Content is
-    immutable once sent (ALERT_SENT_LOG's own PK), so caching it is safe."""
+    (track_id, forecast_time, country_code) row doesn't exist.
+
+    Real bug found+fixed here: ALERT_SENT_LOG's declared PRIMARY KEY isn't
+    actually enforced by Snowflake (see get_alert_emails_for_storm's own
+    docstring — confirmed live duplicate rows from repeated test-harness
+    runs), so more than one row can genuinely match this exact key. Orders
+    by SENT_AT DESC and takes the first — the single latest real send —
+    rather than whatever arbitrary row order Snowflake happens to return.
+    Content itself is otherwise immutable once sent, so caching the result
+    (by these 3 args) is still safe."""
     try:
         df = _run_query(
             "SELECT EMAIL_BODY FROM AOTS.TC_ECMWF.ALERT_SENT_LOG "
-            "WHERE TRACK_ID = %s AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s) AND COUNTRY_CODE = %s",
+            "WHERE TRACK_ID = %s AND FORECAST_TIME = TO_TIMESTAMP_NTZ(%s) AND COUNTRY_CODE = %s "
+            "ORDER BY SENT_AT DESC LIMIT 1",
             params=[track_id, forecast_time, country_code],
         )
         if df.empty or pd.isna(df['EMAIL_BODY'].iloc[0]):

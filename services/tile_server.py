@@ -20,6 +20,7 @@ Start:
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import gzip
 import io
@@ -410,7 +411,7 @@ def _load_mercator_from_files(code: str, storm: str, forecast_date: str, wt: int
     vuln = _read_file(f"mercator_views/{code}_{storm}_{forecast_date}_{MAT_ZOOM_LEVEL}_vulnerability.csv")
     if vuln is not None and not vuln.empty:
         vuln = _norm_cols(vuln)
-        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED"] if c in vuln.columns]
+        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED", "E_INFANT_IN_NEED", "E_SCHOOL_AGE_IN_NEED", "E_ADOLESCENT_IN_NEED"] if c in vuln.columns]
         if len(keep) > 1:
             base = _merge_no_collision(base, vuln[keep], on="TILE_ID")
 
@@ -450,7 +451,7 @@ def _load_admin_from_files(code: str, storm: str, forecast_date: str, wt: int, a
     vuln = _read_file(f"admin_views/{code}_{storm}_{forecast_date}_admin{admin_level}_vulnerability.csv")
     if vuln is not None and not vuln.empty:
         vuln = _norm_cols(vuln)
-        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED"] if c in vuln.columns]
+        keep = [c for c in ["TILE_ID", "E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED", "E_INFANT_IN_NEED", "E_SCHOOL_AGE_IN_NEED", "E_ADOLESCENT_IN_NEED"] if c in vuln.columns]
         if len(keep) > 1:
             base = _merge_no_collision(base, vuln[keep], on="TILE_ID")
 
@@ -555,6 +556,9 @@ _STATS_COL_MAP = [
     ("E_num_wash",              "E_NUM_WASH",              True),
     ("E_people_in_need",        "E_PEOPLE_IN_NEED",        True),
     ("E_children_in_need",      "E_CHILDREN_IN_NEED",      True),
+    ("E_infant_in_need",        "E_INFANT_IN_NEED",        True),
+    ("E_school_age_in_need",    "E_SCHOOL_AGE_IN_NEED",    True),
+    ("E_adolescent_in_need",    "E_ADOLESCENT_IN_NEED",    True),
     ("cci_children",            "CCI_CHILDREN",            True),
     ("E_cci_children",          "E_CCI_CHILDREN",          True),
 ]
@@ -628,6 +632,9 @@ SELECT
     i.E_NUM_WASH,
     v.E_PEOPLE_IN_NEED,
     v.E_CHILDREN_IN_NEED,
+    v.E_INFANT_IN_NEED,
+    v.E_SCHOOL_AGE_IN_NEED,
+    v.E_ADOLESCENT_IN_NEED,
     c.CCI_CHILDREN,
     c.E_CCI_CHILDREN
 FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
@@ -692,6 +699,9 @@ SELECT
     i.E_NUM_WASH,
     v.E_PEOPLE_IN_NEED,
     v.E_CHILDREN_IN_NEED,
+    v.E_INFANT_IN_NEED,
+    v.E_SCHOOL_AGE_IN_NEED,
+    v.E_ADOLESCENT_IN_NEED,
     c.CCI_CHILDREN,
     c.E_CCI_CHILDREN
 FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
@@ -1112,8 +1122,26 @@ class _DataCache:
         self._admin: dict[tuple, pd.DataFrame] = {}
         self._admin_geoms: dict[tuple, tuple] = {}  # key → (geom_list, strtree, props_list)
         self._facility: dict[tuple, pd.DataFrame] = {}
-        self._load_lock = threading.Lock()
+        # Per-cache-key lock instead of one instance-wide lock — real perf
+        # bug found+fixed here (2026-08, user-reported: a 4-country storm
+        # selection loading "way too long"): a single self._load_lock used
+        # to serialize EVERY ensure_mercator/ensure_admin/ensure_facility
+        # call across the whole process, so an unrelated cache miss (a
+        # different hazard, admin level, or facility layer — even from a
+        # different browser tab) queued behind whichever load happened to
+        # be running, regardless of key. _key_locks_meta_lock only guards
+        # the tiny dict-of-locks itself, not the actual loads.
+        self._key_locks: dict[tuple, threading.Lock] = {}
+        self._key_locks_meta_lock = threading.Lock()
         self._loaded_at: dict[tuple, float] = {}  # key → epoch seconds when loaded
+
+    def _lock_for(self, key: tuple) -> threading.Lock:
+        with self._key_locks_meta_lock:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
 
     def _is_fresh(self, key: tuple) -> bool:
         return key in self._loaded_at and (time.time() - self._loaded_at[key]) < _TILE_TTL
@@ -1128,39 +1156,57 @@ class _DataCache:
         key = (country, storm, forecast_date) + variant
         if self._is_fresh(key) and key in self._mercator:
             return
-        with self._load_lock:
+        with self._lock_for(key):
             if self._is_fresh(key) and key in self._mercator:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
-            all_rows: list[dict] = []
-            for code in codes:
+
+            def _load_one(code: str) -> list[dict]:
                 log.info("Cache: bulk-loading mercator %s/%s/%s hazard=%s variant=%s [%s]…",
                          code, storm, forecast_date, hazard, variant, IMPACT_DATA_STORE)
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
                     if hazard == "gust":
-                        all_rows.extend(_run_query(_MERCATOR_GUST_SQL, [
+                        return _run_query(_MERCATOR_GUST_SQL, [
                             storm, forecast_date, gust_threshold, code, MAT_ZOOM_LEVEL,
-                        ]))
+                        ])
                     elif hazard == "river":
-                        all_rows.extend(_run_query(_MERCATOR_RIVER_SQL, [
+                        return _run_query(_MERCATOR_RIVER_SQL, [
                             code, forecast_date, rp_tier, code, MAT_ZOOM_LEVEL,
-                        ]))
+                        ])
                     elif hazard == "rain":
-                        all_rows.extend(_run_query(_MERCATOR_PRECIP_SQL, [
+                        return _run_query(_MERCATOR_PRECIP_SQL, [
                             forecast_date, threshold_mm, window_h, code, MAT_ZOOM_LEVEL,
-                        ]))
+                        ])
                     else:
-                        all_rows.extend(_run_query(_MERCATOR_FULL_SQL, [
+                        return _run_query(_MERCATOR_FULL_SQL, [
                             storm, forecast_date, wind_threshold,
                             storm, forecast_date,
                             storm, forecast_date,
                             code, MAT_ZOOM_LEVEL,
-                        ]))
+                        ])
                 elif hazard == "wind":
-                    all_rows.extend(_load_mercator_from_files(code, storm, forecast_date, wind_threshold))
+                    return _load_mercator_from_files(code, storm, forecast_date, wind_threshold)
                 else:
                     log.warning("%s STAGE (file-based) mercator loading not implemented — returning empty for %s",
                                 hazard, code)
+                    return []
+
+            all_rows: list[dict] = []
+            # Independent per-country Snowflake round-trips — safe to run
+            # concurrently (pure network I/O, each _run_query opens/uses its
+            # own connection). Real perf fix (2026-08, user-reported: a
+            # multi-country storm selection, e.g. MELISSA across Turks and
+            # Caicos/Jamaica/Cuba/Nicaragua, loading "way too long" when not
+            # already prewarmed) — this loop used to pay ~2s/country fully
+            # serially under the old single global lock; ex.map preserves
+            # `codes`' own order in the results, so output stays deterministic.
+            if len(codes) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
+                    for rows in ex.map(_load_one, codes):
+                        all_rows.extend(rows)
+            else:
+                for code in codes:
+                    all_rows.extend(_load_one(code))
             if all_rows:
                 df = pd.DataFrame(all_rows)
                 df = pd.concat([df, _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
@@ -1197,39 +1243,52 @@ class _DataCache:
         key = (country, storm, forecast_date) + variant + (admin_level,)
         if self._is_fresh(key) and key in self._admin_geoms:
             return
-        with self._load_lock:
+        with self._lock_for(key):
             if self._is_fresh(key) and key in self._admin_geoms:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
-            all_rows_admin: list[dict] = []
-            for code in codes:
+
+            def _load_one(code: str) -> list[dict]:
                 log.info("Cache: bulk-loading admin %s/%s/%s hazard=%s variant=%s L%s [%s]…",
                          code, storm, forecast_date, hazard, variant, admin_level, IMPACT_DATA_STORE)
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
                     if hazard == "gust":
-                        all_rows_admin.extend(_run_query(_ADMIN_GUST_SQL, [
+                        return _run_query(_ADMIN_GUST_SQL, [
                             storm, forecast_date, gust_threshold, code, admin_level,
-                        ]))
+                        ])
                     elif hazard == "river":
-                        all_rows_admin.extend(_run_query(_ADMIN_RIVER_SQL, [
+                        return _run_query(_ADMIN_RIVER_SQL, [
                             code, forecast_date, rp_tier, code, admin_level,
-                        ]))
+                        ])
                     elif hazard == "rain":
-                        all_rows_admin.extend(_run_query(_ADMIN_PRECIP_SQL, [
+                        return _run_query(_ADMIN_PRECIP_SQL, [
                             forecast_date, threshold_mm, window_h, code, admin_level,
-                        ]))
+                        ])
                     else:
-                        all_rows_admin.extend(_run_query(_ADMIN_FULL_SQL, [
+                        return _run_query(_ADMIN_FULL_SQL, [
                             storm, forecast_date, wind_threshold,
                             storm, forecast_date,
                             storm, forecast_date,
                             code, admin_level,
-                        ]))
+                        ])
                 elif hazard == "wind":
-                    all_rows_admin.extend(_load_admin_from_files(code, storm, forecast_date, wind_threshold, admin_level))
+                    return _load_admin_from_files(code, storm, forecast_date, wind_threshold, admin_level)
                 else:
                     log.warning("%s STAGE (file-based) admin loading not implemented — returning empty for %s",
                                 hazard, code)
+                    return []
+
+            all_rows_admin: list[dict] = []
+            # See ensure_mercator's own comment — same real perf fix, same
+            # safe-to-parallelize reasoning (independent per-country
+            # Snowflake round-trips).
+            if len(codes) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
+                    for rows in ex.map(_load_one, codes):
+                        all_rows_admin.extend(rows)
+            else:
+                for code in codes:
+                    all_rows_admin.extend(_load_one(code))
             df = pd.DataFrame(all_rows_admin) if all_rows_admin else pd.DataFrame(columns=["TILE_ID"])
             self._admin[key] = df
             # Pre-parse geometries and build spatial index for instant tile filtering.
@@ -1280,12 +1339,12 @@ class _DataCache:
         key = (layer_type, country, storm, forecast_date) + variant
         if self._is_fresh(key) and key in self._facility:
             return
-        with self._load_lock:
+        with self._lock_for(key):
             if self._is_fresh(key) and key in self._facility:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
-            all_rows: list[dict] = []
-            for code in codes:
+
+            def _load_one(code: str) -> list[dict]:
                 log.info("Cache: bulk-loading facility %s %s/%s/%s hazard=%s variant=%s [%s]…",
                          layer_type, code, storm, forecast_date, hazard, variant, IMPACT_DATA_STORE)
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
@@ -1304,13 +1363,24 @@ class _DataCache:
                     if not rows:
                         log.info("  No impact data for %s %s — using base layer", layer_type, code)
                         rows = _run_query(_FACILITY_BASE_SQL[layer_type], [code])
+                    return rows
                 elif hazard == "wind":
-                    rows = _load_facility_from_files(layer_type, code, storm, forecast_date, wind_threshold)
+                    return _load_facility_from_files(layer_type, code, storm, forecast_date, wind_threshold)
                 else:
                     log.warning("%s STAGE (file-based) facility loading not implemented — returning empty for %s",
                                 hazard, code)
-                    rows = []
-                all_rows.extend(rows)
+                    return []
+
+            all_rows: list[dict] = []
+            # See ensure_mercator's own comment — same real perf fix, same
+            # safe-to-parallelize reasoning.
+            if len(codes) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
+                    for rows in ex.map(_load_one, codes):
+                        all_rows.extend(rows)
+            else:
+                for code in codes:
+                    all_rows.extend(_load_one(code))
             df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(
                 columns=["NAME", "PROBABILITY", "LATITUDE", "LONGITUDE"])
             if "PROBABILITY" in df.columns:
@@ -1624,6 +1694,9 @@ _RASTER_PALETTES: dict[str, dict] = {
     'E_CHILDREN_TOTAL':        {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
     'E_PEOPLE_IN_NEED':        {'colors': ['#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000'], 'scale': 'log'},
     'E_CHILDREN_IN_NEED':      {'colors': ['#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000'], 'scale': 'log'},
+    'E_INFANT_IN_NEED':        {'colors': ['#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000'], 'scale': 'log'},
+    'E_SCHOOL_AGE_IN_NEED':    {'colors': ['#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000'], 'scale': 'log'},
+    'E_ADOLESCENT_IN_NEED':    {'colors': ['#fff7ec','#fee8c8','#fdd49e','#fdbb84','#fc8d59','#ef6548','#d7301f','#b30000','#7f0000'], 'scale': 'log'},
     'INFANT_POPULATION':       {'colors': ['#d6e8ff','#b3d9ff','#8ac8ff','#66b7ff','#42a6ff','#1e95ff','#1685e6','#0f75cc','#0765b3','#005599'], 'scale': 'log'},
     'E_INFANT_POPULATION':     {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
     'SCHOOL_AGE_POPULATION':   {'colors': ['#a8e6cf','#7ed3b8','#5ec0a1','#40ad8a','#2d9a73','#228759','#177440','#0f5127','#083310','#001107'], 'scale': 'log'},
@@ -2146,8 +2219,20 @@ class _PrecipRawCache:
 
         if forecast_time in (None, "", "latest"):
             forecast_time = latest_forecast_time
-            stage_path = latest_stage_path
-        elif forecast_time == latest_forecast_time:
+
+        # Real perf fix (2026-08, user-reported: map hover tooltips are
+        # "still quite slow") — stage_path is ONLY needed to actually
+        # download something below; resolving it for a non-"latest" cycle
+        # used to run a real, wholly uncached Snowflake query on EVERY
+        # single call (including every single hover request), even when
+        # the grid for that exact forecast_time was already fully loaded
+        # and fresh in memory. Checking the in-memory cache FIRST — before
+        # ever resolving stage_path — means the common "already warm"
+        # hover-lookup case now touches Snowflake zero times.
+        if forecast_time in self._grid and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _PRECIP_RAW_TTL:
+            return forecast_time
+
+        if forecast_time == latest_forecast_time:
             stage_path = latest_stage_path
         else:
             rows = _run_query(_PRECIP_RAW_BY_TIME_SQL, [forecast_time])
@@ -2155,8 +2240,6 @@ class _PrecipRawCache:
                 return None
             stage_path = rows[0]["STAGE_PATH"]
 
-        if forecast_time in self._grid and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _PRECIP_RAW_TTL:
-            return forecast_time
         with self._load_lock:
             if forecast_time in self._grid and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _PRECIP_RAW_TTL:
                 return forecast_time
@@ -2384,6 +2467,32 @@ def _sample_global_grid_tile(entry: dict, grid: np.ndarray, z: int, x: int, y: i
     if not np.isfinite(sampled).any():
         return None
     return sampled
+
+
+def _sample_global_grid_point(entry: dict, grid: Optional[np.ndarray], lon: float, lat: float) -> Optional[float]:
+    """Point-lookup counterpart to _sample_global_grid_tile — same grid
+    convention (row 0 = lat_max, N->S). Used by the raw-layer hover-tooltip
+    endpoints (real bug found+fixed 2026-08, user-reported: "there are no
+    tooltips for the raw layers... on the map directly, like we had already
+    for the storms" — these two global raster layers had NO hover mechanism
+    at all, unlike tracks/envelopes (Leaflet tooltips) and the per-country
+    hazard tiles (/tile-value/{country}/...)) instead of rendering/sampling
+    a full 512x512 tile for a single point."""
+    if grid is None:
+        return None
+    lat_min, lat_max = entry["lat_min"], entry["lat_max"]
+    if lat < lat_min or lat > lat_max:
+        return None
+    n_lat, n_lon = entry["n_lat"], entry["n_lon"]
+    lon_min = entry["lon_min"]
+    lat_step, lon_step = entry["lat_step"], entry["lon_step"]
+    lon_wrapped = ((lon + 180.0) % 360.0) - 180.0
+    lon_idx = int(round((lon_wrapped - lon_min) / lon_step)) % n_lon
+    lat_idx = int(round((lat_max - lat) / lat_step))
+    if lat_idx < 0 or lat_idx >= n_lat:
+        return None
+    val = grid[lat_idx, lon_idx]
+    return None if not np.isfinite(val) else float(val)
 
 
 def _render_dense_grid_webp(
@@ -2731,8 +2840,20 @@ class _RiverExtentCache:
 
         if forecast_time in (None, "", "latest"):
             forecast_time = latest_forecast_time
-            stage_path = latest_stage_path
-        elif forecast_time == latest_forecast_time:
+
+        # Real perf fix (2026-08, user-reported: map hover tooltips are
+        # "still quite slow") — same fix as ensure_precip_raw's own: check
+        # the in-memory cache BEFORE ever resolving stage_path, since
+        # stage_path is only needed to actually download something below.
+        # The old order ran a real, wholly uncached Snowflake query on
+        # EVERY single call for a non-"latest" forecast_time (e.g. every
+        # hover over a fixed historical/demo date), even when the table
+        # was already fully loaded and fresh in memory.
+        key = (forecast_time, rp_tier)
+        if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
+            return forecast_time
+
+        if forecast_time == latest_forecast_time:
             stage_path = latest_stage_path
         else:
             rows = _run_query(_RIVER_EXTENT_BY_TIME_SQL, [_river_extent_param(rp_tier), forecast_time])
@@ -2740,9 +2861,6 @@ class _RiverExtentCache:
                 return None
             stage_path = rows[0]["STAGE_PATH"]
 
-        key = (forecast_time, rp_tier)
-        if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
-            return forecast_time
         with self._load_lock:
             if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
                 return forecast_time
@@ -2890,6 +3008,16 @@ class _RiverExtentCache:
                 "rows_kept": rows_kept,
                 "n_members_seen": len(members_seen),
                 "load_seconds": elapsed,
+                # Real perf fix (2026-08, user-reported: the raw-layer hover
+                # tooltip is "quite slow") — river_raw_tile_value's point
+                # lookup used to do `df[df['TILE_ID'] == qk]`, a full linear
+                # scan across every distinct z14 tile in this table (tens of
+                # thousands to low hundreds of thousands globally, per this
+                # function's own comment above) on EVERY single hover
+                # request. Built once here, alongside the table itself (so
+                # it's naturally invalidated together whenever this entry
+                # reloads), it turns that into an O(1) dict lookup instead.
+                "prob_by_tile": dict(zip(tile_ids, probability.tolist())),
             }
             self._loaded_at[key] = time.time()
             log.info("  RiverExtent: z14 tile table ready %s/%s (scanned %d rows, kept %d @step_h=%d, "
@@ -3408,16 +3536,16 @@ def _stats_from_row(r: dict, mapping: dict) -> dict:
     return stats
 
 
-@app.get("/stats/{country}/{storm}/{forecast_date}")
-def get_tile_stats(
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
+def _fetch_tile_stats(
     country: str, storm: str, forecast_date: str,
     wind_threshold: int = 50,
     zoom_level: int = 14,
-    hazard: str = Query("wind"),
-    gust_threshold: Optional[int] = Query(None),
-    rp_tier: Optional[str] = Query(None),
-    threshold_mm: Optional[float] = Query(None),
-    window_h: Optional[int] = Query(None),
+    hazard: str = "wind",
+    gust_threshold: Optional[int] = None,
+    rp_tier: Optional[str] = None,
+    threshold_mm: Optional[float] = None,
+    window_h: Optional[int] = None,
 ) -> dict:
     try:
         if IMPACT_DATA_STORE != "SNOWFLAKE":
@@ -3467,6 +3595,9 @@ def get_tile_stats(
                 MIN(NULLIF(i.E_NUM_WASH, 0))             AS e_wsh_min, MAX(i.E_NUM_WASH)             AS e_wsh_max,
                 MIN(NULLIF(v.E_PEOPLE_IN_NEED, 0))       AS e_pin_min, MAX(v.E_PEOPLE_IN_NEED)       AS e_pin_max,
                 MIN(NULLIF(v.E_CHILDREN_IN_NEED, 0))     AS e_cin_min, MAX(v.E_CHILDREN_IN_NEED)     AS e_cin_max,
+                MIN(NULLIF(v.E_INFANT_IN_NEED, 0))       AS e_inn_min, MAX(v.E_INFANT_IN_NEED)       AS e_inn_max,
+                MIN(NULLIF(v.E_SCHOOL_AGE_IN_NEED, 0))   AS e_scn_min, MAX(v.E_SCHOOL_AGE_IN_NEED)   AS e_scn_max,
+                MIN(NULLIF(v.E_ADOLESCENT_IN_NEED, 0))   AS e_adn_min, MAX(v.E_ADOLESCENT_IN_NEED)   AS e_adn_max,
                 MIN(NULLIF(c.CCI_CHILDREN, 0))           AS cci_min,   MAX(c.CCI_CHILDREN)           AS cci_max,
                 MIN(NULLIF(c.E_CCI_CHILDREN, 0))         AS e_cci_min, MAX(c.E_CCI_CHILDREN)         AS e_cci_max
             FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
@@ -3521,6 +3652,9 @@ def get_tile_stats(
             "E_num_wash":              ("E_WSH_MIN","E_WSH_MAX"),
             "E_people_in_need":        ("E_PIN_MIN","E_PIN_MAX"),
             "E_children_in_need":      ("E_CIN_MIN","E_CIN_MAX"),
+            "E_infant_in_need":        ("E_INN_MIN","E_INN_MAX"),
+            "E_school_age_in_need":    ("E_SCN_MIN","E_SCN_MAX"),
+            "E_adolescent_in_need":    ("E_ADN_MIN","E_ADN_MAX"),
             "cci_children":            ("CCI_MIN",  "CCI_MAX"),
             "E_cci_children":          ("E_CCI_MIN","E_CCI_MAX"),
         }
@@ -3534,6 +3668,28 @@ def get_tile_stats(
     except Exception as e:
         log.error("Stats error: %s", e, exc_info=True)
         return {}
+
+
+# Real perf fix (2026-08, multi-agent audit): this endpoint used to run the
+# full Snowflake query above on EVERY call, even though it's driven by the
+# hazard-threshold slider debounce settling — the exact same
+# repeated-identical-request shape every other tile-render endpoint in this
+# file already caches via _ttl_cache. Thin route, all real work now lives in
+# the cached _fetch_tile_stats above (same split already used throughout
+# this file, e.g. _fetch_mercator_tile / get_mercator_tile).
+@app.get("/stats/{country}/{storm}/{forecast_date}")
+def get_tile_stats(
+    country: str, storm: str, forecast_date: str,
+    wind_threshold: int = 50,
+    zoom_level: int = 14,
+    hazard: str = Query("wind"),
+    gust_threshold: Optional[int] = Query(None),
+    rp_tier: Optional[str] = Query(None),
+    threshold_mm: Optional[float] = Query(None),
+    window_h: Optional[int] = Query(None),
+) -> dict:
+    return _fetch_tile_stats(country, storm, forecast_date, wind_threshold, zoom_level,
+                               hazard, gust_threshold, rp_tier, threshold_mm, window_h)
 
 
 _GUST_ADMIN_STATS_SQL = """
@@ -3631,16 +3787,16 @@ _RAIN_ADMIN_STATS_SQL = """
 """
 
 
-@app.get("/admin-stats/{country}/{storm}/{forecast_date}")
-def get_admin_stats(
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
+def _fetch_admin_stats(
     country: str, storm: str, forecast_date: str,
     wind_threshold: int = 50,
     admin_level: int = 1,
-    hazard: str = Query("wind"),
-    gust_threshold: Optional[int] = Query(None),
-    rp_tier: Optional[str] = Query(None),
-    threshold_mm: Optional[float] = Query(None),
-    window_h: Optional[int] = Query(None),
+    hazard: str = "wind",
+    gust_threshold: Optional[int] = None,
+    rp_tier: Optional[str] = None,
+    threshold_mm: Optional[float] = None,
+    window_h: Optional[int] = None,
 ) -> dict:
     try:
         if IMPACT_DATA_STORE != "SNOWFLAKE":
@@ -3690,6 +3846,9 @@ def get_admin_stats(
                 MIN(NULLIF(i.E_NUM_WASH, 0))              AS e_wsh_min, MAX(i.E_NUM_WASH)              AS e_wsh_max,
                 MIN(NULLIF(v.E_PEOPLE_IN_NEED, 0))        AS e_pin_min, MAX(v.E_PEOPLE_IN_NEED)        AS e_pin_max,
                 MIN(NULLIF(v.E_CHILDREN_IN_NEED, 0))      AS e_cin_min, MAX(v.E_CHILDREN_IN_NEED)      AS e_cin_max,
+                MIN(NULLIF(v.E_INFANT_IN_NEED, 0))        AS e_inn_min, MAX(v.E_INFANT_IN_NEED)        AS e_inn_max,
+                MIN(NULLIF(v.E_SCHOOL_AGE_IN_NEED, 0))    AS e_scn_min, MAX(v.E_SCHOOL_AGE_IN_NEED)    AS e_scn_max,
+                MIN(NULLIF(v.E_ADOLESCENT_IN_NEED, 0))    AS e_adn_min, MAX(v.E_ADOLESCENT_IN_NEED)    AS e_adn_max,
                 MIN(NULLIF(c.CCI_CHILDREN, 0))            AS cci_min,   MAX(c.CCI_CHILDREN)            AS cci_max,
                 MIN(NULLIF(c.E_CCI_CHILDREN, 0))          AS e_cci_min, MAX(c.E_CCI_CHILDREN)          AS e_cci_max
             FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
@@ -3744,6 +3903,9 @@ def get_admin_stats(
             "E_num_wash":              ("E_WSH_MIN","E_WSH_MAX"),
             "E_people_in_need":        ("E_PIN_MIN","E_PIN_MAX"),
             "E_children_in_need":      ("E_CIN_MIN","E_CIN_MAX"),
+            "E_infant_in_need":        ("E_INN_MIN","E_INN_MAX"),
+            "E_school_age_in_need":    ("E_SCN_MIN","E_SCN_MAX"),
+            "E_adolescent_in_need":    ("E_ADN_MIN","E_ADN_MAX"),
             "cci_children":            ("CCI_MIN",  "CCI_MAX"),
             "E_cci_children":          ("E_CCI_MIN","E_CCI_MAX"),
         }
@@ -3757,6 +3919,23 @@ def get_admin_stats(
     except Exception as e:
         log.error("Admin stats error: %s", e, exc_info=True)
         return {}
+
+
+# Same real perf fix as get_tile_stats above — thin route, real work now
+# lives in the cached _fetch_admin_stats.
+@app.get("/admin-stats/{country}/{storm}/{forecast_date}")
+def get_admin_stats(
+    country: str, storm: str, forecast_date: str,
+    wind_threshold: int = 50,
+    admin_level: int = 1,
+    hazard: str = Query("wind"),
+    gust_threshold: Optional[int] = Query(None),
+    rp_tier: Optional[str] = Query(None),
+    threshold_mm: Optional[float] = Query(None),
+    window_h: Optional[int] = Query(None),
+) -> dict:
+    return _fetch_admin_stats(country, storm, forecast_date, wind_threshold, admin_level,
+                                hazard, gust_threshold, rp_tier, threshold_mm, window_h)
 
 
 @app.get("/tiles/raster/{country}/{storm}/{forecast_date}/{prop}/{z}/{x}/{y}.webp",
@@ -3808,60 +3987,36 @@ def facility_geojson(
     rp_tier: Optional[str] = Query(None),
     threshold_mm: Optional[float] = Query(None),
     window_h: Optional[int] = Query(None),
+    combine: bool = Query(True),
 ) -> Response:
     """Return a styled GeoJSON FeatureCollection for the requested facility layer.
 
     Properties include `_color`, `_radius`, `_opacity`, `_weight`, `_fillOpacity` for
     Leaflet's pointToLayer, plus lowercase field names for tooltip functions.
     Response is gzip-compressed so the browser receives it efficiently via fetch().
+
+    `combine` (default True): whether to color/size each facility by its real
+    per-hazard PROBABILITY at `wind_threshold`/etc, or render every facility
+    as a plain, uncolored location instead. Real feature added here per
+    explicit user request: the client (pages/map_shell_concept.py's
+    _register_ms_facility_layer) still ALWAYS fetches with a real
+    wind_threshold — the query itself doesn't stop being hazard-conditional
+    just because no hazard checkbox happens to be on — so without this flag,
+    turning every hazard off (or hiding them via the eye icon) left facility
+    points still tinted by whatever threshold was last selected. When False,
+    `prob` is forced to 0 for every row below (same code path a real,
+    confirmed-zero PROBABILITY already takes — the base/neutral color), and
+    the real `probability` property is dropped from the response so a
+    tooltip can't show a stale percentage for a marker that's deliberately
+    NOT being colored by it.
     """
     valid_layers = {"gust": _FACILITY_GUST_SQL, "river": _FACILITY_RIVER_SQL,
                     "rain": _FACILITY_PRECIP_SQL}.get(hazard, _FACILITY_IMPACT_SQL)
     if layer_type not in valid_layers:
         raise HTTPException(status_code=404, detail=f"Unknown layer type: {layer_type}")
-    base_color = _FACILITY_BASE_COLORS[layer_type]
     try:
-        df = _cache.get_facility_df(layer_type, country.upper(), storm, forecast_date, wind_threshold,
-                                    hazard, gust_threshold, rp_tier, threshold_mm, window_h)
-        features = []
-        for _, row in df.iterrows():
-            lat = row.get("LATITUDE")
-            lon = row.get("LONGITUDE")
-            if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
-                continue
-            prob = float(row.get("PROBABILITY") or 0)
-            if prob <= 0:
-                color, radius = base_color, 4
-            elif prob <= 0.15:
-                color, radius = "#FFFF00", 10
-            elif prob <= 0.30:
-                color, radius = "#FFD700", 12
-            elif prob <= 0.45:
-                color, radius = "#FFA500", 15
-            elif prob <= 0.60:
-                color, radius = "#FF8C00", 18
-            elif prob <= 0.75:
-                color, radius = "#FF4500", 20
-            elif prob <= 0.90:
-                color, radius = "#DC143C", 22
-            else:
-                color, radius = "#8B0000", 25
-            props = {k.lower(): _safe_prop(v)
-                     for k, v in row.items()
-                     if k not in ("LATITUDE", "LONGITUDE")}
-            props.update({
-                "_color": color, "_radius": radius,
-                "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
-            })
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
-                "properties": props,
-            })
-        body = gzip.compress(
-            json.dumps({"type": "FeatureCollection", "features": features}).encode(),
-            compresslevel=6,
-        )
+        body = _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind_threshold,
+                                              hazard, gust_threshold, rp_tier, threshold_mm, window_h, combine)
         return Response(
             content=body,
             media_type="application/geo+json",
@@ -3870,6 +4025,62 @@ def facility_geojson(
     except Exception as exc:
         log.error("facility_geojson error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# Real perf fix (2026-08, multi-agent audit): this used to rebuild the full
+# response (iterrows + json.dumps + gzip) on EVERY call, even though the
+# browser's own Cache-Control here already assumes a stable 5-minute
+# response — measured 0.727s/0.727s/0.736s on three identical back-to-back
+# requests (i.e. genuinely uncached server-side). Same _ttl_cache pattern
+# already used throughout this file; the route above wraps the cached gzip
+# bytes in a fresh Response object each time (cheap) rather than caching
+# the Response itself.
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
+def _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind_threshold,
+                                    hazard, gust_threshold, rp_tier, threshold_mm, window_h, combine):
+    base_color = _FACILITY_BASE_COLORS[layer_type]
+    df = _cache.get_facility_df(layer_type, country.upper(), storm, forecast_date, wind_threshold,
+                                hazard, gust_threshold, rp_tier, threshold_mm, window_h)
+    features = []
+    for _, row in df.iterrows():
+        lat = row.get("LATITUDE")
+        lon = row.get("LONGITUDE")
+        if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+            continue
+        prob = float(row.get("PROBABILITY") or 0) if combine else 0.0
+        if prob <= 0:
+            color, radius = base_color, 4
+        elif prob <= 0.15:
+            color, radius = "#FFFF00", 10
+        elif prob <= 0.30:
+            color, radius = "#FFD700", 12
+        elif prob <= 0.45:
+            color, radius = "#FFA500", 15
+        elif prob <= 0.60:
+            color, radius = "#FF8C00", 18
+        elif prob <= 0.75:
+            color, radius = "#FF4500", 20
+        elif prob <= 0.90:
+            color, radius = "#DC143C", 22
+        else:
+            color, radius = "#8B0000", 25
+        props = {k.lower(): _safe_prop(v)
+                 for k, v in row.items()
+                 if k not in ("LATITUDE", "LONGITUDE")
+                 and (combine or k != "PROBABILITY")}
+        props.update({
+            "_color": color, "_radius": radius,
+            "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
+        })
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+            "properties": props,
+        })
+    return gzip.compress(
+        json.dumps({"type": "FeatureCollection", "features": features}).encode(),
+        compresslevel=6,
+    )
 
 
 @app.get("/tile-value/{country}/{storm}/{forecast_date}")
@@ -3949,6 +4160,67 @@ def precip_raw_tile(
         media_type="image/webp",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@app.get("/tile-value/precip-raw/{forecast_time}")
+def precip_raw_tile_value(
+    forecast_time: str,
+    lon: float = Query(...),
+    lat: float = Query(...),
+    mode: str = Query("mean", pattern="^(mean|probability)$"),
+    window_h: int = Query(_PRECIP_RATE_DEFAULT_WINDOW_H),
+    threshold_mm: float = Query(_PRECIP_PROB_THRESHOLD_MM),
+) -> dict:
+    """Point lookup for the raw precip-rate raster's hover tooltip — real
+    bug found+fixed here (2026-08, user-reported: "there are no tooltips
+    for the raw layers still... on the map directly, like we had already
+    for the storms"): this GLOBAL, country-independent layer had NO hover
+    mechanism at all — assets/maplibre_tiles.js's hover handler only ever
+    queries the per-country hazard system's own /tile-value/{country}/...
+    endpoint, and bails out entirely whenever no country is selected (this
+    layer's own normal Global-mode state). Reuses the SAME cached dense
+    grid _fetch_precip_raw_tile already renders 512x512 tiles from
+    (_PrecipRawCache.get_render_entry) — a single grid-index lookup, no
+    fresh Zarr read.
+
+    `mode` mirrors _fetch_precip_raw_tile's own param — real bug found+
+    fixed here (2026-08, user-reported: the tooltip "still showing
+    precipitation everywhere if there is nothing"): this used to always
+    compute+return BOTH mean_mm and probability regardless of which ONE is
+    actually being painted right now (the raster only ever renders ONE
+    ramp per `mode` — see _render_dense_grid_webp). A spot with a real but
+    unremarkable mean rate (e.g. 15mm/120h) could clear the mean-intensity
+    ramp's own low first break while the map is actually painting
+    Probability-mode (e.g. "% of members over 100mm") and showing nothing
+    there at all — so the tooltip surfaced a real number completely
+    disconnected from what the cursor was visually hovering over. Now only
+    computes/returns the ONE metric matching the active display mode, same
+    as the raster itself."""
+    resolved = _precip_cache.ensure_precip_raw(forecast_time)
+    if resolved is None:
+        return {}
+    entry = _precip_cache.get_render_entry(resolved, window_h, threshold_mm)
+    if entry is None:
+        return {}
+    result: dict = {}
+    if mode == "mean":
+        # Real UX bug found+fixed here (2026-08, user-reported: the
+        # tooltip "shows the precipitation everywhere, but with 0%"):
+        # this dense grid is finite (real, non-NaN) almost everywhere, not
+        # just where it's visually raining — most of that is a near-zero
+        # rate the color ramp itself already treats as invisible (below
+        # its own first real break — see _precip_rate_breaks_for_window's
+        # own docstring). Same real threshold the map's own paint already
+        # uses to decide what counts as visible rain.
+        mean_val = _sample_global_grid_point(entry, entry["grid"], lon, lat)
+        mean_break = _precip_rate_breaks_for_window(window_h)[0]
+        if mean_val is not None and mean_val >= mean_break:
+            result["mean_mm"] = mean_val
+    else:
+        prob_val = _sample_global_grid_point(entry, entry.get("prob_grid"), lon, lat)
+        if prob_val is not None and prob_val > 0:
+            result["probability"] = prob_val
+    return result
 
 
 @app.get("/stats/precip-raw/{forecast_time}")
@@ -4078,6 +4350,41 @@ def river_raw_raster_tile(
         media_type="image/webp",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@app.get("/tile-value/river-raw/{forecast_time}")
+def river_raw_tile_value(
+    forecast_time: str,
+    lon: float = Query(...),
+    lat: float = Query(...),
+    rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER),
+) -> dict:
+    """Point lookup for the raw river-extent raster's hover tooltip — same
+    real gap/fix as precip_raw_tile_value above. Same quadkey-lookup
+    pattern as tile_value() (the per-country endpoint), against the sparse
+    z14-tile _RiverExtentCache table instead of the per-country mercator
+    cache — no fresh parquet read, reuses whatever _fetch_river_extent_
+    raster_tile already cached for this forecast_time/rp_tier.
+
+    Real perf fix (2026-08, user-reported: "it's still quite slow") — uses
+    the entry's own "prob_by_tile" dict (built once, see _RiverExtentCache's
+    own comment on it) instead of a linear `df[df['TILE_ID'] == qk]` scan
+    across every distinct z14 tile in the table on every single hover."""
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+    if resolved is None:
+        return {}
+    entry = _river_extent_cache.get_grid(resolved, rp_tier)
+    if entry is None:
+        return {}
+    prob_by_tile = entry.get("prob_by_tile")
+    if not prob_by_tile:
+        return {}
+    tile = mercantile.tile(lon, lat, 14)
+    qk = mercantile.quadkey(tile)
+    prob = prob_by_tile.get(qk)
+    if prob is None or (isinstance(prob, float) and math.isnan(prob)):
+        return {}
+    return {"probability": float(prob), "rp_tier": rp_tier}
 
 
 @app.get("/stats/river-raw/{forecast_time}")

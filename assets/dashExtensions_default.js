@@ -167,19 +167,28 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                     if (typeof s !== 'string') return s;
                     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
                 };
+                // _mapT/_AOTS_TT_* are global window functions/vars set by
+                // assets/maplibre_tiles.js (same browser window, loaded as a plain
+                // non-module <script>) — real gap found+fixed here (2026-08,
+                // user-reported: are these tooltips translated / matching the new
+                // page's own design, or just carried over from the old dashboard? they
+                // were neither — 100% hardcoded English with an ad hoc, per-function
+                // color/font-size scale). See _mapT's own comment for the full
+                // rationale and window.AOTS_MAP_I18N's source (pages/map_shell_
+                // concept.py's _MAP_TOOLTIP_TRANSLATIONS via ms-map-i18n-store).
                 const member_raw = props.ensemble_member;
                 const member = member_raw != null ? escapeHtml(String(member_raw)) : null;
                 const type = props.member_type || 'N/A';
                 const storm = props.track_id ? escapeHtml(String(props.track_id)) : null;
 
-                const label = type === 'control' ? 'Control Track' : 'Ensemble Track';
+                const label = type === 'control' ? _mapT('Control Track') : _mapT('Ensemble Track');
 
                 const content = `
         <div style="font-size: 13px; font-weight: 600; color: #1cabe2; margin-bottom: 5px;">
             ${storm ? storm + ' — ' : ''}${label}
         </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>Ensemble Member:</strong> ${member !== null ? '#' + member : 'N/A'}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            <strong>${_mapT('Ensemble Member')}:</strong> ${member !== null ? '#' + member : _mapT('N/A')}
         </div>
     `;
 
@@ -236,13 +245,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 // Always show same structure, use N/A when data not available
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
-            ${isGust ? 'Gust Envelope' : 'Hurricane Envelope'}
+            ${isGust ? _mapT('Gust Envelope') : _mapT('Hurricane Envelope')}
         </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>${isGust ? 'Gust Threshold' : 'Wind Threshold'}:</strong> ${wind_threshold}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            <strong>${isGust ? _mapT('Gust Threshold') : _mapT('Wind Threshold')}:</strong> ${wind_threshold}
         </div>
-        <div style="font-size: 12px; color: #555;">
-            <strong>Ensemble Member:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : 'N/A'}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            <strong>${_mapT('Ensemble Member')}:</strong> ${ensemble_member !== 'N/A' ? '#' + ensemble_member : _mapT('N/A')}
         </div>
     `;
 
@@ -252,39 +261,39 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                 const sev_children_total = _sev_children_all_null ? null : (severity_infant_population || 0) + (severity_school_age_population || 0) + (severity_adolescent_population || 0);
 
                 content += `
-        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
-        <div style="font-size: 11px; color: #777; margin-top: 5px;">
-            <strong>Impact:</strong>
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid ${_AOTS_TT_DIVIDER};">
+        <div style="font-size: 11px; color: ${_AOTS_TT_LABEL}; margin-top: 5px;">
+            <strong>${_mapT('Impact')}:</strong>
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Population: ${fmtImpact(severity_population)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Population')}: ${fmtImpact(severity_population)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Children<span style="font-size: 0.85em; color: #888; margin-left: 3px;">(total)</span>: ${sev_children_total !== null ? fmtImpact(sev_children_total) : 'N/A'}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Children (total)')}: ${sev_children_total !== null ? fmtImpact(sev_children_total) : _mapT('N/A')}
         </div>
-        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 0–4: ${fmtImpact(severity_infant_population)}
+        <div style="font-size: 10px; color: ${_AOTS_TT_SUB}; padding-left: 10px; font-style: italic;">
+            ${_mapT('Age 0–4')}: ${fmtImpact(severity_infant_population)}
         </div>
-        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 5–14: ${fmtImpact(severity_school_age_population)}
+        <div style="font-size: 10px; color: ${_AOTS_TT_SUB}; padding-left: 10px; font-style: italic;">
+            ${_mapT('Age 5–14')}: ${fmtImpact(severity_school_age_population)}
         </div>
-        <div style="font-size: 10px; color: #888; padding-left: 10px; font-style: italic;">
-            Age 15–19: ${fmtImpact(severity_adolescent_population)}
+        <div style="font-size: 10px; color: ${_AOTS_TT_SUB}; padding-left: 10px; font-style: italic;">
+            ${_mapT('Age 15–19')}: ${fmtImpact(severity_adolescent_population)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Schools: ${fmtImpact(severity_schools)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Schools')}: ${fmtImpact(severity_schools)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Health Centers: ${fmtImpact(severity_hcs)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Health Centers')}: ${fmtImpact(severity_hcs)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Shelters: ${fmtImpact(severity_num_shelters)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Shelters')}: ${fmtImpact(severity_num_shelters)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            WASH Facilities: ${fmtImpact(severity_num_wash)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('WASH Facilities')}: ${fmtImpact(severity_num_wash)}
         </div>
-        <div style="font-size: 11px; color: #555;">
-            Built Surface: ${fmtSurface(severity_built_surface_m2)}
+        <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
+            ${_mapT('Built Surface')}: ${fmtSurface(severity_built_surface_m2)}
         </div>
     `;
 
@@ -293,13 +302,13 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
                     const sev_chin_all_null = severity_infant_in_need == null && severity_school_age_in_need == null && severity_adolescent_in_need == null;
                     const sev_chin_total = sev_chin_all_null ? null : (severity_infant_in_need || 0) + (severity_school_age_in_need || 0) + (severity_adolescent_in_need || 0);
                     content += `
-        <hr style="margin: 5px 0; border: none; border-top: 1px solid #ddd;">
-        <div style="font-size: 11px; color: #f59f00; font-weight: 600; margin-top: 5px;">In Need:</div>
-        <div style="font-size: 11px; color: #f59f00;">Population: ${_hasInNeed(severity_people_in_need) ? formatNumber(severity_people_in_need) : 'N/A'}</div>
-        <div style="font-size: 11px; color: #f59f00;">Children<span style="font-size: 0.85em; margin-left: 3px;">(total)</span>: ${sev_chin_total !== null ? formatNumber(sev_chin_total) : (_hasInNeed(severity_children_in_need) ? formatNumber(severity_children_in_need) : 'N/A')}</div>
-        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 0–4: ${_hasInNeed(severity_infant_in_need) ? formatNumber(severity_infant_in_need) : 'N/A'}</div>
-        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 5–14: ${_hasInNeed(severity_school_age_in_need) ? formatNumber(severity_school_age_in_need) : 'N/A'}</div>
-        <div style="font-size: 10px; color: #f5b942; padding-left: 10px; font-style: italic;">Age 15–19: ${_hasInNeed(severity_adolescent_in_need) ? formatNumber(severity_adolescent_in_need) : 'N/A'}</div>
+        <hr style="margin: 5px 0; border: none; border-top: 1px solid ${_AOTS_TT_DIVIDER};">
+        <div style="font-size: 11px; color: #f59f00; font-weight: 600; margin-top: 5px;">${_mapT('In Need')}:</div>
+        <div style="font-size: 11px; color: #f59f00;">${_mapT('Population')}: ${_hasInNeed(severity_people_in_need) ? formatNumber(severity_people_in_need) : _mapT('N/A')}</div>
+        <div style="font-size: 11px; color: #f59f00;">${_mapT('Children (total)')}: ${sev_chin_total !== null ? formatNumber(sev_chin_total) : (_hasInNeed(severity_children_in_need) ? formatNumber(severity_children_in_need) : _mapT('N/A'))}</div>
+        <div style="font-size: 10px; color: #f59f00; padding-left: 10px; font-style: italic;">${_mapT('Age 0–4')}: ${_hasInNeed(severity_infant_in_need) ? formatNumber(severity_infant_in_need) : _mapT('N/A')}</div>
+        <div style="font-size: 10px; color: #f59f00; padding-left: 10px; font-style: italic;">${_mapT('Age 5–14')}: ${_hasInNeed(severity_school_age_in_need) ? formatNumber(severity_school_age_in_need) : _mapT('N/A')}</div>
+        <div style="font-size: 10px; color: #f59f00; padding-left: 10px; font-style: italic;">${_mapT('Age 15–19')}: ${_hasInNeed(severity_adolescent_in_need) ? formatNumber(severity_adolescent_in_need) : _mapT('N/A')}</div>
         `;
                 }
 
@@ -327,14 +336,14 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #4169E1; margin-bottom: 5px;">
-            School
+            ${_mapT('School')}
         </div>
-        ${school_name ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${school_name}</div>` : ''}
+        ${school_name ? `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Name')}:</strong> ${school_name}</div>` : ''}
     `;
                 if (probability !== undefined && probability !== null) {
-                    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Impact Probability')}:</strong> ${formatPercent(probability)}</div>`;
                 } else {
-                    content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_SUB}; font-style: italic;">${_mapT('Base location (no impact data)')}</div>`;
                 }
 
                 layer.bindTooltip(content, {
@@ -362,15 +371,15 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #228B22; margin-bottom: 5px;">
-            Health Facility
+            ${_mapT('Health Facility')}
         </div>
-        ${facility_name ? `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${facility_name}</div>` : ''}
-        ${facility_type ? `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${facility_type}</div>` : ''}
+        ${facility_name ? `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Name')}:</strong> ${facility_name}</div>` : ''}
+        ${facility_type ? `<div style="font-size: 11px; color: ${_AOTS_TT_LABEL};"><strong>${_mapT('Type')}:</strong> ${facility_type}</div>` : ''}
     `;
                 if (probability !== undefined && probability !== null) {
-                    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Impact Probability')}:</strong> ${formatPercent(probability)}</div>`;
                 } else {
-                    content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_SUB}; font-style: italic;">${_mapT('Base location (no impact data)')}</div>`;
                 }
 
                 layer.bindTooltip(content, {
@@ -397,16 +406,16 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
                 let content = `
         <div style="font-size: 13px; font-weight: 600; color: #FF8C00; margin-bottom: 5px;">
-            Shelter
+            ${_mapT('Shelter')}
         </div>
     `;
-                if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
-                if (shelter_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${shelter_type}</div>`;
-                if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+                if (name) content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Name')}:</strong> ${name}</div>`;
+                if (shelter_type) content += `<div style="font-size: 11px; color: ${_AOTS_TT_LABEL};"><strong>${_mapT('Type')}:</strong> ${shelter_type}</div>`;
+                if (category) content += `<div style="font-size: 11px; color: ${_AOTS_TT_LABEL};"><strong>${_mapT('Category')}:</strong> ${category}</div>`;
                 if (probability !== undefined && probability !== null) {
-                    content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Impact Probability')}:</strong> ${formatPercent(probability)}</div>`;
                 } else {
-                    content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                    content += `<div style="font-size: 11px; color: ${_AOTS_TT_SUB}; font-style: italic;">${_mapT('Base location (no impact data)')}</div>`;
                 }
 
                 layer.bindTooltip(content, {
@@ -433,16 +442,16 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
 
             let content = `
         <div style="font-size: 13px; font-weight: 600; color: #008B8B; margin-bottom: 5px;">
-            WASH Facility
+            ${_mapT('WASH Facility')}
         </div>
     `;
-            if (name) content += `<div style="font-size: 12px; color: #555;"><strong>Name:</strong> ${name}</div>`;
-            if (wash_type) content += `<div style="font-size: 11px; color: #777;"><strong>Type:</strong> ${wash_type}</div>`;
-            if (category) content += `<div style="font-size: 11px; color: #777;"><strong>Category:</strong> ${category}</div>`;
+            if (name) content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Name')}:</strong> ${name}</div>`;
+            if (wash_type) content += `<div style="font-size: 11px; color: ${_AOTS_TT_LABEL};"><strong>${_mapT('Type')}:</strong> ${wash_type}</div>`;
+            if (category) content += `<div style="font-size: 11px; color: ${_AOTS_TT_LABEL};"><strong>${_mapT('Category')}:</strong> ${category}</div>`;
             if (probability !== undefined && probability !== null) {
-                content += `<div style="font-size: 12px; color: #555;"><strong>Impact Probability:</strong> ${formatPercent(probability)}</div>`;
+                content += `<div style="font-size: 11px; color: ${_AOTS_TT_VALUE};"><strong>${_mapT('Impact Probability')}:</strong> ${formatPercent(probability)}</div>`;
             } else {
-                content += `<div style="font-size: 11px; color: #888; font-style: italic;">Base location (no impact data)</div>`;
+                content += `<div style="font-size: 11px; color: ${_AOTS_TT_SUB}; font-style: italic;">${_mapT('Base location (no impact data)')}</div>`;
             }
 
             layer.bindTooltip(content, {

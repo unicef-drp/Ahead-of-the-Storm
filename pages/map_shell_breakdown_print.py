@@ -75,13 +75,17 @@ def layout(lang="en", zoom_countries=None, date=None, run=None,
     # Rainfall's own accumulation window ("6"/"24"/"72"/"120") — which of the
     # 4 lines in its multi-line curve is "current" (see _rain_threshold_chart).
 
-    # Best-effort match against the mock storm list — a real implementation
-    # would key this off the actual forecast/track_id behind the selected
-    # countries+date rather than re-deriving it from a static list, but
-    # there's no live storm/date binding on this concept page to read
-    # instead. Falls back to no storm badge at all (a plain "no active
-    # storm" report) rather than guessing.
-    storm = next((s for s in ms._STORMS if set(s["countries"]) & set(countries)), None)
+    # Real bug found+fixed here (2026-08, multi-agent hardcoded-mock-data
+    # sweep): this used to match against ms._STORMS, a frozen "active right
+    # now" snapshot, completely ignoring this page's own date/run (already
+    # parsed above, shown in the "Forecast issued" line, and correctly
+    # threaded into _impact_breakdown_content below) — a report for a
+    # historical or non-"currently active" forecast date could show the
+    # wrong storm's badge, or none at all even though real data existed.
+    # ms._resolve_storm_for_country is the same real, date-reactive lookup
+    # the live modal itself uses — try each selected country in turn (first
+    # real match wins) rather than re-deriving from the static snapshot.
+    storm = next(filter(None, (ms._resolve_storm_for_country(c, date, run) for c in countries)), None)
 
     info_items = []
     if storm:
