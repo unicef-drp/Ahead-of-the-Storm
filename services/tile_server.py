@@ -50,7 +50,7 @@ _FACILITY_CACHE_MAX = 48
 
 
 def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
-    """LRU cache with a sliding PER-ENTRY TTL, thread-safe.
+    """LRU cache with a sliding PER-ENTRY TTL, thread-safe, single-flight.
 
     The previous implementation bucketed on time.time() // ttl_seconds,
     which meant every entry in the cache — every tile, across every
@@ -59,9 +59,20 @@ def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
     that moment (found in the 2026-08 performance audit). Each entry now
     expires ttl_seconds after IT was individually cached, so misses spread
     out over time instead of synchronizing.
+
+    Single-flight (2026-08 perf audit, finding #3): a miss used to be
+    computed outside the lock with no coordination between callers, so N
+    concurrent requests for the SAME cold key each redid the full (often
+    Snowflake-backed) work, measured as two identical concurrent cold calls
+    both taking the full ~2.75s with zero sharing. A `pending` dict now
+    tracks an in-flight Future per key; the first caller for a cold key
+    computes it and resolves the Future for everyone else waiting on that
+    same key, while callers for a DIFFERENT key are still never blocked by
+    it (the actual computation still runs outside the lock).
     """
     def decorator(func):
         cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
+        pending: dict[tuple, concurrent.futures.Future] = {}
         lock = threading.Lock()
 
         @functools.wraps(func)
@@ -73,14 +84,31 @@ def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
                 if entry is not None and entry[0] > now:
                     cache.move_to_end(key)
                     return entry[1]
+                fut = pending.get(key)
+                is_owner = fut is None
+                if is_owner:
+                    fut = concurrent.futures.Future()
+                    pending[key] = fut
+            if not is_owner:
+                # Someone else is already computing this exact key, wait
+                # for their result instead of redoing the same slow work.
+                return fut.result()
             # Computed outside the lock — a slow Snowflake-backed miss on one
             # key must not block lookups/hits for every other key.
-            value = func(*args, **kwargs)
+            try:
+                value = func(*args, **kwargs)
+            except BaseException as exc:
+                with lock:
+                    pending.pop(key, None)
+                fut.set_exception(exc)
+                raise
             with lock:
                 cache[key] = (now + ttl_seconds, value)
                 cache.move_to_end(key)
                 while len(cache) > maxsize:
                     cache.popitem(last=False)
+                pending.pop(key, None)
+            fut.set_result(value)
             return value
 
         def cache_clear():
@@ -241,7 +269,41 @@ def _run_query(sql: str, params: list) -> list[dict]:
                 cur.close()
         except snowflake.connector.errors.ProgrammingError as exc:
             if exc.errno == 390114 and attempt == 0:
-                log.info("SPCS token expired — reconnecting with fresh token…")
+                log.info("SPCS token expired, reconnecting with fresh token…")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _thread_local.connection = None
+                continue
+            raise
+
+
+def _run_query_df(sql: str, params: list) -> pd.DataFrame:
+    """Same retry/reconnect behaviour as _run_query, but returns a DataFrame
+    directly via fetch_pandas_all() (Arrow, columnar) instead of first
+    materializing a Python list of per-row dicts and letting pandas rebuild
+    a DataFrame from those, a real double conversion cost for the large
+    bulk base-table loads (tens to hundreds of thousands of rows) this file
+    issues (microbenched at ~0.94s CPU for 300k rows via the dict path).
+    Reserved for those bulk loads; small facility/metadata queries keep
+    using _run_query's dict path (a DataFrame is more overhead than benefit
+    at that row count).
+    """
+    for attempt in range(2):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, params)
+                df = cur.fetch_pandas_all()
+                df.columns = [c.upper() for c in df.columns]
+                return df
+            finally:
+                cur.close()
+        except snowflake.connector.errors.ProgrammingError as exc:
+            if exc.errno == 390114 and attempt == 0:
+                log.info("SPCS token expired, reconnecting with fresh token…")
                 try:
                     conn.close()
                 except Exception:
@@ -609,9 +671,21 @@ def _stats_from_df(df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 # Mercator tiles — reconstruct geometry from quadkey TILE_ID
 # ---------------------------------------------------------------------------
+#
+# Split base / impact (2026-08 perf audit, findings #5+#6): the 15 base
+# columns below are byte-identical across every threshold/hazard for a given
+# country, only the small impact/vulnerability/CCI columns actually vary
+# per (storm, forecast_date, threshold). _MERCATOR_BASE_SQL is queried once
+# per (country, zoom_level) and cached with a long TTL (see
+# _ensure_mercator_base_one); every hazard/threshold variant below queries
+# ONLY its own small ZONE_ID-keyed impact columns and merges them onto the
+# cached base DataFrame in pandas (_merge_no_collision) instead of re-running
+# a whole-country 3-way LEFT JOIN per threshold. Bonus: the base query's
+# bind params are now identical across every threshold, so Snowflake's own
+# 24h result cache can serve repeat base loads even across container
+# restarts.
 
-# Bulk variant — loads ALL rows for a country; no TILE_ID LIKE filter.
-_MERCATOR_FULL_SQL = """
+_MERCATOR_BASE_SQL = """
 SELECT
     b.TILE_ID,
     b.POPULATION,
@@ -627,7 +701,20 @@ SELECT
     b.NUM_SCHOOLS,
     b.NUM_HCS,
     b.NUM_SHELTERS,
-    b.NUM_WASH,
+    b.NUM_WASH
+FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
+WHERE b.COUNTRY    = %s
+  AND b.ZOOM_LEVEL = %s
+"""
+
+# Wind impact-only siblings, MERCATOR_TILE_VULNERABILITY_MAT/
+# MERCATOR_TILE_CCI_MAT are keyed by STORM+FORECAST_DATE only (no
+# WIND_THRESHOLD), queried separately from the WIND_THRESHOLD-keyed impact
+# table so their result is naturally reusable across every wind threshold of
+# the same storm/date, not just the base columns.
+_MERCATOR_IMPACT_ONLY_SQL = """
+SELECT
+    i.ZONE_ID AS TILE_ID,
     i.PROBABILITY,
     i.E_POPULATION,
     i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
@@ -638,44 +725,52 @@ SELECT
     i.E_NUM_SCHOOLS,
     i.E_NUM_HCS,
     i.E_NUM_SHELTERS,
-    i.E_NUM_WASH,
+    i.E_NUM_WASH
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT i
+WHERE i.COUNTRY        = %s
+  AND i.ZOOM_LEVEL     = %s
+  AND i.STORM          = %s
+  AND i.FORECAST_DATE  = %s
+  AND i.WIND_THRESHOLD = %s
+"""
+
+_MERCATOR_VULN_ONLY_SQL = """
+SELECT
+    v.ZONE_ID AS TILE_ID,
     v.E_PEOPLE_IN_NEED,
     v.E_CHILDREN_IN_NEED,
     v.E_INFANT_IN_NEED,
     v.E_SCHOOL_AGE_IN_NEED,
-    v.E_ADOLESCENT_IN_NEED,
+    v.E_ADOLESCENT_IN_NEED
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT v
+WHERE v.COUNTRY       = %s
+  AND v.ZOOM_LEVEL    = %s
+  AND v.STORM         = %s
+  AND v.FORECAST_DATE = %s
+"""
+
+_MERCATOR_CCI_ONLY_SQL = """
+SELECT
+    c.ZONE_ID AS TILE_ID,
     c.CCI_CHILDREN,
     c.E_CCI_CHILDREN
-FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
-LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT i
-    ON  b.TILE_ID        = i.ZONE_ID
-    AND b.COUNTRY        = i.COUNTRY
-    AND b.ZOOM_LEVEL     = i.ZOOM_LEVEL
-    AND i.STORM          = %s
-    AND i.FORECAST_DATE  = %s
-    AND i.WIND_THRESHOLD = %s
-LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT v
-    ON  b.TILE_ID        = v.ZONE_ID
-    AND b.COUNTRY        = v.COUNTRY
-    AND b.ZOOM_LEVEL     = v.ZOOM_LEVEL
-    AND v.STORM          = %s
-    AND v.FORECAST_DATE  = %s
-LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT c
-    ON  b.TILE_ID        = c.ZONE_ID
-    AND b.COUNTRY        = c.COUNTRY
-    AND b.ZOOM_LEVEL     = c.ZOOM_LEVEL
-    AND c.STORM          = %s
-    AND c.FORECAST_DATE  = %s
-WHERE b.COUNTRY    = %s
-  AND b.ZOOM_LEVEL = %s
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT c
+WHERE c.COUNTRY       = %s
+  AND c.ZOOM_LEVEL    = %s
+  AND c.STORM         = %s
+  AND c.FORECAST_DATE = %s
 """
 
 # ---------------------------------------------------------------------------
 # Admin tiles — GEOMETRY column exists; use shapely for clipping
 # ---------------------------------------------------------------------------
+#
+# Same base/impact split as mercator above, plus the ST_ASGEOJSON polygon
+# transfer + shapely shape() parse + STRtree build, all threshold-invariant,
+# cached once per (country, admin_level) (see _ensure_admin_base_one)
+# instead of repeated per threshold.
 
-# Bulk variant — loads ALL rows for a country/admin_level; no ST_INTERSECTS filter.
-_ADMIN_FULL_SQL = """
+_ADMIN_BASE_SQL = """
 SELECT
     b.TILE_ID,
     b.NAME,
@@ -694,7 +789,15 @@ SELECT
     b.NUM_HCS,
     b.NUM_SHELTERS,
     b.NUM_WASH,
-    ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON,
+    ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON
+FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
+WHERE b.COUNTRY     = %s
+  AND b.ADMIN_LEVEL = %s
+"""
+
+_ADMIN_IMPACT_ONLY_SQL = """
+SELECT
+    i.TILE_ID,
     i.PROBABILITY,
     i.E_POPULATION,
     i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
@@ -705,36 +808,40 @@ SELECT
     i.E_NUM_SCHOOLS,
     i.E_NUM_HCS,
     i.E_NUM_SHELTERS,
-    i.E_NUM_WASH,
+    i.E_NUM_WASH
+FROM AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT i
+WHERE i.COUNTRY        = %s
+  AND i.ADMIN_LEVEL    = %s
+  AND i.STORM          = %s
+  AND i.FORECAST_DATE  = %s
+  AND i.WIND_THRESHOLD = %s
+"""
+
+_ADMIN_VULN_ONLY_SQL = """
+SELECT
+    v.TILE_ID,
     v.E_PEOPLE_IN_NEED,
     v.E_CHILDREN_IN_NEED,
     v.E_INFANT_IN_NEED,
     v.E_SCHOOL_AGE_IN_NEED,
-    v.E_ADOLESCENT_IN_NEED,
+    v.E_ADOLESCENT_IN_NEED
+FROM AOTS.TC_ECMWF.ADMIN_ALL_VULNERABILITY_MAT v
+WHERE v.COUNTRY       = %s
+  AND v.ADMIN_LEVEL   = %s
+  AND v.STORM         = %s
+  AND v.FORECAST_DATE = %s
+"""
+
+_ADMIN_CCI_ONLY_SQL = """
+SELECT
+    c.TILE_ID,
     c.CCI_CHILDREN,
     c.E_CCI_CHILDREN
-FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
-LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT i
-    ON  b.TILE_ID        = i.TILE_ID
-    AND b.COUNTRY        = i.COUNTRY
-    AND b.ADMIN_LEVEL    = i.ADMIN_LEVEL
-    AND i.STORM          = %s
-    AND i.FORECAST_DATE  = %s
-    AND i.WIND_THRESHOLD = %s
-LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_VULNERABILITY_MAT v
-    ON  b.TILE_ID        = v.TILE_ID
-    AND b.COUNTRY        = v.COUNTRY
-    AND b.ADMIN_LEVEL    = v.ADMIN_LEVEL
-    AND v.STORM          = %s
-    AND v.FORECAST_DATE  = %s
-LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT c
-    ON  b.TILE_ID        = c.TILE_ID
-    AND b.COUNTRY        = c.COUNTRY
-    AND b.ADMIN_LEVEL    = c.ADMIN_LEVEL
-    AND c.STORM          = %s
-    AND c.FORECAST_DATE  = %s
-WHERE b.COUNTRY     = %s
-  AND b.ADMIN_LEVEL = %s
+FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT c
+WHERE c.COUNTRY       = %s
+  AND c.ADMIN_LEVEL   = %s
+  AND c.STORM         = %s
+  AND c.FORECAST_DATE = %s
 """
 
 # ---------------------------------------------------------------------------
@@ -749,23 +856,9 @@ WHERE b.COUNTRY     = %s
 # as gust data. No CCI/vulnerability pipeline exists for gust at all.
 # ---------------------------------------------------------------------------
 
-_MERCATOR_GUST_SQL = """
+_MERCATOR_GUST_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
+    i.ZONE_ID AS TILE_ID,
     i.PROBABILITY,
     i.E_POPULATION,
     i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
@@ -777,38 +870,17 @@ SELECT
     i.E_NUM_HCS,
     i.E_NUM_SHELTERS,
     i.E_NUM_WASH
-FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
-LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_GUST_MAT i
-    ON  b.TILE_ID        = i.ZONE_ID
-    AND b.COUNTRY        = i.COUNTRY
-    AND b.ZOOM_LEVEL     = i.ZOOM_LEVEL
-    AND i.STORM          = %s
-    AND i.FORECAST_DATE  = %s
-    AND i.GUST_THRESHOLD = %s
-WHERE b.COUNTRY    = %s
-  AND b.ZOOM_LEVEL = %s
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_GUST_MAT i
+WHERE i.COUNTRY        = %s
+  AND i.ZOOM_LEVEL     = %s
+  AND i.STORM          = %s
+  AND i.FORECAST_DATE  = %s
+  AND i.GUST_THRESHOLD = %s
 """
 
-_ADMIN_GUST_SQL = """
+_ADMIN_GUST_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.NAME,
-    b.ADMIN_LEVEL,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
-    ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON,
+    i.TILE_ID,
     i.PROBABILITY,
     i.E_POPULATION,
     i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
@@ -820,16 +892,12 @@ SELECT
     i.E_NUM_HCS,
     i.E_NUM_SHELTERS,
     i.E_NUM_WASH
-FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
-LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_GUST_MAT i
-    ON  b.TILE_ID        = i.TILE_ID
-    AND b.COUNTRY        = i.COUNTRY
-    AND b.ADMIN_LEVEL    = i.ADMIN_LEVEL
-    AND i.STORM          = %s
-    AND i.FORECAST_DATE  = %s
-    AND i.GUST_THRESHOLD = %s
-WHERE b.COUNTRY     = %s
-  AND b.ADMIN_LEVEL = %s
+FROM AOTS.TC_ECMWF.ADMIN_ALL_GUST_MAT i
+WHERE i.COUNTRY        = %s
+  AND i.ADMIN_LEVEL    = %s
+  AND i.STORM          = %s
+  AND i.FORECAST_DATE  = %s
+  AND i.GUST_THRESHOLD = %s
 """
 
 # ---------------------------------------------------------------------------
@@ -851,120 +919,48 @@ WHERE b.COUNTRY     = %s
 # at ANY point in the forecast horizon for that RP tier) — the same "at least
 # this severity, at some point" semantics the other hazards already have.
 # BOOLOR_AGG folds the two boolean flag columns (true if true in ANY step).
+# Deliberately no E_CHILDREN_TOTAL here (matches the original combined
+# query's own asymmetry, no such column exists for this hazard).
 # ---------------------------------------------------------------------------
 
-_MERCATOR_RIVER_SQL = """
-WITH river_agg AS (
-    SELECT
-        ZONE_ID,
-        MAX(PROBABILITY)              AS PROBABILITY,
-        BOOLOR_AGG(BELOW_MIN_BASIN)   AS BELOW_MIN_BASIN,
-        BOOLOR_AGG(IS_STANDIN)        AS IS_STANDIN,
-        MAX(E_POPULATION)             AS E_POPULATION,
-        MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
-        MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
-        MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
-        MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
-        MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
-        MAX(E_NUM_HCS)                AS E_NUM_HCS,
-        MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
-        MAX(E_NUM_WASH)               AS E_NUM_WASH
-    FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-    WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
-    GROUP BY ZONE_ID
-)
+_MERCATOR_RIVER_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
-    i.PROBABILITY,
-    i.BELOW_MIN_BASIN,
-    i.IS_STANDIN,
-    i.E_POPULATION,
-    i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
-    i.E_INFANT_POPULATION,
-    i.E_SCHOOL_AGE_POPULATION,
-    i.E_ADOLESCENT_POPULATION,
-    i.E_BUILT_SURFACE_M2,
-    i.E_NUM_SCHOOLS,
-    i.E_NUM_HCS,
-    i.E_NUM_SHELTERS,
-    i.E_NUM_WASH
-FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
-LEFT JOIN river_agg i ON b.TILE_ID = i.ZONE_ID
-WHERE b.COUNTRY    = %s
-  AND b.ZOOM_LEVEL = %s
+    ZONE_ID AS TILE_ID,
+    MAX(PROBABILITY)              AS PROBABILITY,
+    BOOLOR_AGG(BELOW_MIN_BASIN)   AS BELOW_MIN_BASIN,
+    BOOLOR_AGG(IS_STANDIN)        AS IS_STANDIN,
+    MAX(E_POPULATION)             AS E_POPULATION,
+    MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
+    MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
+    MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
+    MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
+    MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
+    MAX(E_NUM_HCS)                AS E_NUM_HCS,
+    MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
+    MAX(E_NUM_WASH)               AS E_NUM_WASH
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
+WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+GROUP BY ZONE_ID
 """
 
-_ADMIN_RIVER_SQL = """
-WITH river_agg AS (
-    SELECT
-        TILE_ID,
-        ADMIN_LEVEL,
-        MAX(PROBABILITY)              AS PROBABILITY,
-        BOOLOR_AGG(BELOW_MIN_BASIN)   AS BELOW_MIN_BASIN,
-        BOOLOR_AGG(IS_STANDIN)        AS IS_STANDIN,
-        MAX(E_POPULATION)             AS E_POPULATION,
-        MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
-        MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
-        MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
-        MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
-        MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
-        MAX(E_NUM_HCS)                AS E_NUM_HCS,
-        MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
-        MAX(E_NUM_WASH)               AS E_NUM_WASH
-    FROM AOTS.TC_ECMWF.ADMIN_ALL_RIVER_MAT
-    WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
-    GROUP BY TILE_ID, ADMIN_LEVEL
-)
+_ADMIN_RIVER_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.NAME,
-    b.ADMIN_LEVEL,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
-    ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON,
-    i.PROBABILITY,
-    i.BELOW_MIN_BASIN,
-    i.IS_STANDIN,
-    i.E_POPULATION,
-    i.E_INFANT_POPULATION + i.E_SCHOOL_AGE_POPULATION + i.E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
-    i.E_INFANT_POPULATION,
-    i.E_SCHOOL_AGE_POPULATION,
-    i.E_ADOLESCENT_POPULATION,
-    i.E_BUILT_SURFACE_M2,
-    i.E_NUM_SCHOOLS,
-    i.E_NUM_HCS,
-    i.E_NUM_SHELTERS,
-    i.E_NUM_WASH
-FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
-LEFT JOIN river_agg i ON b.TILE_ID = i.TILE_ID AND b.ADMIN_LEVEL = i.ADMIN_LEVEL
-WHERE b.COUNTRY     = %s
-  AND b.ADMIN_LEVEL = %s
+    TILE_ID,
+    MAX(PROBABILITY)              AS PROBABILITY,
+    BOOLOR_AGG(BELOW_MIN_BASIN)   AS BELOW_MIN_BASIN,
+    BOOLOR_AGG(IS_STANDIN)        AS IS_STANDIN,
+    MAX(E_POPULATION)             AS E_POPULATION,
+    MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
+    MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
+    MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
+    MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
+    MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
+    MAX(E_NUM_HCS)                AS E_NUM_HCS,
+    MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
+    MAX(E_NUM_WASH)               AS E_NUM_WASH
+FROM AOTS.TC_ECMWF.ADMIN_ALL_RIVER_MAT
+WHERE COUNTRY = %s AND ADMIN_LEVEL = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+GROUP BY TILE_ID
 """
 
 # ---------------------------------------------------------------------------
@@ -980,8 +976,8 @@ WHERE b.COUNTRY     = %s
 # ADMIN_ALL_PRECIP_MAT is a bare, hazard-UNCONDITIONAL duplicate of the base
 # layer's own column (same values), not a rain-specific exposed count — no
 # "expected number of schools affected by rain" data exists at all. So only
-# E_POPULATION is selected from `i` below; every other exposure figure comes
-# from the base join (`b.`) same as always, and the browser's existing
+# E_POPULATION is selected below; every other exposure figure comes from the
+# base join (merged in pandas) same as always, and the browser's existing
 # fmtE()-based tooltip fallback (base_count × probability) naturally supplies
 # an estimate for those — no special-case tooltip code needed for this gap.
 #
@@ -994,72 +990,27 @@ WHERE b.COUNTRY     = %s
 #
 # Confirmed live: no STEP_H-style duplication for precip (one row per
 # ZONE_ID per (COUNTRY, FORECAST_TIME, THRESHOLD_MM, WINDOW_H) combo) — a
-# plain LEFT JOIN suffices, unlike river's MAX(...) aggregation above.
+# plain filter suffices, unlike river's MAX(...) aggregation above.
 # ---------------------------------------------------------------------------
 
-_MERCATOR_PRECIP_SQL = """
+_MERCATOR_PRECIP_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
-    i.PROBABILITY,
-    i.E_POPULATION
-FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT b
-LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT i
-    ON  b.TILE_ID       = i.ZONE_ID
-    AND b.COUNTRY       = i.COUNTRY
-    AND i.FORECAST_TIME = %s
-    AND i.THRESHOLD_MM  = %s
-    AND i.WINDOW_H      = %s
-WHERE b.COUNTRY    = %s
-  AND b.ZOOM_LEVEL = %s
+    ZONE_ID AS TILE_ID,
+    PROBABILITY,
+    E_POPULATION
+FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
+WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
 """
 
-_ADMIN_PRECIP_SQL = """
+_ADMIN_PRECIP_IMPACT_ONLY_SQL = """
 SELECT
-    b.TILE_ID,
-    b.NAME,
-    b.ADMIN_LEVEL,
-    b.POPULATION,
-    b.INFANT_POPULATION + b.SCHOOL_AGE_POPULATION + b.ADOLESCENT_POPULATION AS CHILDREN_TOTAL,
-    b.INFANT_POPULATION,
-    b.SCHOOL_AGE_POPULATION,
-    b.ADOLESCENT_POPULATION,
-    b.BUILT_SURFACE_M2,
-    b.SMOD_CLASS,
-    b.RWI,
-    b.MODERATE_POVERTY_PROB,
-    b.SEVERE_POVERTY_PROB,
-    b.NUM_SCHOOLS,
-    b.NUM_HCS,
-    b.NUM_SHELTERS,
-    b.NUM_WASH,
-    ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON,
-    i.PROBABILITY,
-    i.E_POPULATION
-FROM AOTS.TC_ECMWF.BASE_ADMIN_GEOM_MAT b
-LEFT JOIN AOTS.TC_ECMWF.ADMIN_ALL_PRECIP_MAT i
-    ON  b.TILE_ID       = i.TILE_ID
-    AND b.COUNTRY       = i.COUNTRY
-    AND b.ADMIN_LEVEL   = i.ADMIN_LEVEL
-    AND i.FORECAST_TIME = %s
-    AND i.THRESHOLD_MM  = %s
-    AND i.WINDOW_H      = %s
-WHERE b.COUNTRY     = %s
-  AND b.ADMIN_LEVEL = %s
+    TILE_ID,
+    PROBABILITY,
+    E_POPULATION
+FROM AOTS.TC_ECMWF.ADMIN_ALL_PRECIP_MAT
+WHERE COUNTRY = %s AND ADMIN_LEVEL = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
 """
+
 
 
 # ---------------------------------------------------------------------------
@@ -1086,6 +1037,32 @@ def _precompute_mercator_bounds(tile_ids: "pd.Series") -> pd.DataFrame:
             log.debug("Bad quadkey %s, skipping bounds: %s", qk, exc)
             ws[i] = ss[i] = es[i] = ns[i] = np.nan
     return pd.DataFrame({"BW": ws, "BS": ss, "BE": es, "BN": ns})
+
+
+# Shared, long-lived fan-out pool for per-country Snowflake round-trips
+# (ensure_mercator/ensure_admin/ensure_facility's own multi-country loops,
+# e.g. a region selection like "AIA+ATG+..."). Real perf fix (2026-08 audit,
+# finding #8's own fix applied to this file's mirror of the same bug):
+# these call sites used to open a THROWAWAY `with ThreadPoolExecutor(...)`
+# per call, so every worker thread paid a fresh Snowflake connect() handshake
+# even on a warm cache, and the connection attached to that thread was never
+# closed when the executor exited (leaked until GC/server-side timeout).
+# Long-lived worker threads reuse their thread-local connection (see
+# get_connection()) after the first call. Sized well above the largest
+# per-call fan-out (`min(8, len(codes))`) so a handful of concurrent
+# multi-country requests never queue behind each other's leaf queries.
+_SHARED_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16, thread_name_prefix="aots-tile-fanout",
+)
+
+# TTL for the base (threshold/storm/hazard-independent) mercator/admin
+# caches, see _ensure_mercator_base_one/_ensure_admin_base_one. Population,
+# infrastructure counts, and admin-region geometry only change when the
+# pipeline re-runs for a country (not per-forecast), so this is deliberately
+# much longer-lived than _TILE_TTL (the per-threshold impact data).
+_BASE_DATA_TTL = _TILE_TTL * 4  # 60 minutes
+_MERCATOR_BASE_CACHE_MAX = 16
+_ADMIN_BASE_CACHE_MAX = 16
 
 
 def _hazard_variant(hazard: str, wind_threshold: int, gust_threshold: Optional[int],
@@ -1120,10 +1097,28 @@ class _DataCache:
 
     hazard="wind" (default) preserves the exact original single-hazard
     behaviour for every existing caller. hazard="gust"/"river"/"rain" route to
-    their own sibling SQL (see _MERCATOR_GUST_SQL etc. above) and their own
-    threshold param (gust_threshold/rp_tier/threshold_mm+window_h respectively)
-    instead of wind_threshold — wind_threshold itself is still accepted (and
-    harmlessly ignored) for non-wind hazards so callers never need to omit it.
+    their own sibling SQL (see _MERCATOR_GUST_IMPACT_ONLY_SQL etc. above) and
+    their own threshold param (gust_threshold/rp_tier/threshold_mm+window_h
+    respectively) instead of wind_threshold, wind_threshold itself is still
+    accepted (and harmlessly ignored) for non-wind hazards so callers never
+    need to omit it.
+
+    Base/impact split (2026-08 perf audit, findings #5+#6, SNOWFLAKE mode
+    only): ensure_mercator/ensure_admin no longer re-run a whole-country
+    3-way LEFT JOIN per threshold. Each first queries/caches its own
+    threshold-independent BASE_MERCATOR_TILE_MAT/BASE_ADMIN_GEOM_MAT columns
+    once per (country[, admin_level]) in its own long-lived
+    _mercator_base/_admin_base dict with its own long TTL (_BASE_DATA_TTL),
+    see _ensure_mercator_base_one/_ensure_admin_base_one. Per variant, it
+    then queries only the small impact/vulnerability/CCI columns keyed by
+    ZONE_ID/TILE_ID and merges them onto the cached base DataFrame
+    (_merge_no_collision). Admin additionally reuses the cached base's
+    already-parsed geometries and STRtree untouched for the common
+    single-country case: only per-variant impact PROPS get rebuilt, not the
+    geometry parse or the spatial index. The LOCAL/BLOB (file-based) path is
+    untouched: it already reads a base parquet plus small per-threshold
+    CSVs and merges them itself (cheap local/blob disk I/O, not the
+    Snowflake round-trip cost this split targets).
     """
 
     def __init__(self) -> None:
@@ -1131,6 +1126,18 @@ class _DataCache:
         self._admin: dict[tuple, pd.DataFrame] = {}
         self._admin_geoms: dict[tuple, tuple] = {}  # key → (geom_list, strtree, props_list)
         self._facility: dict[tuple, pd.DataFrame] = {}
+        # Threshold/storm/hazard-independent base caches (findings #5+#6) , 
+        # own long TTL via _BASE_DATA_TTL, see _ensure_mercator_base_one /
+        # _ensure_admin_base_one. Key shapes ("mercator_base"/"admin_base"
+        # prefixed) never collide with the per-variant caches above, sharing
+        # the same _loaded_at/_key_locks infra (see _evict_oldest_if_over's
+        # own comment on key-shape separation).
+        self._mercator_base: dict[tuple, pd.DataFrame] = {}
+        self._admin_base: dict[tuple, tuple] = {}  # key → (df, geoms, tree, tile_id_order)
+        # ZONE_ID -> (lat, lon) health-centre coordinate lookup (finding #15),
+        # key → dict[str, tuple[float, float]], same long _BASE_DATA_TTL as
+        # the base caches above — see _ensure_hc_coords_one.
+        self._hc_coords: dict[tuple, dict] = {}
         # Per-cache-key lock instead of one instance-wide lock — real perf
         # bug found+fixed here (2026-08, user-reported: a 4-country storm
         # selection loading "way too long"): a single self._load_lock used
@@ -1152,8 +1159,8 @@ class _DataCache:
                 self._key_locks[key] = lock
             return lock
 
-    def _is_fresh(self, key: tuple) -> bool:
-        return key in self._loaded_at and (time.time() - self._loaded_at[key]) < _TILE_TTL
+    def _is_fresh(self, key: tuple, ttl: int = _TILE_TTL) -> bool:
+        return key in self._loaded_at and (time.time() - self._loaded_at[key]) < ttl
 
     def _evict_oldest_if_over(self, just_written_key: tuple, cache_dicts: list, max_size: int) -> None:
         """Bounds a cache dict (or a matched set of dicts sharing the same
@@ -1191,6 +1198,79 @@ class _DataCache:
         with self._key_locks_meta_lock:
             self._key_locks.pop(oldest_key, None)
 
+    # --- base (threshold/storm/hazard-independent) -----------------------
+
+    def _ensure_mercator_base_one(self, code: str) -> pd.DataFrame:
+        """Load+cache the base mercator DataFrame (BASE_MERCATOR_TILE_MAT
+        columns + precomputed tile bounds) for ONE country code, the same
+        base data serves every hazard/threshold variant of that country.
+        SNOWFLAKE mode only (see class docstring for why LOCAL/BLOB skips
+        this and returns an empty placeholder here, ensure_mercator's own
+        _load_one falls back to _load_mercator_from_files directly instead).
+        """
+        base_key = ("mercator_base", code, MAT_ZOOM_LEVEL)
+        if self._is_fresh(base_key, ttl=_BASE_DATA_TTL) and base_key in self._mercator_base:
+            return self._mercator_base[base_key]
+        with self._lock_for(base_key):
+            if self._is_fresh(base_key, ttl=_BASE_DATA_TTL) and base_key in self._mercator_base:
+                return self._mercator_base[base_key]
+            log.info("Cache: bulk-loading mercator BASE %s [%s]…", code, IMPACT_DATA_STORE)
+            if IMPACT_DATA_STORE == "SNOWFLAKE":
+                df = _run_query_df(_MERCATOR_BASE_SQL, [code, MAT_ZOOM_LEVEL])
+            else:
+                df = pd.DataFrame(columns=["TILE_ID"])
+            if not df.empty:
+                df = pd.concat([df.reset_index(drop=True), _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
+            else:
+                df = pd.DataFrame(columns=["TILE_ID", "BW", "BS", "BE", "BN"])
+            self._mercator_base[base_key] = df
+            self._loaded_at[base_key] = time.time()
+            self._evict_oldest_if_over(base_key, [self._mercator_base], _MERCATOR_BASE_CACHE_MAX)
+            log.info("  Cache: %d z=14 base tiles ready (country=%s)", len(df), code)
+            return df
+
+    def _ensure_admin_base_one(self, code: str, admin_level: int) -> tuple:
+        """Load+cache (base_df, geoms, tree, tile_id_order) for ONE country
+        code/admin_level. geoms/tree are parsed/built exactly once here;
+        tile_id_order lines up positionally with geoms (only rows that had a
+        usable GEOJSON, matching the original per-row skip). ensure_admin
+        reuses geoms/tree UNCHANGED for the common single-country case:
+        only the per-variant impact PROPS get rebuilt from a fresh small
+        impact query merged onto base_df. SNOWFLAKE mode only, same
+        reasoning as _ensure_mercator_base_one above.
+        """
+        from shapely.strtree import STRtree
+        base_key = ("admin_base", code, admin_level)
+        if self._is_fresh(base_key, ttl=_BASE_DATA_TTL) and base_key in self._admin_base:
+            return self._admin_base[base_key]
+        with self._lock_for(base_key):
+            if self._is_fresh(base_key, ttl=_BASE_DATA_TTL) and base_key in self._admin_base:
+                return self._admin_base[base_key]
+            log.info("Cache: bulk-loading admin BASE %s L%s [%s]…", code, admin_level, IMPACT_DATA_STORE)
+            if IMPACT_DATA_STORE == "SNOWFLAKE":
+                df = _run_query_df(_ADMIN_BASE_SQL, [code, admin_level])
+            else:
+                df = pd.DataFrame(columns=["TILE_ID"])
+            geoms, tile_id_order = [], []
+            for _, row in df.iterrows():
+                geojson_str = row.get("GEOJSON")
+                if not geojson_str:
+                    continue
+                try:
+                    geojson_data = json.loads(geojson_str) if isinstance(geojson_str, str) else geojson_str
+                    geoms.append(shape(geojson_data))
+                    tile_id_order.append(row["TILE_ID"])
+                except Exception as e:
+                    log.debug("Skip admin base geom: %s", e)
+            tree = STRtree(geoms)
+            entry = (df, geoms, tree, tile_id_order)
+            self._admin_base[base_key] = entry
+            self._loaded_at[base_key] = time.time()
+            self._evict_oldest_if_over(base_key, [self._admin_base], _ADMIN_BASE_CACHE_MAX)
+            log.info("  Cache: %d admin base regions parsed + indexed (country=%s L%s)",
+                     len(geoms), code, admin_level)
+            return entry
+
     # --- mercator --------------------------------------------------------
 
     def ensure_mercator(self, country: str, storm: str, forecast_date: str,
@@ -1206,55 +1286,80 @@ class _DataCache:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
 
-            def _load_one(code: str) -> list[dict]:
+            def _load_one(code: str) -> pd.DataFrame:
                 log.info("Cache: bulk-loading mercator %s/%s/%s hazard=%s variant=%s [%s]…",
                          code, storm, forecast_date, hazard, variant, IMPACT_DATA_STORE)
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
+                    base_df = self._ensure_mercator_base_one(code)
+                    if base_df.empty:
+                        return base_df
+                    merged = base_df
                     if hazard == "gust":
-                        return _run_query(_MERCATOR_GUST_SQL, [
-                            storm, forecast_date, gust_threshold, code, MAT_ZOOM_LEVEL,
+                        impact_rows = _run_query(_MERCATOR_GUST_IMPACT_ONLY_SQL, [
+                            code, MAT_ZOOM_LEVEL, storm, forecast_date, gust_threshold,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "river":
-                        return _run_query(_MERCATOR_RIVER_SQL, [
-                            code, forecast_date, rp_tier, code, MAT_ZOOM_LEVEL,
+                        impact_rows = _run_query(_MERCATOR_RIVER_IMPACT_ONLY_SQL, [
+                            code, forecast_date, rp_tier,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "rain":
-                        return _run_query(_MERCATOR_PRECIP_SQL, [
-                            forecast_date, threshold_mm, window_h, code, MAT_ZOOM_LEVEL,
+                        impact_rows = _run_query(_MERCATOR_PRECIP_IMPACT_ONLY_SQL, [
+                            code, forecast_date, threshold_mm, window_h,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     else:
-                        return _run_query(_MERCATOR_FULL_SQL, [
-                            storm, forecast_date, wind_threshold,
-                            storm, forecast_date,
-                            storm, forecast_date,
-                            code, MAT_ZOOM_LEVEL,
+                        impact_rows = _run_query(_MERCATOR_IMPACT_ONLY_SQL, [
+                            code, MAT_ZOOM_LEVEL, storm, forecast_date, wind_threshold,
                         ])
+                        vuln_rows = _run_query(_MERCATOR_VULN_ONLY_SQL, [
+                            code, MAT_ZOOM_LEVEL, storm, forecast_date,
+                        ])
+                        cci_rows = _run_query(_MERCATOR_CCI_ONLY_SQL, [
+                            code, MAT_ZOOM_LEVEL, storm, forecast_date,
+                        ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                        if vuln_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(vuln_rows), on="TILE_ID")
+                        if cci_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(cci_rows), on="TILE_ID")
+                    return merged
                 elif hazard == "wind":
-                    return _load_mercator_from_files(code, storm, forecast_date, wind_threshold)
+                    rows = _load_mercator_from_files(code, storm, forecast_date, wind_threshold)
+                    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
                 else:
                     log.warning("%s STAGE (file-based) mercator loading not implemented — returning empty for %s",
                                 hazard, code)
-                    return []
+                    return pd.DataFrame(columns=["TILE_ID"])
 
-            all_rows: list[dict] = []
             # Independent per-country Snowflake round-trips — safe to run
-            # concurrently (pure network I/O, each _run_query opens/uses its
-            # own connection). Real perf fix (2026-08, user-reported: a
-            # multi-country storm selection, e.g. MELISSA across Turks and
-            # Caicos/Jamaica/Cuba/Nicaragua, loading "way too long" when not
-            # already prewarmed) — this loop used to pay ~2s/country fully
-            # serially under the old single global lock; ex.map preserves
-            # `codes`' own order in the results, so output stays deterministic.
+            # concurrently (pure network I/O). Real perf fix (2026-08,
+            # user-reported: a multi-country storm selection, e.g. MELISSA
+            # across Turks and Caicos/Jamaica/Cuba/Nicaragua, loading "way
+            # too long" when not already prewarmed), this loop used to pay
+            # ~2s/country fully serially under the old single global lock.
+            # Uses the shared long-lived _SHARED_EXECUTOR (see its own
+            # comment) instead of an ephemeral per-call executor.
             if len(codes) > 1:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
-                    for rows in ex.map(_load_one, codes):
-                        all_rows.extend(rows)
+                dfs = [df for df in _SHARED_EXECUTOR.map(_load_one, codes) if not df.empty]
             else:
+                dfs = []
                 for code in codes:
-                    all_rows.extend(_load_one(code))
-            if all_rows:
-                df = pd.DataFrame(all_rows)
-                df = pd.concat([df, _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
+                    df = _load_one(code)
+                    if not df.empty:
+                        dfs.append(df)
+            if dfs:
+                df = pd.concat(dfs, ignore_index=True)
+                if "BW" not in df.columns:
+                    # File-based fallback rows don't carry precomputed
+                    # bounds yet (SNOWFLAKE-sourced rows already do, via
+                    # the cached base, see _ensure_mercator_base_one).
+                    df = pd.concat([df.reset_index(drop=True), _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
             else:
                 df = pd.DataFrame(columns=["TILE_ID", "BW", "BS", "BE", "BN"])
             log.info("  Cache: %d z=14 tiles ready (country=%s, hazard=%s)", len(df), country, hazard)
@@ -1284,7 +1389,6 @@ class _DataCache:
                      wind_threshold: int, admin_level: int, hazard: str = "wind",
                      gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
                      threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> None:
-        from shapely.strtree import STRtree
         variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
         key = (country, storm, forecast_date) + variant + (admin_level,)
         if self._is_fresh(key) and key in self._admin_geoms:
@@ -1294,69 +1398,137 @@ class _DataCache:
                 return
             codes = [c.upper() for c in country.split('+') if c.strip()]
 
-            def _load_one(code: str) -> list[dict]:
+            def _load_one(code: str) -> tuple:
+                """Returns (merged_df, reuse_geoms, reuse_tree, tile_id_order).
+                SNOWFLAKE mode reuses the cached base's geoms/tree/order
+                untouched (only impact/vuln/cci columns are freshly queried
+                and merged), reuse_geoms is None for the file-based
+                fallback, signalling the caller to parse geometry fresh from
+                merged_df['GEOJSON'] the original way.
+                """
                 log.info("Cache: bulk-loading admin %s/%s/%s hazard=%s variant=%s L%s [%s]…",
                          code, storm, forecast_date, hazard, variant, admin_level, IMPACT_DATA_STORE)
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
+                    base_df, geoms, tree, tile_id_order = self._ensure_admin_base_one(code, admin_level)
+                    if base_df.empty:
+                        return base_df, [], None, []
+                    merged = base_df
                     if hazard == "gust":
-                        return _run_query(_ADMIN_GUST_SQL, [
-                            storm, forecast_date, gust_threshold, code, admin_level,
+                        impact_rows = _run_query(_ADMIN_GUST_IMPACT_ONLY_SQL, [
+                            code, admin_level, storm, forecast_date, gust_threshold,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "river":
-                        return _run_query(_ADMIN_RIVER_SQL, [
-                            code, forecast_date, rp_tier, code, admin_level,
+                        impact_rows = _run_query(_ADMIN_RIVER_IMPACT_ONLY_SQL, [
+                            code, admin_level, forecast_date, rp_tier,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "rain":
-                        return _run_query(_ADMIN_PRECIP_SQL, [
-                            forecast_date, threshold_mm, window_h, code, admin_level,
+                        impact_rows = _run_query(_ADMIN_PRECIP_IMPACT_ONLY_SQL, [
+                            code, admin_level, forecast_date, threshold_mm, window_h,
                         ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     else:
-                        return _run_query(_ADMIN_FULL_SQL, [
-                            storm, forecast_date, wind_threshold,
-                            storm, forecast_date,
-                            storm, forecast_date,
-                            code, admin_level,
+                        impact_rows = _run_query(_ADMIN_IMPACT_ONLY_SQL, [
+                            code, admin_level, storm, forecast_date, wind_threshold,
                         ])
+                        vuln_rows = _run_query(_ADMIN_VULN_ONLY_SQL, [
+                            code, admin_level, storm, forecast_date,
+                        ])
+                        cci_rows = _run_query(_ADMIN_CCI_ONLY_SQL, [
+                            code, admin_level, storm, forecast_date,
+                        ])
+                        if impact_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                        if vuln_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(vuln_rows), on="TILE_ID")
+                        if cci_rows:
+                            merged = _merge_no_collision(merged, pd.DataFrame(cci_rows), on="TILE_ID")
+                    return merged, geoms, tree, tile_id_order
                 elif hazard == "wind":
-                    return _load_admin_from_files(code, storm, forecast_date, wind_threshold, admin_level)
+                    rows = _load_admin_from_files(code, storm, forecast_date, wind_threshold, admin_level)
+                    merged = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
+                    return merged, None, None, None
                 else:
                     log.warning("%s STAGE (file-based) admin loading not implemented — returning empty for %s",
                                 hazard, code)
-                    return []
+                    return pd.DataFrame(columns=["TILE_ID"]), None, None, None
 
-            all_rows_admin: list[dict] = []
             # See ensure_mercator's own comment — same real perf fix, same
-            # safe-to-parallelize reasoning (independent per-country
-            # Snowflake round-trips).
+            # safe-to-parallelize reasoning, same shared executor.
             if len(codes) > 1:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
-                    for rows in ex.map(_load_one, codes):
-                        all_rows_admin.extend(rows)
+                results = list(_SHARED_EXECUTOR.map(_load_one, codes))
             else:
-                for code in codes:
-                    all_rows_admin.extend(_load_one(code))
-            df = pd.DataFrame(all_rows_admin) if all_rows_admin else pd.DataFrame(columns=["TILE_ID"])
-            self._admin[key] = df
-            # Pre-parse geometries and build spatial index for instant tile filtering.
-            geoms, props_list = [], []
-            for _, row in df.iterrows():
-                geojson_str = row.get("GEOJSON")
-                if not geojson_str:
+                results = [_load_one(code) for code in codes]
+
+            all_dfs: list[pd.DataFrame] = []
+            all_geoms: list = []
+            all_props: list = []
+            # Only safe to reuse the base cache's own STRtree object as-is
+            # when there's exactly one country AND the merge didn't drop any
+            # of its geoms (see below), otherwise a fresh tree must be
+            # built over the combined/filtered geometry list.
+            single_code_tree = None
+            for merged_df, reuse_geoms, reuse_tree, reuse_tile_id_order in results:
+                if merged_df is None or merged_df.empty:
                     continue
-                try:
-                    geojson_data = json.loads(geojson_str) if isinstance(geojson_str, str) else geojson_str
-                    geom = shape(geojson_data)
-                    props = {k: _py(v) for k, v in row.items()
-                             if k != "GEOJSON" and _safe_prop(v) is not None}
-                    geoms.append(geom)
-                    props_list.append(props)
-                except Exception as e:
-                    log.debug("Skip admin geom: %s", e)
-            tree = STRtree(geoms)
-            self._admin_geoms[key] = (geoms, tree, props_list)
+                all_dfs.append(merged_df)
+                if reuse_geoms is not None:
+                    # SNOWFLAKE path, geoms already parsed once at base-load
+                    # time (see _ensure_admin_base_one); only look up each
+                    # geom's row (by TILE_ID) to build THIS variant's props.
+                    merged_idx = merged_df.set_index("TILE_ID", drop=False)
+                    code_geoms, code_props = [], []
+                    for tile_id, geom in zip(reuse_tile_id_order, reuse_geoms):
+                        if tile_id not in merged_idx.index:
+                            continue
+                        row = merged_idx.loc[tile_id]
+                        if isinstance(row, pd.DataFrame):  # duplicate TILE_ID guard
+                            row = row.iloc[0]
+                        props = {k: _py(v) for k, v in row.items()
+                                 if k != "GEOJSON" and _safe_prop(v) is not None}
+                        code_geoms.append(geom)
+                        code_props.append(props)
+                    if len(results) == 1 and reuse_tree is not None and len(code_geoms) == len(reuse_geoms):
+                        # Real perf win (finding #6): nothing dropped, single
+                        # country, the cached base STRtree's own geometry
+                        # set/order is unchanged, so reuse it directly
+                        # instead of rebuilding it from scratch every
+                        # threshold change (only PROPS actually vary).
+                        single_code_tree = reuse_tree
+                    all_geoms.extend(code_geoms)
+                    all_props.extend(code_props)
+                else:
+                    # File-based fallback, parse geometry fresh, same as
+                    # the original single-query implementation.
+                    for _, row in merged_df.iterrows():
+                        geojson_str = row.get("GEOJSON")
+                        if not geojson_str:
+                            continue
+                        try:
+                            geojson_data = json.loads(geojson_str) if isinstance(geojson_str, str) else geojson_str
+                            geom = shape(geojson_data)
+                            props = {k: _py(v) for k, v in row.items()
+                                     if k != "GEOJSON" and _safe_prop(v) is not None}
+                            all_geoms.append(geom)
+                            all_props.append(props)
+                        except Exception as e:
+                            log.debug("Skip admin geom: %s", e)
+
+            df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame(columns=["TILE_ID"])
+            self._admin[key] = df
+            if single_code_tree is not None:
+                tree = single_code_tree
+            else:
+                from shapely.strtree import STRtree
+                tree = STRtree(all_geoms)
+            self._admin_geoms[key] = (all_geoms, tree, all_props)
             self._loaded_at[key] = time.time()
             self._evict_oldest_if_over(key, [self._admin, self._admin_geoms], _ADMIN_CACHE_MAX)
-            log.info("  Cache: %d admin regions parsed + indexed", len(geoms))
+            log.info("  Cache: %d admin regions parsed + indexed", len(all_geoms))
 
     def query_admin(self, country: str, storm: str, forecast_date: str,
                     wind_threshold: int, admin_level: int,
@@ -1377,6 +1549,35 @@ class _DataCache:
         return [(geoms[i], props_list[i]) for i in candidate_idxs]
 
     # --- facility points -------------------------------------------------
+
+    def _ensure_hc_coords_one(self, hazard: str, code: str, storm: Optional[str],
+                              forecast_date: str) -> dict:
+        """ZONE_ID -> (lat, lon) lookup for health-centre facilities (finding
+        #15), cached per (hazard, code, storm, forecast_date) with the same
+        long _BASE_DATA_TTL as the mercator/admin base caches — ZONE_ID
+        coordinates are threshold-independent within a forecast cycle,
+        verified live: the same ZONE_ID resolves to an identical lat/lon
+        across every threshold and even across the wind/gust sibling
+        tables. Only called for hazard in (wind, gust, rain) — river's
+        HC_RIVER_MAT already does its own self-contained ZONE_ID GROUP BY.
+        """
+        key = ("hc_coords", hazard, code, storm, forecast_date)
+        if self._is_fresh(key, ttl=_BASE_DATA_TTL) and key in self._hc_coords:
+            return self._hc_coords[key]
+        with self._lock_for(key):
+            if self._is_fresh(key, ttl=_BASE_DATA_TTL) and key in self._hc_coords:
+                return self._hc_coords[key]
+            if hazard == "rain":
+                rows = _run_query(_HC_COORDS_SQL[hazard], [code, forecast_date])
+            else:
+                rows = _run_query(_HC_COORDS_SQL[hazard], [code, storm, forecast_date])
+            coords = {r["ZONE_ID"]: (r["LATITUDE"], r["LONGITUDE"]) for r in rows}
+            self._hc_coords[key] = coords
+            self._loaded_at[key] = time.time()
+            self._evict_oldest_if_over(key, [self._hc_coords], _HC_COORDS_CACHE_MAX)
+            log.info("  Cache: %d health-centre ZONE_ID coords (%s %s hazard=%s)",
+                     len(coords), code, forecast_date, hazard)
+            return coords
 
     def ensure_facility(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int, hazard: str = "wind",
@@ -1410,6 +1611,29 @@ class _DataCache:
                     if not rows:
                         log.info("  No impact data for %s %s — using base layer", layer_type, code)
                         rows = _run_query(_FACILITY_BASE_SQL[layer_type], [code])
+                    elif layer_type == "health" and hazard in ("wind", "gust", "rain"):
+                        # Finding #15 fix: the lean queries above no longer
+                        # carry LATITUDE/LONGITUDE (dropped the per-row
+                        # ST_CENTROID) — resolve via the cached ZONE_ID
+                        # lookup instead. Rows with no coord match (should
+                        # never happen given both queries share the same
+                        # geometry-not-null filter) are dropped rather than
+                        # rendered with a missing/wrong location.
+                        coords = self._ensure_hc_coords_one(hazard, code, storm, forecast_date)
+                        enriched = []
+                        missing = 0
+                        for row in rows:
+                            zid = row.pop("ZONE_ID", None)
+                            lat_lon = coords.get(zid)
+                            if lat_lon is None:
+                                missing += 1
+                                continue
+                            row["LATITUDE"], row["LONGITUDE"] = lat_lon
+                            enriched.append(row)
+                        if missing:
+                            log.warning("  %d/%d health rows had no ZONE_ID coord match (%s hazard=%s)",
+                                       missing, len(rows), code, hazard)
+                        rows = enriched
                     return rows
                 elif hazard == "wind":
                     return _load_facility_from_files(layer_type, code, storm, forecast_date, wind_threshold)
@@ -1420,11 +1644,10 @@ class _DataCache:
 
             all_rows: list[dict] = []
             # See ensure_mercator's own comment — same real perf fix, same
-            # safe-to-parallelize reasoning.
+            # safe-to-parallelize reasoning, same shared executor.
             if len(codes) > 1:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
-                    for rows in ex.map(_load_one, codes):
-                        all_rows.extend(rows)
+                for rows in _SHARED_EXECUTOR.map(_load_one, codes):
+                    all_rows.extend(rows)
             else:
                 for code in codes:
                     all_rows.extend(_load_one(code))
@@ -1447,12 +1670,38 @@ class _DataCache:
         return self._facility.get((layer_type, country, storm, forecast_date) + variant,
                                   pd.DataFrame())
 
-
 _cache = _DataCache()
 
 
 # ---------------------------------------------------------------------------
 # Facility SQL — impact tables (with PROBABILITY) and base fallbacks
+#
+# Health-centre coordinates: the *_HC_MAT impact tables carry no plain
+# LATITUDE/LONGITUDE columns (unlike the school/shelter/WASH siblings), only
+# a raw ALL_DATA:geometry blob. A NAME-keyed join onto BASE_HC_MAT (which has
+# plain LATITUDE/LONGITUDE) was tried as a perf optimization but reverted:
+# NAME is not a reliable key — a large share of health-centre NAMEs (roughly
+# a fifth to two-fifths of rows, country-dependent, e.g. JPN) are shared by
+# multiple facilities at genuinely different coordinates, so a NAME-only join
+# silently collapses distinct facilities onto one arbitrary shared location.
+#
+# Real fix (2026-08-05, finding #15): ZONE_ID — already present on every
+# *_HC_MAT table (HC_IMPACT_MAT/HC_GUST_MAT/HC_PRECIP_MAT) — IS a stable,
+# collision-free per-facility identifier, verified live against real PHL
+# data: comparing derived (ROUND(lat,6), ROUND(lon,6)) per ZONE_ID (not raw
+# geometry strings, which have benign encoding variance) across every real
+# storm/forecast_date/threshold combination and even across the separate
+# wind/gust tables showed 0/2059 zones unstable. So instead of every
+# threshold-scoped query recomputing ST_Y/ST_X(ST_CENTROID(...)) per row
+# (below, now dropped from these three), coordinates are resolved once per
+# (hazard, country, storm, forecast_date) via _ensure_hc_coords_one's own
+# ZONE_ID-keyed GROUP BY query (see _HC_COORDS_SQL) and cached with the same
+# long _BASE_DATA_TTL as the mercator/admin base caches, then merged onto
+# each lean per-threshold row in ensure_facility's _load_one. River's own
+# HC_RIVER_MAT (_FACILITY_RIVER_SQL below) already does its own self-
+# contained ZONE_ID GROUP BY per query (task from an earlier fix) and is
+# untouched by this change — it doesn't need cross-query caching since it
+# has no separate base/impact split.
 # ---------------------------------------------------------------------------
 
 _FACILITY_IMPACT_SQL: dict[str, str] = {
@@ -1463,9 +1712,7 @@ _FACILITY_IMPACT_SQL: dict[str, str] = {
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "health": """
-        SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
-               ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
-               ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        SELECT ZONE_ID, NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY
         FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
           AND ALL_DATA:geometry::STRING IS NOT NULL
@@ -1492,9 +1739,7 @@ _FACILITY_GUST_SQL: dict[str, str] = {
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "health": """
-        SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
-               ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
-               ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        SELECT ZONE_ID, NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY
         FROM AOTS.TC_ECMWF.HC_GUST_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND GUST_THRESHOLD = %s
           AND ALL_DATA:geometry::STRING IS NOT NULL
@@ -1513,49 +1758,65 @@ _FACILITY_GUST_SQL: dict[str, str] = {
     """,
 }
 
-# River facility queries aggregate across STEP_H with MAX(PROBABILITY) — same
-# real multi-step-per-tier duplication documented above _MERCATOR_RIVER_SQL
-# applies identically to every *_RIVER_MAT facility table (confirmed live:
+# River facility queries aggregate across STEP_H (same real multi-step-per-tier
+# duplication documented for _MERCATOR_RIVER_IMPACT_ONLY_SQL, which applies
+# identically to every *_RIVER_MAT facility table — confirmed live:
 # SCHOOL_RIVER_MAT alone had 159,652 rows for only 39,913 distinct schools at
-# rp10 — a 4x duplication exactly matching rp10's 4 real STEP_H values).
+# rp10, a 4x duplication exactly matching rp10's 4 real STEP_H values).
+#
+# GROUP BY ZONE_ID, not by name/type columns — real bug found+fixed here: these
+# queries used to group by descriptive columns (SCHOOL_NAME, NAME+TYPE+...),
+# which collapses multiple genuinely distinct facilities that share identical
+# descriptive metadata (confirmed live against PHL/rp2: NAME-grouping silently
+# dropped ~11% of real health centres, ~21% of schools, ~16% of shelters, and
+# ~87% of WASH facilities down to one arbitrary shared row each). ZONE_ID is a
+# real per-facility identifier already present in every one of these tables
+# and confirmed live to never map to more than one distinct name within a
+# single (country, forecast_time, rp_tier) slice for any of the four facility
+# types — the correct, collision-free key to aggregate the STEP_H duplication
+# away without merging distinct real facilities.
 _FACILITY_RIVER_SQL: dict[str, str] = {
     "schools": """
-        SELECT SCHOOL_NAME, EDUCATION_LEVEL, MAX(PROBABILITY) AS PROBABILITY,
+        SELECT MAX(SCHOOL_NAME) AS SCHOOL_NAME, MAX(EDUCATION_LEVEL) AS EDUCATION_LEVEL,
+               MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.SCHOOL_RIVER_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        GROUP BY SCHOOL_NAME, EDUCATION_LEVEL
+        GROUP BY ZONE_ID
     """,
     "health": """
         SELECT NAME, FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
                ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LATITUDE,
                ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LONGITUDE
         FROM (
-            SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE,
+            SELECT MAX(NAME) AS NAME, MAX(HEALTH_AMENITY_TYPE) AS FACILITY_TYPE,
+                   MAX(OPERATOR_TYPE) AS OPERATOR_TYPE,
                    MAX(PROBABILITY) AS PROBABILITY,
                    MAX(ALL_DATA:geometry::STRING) AS GEOM_STR
             FROM AOTS.TC_ECMWF.HC_RIVER_MAT
             WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
               AND ALL_DATA:geometry::STRING IS NOT NULL
-            GROUP BY NAME, HEALTH_AMENITY_TYPE, OPERATOR_TYPE
+            GROUP BY ZONE_ID
         )
     """,
     "shelters": """
-        SELECT NAME, SHELTER_TYPE, CATEGORY, MAX(PROBABILITY) AS PROBABILITY,
+        SELECT MAX(NAME) AS NAME, MAX(SHELTER_TYPE) AS SHELTER_TYPE, MAX(CATEGORY) AS CATEGORY,
+               MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.SHELTER_RIVER_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        GROUP BY NAME, SHELTER_TYPE, CATEGORY
+        GROUP BY ZONE_ID
     """,
     "wash": """
-        SELECT NAME, WASH_TYPE, CATEGORY, MAX(PROBABILITY) AS PROBABILITY,
+        SELECT MAX(NAME) AS NAME, MAX(WASH_TYPE) AS WASH_TYPE, MAX(CATEGORY) AS CATEGORY,
+               MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.WASH_RIVER_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        GROUP BY NAME, WASH_TYPE, CATEGORY
+        GROUP BY ZONE_ID
     """,
 }
 
@@ -1568,9 +1829,7 @@ _FACILITY_PRECIP_SQL: dict[str, str] = {
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "health": """
-        SELECT NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
-               ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
-               ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+        SELECT ZONE_ID, NAME, HEALTH_AMENITY_TYPE AS FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY
         FROM AOTS.TC_ECMWF.HC_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
           AND ALL_DATA:geometry::STRING IS NOT NULL
@@ -1588,6 +1847,43 @@ _FACILITY_PRECIP_SQL: dict[str, str] = {
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
 }
+
+# ZONE_ID -> (lat, lon) health-centre coordinate lookup, one query per
+# (hazard, country, storm, forecast_date) regardless of how many thresholds
+# get browsed — see the finding #15 comment above _FACILITY_IMPACT_SQL and
+# _DataCache._ensure_hc_coords_one. No threshold filter: pulls every ZONE_ID
+# for the whole forecast cycle in one pass, GROUP BY collapses the (verified
+# harmless — see comment above) per-threshold-row duplication.
+_HC_COORDS_SQL: dict[str, str] = {
+    "wind": """
+        SELECT ZONE_ID,
+               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
+               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
+          AND ALL_DATA:geometry::STRING IS NOT NULL
+        GROUP BY ZONE_ID
+    """,
+    "gust": """
+        SELECT ZONE_ID,
+               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
+               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_GUST_MAT
+        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
+          AND ALL_DATA:geometry::STRING IS NOT NULL
+        GROUP BY ZONE_ID
+    """,
+    "rain": """
+        SELECT ZONE_ID,
+               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
+               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_PRECIP_MAT
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s
+          AND ALL_DATA:geometry::STRING IS NOT NULL
+        GROUP BY ZONE_ID
+    """,
+}
+_HC_COORDS_CACHE_MAX = 32
 
 _FACILITY_BASE_SQL: dict[str, str] = {
     "schools": """
@@ -3428,19 +3724,46 @@ def preload(country: str, storm: str, forecast_date: str,
             window_h: Optional[int] = Query(None)) -> dict:
     """Pre-warm pandas cache. Call this when user selects a storm/forecast.
     Returns immediately; loading happens in a background thread."""
-    def _load():
+    def _run_and_log(fn, *args) -> None:
         try:
-            _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
-                                   gust_threshold, rp_tier, threshold_mm, window_h)
-            _cache.ensure_admin(country.upper(), storm, forecast_date, wind_threshold, admin_level, hazard,
-                                gust_threshold, rp_tier, threshold_mm, window_h)
-            facility_sql = {"gust": _FACILITY_GUST_SQL, "river": _FACILITY_RIVER_SQL,
-                            "rain": _FACILITY_PRECIP_SQL}.get(hazard, _FACILITY_IMPACT_SQL)
-            for layer_type in facility_sql:
-                _cache.ensure_facility(layer_type, country.upper(), storm, forecast_date, wind_threshold, hazard,
-                                       gust_threshold, rp_tier, threshold_mm, window_h)
+            fn(*args)
         except Exception as e:
-            log.error("Preload error: %s", e)
+            log.error("Preload error in %s: %s", getattr(fn, "__name__", fn), e)
+
+    def _load():
+        # Real perf fix (2026-08 audit, finding #17): the 6 ensure_* warm-up
+        # calls used to run strictly serially in this one background thread
+        # (sum of every load's own cost); they're independent (each already
+        # has its own per-key lock, see _DataCache), so running them
+        # concurrently collapses cold preload to roughly the slowest single
+        # load instead. Plain threading.Thread (not _SHARED_EXECUTOR)
+        # deliberately here, ensure_mercator/ensure_admin/ensure_facility
+        # each internally fan out multi-country requests onto
+        # _SHARED_EXECUTOR too, and a pool worker blocking on its OWN pool's
+        # tasks risks starving it; these top-level supervisor threads are
+        # uncounted OS threads, so they never compete with the pool's own
+        # worker budget.
+        facility_sql = {"gust": _FACILITY_GUST_SQL, "river": _FACILITY_RIVER_SQL,
+                        "rain": _FACILITY_PRECIP_SQL}.get(hazard, _FACILITY_IMPACT_SQL)
+        tasks = [
+            threading.Thread(target=_run_and_log, args=(
+                _cache.ensure_mercator, country.upper(), storm, forecast_date, wind_threshold, hazard,
+                gust_threshold, rp_tier, threshold_mm, window_h,
+            )),
+            threading.Thread(target=_run_and_log, args=(
+                _cache.ensure_admin, country.upper(), storm, forecast_date, wind_threshold, admin_level, hazard,
+                gust_threshold, rp_tier, threshold_mm, window_h,
+            )),
+        ]
+        for layer_type in facility_sql:
+            tasks.append(threading.Thread(target=_run_and_log, args=(
+                _cache.ensure_facility, layer_type, country.upper(), storm, forecast_date, wind_threshold, hazard,
+                gust_threshold, rp_tier, threshold_mm, window_h,
+            )))
+        for t in tasks:
+            t.start()
+        for t in tasks:
+            t.join()
     threading.Thread(target=_load, daemon=True).start()
     return {"status": "loading", "country": country, "storm": storm}
 
@@ -3452,7 +3775,8 @@ def preload(country: str, storm: str, forecast_date: str,
 # BELOW_MIN_BASIN/IS_STANDIN flags are booleans, not ramp-colorable numeric
 # stats, so they're intentionally omitted here). Rain has its own much
 # smaller mapping (_RAIN_STATS_MAPPING below) since only E_population is
-# hazard-conditional for that table (see _MERCATOR_PRECIP_SQL's own comment).
+# hazard-conditional for that table (see _MERCATOR_PRECIP_IMPACT_ONLY_SQL's
+# own comment).
 _GUST_RIVER_STATS_MAPPING = {
     "population":              ("POP_MIN",  "POP_MAX"),
     "children_total":          ("CHI_MIN",  "CHI_MAX"),
@@ -3605,14 +3929,25 @@ def _fetch_tile_stats(
     threshold_mm: Optional[float] = None,
     window_h: Optional[int] = None,
 ) -> dict:
+    # Real perf fix (2026-08 audit, finding #13): reuse ensure_mercator's own
+    # cached/merged DataFrame instead of always re-running a separate
+    # full-country SQL aggregate below, the browser's simultaneous tile
+    # requests already trigger (or share, via ensure_mercator's own per-key
+    # lock) the exact same bulk load for this key, so this avoids
+    # duplicating it in SNOWFLAKE mode too (previously only LOCAL/BLOB mode
+    # did this). Falls through to the original standalone SQL aggregate only
+    # if this fast path itself fails.
     try:
-        if IMPACT_DATA_STORE != "SNOWFLAKE":
-            _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
-                                   gust_threshold, rp_tier, threshold_mm, window_h)
-            variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
-            df = _cache._mercator.get((country.upper(), storm, forecast_date) + variant)
-            return _stats_from_df(df) if df is not None else {}
+        _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
+                               gust_threshold, rp_tier, threshold_mm, window_h)
+        variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
+        df = _cache._mercator.get((country.upper(), storm, forecast_date) + variant)
+        if df is not None:
+            return _stats_from_df(df)
+    except Exception as e:
+        log.warning("Stats fast-path (ensure_mercator) failed, falling back to SQL aggregate: %s", e)
 
+    try:
         clause, codes = _country_in_clause(country)
         if hazard == "gust":
             rows = _run_query(_GUST_MERCATOR_STATS_SQL.replace("{country_clause}", clause),
@@ -3856,14 +4191,20 @@ def _fetch_admin_stats(
     threshold_mm: Optional[float] = None,
     window_h: Optional[int] = None,
 ) -> dict:
+    # Same real perf fix as _fetch_tile_stats above (finding #13), reuse
+    # ensure_admin's own cached/merged DataFrame instead of always
+    # re-running a separate full-country SQL aggregate below.
     try:
-        if IMPACT_DATA_STORE != "SNOWFLAKE":
-            _cache.ensure_admin(country.upper(), storm, forecast_date, wind_threshold, admin_level, hazard,
-                                gust_threshold, rp_tier, threshold_mm, window_h)
-            variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
-            df = _cache._admin.get((country.upper(), storm, forecast_date) + variant + (admin_level,))
-            return _stats_from_df(df) if df is not None else {}
+        _cache.ensure_admin(country.upper(), storm, forecast_date, wind_threshold, admin_level, hazard,
+                            gust_threshold, rp_tier, threshold_mm, window_h)
+        variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
+        df = _cache._admin.get((country.upper(), storm, forecast_date) + variant + (admin_level,))
+        if df is not None:
+            return _stats_from_df(df)
+    except Exception as e:
+        log.warning("Admin stats fast-path (ensure_admin) failed, falling back to SQL aggregate: %s", e)
 
+    try:
         clause, codes = _country_in_clause(country)
         if hazard == "gust":
             rows = _run_query(_GUST_ADMIN_STATS_SQL.replace("{country_clause}", clause),

@@ -16,61 +16,108 @@ Usage:
 """
 
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
-
-# Import GigaSpatial components
-from gigaspatial.core.io.adls_data_store import ADLSDataStore
-from gigaspatial.core.io.local_data_store import LocalDataStore
-from gigaspatial.core.io.readers import read_dataset
-try:
-    from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
-except ImportError:
-    SnowflakeDataStore = None
 
 # Import centralized configuration
 from components.config import config as app_config
 
+
+class _LazyDataStore:
+    """Thin proxy that defers constructing the real gigaspatial DataStore
+    (and therefore its `gigaspatial` import, which pulls in geemap/hdx/
+    sklearn) until the first attribute access.
+
+    This matters because several callers (e.g. page modules) call
+    `get_data_store()` unconditionally at *module import* time, regardless
+    of `IMPACT_DATA_SOURCE`. Simply moving the `gigaspatial` import inside
+    `get_data_store()` does not, by itself, defer anything for those
+    callers: the import would still run the moment the module-level
+    `get_data_store()` call executes. Wrapping the real store behind this
+    proxy means the import genuinely only happens if/when a `.file_exists(
+    )`/`.read_file()`/`.open()`/etc call is actually made on it, which
+    IMPACT_DATA_SOURCE=SQL callers never do (they either short-circuit past
+    the store entirely, e.g. `IMPACT_DATA_SOURCE == 'SQL' or giga_store.
+    file_exists(...)`, or never reference the store at all).
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._store = None
+        self._lock = threading.Lock()
+
+    def _ensure(self):
+        store = self._store
+        if store is None:
+            with self._lock:
+                store = self._store
+                if store is None:
+                    store = self._factory()
+                    self._store = store
+        return store
+
+    def __getattr__(self, name):
+        # Only reached for attributes not already found on this proxy
+        # instance itself (factory/_store/_lock), so this can't recurse.
+        return getattr(self._ensure(), name)
+
+
 def get_data_store():
     """
     Get the appropriate data store based on centralized configuration.
-    
+
     This controls where pre-processed impact views are stored:
     - LOCAL: Local filesystem (default)
     - BLOB: Azure Blob Storage (read-only, this app only reads data)
     - SNOWFLAKE: Snowflake internal stage (read-only, this app only reads data)
-    
+
     Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages).
-    
+
     Returns:
-        DataStore: Configured data store instance
+        DataStore: Configured data store instance (a lazy proxy, see
+        `_LazyDataStore`, that only imports/constructs the real gigaspatial
+        store on first actual use)
     """
+    # GigaSpatial imports pull in geemap/hdx/sklearn and are only needed for the
+    # STAGE file-store path. Deferred via _LazyDataStore so SQL-mode callers
+    # (and any caller that ends up never touching the store) never pay this cost,
+    # even though this factory itself typically runs at module-import time.
     impact_data_store = app_config.IMPACT_DATA_STORE
-    
-    if impact_data_store == 'BLOB':
-        return ADLSDataStore()
-    elif impact_data_store == 'SNOWFLAKE':
-        if SnowflakeDataStore is None:
-            raise ImportError(
-                "SnowflakeDataStore not available. Please ensure giga-spatial>=0.7.0 is installed "
-                "and includes the SnowflakeDataStore class."
+
+    def _build():
+        if impact_data_store == 'BLOB':
+            from gigaspatial.core.io.adls_data_store import ADLSDataStore
+            return ADLSDataStore()
+        elif impact_data_store == 'SNOWFLAKE':
+            try:
+                from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
+            except ImportError:
+                SnowflakeDataStore = None
+            if SnowflakeDataStore is None:
+                raise ImportError(
+                    "SnowflakeDataStore not available. Please ensure giga-spatial>=0.7.0 is installed "
+                    "and includes the SnowflakeDataStore class."
+                )
+
+            # Note: SnowflakeDataStore uses standard password authentication
+            # SPCS OAuth is not currently supported for Snowflake stages
+            # Use password authentication (SPCS_RUN=false) for Snowflake stage access
+            return SnowflakeDataStore(
+                account=app_config.SNOWFLAKE_ACCOUNT,
+                user=app_config.SNOWFLAKE_USER,
+                password=app_config.SNOWFLAKE_PASSWORD,
+                warehouse=app_config.SNOWFLAKE_WAREHOUSE,
+                database=app_config.SNOWFLAKE_DATABASE,
+                schema=app_config.SNOWFLAKE_SCHEMA,
+                stage_name=app_config.SNOWFLAKE_STAGE_NAME
             )
-        
-        # Note: SnowflakeDataStore uses standard password authentication
-        # SPCS OAuth is not currently supported for Snowflake stages
-        # Use password authentication (SPCS_RUN=false) for Snowflake stage access
-        return SnowflakeDataStore(
-            account=app_config.SNOWFLAKE_ACCOUNT,
-            user=app_config.SNOWFLAKE_USER,
-            password=app_config.SNOWFLAKE_PASSWORD,
-            warehouse=app_config.SNOWFLAKE_WAREHOUSE,
-            database=app_config.SNOWFLAKE_DATABASE,
-            schema=app_config.SNOWFLAKE_SCHEMA,
-            stage_name=app_config.SNOWFLAKE_STAGE_NAME
-        )
-    else:
-        # Default to local storage
-        return LocalDataStore()
+        else:
+            # Default to local storage
+            from gigaspatial.core.io.local_data_store import LocalDataStore
+            return LocalDataStore()
+
+    return _LazyDataStore(_build)
 
 
 def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
@@ -149,6 +196,7 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
         source_label = f"SQL/{data_type}"
     else:
         # STAGE path — original behaviour
+        from gigaspatial.core.io.readers import read_dataset
         result = read_dataset(filepath, giga_store)
         source_label = f"STAGE/{filepath}"
         # Normalize column names to match SQL path convention (E_population, tile_id, probability…).

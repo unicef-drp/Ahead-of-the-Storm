@@ -17,6 +17,7 @@ import threading
 import functools
 from collections import OrderedDict
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import geopandas as gpd
 import snowflake.connector
@@ -46,6 +47,19 @@ logger = logging.getLogger(__name__)
 # audit's N+1 fix). Each entry now expires ttl_seconds after IT was
 # individually cached, so misses spread out over time instead of
 # synchronizing.
+#
+# Per-key single-flight (2026-08 perf audit): a miss is still
+# computed OUTSIDE the global `lock` (a slow cold key must never block
+# lookups/hits on unrelated keys), but N concurrent callers on the SAME cold
+# key used to each independently redo the full query (measured live: two
+# identical concurrent cold calls both took 2754ms, zero sharing). `pending`
+# holds one threading.Lock per key currently being computed; the first caller
+# for a key becomes its "owner" and actually calls func(), every other
+# concurrent caller for that exact key blocks on the owner's lock instead of
+# re-querying, then re-checks the cache once unblocked (a real hit, since the
+# owner just populated it). Entries are removed from `pending` as soon as
+# their computation finishes (success or exception) so the dict never grows
+# unbounded: it only ever holds keys with a computation genuinely in flight.
 
 _META_TTL    = 15 * 60   # 15 min — storm list, forecast times (new storms appear promptly)
 _IMPACT_TTL  = 15 * 60   # 15 min — impact queries (new pipeline output picked up within 15 min)
@@ -53,29 +67,67 @@ _BASE_TTL    = 60 * 60   # 60 min — base layers (schools/HCs/tiles — change 
 
 
 def ttl_cache(ttl_seconds: int, maxsize: int = 128):
-    """LRU cache with a sliding per-entry TTL, thread-safe."""
+    """LRU cache with a sliding per-entry TTL, thread-safe, single-flight per key."""
     def decorator(func):
         cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
         lock = threading.Lock()
+        pending: dict = {}  # key -> threading.Lock held by whichever caller is computing it
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             key = (args, tuple(sorted(kwargs.items())))
-            now = time.monotonic()
-            with lock:
-                entry = cache.get(key)
-                if entry is not None and entry[0] > now:
-                    cache.move_to_end(key)
-                    return entry[1]
-            # Computed outside the lock — a slow Snowflake-backed miss on one
-            # key must not block lookups/hits for every other key.
-            value = func(*args, **kwargs)
-            with lock:
-                cache[key] = (now + ttl_seconds, value)
-                cache.move_to_end(key)
-                while len(cache) > maxsize:
-                    cache.popitem(last=False)
-            return value
+            # Loop (not self-recursion) so a persistently-failing owner
+            # under sustained concurrent load can't grow an unbounded
+            # Python call stack in every still-waiting caller — each retry
+            # below re-competes for ownership in place, in the same frame.
+            while True:
+                now = time.monotonic()
+                with lock:
+                    entry = cache.get(key)
+                    if entry is not None and entry[0] > now:
+                        cache.move_to_end(key)
+                        return entry[1]
+                    # Miss (or expired). Become this key's single-flight owner
+                    # unless someone else already is; either way this whole
+                    # branch only ever touches the dict lookups, never func()
+                    # itself, so `lock` is held only briefly regardless of how
+                    # slow the underlying query turns out to be.
+                    key_lock = pending.get(key)
+                    is_owner = key_lock is None
+                    if is_owner:
+                        key_lock = threading.Lock()
+                        key_lock.acquire()
+                        pending[key] = key_lock
+
+                if not is_owner:
+                    # Another caller is already computing this exact key;
+                    # block on their lock instead of redoing the query.
+                    key_lock.acquire()
+                    key_lock.release()
+                    with lock:
+                        entry = cache.get(key)
+                        if entry is not None and entry[0] > now:
+                            cache.move_to_end(key)
+                            return entry[1]
+                    # Owner's computation raised (cache never got populated);
+                    # loop back around, this time competing to become the
+                    # new owner.
+                    continue
+
+                # Computed outside the lock — a slow Snowflake-backed miss on
+                # one key must not block lookups/hits for every other key.
+                try:
+                    value = func(*args, **kwargs)
+                    with lock:
+                        cache[key] = (now + ttl_seconds, value)
+                        cache.move_to_end(key)
+                        while len(cache) > maxsize:
+                            cache.popitem(last=False)
+                    return value
+                finally:
+                    with lock:
+                        pending.pop(key, None)
+                    key_lock.release()
 
         def cache_clear():
             with lock:
@@ -93,6 +145,36 @@ def ttl_cache(ttl_seconds: int, maxsize: int = 128):
 # Per-thread connection storage — each Gunicorn worker thread gets its own connection
 _thread_local = threading.local()
 _HEALTH_CHECK_INTERVAL = 300  # seconds — recheck liveness at most once every 5 min
+
+# ---------------------------------------------------------------------------
+# Shared query executor (2026-08 perf audit)
+# ---------------------------------------------------------------------------
+# Every Snowflake fan-out in this codebase (curve popups, per-country panels,
+# multi-storm lookups) used to open its own throwaway `with
+# ThreadPoolExecutor(...) as ex:` block at the call site: 13+ call sites.
+# Each worker thread in a throwaway pool pays a fresh connect() handshake on
+# a cold `_thread_local` (0.47-0.65s), and when the executor exits, that
+# thread dies with its Snowflake connection still open; nothing ever calls
+# .close() on it, so sessions leak until GC/server-side timeout. A cold curve
+# popup alone used to spawn 8 short-lived threads = 8 handshakes + 8 leaked
+# sessions.
+#
+# One shared, long-lived pool fixes both: worker threads never exit while
+# the app runs, so each thread's `_thread_local.connection` is created once
+# and reused by every future call routed to that thread, and there is no
+# executor-shutdown moment to leak a connection at. Callers must use
+# `get_query_executor().map(fn, items)` / `.submit(fn, item)` directly,
+# NEVER as a context manager (`with get_query_executor() as ex:` would call
+# `__exit__` -> `shutdown()` on this shared pool, killing it for every other
+# concurrent caller in the process, not just the caller that opened it).
+_SHARED_QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=24, thread_name_prefix="sf-query")
+
+
+def get_query_executor() -> ThreadPoolExecutor:
+    """Process-wide, long-lived executor for fanning out concurrent Snowflake
+    queries. Use `.map(fn, items)` or `.submit(fn, item)`; do not use as a
+    context manager (see module comment above for why)."""
+    return _SHARED_QUERY_EXECUTOR
 
 def _is_connection_alive(conn):
     """Check if a Snowflake connection is still alive via a lightweight SELECT 1."""
@@ -881,16 +963,35 @@ def get_active_storm_countries() -> list:
     non-zero expected impact (population, schools, or HCs) for that specific forecast
     date. Pure probability hits on uninhabited ocean tiles are excluded.
     Timezone-independent — comparison always done in UTC via CONVERT_TIMEZONE.
+
+    Real perf fix (2026-08 performance audit): this used to have no WHERE
+    predicate at all before the GROUP BY, so Snowflake scanned the entire
+    206M-row MERCATOR_TILE_IMPACT_MAT and only narrowed to the last 12h
+    afterwards, in the HAVING clause; it was the slowest of the 3 parallel
+    startup-pool queries as a result. FORECAST_DATE is a 'YYYYMMDDHH24MISS'
+    string, which sorts lexicographically the same as it sorts chronologically,
+    so a plain string >= comparison against a cutoff computed the same way
+    (DATEADD/CONVERT_TIMEZONE, still Snowflake's own clock, not the app
+    server's) works as a real WHERE predicate and enables micro-partition
+    pruning on both scans below. Any row that's a country's true MAX(FORECAST_DATE)
+    and within 12h of now is, by definition, >= (now - 12h), so this WHERE
+    cutoff can't exclude a country the old HAVING would have kept, which is
+    why the HAVING in the `latest` CTE is now redundant and dropped rather
+    than kept as a belt-and-suspenders check.
     """
     query = """
-        WITH latest AS (
-            SELECT COUNTRY, MAX(FORECAST_DATE) AS latest_forecast
-            FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
-            GROUP BY COUNTRY
-            HAVING DATEDIFF('hour',
-                TO_TIMESTAMP(MAX(FORECAST_DATE), 'YYYYMMDDHH24MISS'),
-                CONVERT_TIMEZONE('UTC', CURRENT_TIMESTAMP())
-            ) <= 12
+        WITH bounds AS (
+            SELECT TO_VARCHAR(
+                DATEADD('hour', -12, CONVERT_TIMEZONE('UTC', CURRENT_TIMESTAMP())),
+                'YYYYMMDDHH24MISS'
+            ) AS cutoff
+        ),
+        latest AS (
+            SELECT t.COUNTRY, MAX(t.FORECAST_DATE) AS latest_forecast
+            FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT t
+            CROSS JOIN bounds b
+            WHERE t.FORECAST_DATE >= b.cutoff
+            GROUP BY t.COUNTRY
         )
         SELECT l.COUNTRY
         FROM latest l
@@ -1314,6 +1415,134 @@ def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window
         return pd.DataFrame()
 
 
+# Canonical threshold tiers a per-threshold curve steps through. Mirrors
+# _WIND_CATS (index [2] wind kt / index [3] gust kt) and _RIVER_RP_TIERS in
+# pages/map_shell_concept.py, duplicated here (rather than imported) because
+# snowflake_utils.py sits below pages/ in the import graph; if either list of
+# tiers changes there, update these too so a real threshold never silently
+# falls back to a fabricated 0 in the returned dict below.
+_TOTALS_WIND_THRESHOLDS_KT = [34, 40, 50, 64, 83, 96, 113, 137]
+_TOTALS_GUST_THRESHOLDS_KT = [17, 21, 26, 33, 43, 49, 58, 70]
+_TOTALS_RIVER_RP_TIERS = ["rp2", "rp5", "rp10", "rp20", "rp50", "rp100"]
+
+_TOTALS_IMPACT_COLS = [
+    "E_POPULATION", "E_INFANT_POPULATION", "E_SCHOOL_AGE_POPULATION",
+    "E_ADOLESCENT_POPULATION", "E_NUM_SCHOOLS", "E_NUM_HCS",
+    "E_NUM_SHELTERS", "E_NUM_WASH",
+]
+
+
+def _zero_impact_totals() -> dict:
+    return {col: 0 for col in _TOTALS_IMPACT_COLS}
+
+
+def _row_to_impact_totals(row) -> dict:
+    # A real, all-NULL column for this country (e.g. E_NUM_SHELTERS for a
+    # country with no shelter dataset at all, see
+    # _get_data_availability_real's own comment on this exact gap) stays
+    # None here, same "don't fabricate a confirmed zero" convention used
+    # throughout this file; only a threshold with genuinely zero matching
+    # rows gets filled with real 0s, by _zero_impact_totals above.
+    return {col: (int(row[col]) if pd.notna(row[col]) else None) for col in _TOTALS_IMPACT_COLS}
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> dict:
+    """
+    One-round-trip-per-hazard replacement for fanning out get_tile_impacts/
+    get_gust_tile_impacts/get_river_tile_impacts across every threshold tier
+    just to sum them (the old pattern behind the Hazard Contribution popup's
+    per-tier curve: 8 full per-tile fetches for wind alone, 472,848 rows
+    transferred where a GROUP BY aggregate returns 8). Each hazard here is
+    SUM(...) GROUP BY <threshold column> in a single statement covering every
+    tier at once, cached on (country, storm, forecast_date) only, so every
+    slider position after the first is a cache hit, not a new query.
+
+    Returns:
+        {
+            "wind":  {34: {...}, 40: {...}, ..., 137: {...}},   # kt -> totals
+            "gust":  {17: {...}, 21: {...}, ...,  70: {...}},   # kt -> totals
+            "river": {"rp2": {...}, ..., "rp100": {...}},        # rp_tier -> totals
+        }
+    where each `{...}` is {"E_POPULATION": int|None, "E_INFANT_POPULATION": int|None,
+    "E_SCHOOL_AGE_POPULATION": int|None, "E_ADOLESCENT_POPULATION": int|None,
+    "E_NUM_SCHOOLS": int|None, "E_NUM_HCS": int|None, "E_NUM_SHELTERS": int|None,
+    "E_NUM_WASH": int|None}. None only when that column is genuinely all-NULL
+    for this country (a real dataset gap), 0 when the threshold tier simply
+    has no matching rows (a real, confirmed-zero exposure at that tier).
+
+    Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
+    _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS is always present as a
+    key: a tier absent from the query result (genuinely 0 rows) is filled
+    with _zero_impact_totals(), not omitted, so callers never have to
+    special-case a missing key as "no data" when it really means "real zero".
+
+    River is NOT storm-scoped (see get_river_tile_impacts's own docstring),
+    so `storm` is ignored for the "river" section, and its own forecast time
+    is resolved independently via get_latest_river_forecast_time(country)
+    rather than reusing `forecast_date` (which is wind's cycle, and can
+    genuinely differ from river's, confirmed live: PHL's own river data has
+    lagged its wind cycle by weeks). The "river" key is {} (not zero-filled)
+    when the country has no river data of any kind, a real dataset gap, not
+    a per-tier zero.
+    """
+    result = {"wind": {}, "gust": {}, "river": {}}
+
+    try:
+        wind_df = _run_query(
+            """
+            SELECT WIND_THRESHOLD, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+            FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
+            WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND ZOOM_LEVEL = %s
+            GROUP BY WIND_THRESHOLD
+            """,
+            params=[country, storm, forecast_date, zoom_level],
+        )
+        by_kt = {int(row["WIND_THRESHOLD"]): _row_to_impact_totals(row) for _, row in wind_df.iterrows()}
+        result["wind"] = {kt: by_kt.get(kt, _zero_impact_totals()) for kt in _TOTALS_WIND_THRESHOLDS_KT}
+    except Exception as e:
+        logger.warning("get_tile_impact_totals_by_threshold wind failed for %s/%s/%s: %s", country, storm, forecast_date, e)
+
+    try:
+        gust_df = _run_query(
+            """
+            SELECT GUST_THRESHOLD, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+            FROM AOTS.TC_ECMWF.MERCATOR_TILE_GUST_MAT
+            WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND ZOOM_LEVEL = %s
+            GROUP BY GUST_THRESHOLD
+            """,
+            params=[country, storm, forecast_date, zoom_level],
+        )
+        by_kt = {int(row["GUST_THRESHOLD"]): _row_to_impact_totals(row) for _, row in gust_df.iterrows()}
+        result["gust"] = {kt: by_kt.get(kt, _zero_impact_totals()) for kt in _TOTALS_GUST_THRESHOLDS_KT}
+    except Exception as e:
+        logger.warning("get_tile_impact_totals_by_threshold gust failed for %s/%s/%s: %s", country, storm, forecast_date, e)
+
+    try:
+        river_forecast_time = get_latest_river_forecast_time(country)
+        if river_forecast_time is not None:
+            river_df = _run_query(
+                """
+                WITH per_zone_max AS (
+                    SELECT RP_TIER, ZONE_ID, """ + ", ".join(f"MAX({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+                    FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
+                    WHERE COUNTRY = %s AND FORECAST_TIME = %s
+                    GROUP BY RP_TIER, ZONE_ID
+                )
+                SELECT RP_TIER, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+                FROM per_zone_max
+                GROUP BY RP_TIER
+                """,
+                params=[country, river_forecast_time],
+            )
+            by_tier = {str(row["RP_TIER"]): _row_to_impact_totals(row) for _, row in river_df.iterrows()}
+            result["river"] = {tier: by_tier.get(tier, _zero_impact_totals()) for tier in _TOTALS_RIVER_RP_TIERS}
+    except Exception as e:
+        logger.warning("get_tile_impact_totals_by_threshold river failed for %s: %s", country, e)
+
+    return result
+
+
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, admin_level: int = 1) -> pd.DataFrame:
     """
@@ -1607,6 +1836,84 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
     except Exception as e:
         logger.error("Error querying BASE_MERCATOR_TILE_MAT: %s", e)
         return gpd.GeoDataFrame()
+
+
+@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
+def get_data_availability(country: str, zoom_level: int = 14) -> dict:
+    """
+    One-round-trip aggregate replacement for the Data Availability panel's
+    old pattern of calling get_base_tiles(country): a full row pull (PHL:
+    59,106 rows x 16 cols) plus a Python loop reconstructing quadkey geometry
+    per row, just to compute 4 facility sums and 8 non-null checks. This
+    does the exact same SUM/COUNT math in one Snowflake aggregate query
+    instead, with no geometry involved at all.
+
+    Same return shape as pages/map_shell_concept.py's own
+    _get_data_availability_real(country) builds from get_base_tiles today:
+
+        {
+            "schools": int|None, "health_centers": int|None,
+            "shelters": int|None, "wash": int|None,
+            "population": bool, "age_0_4": bool,
+            "age_5_14": bool, "age_15_19": bool,
+            "rwi": bool, "settlement": bool,
+            "moderate_poverty": bool, "severe_poverty": bool,
+        }
+
+    The 4 facility counts are None (not a fabricated 0) when that column is
+    genuinely all-NULL for this country for the same reason
+    _get_data_availability_real's own _total() treats it that way (live-
+    verified real gap: Turks and Caicos Islands' NUM_SHELTERS is 100% NULL).
+    SQL's own NULL-skipping SUM already returns NULL when every input row
+    is NULL, so no extra COUNT(...) check is needed for those 4 fields. The
+    8 boolean fields use COUNT(col) > 0 (a non-null row exists) since "any
+    real data present at all" is the actual question there, not a sum.
+
+    Returns None (same as get_base_tiles returning empty) when this country
+    has no base-layer data in Snowflake at all yet for `zoom_level`.
+    """
+    try:
+        query = """
+        SELECT
+            COUNT(*)                        AS N_ROWS,
+            SUM(NUM_SCHOOLS)                AS TOTAL_SCHOOLS,
+            SUM(NUM_HCS)                    AS TOTAL_HCS,
+            SUM(NUM_SHELTERS)               AS TOTAL_SHELTERS,
+            SUM(NUM_WASH)                   AS TOTAL_WASH,
+            COUNT(POPULATION)               AS N_POPULATION,
+            COUNT(INFANT_POPULATION)        AS N_INFANT,
+            COUNT(SCHOOL_AGE_POPULATION)    AS N_SCHOOL_AGE,
+            COUNT(ADOLESCENT_POPULATION)    AS N_ADOLESCENT,
+            COUNT(RWI)                      AS N_RWI,
+            COUNT(SMOD_CLASS)               AS N_SMOD_CLASS,
+            COUNT(MODERATE_POVERTY_PROB)    AS N_MODERATE_POVERTY,
+            COUNT(SEVERE_POVERTY_PROB)      AS N_SEVERE_POVERTY
+        FROM AOTS.TC_ECMWF.BASE_MERCATOR_TILE_MAT
+        WHERE COUNTRY = %s
+          AND ZOOM_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, zoom_level])
+        if df.empty or int(df.iloc[0]["N_ROWS"]) == 0:
+            return None
+        row = df.iloc[0]
+
+        def _total(col):
+            return int(row[col]) if pd.notna(row[col]) else None
+
+        def _any_present(col):
+            return pd.notna(row[col]) and int(row[col]) > 0
+
+        return {
+            "schools": _total("TOTAL_SCHOOLS"), "health_centers": _total("TOTAL_HCS"),
+            "shelters": _total("TOTAL_SHELTERS"), "wash": _total("TOTAL_WASH"),
+            "population": _any_present("N_POPULATION"), "age_0_4": _any_present("N_INFANT"),
+            "age_5_14": _any_present("N_SCHOOL_AGE"), "age_15_19": _any_present("N_ADOLESCENT"),
+            "rwi": _any_present("N_RWI"), "settlement": _any_present("N_SMOD_CLASS"),
+            "moderate_poverty": _any_present("N_MODERATE_POVERTY"), "severe_poverty": _any_present("N_SEVERE_POVERTY"),
+        }
+    except Exception as e:
+        logger.error("Error querying data availability for %s: %s", country, e)
+        return None
 
 
 @ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)

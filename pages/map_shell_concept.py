@@ -25,7 +25,6 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 
 import dash
 import dash_mantine_components as dmc
@@ -49,7 +48,7 @@ from components.map.javascript import (
 from components.data.snowflake_utils import (
     get_active_countries, get_snowflake_data, get_active_storm_countries,
     get_latest_forecast_time_overall, get_available_wind_thresholds,
-    get_country_totals, get_base_tiles, get_snowflake_connection,
+    get_country_totals, get_snowflake_connection,
     get_envelope_data_snowflake, get_gust_envelope_data_snowflake, get_storms_for_country_date,
     get_storms_and_countries_for_date, get_track_impacts, get_gust_track_impacts,
     get_latest_river_forecast_time, get_latest_rain_forecast_time, ttl_cache,
@@ -58,6 +57,7 @@ from components.data.snowflake_utils import (
     get_tile_impacts, get_gust_tile_impacts, get_river_tile_impacts, get_rain_tile_impacts,
     get_storms_with_alert_emails_at, get_alert_emails_for_storm, get_alert_email_body,
     get_recent_forecast_dates, get_admin_impacts, get_facility_source,
+    get_query_executor, get_tile_impact_totals_by_threshold, get_data_availability,
 )
 from components.data.data_store_utils import get_data_store, get_impact_data
 
@@ -75,13 +75,20 @@ dash.register_page(__name__, path="/", name="Ahead of the Storm")
 # queries reactively on country/storm selection — same module-level-vs-
 # per-callback split pages/dashboard.py and callbacks/metrics.py already use.
 # ---------------------------------------------------------------------------
-with ThreadPoolExecutor(max_workers=3) as _startup_pool:
-    _f_countries = _startup_pool.submit(get_active_countries)
-    _f_metadata = _startup_pool.submit(get_snowflake_data)
-    _f_active_storm_codes = _startup_pool.submit(get_active_storm_countries)
-    _countries_df = _f_countries.result()
-    _metadata_df = _f_metadata.result()
-    _active_storm_country_codes = _f_active_storm_codes.result()
+# Real perf fix (2026-08, multi-agent audit, finding #8/#10): was its own
+# throwaway `with ThreadPoolExecutor(...) as _startup_pool:` block — every
+# worker thread paid a fresh connect() handshake, and the connection
+# attached to each thread leaked (never closed) once the `with` block
+# exited. The shared, long-lived executor's threads persist for the app's
+# whole lifetime, so their threading.local() connections (get_snowflake_
+# connection in snowflake_utils.py) get reused by later fan-outs too,
+# instead of leaking here on the very first queries the app ever runs.
+_f_countries = get_query_executor().submit(get_active_countries)
+_f_metadata = get_query_executor().submit(get_snowflake_data)
+_f_active_storm_codes = get_query_executor().submit(get_active_storm_countries)
+_countries_df = _f_countries.result()
+_metadata_df = _f_metadata.result()
+_active_storm_country_codes = _f_active_storm_codes.result()
 
 # Lazy-ish singleton (created once here, at import time) — mirrors
 # pages/dashboard.py's own module-level `data_store = get_data_store()`.
@@ -1508,7 +1515,7 @@ _ZERO_STATS = {k: "0" for k in _DEFAULT_STATS}
 # _real_member_stats, then discarded. See _get_country_age_split/
 # _real_member_age_split/_combined_age_split for the real replacement.
 _CHILD_AGE_BANDS = ["Age 0–4 (Infant)", "Age 5–14 (School-age)", "Age 15–19 (Adolescent)"]
-_ZERO_AGE_SPLIT = {label: {"at_risk": 0.0, "in_need_pct": 0} for label in _CHILD_AGE_BANDS}
+_ZERO_AGE_SPLIT = {label: {"at_risk": 0.0, "in_need_pct": 0, "in_need_abs": 0.0} for label in _CHILD_AGE_BANDS}
 
 # Icon per stat — Material Design Icons (mdi:*) via Iconify, since carbon's
 # set (used for the rest of this page's chrome icons) doesn't cover
@@ -1570,6 +1577,7 @@ def _resolve_storm_for_country(country, date=None, run=None):
     return {"name": storm_name, "cat": cat, "forecast_time": forecast_time_str, "mat_forecast_date": mat_date}
 
 
+@ttl_cache(ttl_seconds=900, maxsize=64)
 def _resolve_storms_for_date(date=None, run=None):
     """Every REAL storm with impact data at the given topbar date/run,
     across ALL countries — the date-reactive replacement for filtering the
@@ -1599,6 +1607,15 @@ def _resolve_storms_for_date(date=None, run=None):
     each entry still carries its own copy rather than callers assuming a
     single shared value, in case that ever changes. Empty list when
     there's genuinely no real data for this date.
+
+    Real perf fix (2026-08, multi-agent audit, finding #12): was previously
+    uncached — called (with the same date/run) by _active_storms_section,
+    _hurricane_family, _flood_hazards_family, and _resolve_stat_value's own
+    "global" branch, several of which run inside the same request via
+    _controls_global/_controls_zoom's own concurrent fan-out. @ttl_cache
+    (single-flight per key, see its own docstring in snowflake_utils.py)
+    means the second-and-later callers for the same (date, run) hit cache
+    instead of redoing this function's own Snowflake round-trips.
     """
     date = date or _DEFAULT_FORECAST_DATE
     run = run if run is not None else _DEFAULT_FORECAST_RUN
@@ -1641,15 +1658,24 @@ def _resolve_storms_for_date(date=None, run=None):
         date_str = pd.Timestamp(forecast_time_str).strftime("%a %-d %b %Y")
     except Exception:
         date_str = date
-    storms = []
-    for storm_name, codes in by_storm.items():
+
+    def _build_storm_entry(item):
+        storm_name, codes = item
         cat = _category_label_ensemble_max(storm_name, forecast_time_str)
         country_names = [_CODE_TO_NAME.get(c, c) for c in codes]
-        storms.append({
+        return {
             "name": storm_name, "countries": country_names, "date": date_str, "cat": cat,
             "forecast_time": forecast_time_str, "mat_forecast_date": mat_date,
-        })
-    return storms
+        }
+
+    # Real perf fix (2026-08, multi-agent audit, finding #12): this used to
+    # call _category_label_ensemble_max (-> _ensemble_max_kt, its own
+    # Snowflake round-trip on a cold cache) once PER STORM, sequentially —
+    # every other per-item loop in this file already got this fix; this one
+    # was missed. Real storms with a track for the same date/run are
+    # independent of each other, so fetching concurrently via the shared
+    # executor turns N sequential round-trips into ~1.
+    return list(get_query_executor().map(_build_storm_entry, by_storm.items()))
 
 
 def _resolve_wind_kt(wind_idx):
@@ -1748,8 +1774,7 @@ def _global_flood_availability(date, run):
     def _fetch(c):
         return get_latest_river_forecast_time(c), get_latest_rain_forecast_time(c)
     if codes:
-        with ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
-            results = list(ex.map(_fetch, codes))
+        results = list(get_query_executor().map(_fetch, codes))
     else:
         results = []
     river_avail = any(river_t == mat_date for river_t, _rain_t in results)
@@ -2032,6 +2057,32 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     pin_pct = {
         "people": (max(0.0, min(100.0, people_in_need / population * 100)) if population > 0 else 0.0) if people_in_need is not None else None,
         "children": (max(0.0, min(100.0, children_in_need / children * 100)) if children > 0 else 0.0) if children_in_need is not None else None,
+        # Real bug found+fixed here (2026-08, user-reported: PHL/DOLPHIN at
+        # 06Z showed "At Risk" and "In Need" as the EXACT same number for
+        # People, Children, and every age band alike). People/Children In
+        # Need (E_people_in_need/E_children_in_need) come from a wind-only
+        # vulnerability assessment that does NOT scale with the selected
+        # wind-severity threshold (see this project's own established In
+        # Need note), while At Risk exposure (population) shrinks sharply
+        # as the threshold rises. Every consumer of pin_pct used to
+        # RECONSTRUCT the displayed In Need count as at_risk * pct / 100 —
+        # correct only while at_risk stays above the real in_need count;
+        # once a high threshold shrinks at_risk below the country's
+        # genuinely near-fixed in_need total, the real ratio exceeds 100%,
+        # the min(100.0, ...) clamp above silently caps pct at exactly
+        # 100%, and the reconstruction collapses to In Need == At Risk —
+        # not a coincidence, a systematic artifact of deriving an absolute
+        # count from a clamped percentage instead of showing the real
+        # number. people_abs/children_abs are the real, un-derived,
+        # un-clamped absolute counts (raw floats, ceil'd only once at final
+        # display, same convention as pin_pct's own comment above) — every
+        # display surface (the breakdown table, arc charts, Combined
+        # column, per-member comparisons) now reads these directly instead
+        # of reconstructing via pct, so a real In Need count can correctly
+        # exceed At Risk without being silently misrepresented as equal to
+        # it.
+        "people_abs": people_in_need,
+        "children_abs": children_in_need,
     }
     # Real per-age at-risk/in-need breakdown — see _CHILD_AGE_BANDS's own
     # comment for the illustrative-split bug this replaces.
@@ -2045,6 +2096,10 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
             # denominator) whenever at_risk itself is None.
             "in_need_pct": ((max(0.0, min(100.0, age_in_need[label] / age_population[label] * 100)) if age_population[label] > 0 else 0.0)
                              if age_in_need[label] is not None and age_population[label] is not None else None),
+            # Real, un-derived absolute in-need count for this age band —
+            # same "read directly, don't reconstruct via a clamped pct"
+            # fix as pin_pct's own people_abs/children_abs above.
+            "in_need_abs": age_in_need[label],
         }
         for label in _CHILD_AGE_BANDS
     }
@@ -2101,47 +2156,27 @@ def _get_country_pin_pct(country, date=None, run=None, wind_kt=None, hz=None):
 def _get_data_availability_real(country):
     """Real per-country data-availability snapshot — the same facility-count
     + dataset-boolean check Ahead-of-the-Storm-ORCHESTRATION's own
-    08_utilities/check_baseline_data.py already runs against Snowflake,
-    sourced here from BASE_MERCATOR_TILE_MAT (get_base_tiles in
-    snowflake_utils.py) instead of the old hardcoded _DATA_AVAILABILITY mock.
+    08_utilities/check_baseline_data.py already runs against Snowflake.
     Returns None (same as the old dict's `.get()` miss) when the country has
     no base-layer data in Snowflake at all yet.
+
+    Real perf fix (2026-08, multi-agent audit): this used to pull EVERY
+    BASE_MERCATOR_TILE_MAT row for the country (get_base_tiles — PHL:
+    59,106 rows x 16 cols) plus a Python loop reconstructing quadkey
+    geometry per row, just to compute the same 4 facility sums and 8
+    non-null checks get_data_availability now does in one Snowflake
+    aggregate query (SUM/COUNT, no geometry involved at all) — same return
+    shape (see get_data_availability's own docstring), so every caller here
+    keeps working unchanged.
     """
     code = _NAME_TO_CODE.get(country)
     if not code:
         return None
     try:
-        df = get_base_tiles(code)
+        return get_data_availability(code)
     except Exception as e:
-        logger.warning("Could not load base tiles for %s: %s", country, e)
+        logger.warning("Could not load data availability for %s: %s", country, e)
         return None
-    if df is None or df.empty:
-        return None
-
-    def _any_present(col):
-        return col in df.columns and df[col].notna().any()
-
-    # None (not a fabricated 0) when this facility column is genuinely
-    # all-NULL for the country — live-verified (2026-08): Turks and Caicos
-    # Islands' real num_shelters is 100% NULL in BASE_MERCATOR_TILE_MAT (0
-    # non-null out of 362 rows), same real gap confirmed independently in
-    # MERCATOR_TILE_IMPACT_MAT/TRACK_MAT/ADMIN_ALL_IMPACT_MAT for the same
-    # country/facility type (see _fetch_real_combined_tile_totals_uncached's
-    # own _sum_or_none comment) — the OLD `isna().all()` check here already
-    # existed but both its branches collapsed to a real int, making the
-    # check dead weight; _facility_line below renders None as "N/A", not a
-    # confirmed real zero count.
-    def _total(col):
-        return int(df[col].sum()) if col in df.columns and not df[col].isna().all() else None
-
-    return {
-        "schools": _total('num_schools'), "health_centers": _total('num_hcs'),
-        "shelters": _total('num_shelters'), "wash": _total('num_wash'),
-        "population": _any_present('population'), "age_0_4": _any_present('infant_population'),
-        "age_5_14": _any_present('school_age_population'), "age_15_19": _any_present('adolescent_population'),
-        "rwi": _any_present('rwi'), "settlement": _any_present('smod_class'),
-        "moderate_poverty": _any_present('moderate_poverty_prob'), "severe_poverty": _any_present('severe_poverty_prob'),
-    }
 
 
 # Real per-member track granularity (TC_TRACKS has member_type/member id,
@@ -2198,8 +2233,8 @@ def _resolve_ensemble_member(value):
 # Fallback only for the "nothing selected yet" skeleton (see _DEFAULT_STATS's
 # own comment for why this is NOT _get_country_pin_pct's own real-query
 # fallback anymore — that's _ZERO_PIN_PCT below).
-_DEFAULT_PIN_PCT = {"people": 34, "children": 41}
-_ZERO_PIN_PCT = {"people": 0, "children": 0}
+_DEFAULT_PIN_PCT = {"people": 34, "children": 41, "people_abs": None, "children_abs": None}
+_ZERO_PIN_PCT = {"people": 0, "children": 0, "people_abs": 0.0, "children_abs": 0.0}
 
 # Fallback only (see _get_country_totals below) — population/children
 # denominator for the arc charts' outer "Population" ring, used only when
@@ -2583,8 +2618,7 @@ def _resolve_worst_member_multi(influencing_factor, countries, date, run, wind_k
     # round-trip; fetching them concurrently (thread-local connections per
     # components/data/snowflake_utils.py's own get_connection, safe to call
     # from multiple threads) turns N sequential round-trips into ~1.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        dfs = dict(zip(countries, ex.map(lambda c: _member_track_impacts(c, date, run, wind_kt), countries)))
+    dfs = dict(zip(countries, get_query_executor().map(lambda c: _member_track_impacts(c, date, run, wind_kt), countries)))
     for c in countries:
         df = dfs.get(c)
         if df is None or 'zone_id' not in df.columns:
@@ -2776,6 +2810,14 @@ def _real_member_pin_pct(country, date, run, wind_kt, member):
                     if people_in_need is not None else None),
         "children": ((max(0.0, min(100.0, children_in_need / children * 100)) if children > 0 else 0.0)
                       if children_in_need is not None else None),
+        # Real, un-derived absolute in-need counts — same fix as
+        # _fetch_real_combined_tile_totals_uncached's own pin_pct comment
+        # (people_abs/children_abs there): every display now reads these
+        # directly instead of reconstructing via at_risk * pct / 100, which
+        # silently collapses to In Need == At Risk once pct gets clamped at
+        # 100%.
+        "people_abs": people_in_need,
+        "children_abs": children_in_need,
     }
 
 
@@ -2820,6 +2862,10 @@ def _real_member_age_split(country, date, run, wind_kt, member):
             "at_risk": at_risk,
             "in_need_pct": ((max(0.0, min(100.0, need_val / at_risk * 100)) if at_risk > 0 else 0.0)
                              if need_val is not None else None),
+            # Real, un-derived absolute in-need count — same fix as
+            # _fetch_real_combined_tile_totals_uncached's own age_split
+            # comment.
+            "in_need_abs": need_val,
         }
     return result
 
@@ -2877,8 +2923,7 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
     # MELISSA) with no parallelization, unlike the sibling per-country-
     # selected code paths elsewhere in this file. Fetching concurrently
     # turns N sequential round-trips into ~1.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        scaled_per_country = list(ex.map(_fetch, countries))
+    scaled_per_country = list(get_query_executor().map(_fetch, countries))
     for scaled in scaled_per_country:
         for k in keys:
             v = _parse_stat_number(scaled.get(k, "0"))
@@ -2896,45 +2941,49 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
 
 def _combined_in_need_total(countries, risk_key, pin_key, member=None, date=None, run=None, wind_kt=None, hz=None):
     """Sums only the countries with real in-need data for `pin_key`
-    ("people"/"children"), silently excluding any country whose own pct is
-    None (genuinely missing, e.g. Cuba's real all-NULL E_PEOPLE_IN_NEED —
-    see _fetch_real_combined_tile_totals_uncached's own comment). This is
-    the "sum only real countries, note it's partial" policy — use
-    _combined_in_need_is_partial alongside this to know whether any country
-    was excluded, so the UI can flag the total as partial rather than
-    silently understating it.
+    ("people"/"children"), silently excluding any country whose own abs
+    count is None (genuinely missing, e.g. Cuba's real all-NULL
+    E_PEOPLE_IN_NEED — see _fetch_real_combined_tile_totals_uncached's own
+    comment). This is the "sum only real countries, note it's partial"
+    policy — use _combined_in_need_is_partial alongside this to know
+    whether any country was excluded, so the UI can flag the total as
+    partial rather than silently understating it.
 
-    Returns a raw float, NOT ceil'd per-country before summing — ceiling
-    each country's own contribution first (then summing already-ceiled
-    parts) is its own small version of the same premature-rounding bug
-    _fetch_real_combined_tile_totals_uncached's own pin_pct comment
-    describes; callers that need an absolute display count wrap this call
-    in a single math.ceil() themselves."""
+    Real bug found+fixed here (2026-08, user-reported, same root cause as
+    _fetch_real_combined_tile_totals_uncached's own pin_pct comment): this
+    used to reconstruct each country's contribution as
+    `at_risk * pct / 100`, where pct was ALREADY clamped to [0, 100] one
+    level down — so a country whose at-risk population had shrunk below
+    its own real (threshold-independent) in-need count silently
+    contributed at_risk instead of its true, larger in-need count, before
+    ever reaching this function's own sum. Sums the real, un-derived
+    `{pin_key}_abs` count directly instead — `risk_key`/`base` are no
+    longer needed for this sum at all (kept as a parameter purely for this
+    function's existing public signature; every call site still passes
+    it). Returns a raw float, NOT ceil'd per-country before summing —
+    ceiling each country's own contribution first (then summing
+    already-ceiled parts) is its own small version of the same
+    premature-rounding bug _fetch_real_combined_tile_totals_uncached's own
+    pin_pct comment describes; callers that need an absolute display count
+    wrap this call in a single math.ceil() themselves."""
     def _fetch(c):
-        if member:
-            scaled_stats = _real_member_stats(c, date, run, wind_kt, member)
-            scaled_pin = _real_member_pin_pct(c, date, run, wind_kt, member)
-        else:
-            scaled_stats = scaled_pin = None
-        if scaled_stats is None or scaled_pin is None:
-            # Both share one @ttl_cache'd _fetch_real_combined_tile_totals
-            # per country (see _get_country_stats/_get_country_pin_pct's
-            # own docstrings), so calling both here for the same country is
-            # effectively free after the first — the real per-country cost
-            # is the outer loop below, parallelized same as _combined_stats.
-            scaled_stats = _get_country_stats(c, date, run, wind_kt, hz=hz)
+        scaled_pin = _real_member_pin_pct(c, date, run, wind_kt, member) if member else None
+        if scaled_pin is None:
+            # Sits behind one @ttl_cache'd _fetch_real_combined_tile_totals
+            # per country (see _get_country_pin_pct's own docstring), so
+            # this is a cache hit whenever _get_country_stats already ran
+            # for the same country — the real per-country cost is the outer
+            # loop below, parallelized same as _combined_stats.
             scaled_pin = _get_country_pin_pct(c, date, run, wind_kt, hz=hz)
-        return scaled_stats, scaled_pin
+        return scaled_pin
 
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        bundles = list(ex.map(_fetch, countries))
+    bundles = list(get_query_executor().map(_fetch, countries))
     total = 0.0
-    for scaled_stats, scaled_pin in bundles:
-        base = _parse_stat_number(scaled_stats.get(risk_key, "0"))
-        pct = scaled_pin[pin_key]
-        if pct is None:
+    for scaled_pin in bundles:
+        abs_val = scaled_pin.get(f"{pin_key}_abs")
+        if abs_val is None:
             continue
-        total += base * pct / 100
+        total += abs_val
     return total
 
 
@@ -3010,7 +3059,7 @@ def _combined_age_split(countries, member=None, date=None, run=None, wind_kt=Non
     # available" (None/N/A) for both fields, same as _combined_stats's own
     # empty-countries handling above — not a confirmed 0.
     if not countries:
-        return {label: {"at_risk": None, "in_need_pct": None} for label in _CHILD_AGE_BANDS}
+        return {label: {"at_risk": None, "in_need_pct": None, "in_need_abs": None} for label in _CHILD_AGE_BANDS}
     at_risk_totals = {label: 0.0 for label in _CHILD_AGE_BANDS}
     in_need_totals = {label: 0.0 for label in _CHILD_AGE_BANDS}
     # Tracks whether ANY country contributed real in-need data for this age
@@ -3037,8 +3086,7 @@ def _combined_age_split(countries, member=None, date=None, run=None, wind_kt=Non
     # Real perf fix (2026-08, multi-agent audit) — same reasoning as
     # _combined_stats/_combined_in_need_total above: parallelize the real
     # per-country fetch, aggregate sequentially.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        scaled_per_country = list(ex.map(_fetch, countries))
+    scaled_per_country = list(get_query_executor().map(_fetch, countries))
     for scaled in scaled_per_country:
         for label in _CHILD_AGE_BANDS:
             band = scaled[label]
@@ -3046,14 +3094,23 @@ def _combined_age_split(countries, member=None, date=None, run=None, wind_kt=Non
                 continue
             has_real_at_risk[label] = True
             at_risk_totals[label] += band["at_risk"]
-            if band["in_need_pct"] is not None:
+            # Real bug found+fixed here (2026-08, user-reported, same root
+            # cause as _combined_in_need_total's own comment): sums the
+            # real, un-derived in_need_abs directly instead of
+            # reconstructing via `at_risk * in_need_pct / 100`, which
+            # silently corrupts once a country's own in_need_pct has
+            # already been clamped to 100% one level down.
+            if band.get("in_need_abs") is not None:
                 has_real[label] = True
-                in_need_totals[label] += band["at_risk"] * band["in_need_pct"] / 100
+                in_need_totals[label] += band["in_need_abs"]
     return {
         label: {
             "at_risk": at_risk_totals[label] if has_real_at_risk[label] else None,
             "in_need_pct": ((max(0.0, min(100.0, in_need_totals[label] / at_risk_totals[label] * 100)) if at_risk_totals[label] > 0 else 0.0)
                              if has_real[label] else None),
+            # Real, un-derived absolute in-need total for this age band —
+            # same fix as pin_pct's own people_abs/children_abs.
+            "in_need_abs": in_need_totals[label] if has_real[label] else None,
         }
         for label in _CHILD_AGE_BANDS
     }
@@ -3873,13 +3930,13 @@ def _data_availability_table(countries):
         return dmc.Group(items, gap=4, wrap="wrap", style={"rowGap": "2px"}), any_custom
 
     # Real perf fix (2026-08, multi-agent audit): _get_data_availability_real
-    # (get_base_tiles, a full zoom-14 BASE_MERCATOR_TILE_MAT pull) is called
-    # nowhere else in the codebase, so it's never prewarmed — a multi-
-    # country selection's first render used to pay N sequential cold-cache
-    # round-trips here, unlike every sibling per-country loop in this file
-    # that already got this fix. Fetching concurrently, rendering in order.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        availability_per_country = dict(zip(countries, ex.map(_get_data_availability_real, countries)))
+    # (now the one-round-trip get_data_availability aggregate, see its own
+    # docstring) is called nowhere else in the codebase, so it's never
+    # prewarmed — a multi-country selection's first render still pays N
+    # cold-cache round-trips here, unlike every sibling per-country loop in
+    # this file that already got this fix. Fetching concurrently, rendering
+    # in order.
+    availability_per_country = dict(zip(countries, get_query_executor().map(_get_data_availability_real, countries)))
     rows = []
     for c in countries:
         d = availability_per_country[c]
@@ -4232,11 +4289,20 @@ def _controls_global(date=None, run=None):
     # Collapsed by default (Global has less room to spare than a single
     # zoomed-in country's panel) but still active underneath — collapsing
     # is purely a display state now, not a deactivation.
-    children = [
-        _active_storms_section(date=date, run=run),
-        _hurricane_family(expanded=False, date=date, run=run),
-        _flood_hazards_family(expanded=False, date=date, run=run),
-    ]
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #1b): these three
+    # section builders are fully independent of each other (none consumes
+    # another's return value — each hits its own real Snowflake round-trips:
+    # _resolve_storms_for_date/get_storms_with_alert_emails_at,
+    # get_track_ids_for_date + per-storm _ensemble_max_kt,
+    # get_gust_track_ids_for_date/get_river_extent_forecast_time_for_date/
+    # get_precip_forecast_time_near), but used to run strictly one after
+    # another. Fetching concurrently via the shared executor collapses this
+    # 7-9-round-trip serial chain to roughly the slowest single section.
+    _builders = [lambda: _active_storms_section(date=date, run=run),
+                  lambda: _hurricane_family(expanded=False, date=date, run=run),
+                  lambda: _flood_hazards_family(expanded=False, date=date, run=run)]
+    children = list(get_query_executor().map(lambda f: f(), _builders))
     return html.Div([c for c in children if c is not None], className="controls-stack")
 
 
@@ -4258,8 +4324,18 @@ def _controls_zoom(countries=None, date=None, run=None):
     # Order: Active Storm(s) first if there are any (nothing rendered at all
     # otherwise — the switch below just becomes the first thing shown), then
     # the Exposure/Hazard switch, then whichever pane it's set to.
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #1b) — same
+    # reasoning as _controls_global above: _active_storms_section/
+    # _hurricane_family/_flood_hazards_family are independent of each other
+    # and of the exposure pane build below, but ran strictly serially.
+    # Fetching the three concurrently via the shared executor.
+    _builders = [lambda: _active_storms_section(countries=countries, date=date, run=run),
+                  lambda: _hurricane_family(countries=countries, date=date, run=run),
+                  lambda: _flood_hazards_family(countries=countries, date=date, run=run)]
+    active_storms, hurricane_family, flood_hazards_family = get_query_executor().map(lambda f: f(), _builders)
     children = [
-        _active_storms_section(countries=countries, date=date, run=run),
+        active_storms,
         _view_toggle(),
         html.Div(
             dmc.RadioGroup(
@@ -4268,8 +4344,7 @@ def _controls_zoom(countries=None, date=None, run=None):
             ),
             id="controls-exposure-pane",
         ),
-        html.Div([_hurricane_family(countries=countries, date=date, run=run),
-                   _flood_hazards_family(countries=countries, date=date, run=run)],
+        html.Div([hurricane_family, flood_hazards_family],
                   id="controls-hazard-pane", style={"display": "none"}),
     ]
     return html.Div([c for c in children if c is not None], className="controls-stack")
@@ -4281,8 +4356,25 @@ def _controls_panel():
     # like a search result or a one-off detail panel. No headline: whatever
     # renders first (Active Storms, or the Exposure/Hazard switch when
     # there's no storm) already says what this panel is for.
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #1): this used to
+    # call _controls_global() directly here — building the WHOLE real panel
+    # (7-9 serial Snowflake round-trips: _active_storms_section/
+    # _hurricane_family/_flood_hazards_family) inline inside layout()'s own
+    # call graph, which Dash Pages runs synchronously as part of the routing
+    # callback, blocking delivery of the entire page. _switch_mode_content
+    # (controls-body's own Output, an initial callback — prevent_initial_
+    # call=False, and every one of its Inputs (topbar-mode/selected-country-
+    # store/topbar-date/topbar-time) already has a real value in this same
+    # layout() tree, confirmed via their own id= definitions below) fires
+    # immediately after mount regardless, and builds the exact same content
+    # — the inline build here was pure redundant duplicate work, saved from
+    # double cost only by the ttl_cache the first build had just warmed. A
+    # lightweight skeleton here lets the page ship first; the real panel
+    # still appears within one callback round-trip, same as it always has
+    # for every OTHER country/date/run change on this page.
     return html.Div(
-        html.Div(_controls_global(), id="controls-body"),
+        html.Div(_controls_skeleton(), id="controls-body"),
         # top/maxHeight from the shared _PANEL_TOP/_PANEL_MAX_HEIGHT spacing
         # system (see their own comment) — same values impact-panel and
         # command-bar use, so every gap in this shell (topbar-to-panel,
@@ -4290,6 +4382,19 @@ def _controls_panel():
         # same 16px margin.
         id="controls-panel", style={**_PANEL_STYLE, "top": _PANEL_TOP, "left": f"{_UI_MARGIN}px", "width": "290px",
                                      "maxHeight": _PANEL_MAX_HEIGHT, "overflowY": "auto"},
+    )
+
+
+def _controls_skeleton():
+    # Pure-Python, zero Snowflake round-trips — see _controls_panel's own
+    # comment for why this exists. Bare dmc.Loader (same component
+    # _ms_loading_badge already uses elsewhere on this page) rather than a
+    # placeholder shaped like the real panel — this is only ever on-screen
+    # for one callback round-trip, not worth the upkeep of keeping a fake
+    # skeleton layout in sync with the real one.
+    return html.Div(
+        dmc.Loader(size="sm", color="#8ea0ab", type="dots"),
+        style={"display": "flex", "justifyContent": "center", "padding": "24px"},
     )
 
 
@@ -4454,8 +4559,7 @@ def _admin1_regions_real(country, date=None, run=None, wind_kt=None):
     # selected country/region), so a bundled-region selection's own
     # member fan-out was escaping that outer parallelization and running
     # serially inside one worker thread. Parallelized here too.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(codes)))) as ex:
-        rows = [row for code_rows in ex.map(_fetch_region_rows, codes) for row in code_rows]
+    rows = [row for code_rows in get_query_executor().map(_fetch_region_rows, codes) for row in code_rows]
     # User-requested (2026-08-04): alphabetical, not Snowflake's own return
     # order (which followed whatever order ADMIN_ALL_IMPACT_MAT rows came
     # back in — arbitrary from a reader's perspective, and for a bundled
@@ -4814,11 +4918,18 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
             compare_n = _parse_stat_number(comp_stats.get(risk_key, "0")) if comp_stats else None
             cells.append(_value_td(base_n, compare_n, group_style))
             if has_pin:
-                base_pct = pin_source.get(c, _DEFAULT_PIN_PCT)[pin_key]
-                base_in_need = math.ceil(base_n * base_pct / 100) if base_pct is not None else None
+                # Real, un-derived absolute in-need count — read directly
+                # instead of reconstructing via base_n * pct / 100 (real bug
+                # found+fixed here, 2026-08, user-reported: that
+                # reconstruction silently collapses to In Need == At Risk
+                # once pct has already been clamped to 100% one level down
+                # — see _fetch_real_combined_tile_totals_uncached's own
+                # pin_pct comment for the full mechanism).
+                base_abs = pin_source.get(c, _DEFAULT_PIN_PCT).get(f"{pin_key}_abs")
+                base_in_need = math.ceil(base_abs) if base_abs is not None else None
                 compare_in_need = None
-                if comp_stats and comp_pin and comp_pin[pin_key] is not None:
-                    compare_in_need = math.ceil(compare_n * comp_pin[pin_key] / 100)
+                if comp_stats and comp_pin and comp_pin.get(f"{pin_key}_abs") is not None:
+                    compare_in_need = math.ceil(comp_pin[f"{pin_key}_abs"])
                 cells.append(_value_td(base_in_need, compare_in_need,
                                          {**td_style, **_group_style(idx, is_combined)}))
         rows.append(html.Tr(cells))
@@ -4845,10 +4956,12 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
             compare_age = (math.ceil(comp_band["at_risk"]) if comp_band and comp_band.get("at_risk") is not None else None)
             cells.append(_value_td(base_age, compare_age, group_style))
             if has_pin:
-                base_age_need = (math.ceil(band["at_risk"] * band["in_need_pct"] / 100)
-                                  if band["in_need_pct"] is not None else None)
-                compare_age_need = (math.ceil(comp_band["at_risk"] * comp_band["in_need_pct"] / 100)
-                                     if comp_band and comp_band.get("in_need_pct") is not None else None)
+                # Same real-abs-not-reconstructed fix as the People/Children
+                # rows above.
+                base_age_need = (math.ceil(band["in_need_abs"])
+                                  if band.get("in_need_abs") is not None else None)
+                compare_age_need = (math.ceil(comp_band["in_need_abs"])
+                                     if comp_band and comp_band.get("in_need_abs") is not None else None)
                 cells.append(_value_td(base_age_need, compare_age_need,
                                          {**td_style, **_group_style(idx, is_combined)}))
         rows.append(html.Tr(cells))
@@ -4937,8 +5050,15 @@ def _pin_arc_charts_block_from(label, base_stats, pin_pct, totals, member, compa
     # _fetch_real_combined_tile_totals_uncached's own comment. _make_arc_chart
     # renders this ring as an explicit "N/A" state, not a misleading
     # 0%-filled one.
-    in_need_pop = math.ceil(exposed_pop * pin_pct["people"] / 100) if pin_pct["people"] is not None else None
-    in_need_children = math.ceil(exposed_children * pin_pct["children"] / 100) if pin_pct["children"] is not None else None
+    #
+    # Real, un-derived absolute in-need count — read directly instead of
+    # reconstructing via exposed_pop * pct / 100 (real bug found+fixed
+    # here, 2026-08, user-reported: that reconstruction silently collapses
+    # to In Need == At Risk once pct has already been clamped to 100% one
+    # level down — see _fetch_real_combined_tile_totals_uncached's own
+    # pin_pct comment).
+    in_need_pop = math.ceil(pin_pct["people_abs"]) if pin_pct.get("people_abs") is not None else None
+    in_need_children = math.ceil(pin_pct["children_abs"]) if pin_pct.get("children_abs") is not None else None
 
     # compare_pop/compare_children (real per-member In Need numbers) are now
     # computed by the caller (_pin_arc_charts_block/_pin_arc_charts_block_
@@ -5016,10 +5136,15 @@ def _pin_arc_charts_block(country, member, show_label=True, scale=1.0, date=None
             # _real_member_pin_pct's own comment) — leave compare_pop/
             # compare_children as None (no comparison number shown) rather
             # than crashing or fabricating one.
-            if real_pin["people"] is not None:
-                compare_pop = math.ceil(_parse_stat_number(real_stats["People at Risk"]) * real_pin["people"] / 100)
-            if real_pin["children"] is not None:
-                compare_children = math.ceil(_parse_stat_number(real_stats["Children at Risk"]) * real_pin["children"] / 100)
+            # Real, un-derived absolute in-need counts — read directly
+            # instead of reconstructing via at_risk * pct / 100 (see
+            # _fetch_real_combined_tile_totals_uncached's own pin_pct
+            # comment for why that reconstruction silently corrupts once
+            # pct has already been clamped to 100%).
+            if real_pin.get("people_abs") is not None:
+                compare_pop = math.ceil(real_pin["people_abs"])
+            if real_pin.get("children_abs") is not None:
+                compare_children = math.ceil(real_pin["children_abs"])
     return _pin_arc_charts_block_from(
         country, _get_country_stats(country, date, run, wind_kt, hz=hz),
         _get_country_pin_pct(country, date, run, wind_kt, hz=hz),
@@ -5030,13 +5155,29 @@ def _pin_arc_charts_block(country, member, show_label=True, scale=1.0, date=None
 
 def _pin_arc_charts_block_combined(countries, member, show_label=True, scale=1.0, date=None, run=None, wind_kt=None, hz=None):
     combined_base = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
-    combined_pin = {
-        "people": _combined_in_need_pct(countries, "People at Risk", "people",
+    _people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
                                           _parse_stat_number(combined_base["People at Risk"]),
-                                          date=date, run=run, wind_kt=wind_kt, hz=hz),
-        "children": _combined_in_need_pct(countries, "Children at Risk", "children",
+                                          date=date, run=run, wind_kt=wind_kt, hz=hz)
+    _children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
                                             _parse_stat_number(combined_base["Children at Risk"]),
-                                            date=date, run=run, wind_kt=wind_kt, hz=hz),
+                                            date=date, run=run, wind_kt=wind_kt, hz=hz)
+    combined_pin = {
+        "people": _people_pct,
+        "children": _children_pct,
+        # Real, un-derived absolute in-need totals — _pin_arc_charts_block_
+        # from now reads these directly instead of reconstructing via
+        # exposed * pct / 100 (see that function's own comment). Same
+        # None-ness as the already-correct pct fields above (both are
+        # gated on the identical "does any selected country have real
+        # in-need data" check inside _combined_in_need_pct) — a genuine sum
+        # of zero real countries' contributions still correctly computes
+        # to 0.0, never fabricated when at least one country has real data.
+        "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                 date=date, run=run, wind_kt=wind_kt, hz=hz)
+                        if _people_pct is not None else None),
+        "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                    date=date, run=run, wind_kt=wind_kt, hz=hz)
+                           if _children_pct is not None else None),
     }
     compare_pop = compare_children = None
     if member:
@@ -5197,8 +5338,7 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         return (c, _get_country_stats(c, date, run, wind_kt, hz=hz),
                   _get_country_pin_pct(c, date, run, wind_kt, hz=hz),
                   _get_country_age_split(c, date, run, wind_kt, hz=hz))
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        _bundles = list(ex.map(_country_bundle, countries))
+    _bundles = list(get_query_executor().map(_country_bundle, countries))
     cols = [(c, stats) for c, stats, _pin, _age in _bundles]
     pin_source = {c: pin for c, _stats, pin, _age in _bundles}
     age_split_source = {c: age for c, _stats, _pin, age in _bundles}
@@ -5221,8 +5361,7 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
             comp_pin = _real_member_pin_pct(c, date, run, wind_kt, member)
             comp_age = _real_member_age_split(c, date, run, wind_kt, member)
             return (c, comp_stats, comp_pin, comp_age)
-        with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-            _compare_bundles = list(ex.map(_country_compare_bundle, countries))
+        _compare_bundles = list(get_query_executor().map(_country_compare_bundle, countries))
         for c, comp_stats, comp_pin, comp_age in _compare_bundles:
             if comp_stats is not None and comp_pin is not None:
                 compare_source[c] = (comp_stats, comp_pin)
@@ -5232,26 +5371,44 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
     if len(countries) > 1:
         combined_label = _t("Combined — {n} countries", n=len(countries))
         combined_stats = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
-        combined_pin = {
-            "people": _combined_in_need_pct(countries, "People at Risk", "people",
+        _people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
                                               _parse_stat_number(combined_stats["People at Risk"]),
-                                              date=date, run=run, wind_kt=wind_kt, hz=hz),
-            "children": _combined_in_need_pct(countries, "Children at Risk", "children",
+                                              date=date, run=run, wind_kt=wind_kt, hz=hz)
+        _children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
                                                 _parse_stat_number(combined_stats["Children at Risk"]),
-                                                date=date, run=run, wind_kt=wind_kt, hz=hz),
+                                                date=date, run=run, wind_kt=wind_kt, hz=hz)
+        combined_pin = {
+            "people": _people_pct,
+            "children": _children_pct,
+            # Real, un-derived absolute in-need totals — see
+            # _pin_arc_charts_block_combined's own identical comment.
+            "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                     date=date, run=run, wind_kt=wind_kt, hz=hz)
+                            if _people_pct is not None else None),
+            "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                        date=date, run=run, wind_kt=wind_kt, hz=hz)
+                               if _children_pct is not None else None),
         }
         cols = cols + [(combined_label, combined_stats)]
         pin_source = {**pin_source, combined_label: combined_pin}
         age_split_source[combined_label] = _combined_age_split(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
         if member:
             combined_compare_stats = _combined_stats(countries, member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+            _cmp_people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
+                                                       _parse_stat_number(combined_compare_stats["People at Risk"]),
+                                                       member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+            _cmp_children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
+                                                         _parse_stat_number(combined_compare_stats["Children at Risk"]),
+                                                         member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
             combined_compare_pin = {
-                "people": _combined_in_need_pct(countries, "People at Risk", "people",
-                                                  _parse_stat_number(combined_compare_stats["People at Risk"]),
-                                                  member=member, date=date, run=run, wind_kt=wind_kt, hz=hz),
-                "children": _combined_in_need_pct(countries, "Children at Risk", "children",
-                                                    _parse_stat_number(combined_compare_stats["Children at Risk"]),
-                                                    member=member, date=date, run=run, wind_kt=wind_kt, hz=hz),
+                "people": _cmp_people_pct,
+                "children": _cmp_children_pct,
+                "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                         member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+                                if _cmp_people_pct is not None else None),
+                "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                            member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+                                   if _cmp_children_pct is not None else None),
             }
             compare_source[combined_label] = (combined_compare_stats, combined_compare_pin)
             age_compare_source[combined_label] = _combined_age_split(countries, member=member, date=date, run=run, wind_kt=wind_kt, hz=hz)
@@ -5276,9 +5433,8 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
     # each _admin1_section call is an independent per-country
     # get_admin_impacts Snowflake round-trip (_admin1_regions_real);
     # building the HTML around it is cheap, so fetch concurrently.
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        admin1_sections = html.Div(list(ex.map(
-            lambda c: _admin1_section(c, expanded=expand_admin1, date=date, run=run, wind_kt=wind_kt), countries)))
+    admin1_sections = html.Div(list(get_query_executor().map(
+        lambda c: _admin1_section(c, expanded=expand_admin1, date=date, run=run, wind_kt=wind_kt), countries)))
     # cols[-1] is always the "representative" scope — the appended Combined
     # column for 2+ countries, or the single selected country otherwise.
     # _resolve_stat_value's own scope contract: "combined" (+ the real
@@ -5314,13 +5470,23 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
     # selected topbar date/run or wind-severity slider.
     if scope == "combined" and countries:
         stats = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
-        pin_pct = {
-            "people": _combined_in_need_pct(countries, "People at Risk", "people",
+        _people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
                                               _parse_stat_number(stats["People at Risk"]),
-                                              date=date, run=run, wind_kt=wind_kt, hz=hz),
-            "children": _combined_in_need_pct(countries, "Children at Risk", "children",
+                                              date=date, run=run, wind_kt=wind_kt, hz=hz)
+        _children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
                                                 _parse_stat_number(stats["Children at Risk"]),
-                                                date=date, run=run, wind_kt=wind_kt, hz=hz),
+                                                date=date, run=run, wind_kt=wind_kt, hz=hz)
+        pin_pct = {
+            "people": _people_pct,
+            "children": _children_pct,
+            # Real, un-derived absolute in-need totals — see
+            # _pin_arc_charts_block_combined's own identical comment.
+            "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                     date=date, run=run, wind_kt=wind_kt, hz=hz)
+                            if _people_pct is not None else None),
+            "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                        date=date, run=run, wind_kt=wind_kt, hz=hz)
+                               if _children_pct is not None else None),
         }
     elif scope == "global":
         # Real bug found+fixed here: this used to read the OLD hardcoded
@@ -5335,13 +5501,23 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
         all_storms = _resolve_storms_for_date(date, run)
         all_country_names = sorted({c for s in all_storms for c in s["countries"]})
         stats = _combined_stats(all_country_names, date=date, run=run, wind_kt=wind_kt, hz=hz)
-        pin_pct = {
-            "people": _combined_in_need_pct(all_country_names, "People at Risk", "people",
+        _people_pct = _combined_in_need_pct(all_country_names, "People at Risk", "people",
                                               _parse_stat_number(stats["People at Risk"]),
-                                              date=date, run=run, wind_kt=wind_kt, hz=hz),
-            "children": _combined_in_need_pct(all_country_names, "Children at Risk", "children",
+                                              date=date, run=run, wind_kt=wind_kt, hz=hz)
+        _children_pct = _combined_in_need_pct(all_country_names, "Children at Risk", "children",
                                                 _parse_stat_number(stats["Children at Risk"]),
-                                                date=date, run=run, wind_kt=wind_kt, hz=hz),
+                                                date=date, run=run, wind_kt=wind_kt, hz=hz)
+        pin_pct = {
+            "people": _people_pct,
+            "children": _children_pct,
+            # Real, un-derived absolute in-need totals — see
+            # _pin_arc_charts_block_combined's own identical comment.
+            "people_abs": (_combined_in_need_total(all_country_names, "People at Risk", "people",
+                                                     date=date, run=run, wind_kt=wind_kt, hz=hz)
+                            if _people_pct is not None else None),
+            "children_abs": (_combined_in_need_total(all_country_names, "Children at Risk", "children",
+                                                        date=date, run=run, wind_kt=wind_kt, hz=hz)
+                               if _children_pct is not None else None),
         }
     else:
         stats = _get_country_stats(scope, date, run, wind_kt, hz=hz)
@@ -5349,13 +5525,139 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
     # None pin_pct means genuinely no real in-need data for this scope (see
     # _fetch_real_combined_tile_totals_uncached's own comment) — "N/A", not
     # a fabricated 0, matching the same convention as the breakdown table.
+    #
+    # Real, un-derived absolute in-need count — read directly instead of
+    # reconstructing via at_risk * pct / 100 (real bug found+fixed here,
+    # 2026-08, user-reported: that reconstruction silently collapses to In
+    # Need == At Risk once pct has already been clamped to 100% one level
+    # down — see _fetch_real_combined_tile_totals_uncached's own pin_pct
+    # comment for the full mechanism).
     if metric == "People in Need":
-        return (_format_stat_number(_parse_stat_number(stats["People at Risk"]) * pin_pct["people"] / 100)
-                if pin_pct["people"] is not None else _t("N/A"))
+        return (_format_stat_number(pin_pct["people_abs"])
+                if pin_pct.get("people_abs") is not None else _t("N/A"))
     if metric == "Children in Need":
-        return (_format_stat_number(_parse_stat_number(stats["Children at Risk"]) * pin_pct["children"] / 100)
-                if pin_pct["children"] is not None else _t("N/A"))
+        return (_format_stat_number(pin_pct["children_abs"])
+                if pin_pct.get("children_abs") is not None else _t("N/A"))
     return stats.get(metric, "—")
+
+
+def _resolve_curve_countries(scope, countries, date, run):
+    """Same real country-list resolution _resolve_stat_value itself applies
+    per scope, factored out so _hazard_curve_totals below can resolve the
+    identical country set without going through _resolve_stat_value's own
+    metric/stats machinery. "global" recomputes the real affected-country
+    list via _resolve_storms_for_date (ignores `countries`, same as
+    _resolve_stat_value's own "global" branch); "combined" uses `countries`
+    as-is; anything else is a single country name."""
+    if scope == "global":
+        all_storms = _resolve_storms_for_date(date, run)
+        return sorted({c for s in all_storms for c in s["countries"]})
+    if scope == "combined":
+        return countries or []
+    return [scope] if scope else []
+
+
+# metric -> the single get_tile_impact_totals_by_threshold column it reads.
+# "Children at Risk" isn't here — it sums 3 separate age-band columns, see
+# _curve_metric_value below. People/Children in Need aren't here either —
+# no stat-card ever actually fires with those metrics today (extra_stats,
+# the only place that would wire them up, is never passed to _stat_grid —
+# confirmed via grep), and get_tile_impact_totals_by_threshold has no
+# in-need column to derive them from per-threshold anyway (in-need % comes
+# from MERCATOR_TILE_VULNERABILITY_MAT, wind-only and not part of this
+# totals query — see its own docstring). _hazard_curve_totals returns None
+# for those, and callers fall back to the old _resolve_stat_value path.
+_CURVE_METRIC_COL = {
+    "People at Risk": "E_POPULATION", "Schools at Risk": "E_NUM_SCHOOLS",
+    "Health Centers at Risk": "E_NUM_HCS", "Shelters at Risk": "E_NUM_SHELTERS",
+    "WASH Facilities at Risk": "E_NUM_WASH",
+}
+_CURVE_CHILD_AGE_COLS = ("E_INFANT_POPULATION", "E_SCHOOL_AGE_POPULATION", "E_ADOLESCENT_POPULATION")
+
+
+def _curve_metric_value(metric, totals_row):
+    """One threshold tier's real value for `metric`, from a single
+    get_tile_impact_totals_by_threshold(...)["wind"|"river"][tier] row.
+    None when `totals_row` itself is None (this hazard has no real data at
+    all for this country) or the underlying column is genuinely all-NULL —
+    same "don't fabricate a confirmed zero" contract _row_to_impact_totals
+    already documents. "Children at Risk" sums only the real (non-None) age
+    bands, matching _fetch_real_combined_tile_totals_uncached's own
+    `children = sum(v for v in age_population.values() if v is not None)`
+    (an all-None country still nets a real 0 here, not None — same quirk,
+    kept for consistency with that existing behavior)."""
+    if totals_row is None:
+        return None
+    if metric == "Children at Risk":
+        bands = [totals_row.get(c) for c in _CURVE_CHILD_AGE_COLS]
+        return sum(v for v in bands if v is not None)
+    col = _CURVE_METRIC_COL.get(metric)
+    return totals_row.get(col) if col else None
+
+
+def _hazard_curve_totals(metric, hazard, scope, countries, date, run):
+    """Finding #7 perf fix: real replacement for the old per-threshold
+    _resolve_stat_value -> get_tile_impacts fan-out (8 full per-tile row
+    fetches for wind alone, 472,848 rows transferred where one GROUP BY
+    aggregate returns 8) — ONE get_tile_impact_totals_by_threshold call per
+    country (not per country PER THRESHOLD), summed across whichever
+    countries this `scope` resolves to.
+
+    `hazard` is "wind" or "river" (matches get_tile_impact_totals_by_
+    threshold's own two threshold-swept sections — Rainfall/Storm Surge
+    have no real per-threshold backend, see _hazard_curve_row's own
+    unchanged illustrative branches for those).
+
+    Returns a list of real ints aligned to `_WIND_CATS`'s own kt order
+    (hazard="wind") or `_RIVER_RP_TIERS`'s order (hazard="river") — a
+    country/tier with no real contribution is simply excluded from that
+    tier's sum (same "sum only real contributors" policy _combined_stats
+    itself already uses), never fabricated as 0 unless every country is
+    genuinely absent, in which case the tier legitimately sums to 0.
+
+    Returns None when `metric` isn't one of the five real stat-card metrics
+    this fast path covers (see _CURVE_METRIC_COL) or `scope` resolves to no
+    real countries at all — callers fall back to the old per-threshold path.
+    """
+    if metric != "Children at Risk" and metric not in _CURVE_METRIC_COL:
+        return None
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    if not resolved_countries:
+        return None
+
+    def _fetch(country):
+        code = _NAME_TO_CODE.get(country)
+        if not code:
+            return None
+        # Wind needs a real storm to scope MERCATOR_TILE_IMPACT_MAT to —
+        # no storm for this country/date means no real wind curve data at
+        # all (matches _fetch_real_combined_tile_totals_uncached's own
+        # `if hz["wind_on"] and storm_info` gate). River's own section
+        # inside get_tile_impact_totals_by_threshold ignores storm/
+        # forecast_date entirely (see its own docstring) — resolves its
+        # own forecast time independently — so a missing storm_info still
+        # lets river's own section return real data; "" placeholders here
+        # only affect the (harmless, river-irrelevant) ttl_cache key.
+        storm_info = _resolve_storm_for_country(country, date, run)
+        if hazard == "wind" and storm_info is None:
+            return None
+        storm_name = storm_info["name"] if storm_info else ""
+        mat_date = storm_info["mat_forecast_date"] if storm_info else ""
+        return get_tile_impact_totals_by_threshold(code, storm_name, mat_date)
+
+    per_country = list(get_query_executor().map(_fetch, resolved_countries))
+    tiers = [wc[2] for wc in _WIND_CATS] if hazard == "wind" else _RIVER_RP_TIERS
+    values = []
+    for tier in tiers:
+        total = 0
+        for totals in per_country:
+            if not totals or not totals.get(hazard):
+                continue
+            v = _curve_metric_value(metric, totals[hazard].get(tier))
+            if v is not None:
+                total += v
+        values.append(total)
+    return values
 
 
 # Illustrative — what fraction of the SMALLER hazard family's footprint
@@ -5592,36 +5894,39 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # fraction of a nonzero baseline.
         can_query_real = metric is not None and scope is not None
         # Real perf fix (2026-08, multi-agent audit — single worst finding
-        # across the whole scan): each _resolve_stat_value call below is its
-        # own independent Snowflake-backed round-trip (for scope in
-        # ("global","combined") it internally fans out across every active
-        # country too, via the now-parallelized _combined_stats/
-        # _combined_in_need_pct above) — running all 8 wind tiers / 6 river
-        # tiers sequentially on one popup open was measured at an estimated
-        # worst case of ~20-40s for a Global view with ~10 active countries.
-        # Fetching every tier concurrently turns that into ~1 tier's worth
-        # of wall-clock time.
+        # across the whole scan): _hazard_curve_totals (finding #7) fetches
+        # ONE get_tile_impact_totals_by_threshold aggregate per country
+        # instead of a per-tier get_tile_impacts fan-out — replaces the old
+        # 8 (wind) / 6 (river) separate Snowflake round-trips per country
+        # with 1. Returns None for a metric it doesn't cover (People/
+        # Children in Need — see its own docstring), in which case the old
+        # per-tier _resolve_stat_value fan-out below still runs as a
+        # fallback, just via the shared long-lived executor instead of a
+        # throwaway one (finding #8/#10's fix, see get_query_executor's own
+        # docstring in snowflake_utils.py).
         if name == "Sustained Wind" and can_query_real:
-            with ThreadPoolExecutor(max_workers=max(1, min(8, len(_WIND_CATS)))) as ex:
-                raw_values = list(ex.map(
+            real_values = _hazard_curve_totals(metric, "wind", scope, countries, date, run)
+            if real_values is None:
+                raw_values = list(get_query_executor().map(
                     lambda wc: _resolve_stat_value(metric, scope, countries, date=date, run=run,
                                                       wind_kt=wc[2], hz=_wind_only_hz(wc[2])),
                     _WIND_CATS))
-            # None only if this facility metric has no real data at ALL for
-            # this country (a dataset-wide, not threshold-dependent, gap —
-            # see _hazard_contribution_content's own top-level None guard,
-            # which already keeps this whole curve from ever building when
-            # the popup's own headline metric is None) — falls back to 0
-            # here defensively.
-            real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
+                # None only if this facility metric has no real data at ALL
+                # for this country (a dataset-wide, not threshold-dependent,
+                # gap — see _hazard_contribution_content's own top-level
+                # None guard, which already keeps this whole curve from ever
+                # building when the popup's own headline metric is None) —
+                # falls back to 0 here defensively.
+                real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "River Flooding" and can_query_real:
-            with ThreadPoolExecutor(max_workers=max(1, min(8, len(_RIVER_RP_TIERS)))) as ex:
-                raw_values = list(ex.map(
+            real_values = _hazard_curve_totals(metric, "river", scope, countries, date, run)
+            if real_values is None:
+                raw_values = list(get_query_executor().map(
                     lambda rp_tier: _resolve_stat_value(metric, scope, countries, date=date, run=run,
                                                            hz=_river_only_hz(rp_tier)),
                     _RIVER_RP_TIERS))
-            real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
+                real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "Rainfall":
             # PREVIEW ONLY still — genuinely 2D (window x tier), no real
@@ -7564,24 +7869,28 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
         labels, factors = curve_data
         base_n = math.ceil(total_people_at_risk * pct / 100)
         if name == "Sustained Wind" and can_query_real:
-            # Real perf fix (2026-08, multi-agent audit) — same sequential-
-            # tier-loop shape as _hazard_curve_row's own fix inside
-            # _hazard_contribution_content, see its comment for the full
-            # "why"; parallelized here too.
-            with ThreadPoolExecutor(max_workers=max(1, min(8, len(_WIND_CATS)))) as ex:
-                raw_values = list(ex.map(
+            # Real perf fix (2026-08, multi-agent audit) — same
+            # _hazard_curve_totals fast path (finding #7) as _hazard_curve_
+            # row's own fix inside _hazard_contribution_content, see its
+            # comment for the full "why". "People at Risk" is always one of
+            # the metrics _hazard_curve_totals covers, so this never falls
+            # through to the old per-tier fan-out.
+            real_values = _hazard_curve_totals("People at Risk", "wind", scope, countries, date, run)
+            if real_values is None:
+                raw_values = list(get_query_executor().map(
                     lambda wc: _resolve_stat_value("People at Risk", scope, countries, date=date, run=run,
                                                       wind_kt=wc[2], hz=_wind_only_hz(wc[2])),
                     _WIND_CATS))
-            real_values = [_parse_stat_number(v) for v in raw_values]
+                real_values = [_parse_stat_number(v) for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "River Flooding" and can_query_real:
-            with ThreadPoolExecutor(max_workers=max(1, min(8, len(_RIVER_RP_TIERS)))) as ex:
-                raw_values = list(ex.map(
+            real_values = _hazard_curve_totals("People at Risk", "river", scope, countries, date, run)
+            if real_values is None:
+                raw_values = list(get_query_executor().map(
                     lambda rp_tier: _resolve_stat_value("People at Risk", scope, countries, date=date, run=run,
                                                            hz=_river_only_hz(rp_tier)),
                     _RIVER_RP_TIERS))
-            real_values = [_parse_stat_number(v) for v in raw_values]
+                real_values = [_parse_stat_number(v) for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "Rainfall" and rain_window is not None:
             chart = _rain_threshold_grid(labels, base_n, rain_window, idx, color)
@@ -7715,18 +8024,30 @@ def _select_storm(clicks, date, run):
 # so writing a value that's already current (e.g. re-affirming "global") would
 # re-trigger the other callback and ping-pong forever — only ever write mode
 # when it's actually changing.
-@callback(
+#
+# Real perf fix (2026-08, multi-agent audit, finding #4a): this is the FIRST
+# hop of a 4-hop serial chain on every country selection (_country_selected
+# -> _update_view_as -> _build_hazard_tile_config -> _load_ms_tracks_and_
+# envelopes) — pure conditional logic with no Snowflake round-trip of its
+# own, so there's no real reason it needs a server round-trip at all.
+# Clientside removes that one Python round-trip from the front of the chain;
+# logic is unchanged (same no_update-guarded mode write, same ping-pong
+# avoidance described above).
+clientside_callback(
+    """
+    function(countries, current_mode) {
+        countries = countries || [];
+        var newMode = countries.length ? "zoom" : "global";
+        var modeOut = (newMode === current_mode) ? window.dash_clientside.no_update : newMode;
+        return [countries, modeOut];
+    }
+    """,
     Output("selected-country-store", "data"),
     Output("topbar-mode", "value", allow_duplicate=True),
     Input("topbar-country-select", "value"),
     State("topbar-mode", "value"),
     prevent_initial_call=True,
 )
-def _country_selected(countries, current_mode):
-    countries = countries or []
-    new_mode = "zoom" if countries else "global"
-    mode_out = dash.no_update if new_mode == current_mode else new_mode
-    return countries, mode_out
 
 
 # Flies the Leaflet map to the selected country's real center/zoom — until
@@ -7861,6 +8182,15 @@ def _guard_future_forecast_run(date, run):
     return data, dash.no_update
 
 
+# prop_id strings for the 5 hazard checkboxes, as dash.callback_context.
+# triggered reports them ("<id>.<prop>") — see _update_impact_summary's own
+# finding #19 short-circuit for why this exists.
+_HAZARD_CHECKBOX_TRIGGER_PROPS = {
+    "ms-wind-on.checked", "ms-gust-on.checked", "ms-river-on.checked",
+    "ms-rain-on.checked", "ms-surge-on.checked",
+}
+
+
 @callback(
     Output("impact-body", "children"),
     Output("impact-subtitle", "children"),
@@ -7900,6 +8230,26 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
     # no currently-active storm at all). Every hazard's own slider is an
     # Input too — see _build_hz's own docstring for why the real numbers
     # here need to react to each hazard's own threshold, not just wind's.
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #19 — independently
+    # re-verified before applying, per the audit's own "plausible, not fully
+    # confirmed" flag): the Global branch just below (`not countries`)
+    # deliberately ignores wind_on/gust_on/river_on/rain_on/surge_on
+    # entirely — it always uses `_build_hz(True, True, river_avail,
+    # rain_avail, ...)` (hardcoded wind/gust True, river/rain from a real
+    # Snowflake availability check, never from the checkbox args) for the
+    # worldwide total, by explicit product decision (see that branch's own
+    # comment: "Global mode's checkbox on/off state is still a pure
+    # map-display concern... not what counts toward the worldwide total").
+    # So toggling a hazard checkbox while in Global mode (countries empty)
+    # provably cannot change this callback's output — skip the multi-second
+    # worldwide recompute for exactly that one case. Country Analysis scopes
+    # (countries non-empty) are untouched — those totals genuinely still
+    # depend on the checkboxes (real hz below).
+    if not countries:
+        triggered = dash.callback_context.triggered
+        if triggered and all(t["prop_id"] in _HAZARD_CHECKBOX_TRIGGER_PROPS for t in triggered):
+            return dash.no_update, dash.no_update
     wind_kt = _resolve_wind_kt(wind_idx)
     hz = _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window)
     countries = countries or []
@@ -7975,12 +8325,18 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
             # None means genuinely no real in-need data for this member/
             # scope (see _fetch_real_combined_tile_totals_uncached's own
             # comment) — "N/A", not a fabricated number.
+            #
+            # Real, un-derived absolute in-need count — read directly
+            # instead of reconstructing via at_risk * pct / 100 (real bug
+            # found+fixed here, 2026-08, user-reported — see
+            # _fetch_real_combined_tile_totals_uncached's own pin_pct
+            # comment for the full mechanism).
             full_compare["People in Need"] = (
-                _format_stat_number(_parse_stat_number(compare_stats["People at Risk"]) * compare_pin["people"] / 100)
-                if compare_pin["people"] is not None else _t("N/A"))
+                _format_stat_number(compare_pin["people_abs"])
+                if compare_pin.get("people_abs") is not None else _t("N/A"))
             full_compare["Children in Need"] = (
-                _format_stat_number(_parse_stat_number(compare_stats["Children at Risk"]) * compare_pin["children"] / 100)
-                if compare_pin["children"] is not None else _t("N/A"))
+                _format_stat_number(compare_pin["children_abs"])
+                if compare_pin.get("children_abs") is not None else _t("N/A"))
         grid = _stat_grid(base_stats, label=label, scope=scope,
                             compare_stats=full_compare, compare_member=compare_member)
         return html.Div([grid, arc_charts])
@@ -8002,26 +8358,44 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
         # active-hazards total (via `hz`) — not a re-derived aggregate, and
         # no more illustrative percentage scaling.
         combined_base = _combined_stats(countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
-        combined_pin = {
-            "people": _combined_in_need_pct(countries, "People at Risk", "people",
+        _people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
                                               _parse_stat_number(combined_base["People at Risk"]),
-                                              date=date, run=run, wind_kt=wind_kt, hz=hz),
-            "children": _combined_in_need_pct(countries, "Children at Risk", "children",
+                                              date=date, run=run, wind_kt=wind_kt, hz=hz)
+        _children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
                                                 _parse_stat_number(combined_base["Children at Risk"]),
-                                                date=date, run=run, wind_kt=wind_kt, hz=hz),
+                                                date=date, run=run, wind_kt=wind_kt, hz=hz)
+        combined_pin = {
+            "people": _people_pct,
+            "children": _children_pct,
+            # Real, un-derived absolute in-need totals — see
+            # _pin_arc_charts_block_combined's own identical comment.
+            "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                     date=date, run=run, wind_kt=wind_kt, hz=hz)
+                            if _people_pct is not None else None),
+            "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                        date=date, run=run, wind_kt=wind_kt, hz=hz)
+                               if _children_pct is not None else None),
         }
         subtitle = _t("Combined — {n} countries", n=len(countries))
         arc_charts = _pin_arc_charts_block_combined(countries, compare_member, show_label=False, date=date, run=run, wind_kt=wind_kt, hz=hz)
         compare_stats = compare_pin = None
         if compare_member:
             compare_stats = _combined_stats(countries, member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+            _cmp_people_pct = _combined_in_need_pct(countries, "People at Risk", "people",
+                                                       _parse_stat_number(compare_stats["People at Risk"]),
+                                                       member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+            _cmp_children_pct = _combined_in_need_pct(countries, "Children at Risk", "children",
+                                                         _parse_stat_number(compare_stats["Children at Risk"]),
+                                                         member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz)
             compare_pin = {
-                "people": _combined_in_need_pct(countries, "People at Risk", "people",
-                                                  _parse_stat_number(compare_stats["People at Risk"]),
-                                                  member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz),
-                "children": _combined_in_need_pct(countries, "Children at Risk", "children",
-                                                    _parse_stat_number(compare_stats["Children at Risk"]),
-                                                    member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz),
+                "people": _cmp_people_pct,
+                "children": _cmp_children_pct,
+                "people_abs": (_combined_in_need_total(countries, "People at Risk", "people",
+                                                         member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+                                if _cmp_people_pct is not None else None),
+                "children_abs": (_combined_in_need_total(countries, "Children at Risk", "children",
+                                                            member=compare_member, date=date, run=run, wind_kt=wind_kt, hz=hz)
+                                   if _cmp_children_pct is not None else None),
             }
         return _country_block(combined_base, combined_pin, arc_charts,
                                compare_stats=compare_stats, compare_pin=compare_pin, scope="combined"), subtitle
@@ -8043,8 +8417,7 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
             compare_stats=_real_member_stats(c, date, run, wind_kt, compare_member) if compare_member else None,
             compare_pin=_real_member_pin_pct(c, date, run, wind_kt, compare_member) if compare_member else None,
             label=c, scope=c)
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(countries)))) as ex:
-        blocks = list(ex.map(_build_block, countries))
+    blocks = list(get_query_executor().map(_build_block, countries))
     # User-requested (2026-08): stacked country blocks used to butt straight
     # up against each other with no separation of their own (impact-body's
     # own container has no gap — see its layout() definition) — the next
@@ -8576,7 +8949,12 @@ def _hazard_stats(tile_country, hazard, path_storm, path_date, wind_threshold, e
     """Return (stats, admin_stats) for one hazard, or ({}, {}) if this
     hazard has no resolved forecast_date to query at all (e.g. a country with
     genuinely no river/rain data — see get_latest_river_forecast_time's own
-    docstring; not a bug, a real coverage gap)."""
+    docstring; not a bug, a real coverage gap).
+
+    Real perf fix (2026-08, multi-agent audit, finding #9): /stats and
+    /admin-stats used to be two sequential blocking urlopen calls — fetched
+    concurrently via the shared executor instead, since neither depends on
+    the other's result."""
     if not tile_country or not path_date:
         return {}, {}
     base_url = "" if config.SPCS_RUN else config.TILE_SERVER_URL
@@ -8585,7 +8963,8 @@ def _hazard_stats(tile_country, hazard, path_storm, path_date, wind_threshold, e
     admin_qs = urllib.parse.urlencode({**common, "admin_level": 1})
     stats_url = (f"{base_url}/stats/{quote(tile_country)}/{quote(path_storm)}/{quote(path_date)}?{stats_qs}")
     admin_url = (f"{base_url}/admin-stats/{quote(tile_country)}/{quote(path_storm)}/{quote(path_date)}?{admin_qs}")
-    return _fetch_tile_server_json(stats_url), _fetch_tile_server_json(admin_url)
+    stats, admin_stats = get_query_executor().map(_fetch_tile_server_json, [stats_url, admin_url])
+    return stats, admin_stats
 
 
 @callback(
@@ -8809,22 +9188,42 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # exposure min-max (this function's real purpose even with no storm)
     # comes from the SAME LEFT JOIN query and is safe/correct to fetch
     # regardless of whether a real storm resolved.
-    stats_wind, admin_stats_wind = _hazard_stats(
-        tile_country, "wind", tile_storm, tile_forecast_date, wind_kt, {}) if wind_on else ({}, {})
+    #
     # Same tile_storm/tile_forecast_date + wind_on-style gating as wind's
-    # own stats just above (_MERCATOR_GUST_SQL is the identical LEFT-JOIN-
-    # FROM-BASE_MERCATOR_TILE_MAT shape) — gust's own raster URL
+    # own stats above (_MERCATOR_GUST_SQL is the identical LEFT-JOIN-FROM-
+    # BASE_MERCATOR_TILE_MAT shape) — gust's own raster URL
     # (_hazardUrlParts) already reads the SAME placeholder-aware "storm"/
     # "forecast_date" config fields, so its stats must use the same pair or
     # the population layer would render with no color-scale normalization
     # whenever Gust is checked but no real storm has resolved.
-    stats_gust, admin_stats_gust = _hazard_stats(
-        tile_country, "gust", tile_storm, tile_forecast_date, wind_kt, {"gust_threshold": gust_kt}) if gust_on else ({}, {})
-    stats_river, admin_stats_river = _hazard_stats(
-        tile_country, "river", placeholder_storm, river_forecast_date, wind_kt, {"rp_tier": rp_tier}) if river_on else ({}, {})
-    stats_rain, admin_stats_rain = _hazard_stats(
-        tile_country, "rain", placeholder_storm, rain_forecast_date, wind_kt,
-        {"threshold_mm": threshold_mm, "window_h": rain_window}) if rain_on else ({}, {})
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #9): these 4 hazards
+    # are independent of each other (none reads another's stats) but used to
+    # run strictly one after another, each itself 2 sequential urlopen calls
+    # (see _hazard_stats' own fix) — up to 8 serial round-trips before
+    # ms-tile-config-store updates, which gates tracks, all 4 facility
+    # layers, and the MapLibre tile fan-out. Fetching concurrently via the
+    # shared executor turns that into ~1 hazard's worth of wall-clock time.
+    _hazard_fetches = {}
+    if wind_on:
+        _hazard_fetches["wind"] = lambda: _hazard_stats(tile_country, "wind", tile_storm, tile_forecast_date, wind_kt, {})
+    if gust_on:
+        _hazard_fetches["gust"] = lambda: _hazard_stats(
+            tile_country, "gust", tile_storm, tile_forecast_date, wind_kt, {"gust_threshold": gust_kt})
+    if river_on:
+        _hazard_fetches["river"] = lambda: _hazard_stats(
+            tile_country, "river", placeholder_storm, river_forecast_date, wind_kt, {"rp_tier": rp_tier})
+    if rain_on:
+        _hazard_fetches["rain"] = lambda: _hazard_stats(
+            tile_country, "rain", placeholder_storm, rain_forecast_date, wind_kt,
+            {"threshold_mm": threshold_mm, "window_h": rain_window})
+    _hazard_keys = list(_hazard_fetches.keys())
+    _hazard_values = list(get_query_executor().map(lambda k: _hazard_fetches[k](), _hazard_keys)) if _hazard_keys else []
+    _hazard_results = dict(zip(_hazard_keys, _hazard_values))
+    stats_wind, admin_stats_wind = _hazard_results.get("wind", ({}, {}))
+    stats_gust, admin_stats_gust = _hazard_results.get("gust", ({}, {}))
+    stats_river, admin_stats_river = _hazard_results.get("river", ({}, {}))
+    stats_rain, admin_stats_rain = _hazard_results.get("rain", ({}, {}))
 
     # Real per-extra-storm-group tile stats (#248) — one extra "+"-joined
     # tile_country per distinct non-primary storm, each queried exactly like
@@ -9486,24 +9885,43 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     # ALONGSIDE ms-tile-config-store — a single drag fired this Snowflake-
     # backed callback once per raw tick AND again when tile_config settled.
     # ms-tile-config-store's own producing callback (_build_hazard_tile_
-    # config) is already triggered by ms-slider-debounce-store, so its
-    # Output fires exactly once per debounce settle regardless of Global vs
-    # Country Analysis mode — no separate debounce Input needed here, this
-    # Input alone is the right (already-debounced) trigger. Only the
-    # Global-mode branch below genuinely needs a raw wind_idx/gust_idx
-    # (tile_config carries no wind_threshold/gust_threshold at all once
-    # "country" is None — see _build_hazard_tile_config's own early
-    # return), so those are read via State instead of a second live Input.
+    # config) IS already triggered by ms-slider-debounce-store, but its own
+    # early-return path for Global mode ("if not countries: return {...}",
+    # see that function's own comment) never includes wind_threshold/
+    # gust_threshold at all — so a Global-mode slider drag settles the
+    # debounce store, _build_hazard_tile_config re-runs, but its Output
+    # never actually changes shape, and ms-tile-config-store.data alone is
+    # not a reliable trigger for this callback in that mode.
+    #
+    # Real bug found+fixed here (2026-08, user-reported: dragging the
+    # Sustained Wind slider in Global mode never changed the rendered
+    # envelope shape at all — confirmed live via real browser network
+    # capture: zero new fetches of this callback's own output fired across
+    # 5 real slider drags, and ms-tile-config-store.data never left its
+    # layout-declared {} default the whole session). ms-slider-debounce-
+    # store is added back here as its own direct Input specifically to
+    # restore Global mode's own reactivity — it does NOT reintroduce the
+    # double-fire this file's own perf fix removed, since the raw slider
+    # `value` itself is still not a live Input; only the already-debounced
+    # settle event is.
+    Input("ms-slider-debounce-store", "data"),
+    # Only the Global-mode branch below genuinely needs a raw wind_idx/
+    # gust_idx (tile_config carries no wind_threshold/gust_threshold at all
+    # once "country" is None — see _build_hazard_tile_config's own early
+    # return) — Country Analysis mode keeps reading its own real threshold
+    # from tile_config, unaffected by this State pair.
     State("ms-wind-slider", "value"),
     State("ms-gust-slider", "value"),
 )
 def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gust_on, member_select,
-                                     wind_idx, gust_idx):
+                                     _debounce_tick, wind_idx, gust_idx):
     """Fetch real track/envelope GeoJSON for the placeholder ms-tracks-json/
     ms-envelopes-json layers whenever the shared ms-tile-config-store
-    changes (country/storm selection or wind-threshold slider) — no
-    dedicated "Load Layers" button on this page, this store already fires
-    on every relevant input (_build_hazard_tile_config above).
+    changes (country/storm selection, Country Analysis mode's own real
+    wind-threshold) OR ms-slider-debounce-store settles (Global mode's own
+    wind-threshold, which tile_config never carries — see this callback's
+    own Input list comment) — no dedicated "Load Layers" button on this
+    page, one of these two fires on every relevant change in either mode.
 
     Reuses the exact TC_TRACKS query and get_envelope_data_snowflake()
     (components/data/snowflake_utils.py) pages/dashboard.py's own
