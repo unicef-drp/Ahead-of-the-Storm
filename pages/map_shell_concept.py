@@ -8967,6 +8967,41 @@ def _hazard_stats(tile_country, hazard, path_storm, path_date, wind_threshold, e
     return stats, admin_stats
 
 
+def _resolve_primary_storm_group(countries, date, run):
+    """Cheap, ttl-cached storm/forecast_date resolution shared by
+    _build_hazard_tile_config and _load_ms_tracks_and_envelopes (finding
+    #4b, 2026-08). Deliberately excludes everything from
+    _build_hazard_tile_config that isn't needed to draw a track/envelope —
+    the per-hazard stats fan-out (_hazard_stats, the actual slow part,
+    ~4s cold) — so tracks/envelopes can resolve their own storm without
+    waiting on that unrelated, slower callback's Output. _resolve_storm_
+    for_country is itself @ttl_cache'd (single-flight), so when both
+    callbacks call this for the same country/date/run concurrently, only
+    one of them actually pays the Snowflake round trip.
+
+    Returns (codes, primary_country_code, storm, forecast_date,
+    country_storm_infos) — country_storm_infos is exposed for
+    _build_hazard_tile_config's own extra_groups_by_storm (multi-storm)
+    logic, which needs the full per-country list, not just the primary.
+    """
+    codes = _resolve_tile_codes(countries or [])
+    primary_country_code = codes[0] if codes else None
+    country_storm_infos = []
+    for c in (countries or []):
+        code = _NAME_TO_CODE.get(c)
+        if not code:
+            continue
+        storm_info = _resolve_storm_for_country(c, date, run)
+        if storm_info:
+            country_storm_infos.append((code, storm_info))
+    storm = None
+    forecast_date = None
+    if country_storm_infos:
+        storm = country_storm_infos[0][1]["name"]
+        forecast_date = country_storm_infos[0][1]["mat_forecast_date"]
+    return codes, primary_country_code, storm, forecast_date, country_storm_infos
+
+
 @callback(
     Output("ms-tile-config-store", "data"),
     Input("selected-country-store", "data"),
@@ -9007,9 +9042,6 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
             "rain_has_data": False, "real_hazard_available": False,
         }
 
-    codes = _resolve_tile_codes(countries)
-    tile_country = "+".join(codes)
-    primary_code = codes[0] if codes else None
     resolved_prop = _EXPOSURE_PROP_MAP.get(exposure_prop, "population")
     # Matches /legacy's real "Probability" toggle semantics (callbacks/
     # tiles_and_admin.py's _compute_layer_toggle_outputs): a demographic
@@ -9047,20 +9079,16 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # (see maplibre_tiles.js's own "MULTI-STORM GROUPS" section) — a real,
     # separately-queried tile layer for that country's own real storm,
     # instead of silently reusing the primary one.
-    country_storm_infos = []
-    for c in countries:
-        code = _NAME_TO_CODE.get(c)
-        if not code:
-            continue
-        storm_info = _resolve_storm_for_country(c, date, run)
-        if storm_info:
-            country_storm_infos.append((code, storm_info))
-
-    storm = None
-    forecast_date = None
-    if country_storm_infos:
-        storm = country_storm_infos[0][1]["name"]
-        forecast_date = country_storm_infos[0][1]["mat_forecast_date"]
+    #
+    # Real perf fix (2026-08, multi-agent audit, finding #4b): this
+    # resolution (codes/primary_code/storm/forecast_date) is now shared via
+    # _resolve_primary_storm_group with _load_ms_tracks_and_envelopes, so
+    # tracks/envelopes can resolve the same storm independently instead of
+    # waiting on this whole callback's slower Output (the stats fan-out
+    # further below, not this cheap part).
+    codes, primary_code, storm, forecast_date, country_storm_infos = \
+        _resolve_primary_storm_group(countries, date, run)
+    tile_country = "+".join(codes)
     # Real bug found+fixed here (2026-08, user-reported: selecting a
     # country with genuinely no active storm at all — e.g. Bangladesh on a
     # quiet date — showed a completely blank map, not even the raw
@@ -9873,12 +9901,26 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     Output("ms-tracks-json", "key"),
     Output("ms-envelopes-json", "data"),
     Output("ms-envelopes-json", "key"),
-    Input("ms-tile-config-store", "data"),
+    # Real perf fix (2026-08, multi-agent audit, finding #4b): this used to
+    # depend on ms-tile-config-store.data alone, which meant tracks/
+    # envelopes (which only ever need country/storm/forecast_date/
+    # wind_kt/gust_kt/tc_view_as) sat behind _build_hazard_tile_config's
+    # full per-hazard stats fan-out (the actual slow part, ~4s cold,
+    # completely irrelevant to drawing a track line) — a real, measured
+    # serial dependency with no data reason behind it. Now depends
+    # directly on the same raw inputs _build_hazard_tile_config reads,
+    # via the same shared _resolve_primary_storm_group helper (itself
+    # backed by an already-ttl_cache'd lookup, so running both callbacks
+    # concurrently doesn't double the real Snowflake cost) — this callback
+    # fires in PARALLEL with _build_hazard_tile_config off the same
+    # trigger instead of waiting for its Output.
+    Input("selected-country-store", "data"),
     Input("topbar-date", "value"),
     Input("topbar-time", "value"),
     Input("ms-tracks-on", "checked"),
     Input("ms-wind-on", "checked"),
     Input("ms-gust-on", "checked"),
+    Input("tc-view-as", "value"),
     Input("ensemble-member-select", "value"),
     # Real perf fix (2026-08, multi-agent audit): ms-wind-slider/
     # ms-gust-slider's own raw `value` used to be direct Inputs here
@@ -9905,49 +9947,54 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     # `value` itself is still not a live Input; only the already-debounced
     # settle event is.
     Input("ms-slider-debounce-store", "data"),
-    # Only the Global-mode branch below genuinely needs a raw wind_idx/
-    # gust_idx (tile_config carries no wind_threshold/gust_threshold at all
-    # once "country" is None — see _build_hazard_tile_config's own early
-    # return) — Country Analysis mode keeps reading its own real threshold
-    # from tile_config, unaffected by this State pair.
+    # wind_idx/gust_idx are now used in BOTH branches below (Country
+    # Analysis mode used to read its threshold from tile_config instead —
+    # no longer, since this callback no longer receives tile_config at
+    # all; see finding #4b comment above).
     State("ms-wind-slider", "value"),
     State("ms-gust-slider", "value"),
 )
-def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gust_on, member_select,
+def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust_on, tc_view_as, member_select,
                                      _debounce_tick, wind_idx, gust_idx):
     """Fetch real track/envelope GeoJSON for the placeholder ms-tracks-json/
-    ms-envelopes-json layers whenever the shared ms-tile-config-store
-    changes (country/storm selection, Country Analysis mode's own real
-    wind-threshold) OR ms-slider-debounce-store settles (Global mode's own
-    wind-threshold, which tile_config never carries — see this callback's
-    own Input list comment) — no dedicated "Load Layers" button on this
-    page, one of these two fires on every relevant change in either mode.
+    ms-envelopes-json layers whenever country/storm selection, date/run, the
+    tracks/wind/gust checkboxes, or tc-view-as change, OR ms-slider-
+    debounce-store settles (the debounced wind/gust threshold, for both
+    Country Analysis and Global mode) — no dedicated "Load Layers" button on
+    this page, one of these fires on every relevant change in either mode.
+
+    Real perf fix (2026-08, multi-agent audit, finding #4b): this used to
+    depend solely on ms-tile-config-store.data, produced by
+    _build_hazard_tile_config — a much heavier callback whose own slow part
+    (the per-hazard stats fan-out for map tile coloring, ~4s cold) has
+    nothing to do with drawing a track/envelope. That made this callback
+    wait behind an unrelated ~4s+ computation on every cold country/storm
+    selection for no data reason. Country/storm/forecast_date are now
+    resolved directly here via the same _resolve_primary_storm_group helper
+    _build_hazard_tile_config itself uses (backed by an already-ttl_cache'd,
+    single-flight lookup, so this doesn't double the real Snowflake cost
+    when both callbacks fire together) — this callback now runs in PARALLEL
+    with _build_hazard_tile_config off the same trigger, instead of behind
+    it.
 
     Reuses the exact TC_TRACKS query and get_envelope_data_snowflake()
     (components/data/snowflake_utils.py) pages/dashboard.py's own
     load_all_layers callback already uses for this — no new Snowflake
     queries are introduced here.
 
-    Global mode (no country selected — tile_config["country"] is None, see
-    _build_hazard_tile_config's own "if not countries" early return) is a
-    separate branch below: ALL real storms active at the selected topbar
-    date/run (_resolve_storms_for_date, the same resolver already powering
-    the Global-mode Active Storms list) render as ONE combined tracks
-    FeatureCollection, unconditionally (mirrors /legacy's own
-    load_startup_tracks bypass-the-toggle precedent — tracks aren't gated on
-    wind_visible/tc_view_as in Global mode, since there's no per-hazard
-    checkbox governing "all storms" the way there is for a single selected
-    storm). Envelopes DO render in Global mode when ms-wind-on is checked —
-    real per-storm TC_ENVELOPES_COMBINED polygons for every active storm at
-    the selected wind-severity threshold, just without per-country severity
-    coloring (no single country to attribute population severity to here;
-    falls back to flat gray, same as _build_ms_envelope_geojson already does
-    whenever country isn't given). topbar-date/
-    topbar-time are new Inputs added here (this callback previously only
-    depended on ms-tile-config-store, which carries no date/run at all once
-    "country" is None) purely to drive this new branch; they have no effect
-    on the existing single-country branch below, which keeps reading
-    date/forecast_date exclusively from tile_config as it always has.
+    Global mode (no country selected) is a separate branch below: ALL real
+    storms active at the selected topbar date/run (_resolve_storms_for_date,
+    the same resolver already powering the Global-mode Active Storms list)
+    render as ONE combined tracks FeatureCollection, unconditionally
+    (mirrors /legacy's own load_startup_tracks bypass-the-toggle precedent —
+    tracks aren't gated on wind_visible/tc_view_as in Global mode, since
+    there's no per-hazard checkbox governing "all storms" the way there is
+    for a single selected storm). Envelopes DO render in Global mode when
+    ms-wind-on is checked — real per-storm TC_ENVELOPES_COMBINED polygons
+    for every active storm at the selected wind-severity threshold, just
+    without per-country severity coloring (no single country to attribute
+    population severity to here; falls back to flat gray, same as
+    _build_ms_envelope_geojson already does whenever country isn't given).
 
     member_select (ensemble-member-select, only ever visible/meaningful in
     Country Analysis mode — see _command_bar's own docstring) filters the
@@ -9957,7 +10004,6 @@ def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gu
     above (multi-storm "all active storms" view has no single member
     concept to apply this to).
     """
-    tile_config = tile_config or {}
     # Real bug found+fixed here: "Storm Tracks" (ms-tracks-on) rendered
     # unconditionally regardless of its own checked state — it was never an
     # Input to this callback at all. Gates the TRACKS output only (both
@@ -9967,7 +10013,10 @@ def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gu
     # by this checkbox either way.
     tracks_on = tracks_on is not False
 
-    if not tile_config.get("country"):
+    codes, primary_country_code, storm, forecast_date, _infos = \
+        _resolve_primary_storm_group(countries, date, run)
+
+    if not primary_country_code:
         # get_track_ids_for_date, NOT _resolve_storms_for_date -- the latter
         # requires real nonzero MERCATOR_TILE_IMPACT_MAT impact (correct for
         # the Active Storms alert list, wrong here: a storm can have fully
@@ -10035,26 +10084,25 @@ def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gu
         envelope_data = {"type": "FeatureCollection", "features": envelope_features} if envelope_features else dict(_MS_EMPTY_FC)
         return tracks_data, _ms_geojson_key(tracks_data), envelope_data, _ms_geojson_key(envelope_data)
 
-    storm = tile_config.get("storm")
-    forecast_date = tile_config.get("forecast_date")  # "YYYYMMDDHHMMSS"
-    wind_kt = tile_config.get("wind_threshold")
-    gust_kt = tile_config.get("gust_threshold")
-    primary_country_code = tile_config.get("primary_country_code")
-    wind_on_cfg = bool(tile_config.get("wind_visible"))
-    gust_on_cfg = bool(tile_config.get("gust_visible"))
+    # storm/forecast_date/primary_country_code already resolved above (same
+    # _resolve_primary_storm_group call the Global-mode gate used) — no
+    # longer read from tile_config, see this callback's own finding #4b
+    # docstring note.
+    wind_kt = _resolve_wind_kt(wind_idx)
+    gust_kt = _resolve_gust_kt(gust_idx)
+    wind_on_cfg = bool(wind_on)
+    gust_on_cfg = bool(gust_on)
     # Real bug found+fixed here: this used to require wind_visible
     # specifically (`not tile_config.get("wind_visible")` alone), so
     # unchecking "Sustained Wind" while keeping "Gust" checked hid TRACKS
     # and gust's own envelope too, even though gust had nothing to do with
     # that gate. Now proceeds whenever EITHER hazard is on.
     #
-    # storm == "NONE" — _build_hazard_tile_config's own inert placeholder
-    # for when no real storm resolves (see that function's tile_storm
-    # comment for the full "why": it lets the MapLibre Population base
-    # layer keep rendering even with no impact, but there's genuinely no
-    # real track/envelope geometry behind a fake storm name, so this
-    # callback's own real Snowflake-backed fetch must still short-circuit
-    # here exactly as if storm were falsy).
+    # storm == "NONE" — defensive: _resolve_primary_storm_group only ever
+    # returns a real storm name or None, never this placeholder string
+    # (that placeholder is _build_hazard_tile_config's own tile_storm, a
+    # DIFFERENT, MapLibre-URL-only value never exposed here) — kept for
+    # parity with the original tile_config-sourced check.
     if not storm or storm == "NONE" or not forecast_date or not (wind_on_cfg or gust_on_cfg):
         return _MS_EMPTY_FC, dash.no_update, _MS_EMPTY_FC, dash.no_update
 
@@ -10075,7 +10123,7 @@ def _load_ms_tracks_and_envelopes(tile_config, date, run, tracks_on, wind_on, gu
     # ran instead and rendered tracks unconditionally), then a SECOND update
     # landed with the real resolved config (tc_view_as=="raster" by default),
     # which used to wipe tracks too under the old combined gate.
-    show_envelopes = tile_config.get("tc_view_as", "envelopes") != "raster"
+    show_envelopes = (tc_view_as or "envelopes") != "raster"
 
     try:
         forecast_dt_str = pd.to_datetime(forecast_date, format="%Y%m%d%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
