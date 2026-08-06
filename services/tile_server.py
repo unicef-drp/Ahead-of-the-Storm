@@ -919,8 +919,20 @@ WHERE i.COUNTRY        = %s
 # at ANY point in the forecast horizon for that RP tier) — the same "at least
 # this severity, at some point" semantics the other hazards already have.
 # BOOLOR_AGG folds the two boolean flag columns (true if true in ANY step).
-# Deliberately no E_CHILDREN_TOTAL here (matches the original combined
-# query's own asymmetry, no such column exists for this hazard).
+#
+# E_CHILDREN_TOTAL (2026-08 fix, real bug found+fixed): this table has no
+# stored E_CHILDREN_TOTAL column, so it's computed here the same way wind's
+# own _MERCATOR_IMPACT_ONLY_SQL does — as a summed expression, not selected
+# raw. Uses MAX(E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION +
+# E_ADOLESCENT_POPULATION) — the row-level sum's own peak across STEP_H —
+# rather than MAX(E_INFANT)+MAX(E_SCHOOL_AGE)+MAX(E_ADOLESCENT) (summing
+# three INDEPENDENTLY-peaking steps), matching the "peak at any single point
+# in the forecast horizon" semantics every other column in this query
+# already uses, and matching how _RIVER_MERCATOR_STATS_SQL's own e_chi_min/
+# e_chi_max already compute this same expression for color-scale
+# normalization — that stats query already accounted for "Children (total)"
+# correctly; this tile query just never selected the matching value, so the
+# color scale was ready but the raster painted nothing for it.
 # ---------------------------------------------------------------------------
 
 _MERCATOR_RIVER_IMPACT_ONLY_SQL = """
@@ -933,6 +945,7 @@ SELECT
     MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
     MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
     MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
+    MAX(E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION + E_ADOLESCENT_POPULATION) AS E_CHILDREN_TOTAL,
     MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
     MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
     MAX(E_NUM_HCS)                AS E_NUM_HCS,
@@ -953,6 +966,7 @@ SELECT
     MAX(E_INFANT_POPULATION)      AS E_INFANT_POPULATION,
     MAX(E_SCHOOL_AGE_POPULATION)  AS E_SCHOOL_AGE_POPULATION,
     MAX(E_ADOLESCENT_POPULATION)  AS E_ADOLESCENT_POPULATION,
+    MAX(E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION + E_ADOLESCENT_POPULATION) AS E_CHILDREN_TOTAL,
     MAX(E_BUILT_SURFACE_M2)       AS E_BUILT_SURFACE_M2,
     MAX(E_NUM_SCHOOLS)            AS E_NUM_SCHOOLS,
     MAX(E_NUM_HCS)                AS E_NUM_HCS,

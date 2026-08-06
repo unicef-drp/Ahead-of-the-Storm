@@ -5604,9 +5604,12 @@ def _hazard_curve_totals(metric, hazard, scope, countries, date, run):
     countries this `scope` resolves to.
 
     `hazard` is "wind" or "river" (matches get_tile_impact_totals_by_
-    threshold's own two threshold-swept sections — Rainfall/Storm Surge
-    have no real per-threshold backend, see _hazard_curve_row's own
-    unchanged illustrative branches for those).
+    threshold's own two 1D threshold-swept sections). Precip's own real
+    per-threshold totals are also real (see get_tile_impact_totals_by_
+    threshold's own "precip" section) but genuinely 2D (threshold_mm x
+    window_h) — its own dedicated aggregator is _precip_curve_totals below,
+    not this function. Storm Surge has no real per-threshold backend at
+    all, see _hazard_curve_row's own unchanged illustrative branch for that.
 
     Returns a list of real ints aligned to `_WIND_CATS`'s own kt order
     (hazard="wind") or `_RIVER_RP_TIERS`'s order (hazard="river") — a
@@ -5658,6 +5661,66 @@ def _hazard_curve_totals(metric, hazard, scope, countries, date, run):
                 total += v
         values.append(total)
     return values
+
+
+def _precip_curve_totals(metric, scope, countries, date, run):
+    """Precip sibling of _hazard_curve_totals — real, not illustrative (was
+    "PREVIEW ONLY" before, see _rain_threshold_grid's own docstring at the
+    time). Genuinely 2D (unlike wind/river's single threshold dimension), so
+    it returns the FULL grid rather than one tier list, matching how
+    _rain_threshold_grid itself always renders all 4 windows at once (not
+    just the currently selected one) — the "which cell is ringed as current"
+    concern is the caller's, not this aggregator's.
+
+    Returns {"6": [v25, v50, v75], "24": [...], "72": [...], "120": [...]}
+    (values aligned to _RAIN_MM_BY_WINDOW[window]'s own order), or None when
+    `metric` isn't "People at Risk" or `scope` resolves to no real countries
+    at all — caller falls back to the old illustrative grid.
+
+    Real bug found+fixed here: unlike wind/gust/river/rain's own
+    E_POPULATION, MERCATOR_TILE_PRECIP_MAT has NO real age-band or facility-
+    count columns at all (confirmed live — see _TOTALS_PRECIP_IMPACT_COLS's
+    own comment in snowflake_utils.py). Every metric other than "People at
+    Risk" is therefore guaranteed 100% unsupported for precip, not a rare
+    per-country data gap the way it is for wind/river — restricting this
+    function to "People at Risk" only means the OTHER metrics correctly
+    fall back to the illustrative grid instead of confidently showing a
+    fabricated all-zero grid (what `_curve_metric_value`'s "Children at
+    Risk" branch used to silently produce here: summing 3 permanently-
+    absent age-band columns collapses to a real 0, not None, the exact
+    "don't fabricate a confirmed zero" contract this file otherwise
+    enforces everywhere else).
+    """
+    if metric != "People at Risk":
+        return None
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    if not resolved_countries:
+        return None
+
+    def _fetch(country):
+        code = _NAME_TO_CODE.get(country)
+        if not code:
+            return None
+        # Precip is NOT storm-scoped (see get_tile_impact_totals_by_
+        # threshold's own docstring) — storm/forecast_date are irrelevant
+        # to its own section, only affecting the (harmless) ttl_cache key.
+        return get_tile_impact_totals_by_threshold(code, "", "")
+
+    per_country = list(get_query_executor().map(_fetch, resolved_countries))
+    grid = {}
+    for window, mm_tiers in _RAIN_MM_BY_WINDOW.items():
+        values = []
+        for mm in mm_tiers:
+            total = 0
+            for totals in per_country:
+                if not totals or not totals.get("precip") or window not in totals["precip"]:
+                    continue
+                v = _curve_metric_value(metric, totals["precip"][window].get(mm))
+                if v is not None:
+                    total += v
+            values.append(total)
+        grid[window] = values
+    return grid
 
 
 # Illustrative — what fraction of the SMALLER hazard family's footprint
@@ -5821,6 +5884,66 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # Global, so this now applies universally.
         breakdown = {**breakdown, "tc_pct": 100 if tc_active else 0,
                       "flood_pct": 100 if flood_active else 0}
+    # Real fix (2026-08, user-confirmed design after research into how
+    # institutional multi-hazard frameworks handle this — see
+    # MULTI_HAZARD_OVERLAP_DESIGN.md): when BOTH families are genuinely
+    # active, replace the old fixed illustrative 45/20/10/10-derived split
+    # with each family's own real, independently-queried total (Wind alone
+    # vs Flood alone — River+Rain+Surge combined, whichever are actually
+    # checked), combined under an explicit, labeled independence assumption
+    # (P(both) = P(wind) x P(flood)). This is a documented simplification,
+    # not the true value — wind and flood from the SAME storm are
+    # positively correlated, so the true "both" is very likely somewhat
+    # higher than this estimate (see the design doc's Option B entry) — but
+    # it replaces a fully-fabricated ratio with a real, bounded, labeled
+    # approximation computed from this exact selection's own real data.
+    #
+    # `total` (used by every _hazard_row/_hazard_curve_row/_hazard_overlap_
+    # bar call below via Python's own late-binding closures, and passed
+    # explicitly to _hazard_overlap_bar) is reassigned here to this real
+    # split's own total — deliberately NOT the same number as the "Total:
+    # {value}" headline text above (which reads `value`/`total` as they
+    # were BEFORE this reassignment, captured already in that dmc.Text
+    # call). The two are allowed to differ slightly: the headline total
+    # comes from a per-tile MAX-combination (a different, already-real
+    # computation used everywhere else on this page), while this
+    # independence-based estimate is specific to this breakdown display.
+    real_estimate = False
+    if tc_active and flood_active and metric is not None and scope is not None:
+        resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+        total_population = sum(_get_country_totals(c)["population"] for c in resolved_countries)
+        wind_kt = _resolve_wind_kt(hazard_idx.get("Sustained Wind") if hazard_idx else None)
+        w_raw = _resolve_stat_value(metric, scope, countries, date=date, run=run, wind_kt=wind_kt,
+                                       hz=_wind_only_hz(wind_kt))
+        wind_total = _parse_stat_number(w_raw) if w_raw is not None else 0
+        flood_hz = _build_hz(
+            False, False,
+            "River Flooding" in breakdown["active_flood_members"],
+            "Rainfall" in breakdown["active_flood_members"],
+            river_idx=(hazard_idx or {}).get("River Flooding"),
+            rain_idx=(hazard_idx or {}).get("Rainfall"),
+            rain_window=rain_window,
+        )
+        f_raw = _resolve_stat_value(metric, scope, countries, date=date, run=run, hz=flood_hz)
+        flood_total = _parse_stat_number(f_raw) if f_raw is not None else 0
+        if total_population > 0 and (wind_total or flood_total):
+            # Clamped to min(wind_total, flood_total) — "both" can never
+            # exceed the smaller of the two real totals it's derived from,
+            # regardless of what the raw product happens to compute to.
+            both_n = min(wind_total * flood_total / total_population, wind_total, flood_total)
+            wind_only_n = max(wind_total - both_n, 0)
+            flood_only_n = max(flood_total - both_n, 0)
+            real_total = wind_only_n + both_n + flood_only_n
+            if real_total > 0:
+                real_estimate = True
+                total = real_total
+                breakdown = {**breakdown,
+                    "tc_pct": wind_total / real_total * 100,
+                    "flood_pct": flood_total / real_total * 100,
+                    "both_pct": both_n / real_total * 100,
+                    "tc_only_pct": wind_only_n / real_total * 100,
+                    "flood_only_pct": flood_only_n / real_total * 100,
+                }
     by_name = {name: (color, pct, icon) for name, color, pct, icon in _HAZARD_CONTRIBUTION}
     hazard_idx = hazard_idx or {}
 
@@ -5929,15 +6052,19 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
                 real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "Rainfall":
-            # PREVIEW ONLY still — genuinely 2D (window x tier), no real
-            # per-cell query wired up yet (see _rain_threshold_grid's own
-            # comment). Falls back to the flat illustrative single-line
-            # chart if no window was passed in (e.g. an older caller).
+            # Real per-cell query (2026-08) — same real-then-illustrative-
+            # fallback pattern as Sustained Wind/River Flooding above, via
+            # _precip_curve_totals (genuinely 2D, its own dedicated
+            # aggregator, not _hazard_curve_totals — see that function's
+            # own docstring). Falls back to the flat illustrative single-
+            # line chart if no window was passed in at all (e.g. an older
+            # caller), same as before.
             if rain_window is None:
                 values = [base_n * f for f in factors]
                 chart = _threshold_curve_chart(labels, values, idx, color)
             else:
-                chart = _rain_threshold_grid(labels, base_n, rain_window, idx, color)
+                real_matrix = _precip_curve_totals(metric, scope, countries, date, run) if can_query_real else None
+                chart = _rain_threshold_grid(labels, base_n, rain_window, idx, color, real_matrix=real_matrix)
         else:
             # Storm Surge (no real backend at all — always illustrative,
             # see ms-surge-on's own comment) or a real hazard missing
@@ -6051,9 +6178,14 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         blocks.extend(_family_members_block(active_members, group_pct))
         blocks.append(html.Div(style={"height": "16px"}))
 
+    overlap_note = (
+        _t("Estimated assuming Wind and Flood risk are independent — since both come from the "
+            "same storm, the real \"Both\" figure is likely somewhat higher than shown here.")
+        if real_estimate else
+        _t("Tropical Cyclone and Flood risk overlap — this isn't two separate groups of people.")
+    )
     overlap_children = [_hazard_overlap_bar(total, breakdown),
-                          dmc.Text(_t("Tropical Cyclone and Flood risk overlap — this isn't two separate groups of people."),
-                                    size="10px", c="dimmed", mt=14, mb=26, fs="italic")] if both_active else []
+                          dmc.Text(overlap_note, size="10px", c="dimmed", mt=14, mb=26, fs="italic")] if both_active else []
 
     # Column header labeling what the two right-aligned numbers on every
     # hazard row actually are — without this, "45%" / "173K" reads as two
@@ -6069,15 +6201,20 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     ], gap=14, wrap="nowrap", mb=8)
 
     # The caption only makes sense when a real illustrative SPLIT is being
-    # shown somewhere above — either the TC/Flood overlap bar (both_active)
-    # or 2+ Flood members active at once (River/Rain/Surge sharing Flood's
-    # pct via fixed illustrative weights, see _hazard_breakdown). Tropical
-    # Cyclone only ever has one member (Sustained Wind — Gust is
-    # permanently excluded, see _hazard_breakdown's own comment), so a
-    # single active hazard (the common Global case: only Sustained Wind
-    # has real data) shows a plain, deterministic 100% — not a split of
-    # anything — and calling that "illustrative" was misleading.
-    has_illustrative_split = both_active or len(breakdown["active_flood_members"]) > 1
+    # shown somewhere above. As of 2026-08, the TC-vs-Flood split itself is
+    # real when `real_estimate` (own caption above, via overlap_note) — the
+    # remaining illustrative piece is specifically the WITHIN-Flood
+    # sub-split (River/Rain/Surge sharing Flood's own real total via fixed
+    # illustrative weights, see _hazard_breakdown) whenever 2+ Flood
+    # members are simultaneously active, or the TC/Flood split itself
+    # falling back to the old illustrative math (both_active but
+    # real_estimate is False — no real metric/scope context, a defensive
+    # case). Tropical Cyclone only ever has one member (Sustained Wind —
+    # Gust is permanently excluded, see _hazard_breakdown's own comment),
+    # so a single active hazard (the common Global case: only Sustained
+    # Wind has real data) shows a plain, deterministic 100% — not a split
+    # of anything — and calling that "illustrative" was misleading.
+    has_illustrative_split = (both_active and not real_estimate) or len(breakdown["active_flood_members"]) > 1
     caption = [dmc.Text(_t("Illustrative split — a real implementation would compute this from actual per-hazard overlap."),
                           size="10px", c="dimmed", mt=18, fs="italic")] if has_illustrative_split else []
 
@@ -7690,7 +7827,7 @@ def _threshold_curve_chart(labels, values, active_idx, color):
                 "justifyContent": "center", "marginBottom": "0px"})
 
 
-def _rain_threshold_grid(labels, base_n, active_window, active_idx, color):
+def _rain_threshold_grid(labels, base_n, active_window, active_idx, color, real_matrix=None):
     # Rainfall's own version of _threshold_curve_chart — a small heatmap
     # grid (window × depth tier), not a line chart. An earlier version drew
     # 4 overlapping lines here, but genuinely 2D data (duration on one axis,
@@ -7702,8 +7839,18 @@ def _rain_threshold_grid(labels, base_n, active_window, active_idx, color):
     # rather than relying on hover, since this is a small static preview,
     # not an interactive chart; the current (window, tier) cell gets a
     # colored ring so "where am I" is still obvious at a glance.
+    #
+    # Real data (2026-08): `real_matrix` is _precip_curve_totals's own
+    # {"6": [v25, v50, v75], ...} shape when given — same real-vs-
+    # illustrative pattern _hazard_curve_row already uses for Sustained
+    # Wind/River Flooding. Falls back to the illustrative ratio-scaled
+    # matrix only when real_matrix is None (no real per-cell query
+    # available for this metric/scope, or an older caller).
     windows = list(_RAIN_WINDOW_SCALE.keys())
-    matrix = {w: [base_n * f * scale for f in _RAIN_TIER_FACTOR] for w, scale in _RAIN_WINDOW_SCALE.items()}
+    if real_matrix is not None:
+        matrix = real_matrix
+    else:
+        matrix = {w: [base_n * f * scale for f in _RAIN_TIER_FACTOR] for w, scale in _RAIN_WINDOW_SCALE.items()}
     vmax = max(v for vals in matrix.values() for v in vals) or 1
     r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 

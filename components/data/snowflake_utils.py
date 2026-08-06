@@ -1424,12 +1424,29 @@ def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window
 _TOTALS_WIND_THRESHOLDS_KT = [34, 40, 50, 64, 83, 96, 113, 137]
 _TOTALS_GUST_THRESHOLDS_KT = [17, 21, 26, 33, 43, 49, 58, 70]
 _TOTALS_RIVER_RP_TIERS = ["rp2", "rp5", "rp10", "rp20", "rp50", "rp100"]
+# Duplicated from map_shell_concept.py's own _RAIN_MM_BY_WINDOW, same reason
+# as the tier lists above (import-graph ordering) — keep in sync.
+_TOTALS_PRECIP_MM_BY_WINDOW = {"6": [25, 50, 75], "24": [35, 70, 103], "72": [45, 90, 133], "120": [50, 100, 150]}
 
 _TOTALS_IMPACT_COLS = [
     "E_POPULATION", "E_INFANT_POPULATION", "E_SCHOOL_AGE_POPULATION",
     "E_ADOLESCENT_POPULATION", "E_NUM_SCHOOLS", "E_NUM_HCS",
     "E_NUM_SHELTERS", "E_NUM_WASH",
 ]
+# MERCATOR_TILE_PRECIP_MAT only ever carries a real hazard-conditional
+# E_POPULATION column (see get_rain_tile_impacts's own docstring — the
+# other exposure columns on that table are hazard-unconditional base
+# duplicates, not real per-threshold facility/age counts) — a narrower
+# column list than wind/gust/river's, not an oversight.
+_TOTALS_PRECIP_IMPACT_COLS = ["E_POPULATION"]
+
+
+def _zero_precip_impact_totals() -> dict:
+    return {col: 0 for col in _TOTALS_PRECIP_IMPACT_COLS}
+
+
+def _row_to_precip_impact_totals(row) -> dict:
+    return {col: (int(row[col]) if pd.notna(row[col]) else None) for col in _TOTALS_PRECIP_IMPACT_COLS}
 
 
 def _zero_impact_totals() -> dict:
@@ -1460,33 +1477,52 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
 
     Returns:
         {
-            "wind":  {34: {...}, 40: {...}, ..., 137: {...}},   # kt -> totals
-            "gust":  {17: {...}, 21: {...}, ...,  70: {...}},   # kt -> totals
-            "river": {"rp2": {...}, ..., "rp100": {...}},        # rp_tier -> totals
+            "wind":   {34: {...}, 40: {...}, ..., 137: {...}},   # kt -> totals
+            "gust":   {17: {...}, 21: {...}, ...,  70: {...}},   # kt -> totals
+            "river":  {"rp2": {...}, ..., "rp100": {...}},        # rp_tier -> totals
+            "precip": {"6": {25: {...}, 50: {...}, 75: {...}}, "24": {...}, "72": {...}, "120": {...}},
         }
-    where each `{...}` is {"E_POPULATION": int|None, "E_INFANT_POPULATION": int|None,
-    "E_SCHOOL_AGE_POPULATION": int|None, "E_ADOLESCENT_POPULATION": int|None,
-    "E_NUM_SCHOOLS": int|None, "E_NUM_HCS": int|None, "E_NUM_SHELTERS": int|None,
-    "E_NUM_WASH": int|None}. None only when that column is genuinely all-NULL
-    for this country (a real dataset gap), 0 when the threshold tier simply
-    has no matching rows (a real, confirmed-zero exposure at that tier).
+    where each wind/gust/river `{...}` is {"E_POPULATION": int|None,
+    "E_INFANT_POPULATION": int|None, "E_SCHOOL_AGE_POPULATION": int|None,
+    "E_ADOLESCENT_POPULATION": int|None, "E_NUM_SCHOOLS": int|None,
+    "E_NUM_HCS": int|None, "E_NUM_SHELTERS": int|None, "E_NUM_WASH": int|None},
+    and each precip `{...}` is just {"E_POPULATION": int|None} (see
+    _TOTALS_PRECIP_IMPACT_COLS's own comment — MERCATOR_TILE_PRECIP_MAT has
+    no real per-threshold facility/age columns). None only when that column
+    is genuinely all-NULL for this country (a real dataset gap), 0 when the
+    threshold tier simply has no matching rows (a real, confirmed-zero
+    exposure at that tier).
 
     Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
-    _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS is always present as a
-    key: a tier absent from the query result (genuinely 0 rows) is filled
-    with _zero_impact_totals(), not omitted, so callers never have to
-    special-case a missing key as "no data" when it really means "real zero".
+    _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS/
+    _TOTALS_PRECIP_MM_BY_WINDOW is always present as a key: a tier absent
+    from the query result (genuinely 0 rows) is filled with
+    _zero_impact_totals()/_zero_precip_impact_totals(), not omitted, so
+    callers never have to special-case a missing key as "no data" when it
+    really means "real zero". Precip's own window keys ("6"/"24"/"72"/"120")
+    are always all four, same convention one level up.
 
-    River is NOT storm-scoped (see get_river_tile_impacts's own docstring),
-    so `storm` is ignored for the "river" section, and its own forecast time
-    is resolved independently via get_latest_river_forecast_time(country)
+    River and precip are NOT storm-scoped (see get_river_tile_impacts's/
+    get_rain_tile_impacts's own docstrings), so `storm` is ignored for those
+    two sections, and each resolves its own forecast time independently via
+    get_latest_river_forecast_time(country)/get_latest_rain_forecast_time(country)
     rather than reusing `forecast_date` (which is wind's cycle, and can
-    genuinely differ from river's, confirmed live: PHL's own river data has
-    lagged its wind cycle by weeks). The "river" key is {} (not zero-filled)
-    when the country has no river data of any kind, a real dataset gap, not
-    a per-tier zero.
+    genuinely differ from river's/precip's, confirmed live: PHL's own river
+    data has lagged its wind cycle by weeks). The "river"/"precip" keys are
+    {} (not zero-filled) when the country has no river/precip data of any
+    kind, a real dataset gap, not a per-tier zero.
+
+    Precip's own real data is genuinely 2D (threshold_mm x window_h — see
+    MERCATOR_TILE_PRECIP_MAT's own schema, confirmed live: 4 real window_h
+    values [6, 24, 72, 120] x 3 real threshold_mm tiers each) — the whole
+    grid is fetched in ONE query (GROUP BY WINDOW_H, THRESHOLD_MM), same
+    "one round trip regardless of which tier the user currently has
+    selected" design as wind/gust/river's own full-tier fetch, needed here
+    specifically because the dashboard's own Rainfall heatmap
+    (_rain_threshold_grid) shows all 4 windows at once, not just the
+    currently selected one.
     """
-    result = {"wind": {}, "gust": {}, "river": {}}
+    result = {"wind": {}, "gust": {}, "river": {}, "precip": {}}
 
     try:
         wind_df = _run_query(
@@ -1539,6 +1575,28 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
             result["river"] = {tier: by_tier.get(tier, _zero_impact_totals()) for tier in _TOTALS_RIVER_RP_TIERS}
     except Exception as e:
         logger.warning("get_tile_impact_totals_by_threshold river failed for %s: %s", country, e)
+
+    try:
+        precip_forecast_time = get_latest_rain_forecast_time(country)
+        if precip_forecast_time is not None:
+            precip_df = _run_query(
+                """
+                SELECT WINDOW_H, THRESHOLD_MM, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_PRECIP_IMPACT_COLS) + """
+                FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
+                WHERE COUNTRY = %s AND FORECAST_TIME = %s
+                GROUP BY WINDOW_H, THRESHOLD_MM
+                """,
+                params=[country, precip_forecast_time],
+            )
+            by_window_mm = {}
+            for _, row in precip_df.iterrows():
+                by_window_mm.setdefault(str(int(row["WINDOW_H"])), {})[int(row["THRESHOLD_MM"])] = _row_to_precip_impact_totals(row)
+            result["precip"] = {
+                window: {mm: by_window_mm.get(window, {}).get(mm, _zero_precip_impact_totals()) for mm in mm_tiers}
+                for window, mm_tiers in _TOTALS_PRECIP_MM_BY_WINDOW.items()
+            }
+    except Exception as e:
+        logger.warning("get_tile_impact_totals_by_threshold precip failed for %s: %s", country, e)
 
     return result
 
