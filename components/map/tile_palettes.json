@@ -1,6 +1,6 @@
 {
   "palettes": {
-    "probability":            { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "linear", "fixed_max": 1.0 },
+    "probability":            { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
     "population":             { "colors": ["#add8e6","#8cc5d3","#6bb2c0","#4a9bad","#33849a","#216d87","#165674","#0d3f51","#06283d","#011129"], "scale": "log" },
     "E_population":           { "colors": ["#ffffcc","#ffeda0","#fed976","#feb24c","#fd8d3c","#fc4e2a","#f03b20","#e31a1c","#bd0026","#800026"], "scale": "log" },
     "children_total":         { "colors": ["#e8d5f5","#d0a8ed","#b87de5","#9e52dd","#8429d4","#6b1fb0","#53178c","#3c1068","#260844","#110022"], "scale": "log" },

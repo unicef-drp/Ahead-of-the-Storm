@@ -44,9 +44,26 @@ _TILE_TTL = 15 * 60  # 15 minutes
 # pattern) without ever growing unbounded across a long-running session.
 # Facility entries (points, not a full tile grid) are cheaper per-key than
 # mercator/admin, hence the higher cap.
-_MERCATOR_CACHE_MAX = 24
-_ADMIN_CACHE_MAX = 24
-_FACILITY_CACHE_MAX = 48
+#
+# Real capacity risk found+fixed here (2026-08, multi-agent audit): these
+# caps are ONE global LRU pool shared across every (country, storm,
+# forecast_date) + hazard-variant key, regardless of hazard. River's own
+# real variant space grew from 6 (one per rp_tier) to up to 24 (6 rp_tier x
+# 4 real window_h values, see _hazard_variant's own river branch) as part
+# of this session's accumulation-window work — a single country's worth of
+# River exploration alone can now fill the ENTIRE old cap of 24, evicting
+# Wind/Gust/Rain's own warm entries (or another country's) far more readily
+# than before. Facility's own key additionally splits by layer_type (schools/
+# health/shelters/wash), so River's real footprint there is up to 4x24=96,
+# already exceeding the old 48 cap on its own. Bumped proportionally (~2.5x)
+# to comfortably hold River's new full variant space for at least one
+# country plus real headroom for a few more (still bounded, not unbounded —
+# each entry is a real in-memory DataFrame, a few MB at most for a single
+# country's tile grid, so this remains a modest, deliberate memory budget,
+# not a leak).
+_MERCATOR_CACHE_MAX = 64
+_ADMIN_CACHE_MAX = 64
+_FACILITY_CACHE_MAX = 128
 
 
 def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
@@ -911,14 +928,29 @@ WHERE i.COUNTRY        = %s
 # Real schema surprise (confirmed via a live query, not assumed): both
 # MERCATOR_TILE_RIVER_MAT and every *_RIVER_MAT facility table carry MULTIPLE
 # STEP_H rows per (COUNTRY, FORECAST_TIME, RP_TIER, tile/facility) — e.g. rp10
-# has STEP_H in {48, 72, 96, 168} for the same tile, each a different lead
-# time within the same forecast run. Unlike wind/gust (whose WIND_THRESHOLD
-# envelope is already a single "ever crossed X kt during the whole track"
-# aggregate), river has no such pre-collapsed row. Every river query below
-# therefore aggregates across STEP_H with MAX(...) (peak probability/exposure
-# at ANY point in the forecast horizon for that RP tier) — the same "at least
-# this severity, at some point" semantics the other hazards already have.
-# BOOLOR_AGG folds the two boolean flag columns (true if true in ANY step).
+# has STEP_H in {24, 72, 120, 168} for the same tile, each a different real
+# CUMULATIVE lead-time window within the same forecast run.
+#
+# Real fix (2026-08, cross-repo, user-requested): every river query below
+# used to aggregate across EVERY STEP_H unconditionally with MAX(...) (peak
+# probability/exposure at ANY point across the ENTIRE forecast horizon,
+# regardless of anything selected in the UI — there was no window control
+# for these real impact numbers at all). STEP_H's own stored meaning changed
+# the same day (DATAPIPELINE's own caller now feeds create_river_tile_
+# view() etc. a real cumulative union of pixels through each window, not a
+# single day — see docs/hazard_accumulation_windows.md for the full
+# writeup), so each STEP_H row is now ALREADY the correct cumulative figure
+# for that window — these queries now filter `WHERE ... AND STEP_H = %s`
+# (the real requested window, `window_h or _RIVER_WINDOW_DEFAULT` — see that
+# constant's own comment for why 168 is a safe, exact backward-compat
+# default, not an approximation) instead of blindly collapsing every window
+# together. MAX(...)/GROUP BY are kept as a defensive no-op (each ZONE_ID
+# should be unique per (COUNTRY, FORECAST_TIME, RP_TIER, STEP_H) already,
+# same assumption wind/gust's own tile MAT shape makes) rather than a plain
+# SELECT, in case of an unexpected future duplicate row.
+# BOOLOR_AGG folds the two boolean flag columns (true if true in ANY step
+# up through the selected window, matching the real union everything else
+# in this query now reflects).
 #
 # E_CHILDREN_TOTAL (2026-08 fix, real bug found+fixed): this table has no
 # stored E_CHILDREN_TOTAL column, so it's computed here the same way wind's
@@ -952,7 +984,7 @@ SELECT
     MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
     MAX(E_NUM_WASH)               AS E_NUM_WASH
 FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
 GROUP BY ZONE_ID
 """
 
@@ -973,7 +1005,7 @@ SELECT
     MAX(E_NUM_SHELTERS)           AS E_NUM_SHELTERS,
     MAX(E_NUM_WASH)               AS E_NUM_WASH
 FROM AOTS.TC_ECMWF.ADMIN_ALL_RIVER_MAT
-WHERE COUNTRY = %s AND ADMIN_LEVEL = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+WHERE COUNTRY = %s AND ADMIN_LEVEL = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
 GROUP BY TILE_ID
 """
 
@@ -984,16 +1016,20 @@ GROUP BY TILE_ID
 # the app's ms-rain-slider/ms-rain-window controls are already threshold-mm
 # based via _RAIN_MM_BY_WINDOW, not ratio based).
 #
-# Real schema asymmetry (confirmed live, unlike river/wind/gust): only
-# E_POPULATION is E_-prefixed on this table — every other exposure column
-# (SCHOOL_AGE_POPULATION, NUM_SCHOOLS, etc.) on MERCATOR_TILE_PRECIP_MAT/
-# ADMIN_ALL_PRECIP_MAT is a bare, hazard-UNCONDITIONAL duplicate of the base
-# layer's own column (same values), not a rain-specific exposed count — no
-# "expected number of schools affected by rain" data exists at all. So only
-# E_POPULATION is selected below; every other exposure figure comes from the
-# base join (merged in pandas) same as always, and the browser's existing
-# fmtE()-based tooltip fallback (base_count × probability) naturally supplies
-# an estimate for those — no special-case tooltip code needed for this gap.
+# Real fix (2026-08): MERCATOR_TILE_PRECIP_MAT/ADMIN_ALL_PRECIP_MAT used to
+# only carry a real E_POPULATION column — every other exposure column was a
+# bare, hazard-UNCONDITIONAL duplicate of the base layer's own column, not a
+# rain-specific exposed count, so only E_POPULATION was selected below and
+# the browser's client-side fmtE() fallback (base_count × probability)
+# supplied an estimate for everything else. That gap was traced to an
+# incomplete port in DATAPIPELINE's create_precip_tile_view() and fixed at
+# the source — both tables now carry the full E_* breakdown, same shape as
+# wind's own MERCATOR_TILE_IMPACT_MAT/ADMIN_ALL_IMPACT_MAT (see
+# _MERCATOR_IMPACT_ONLY_SQL above), so the queries below now select the same
+# full set, including a computed E_CHILDREN_TOTAL (same
+# E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION + E_ADOLESCENT_POPULATION
+# expression river's own query above uses — precip has no stored
+# E_CHILDREN_TOTAL column either, same as river before its own fix).
 #
 # Confirmed live: ZONE_ID on this table IS a valid mercantile z14 quadkey
 # (decodes to real in-country coordinates, e.g. PHL tiles), despite the
@@ -1011,7 +1047,16 @@ _MERCATOR_PRECIP_IMPACT_ONLY_SQL = """
 SELECT
     ZONE_ID AS TILE_ID,
     PROBABILITY,
-    E_POPULATION
+    E_POPULATION,
+    E_INFANT_POPULATION,
+    E_SCHOOL_AGE_POPULATION,
+    E_ADOLESCENT_POPULATION,
+    E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION + E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
+    E_BUILT_SURFACE_M2,
+    E_NUM_SCHOOLS,
+    E_NUM_HCS,
+    E_NUM_SHELTERS,
+    E_NUM_WASH
 FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
 WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
 """
@@ -1020,7 +1065,16 @@ _ADMIN_PRECIP_IMPACT_ONLY_SQL = """
 SELECT
     TILE_ID,
     PROBABILITY,
-    E_POPULATION
+    E_POPULATION,
+    E_INFANT_POPULATION,
+    E_SCHOOL_AGE_POPULATION,
+    E_ADOLESCENT_POPULATION,
+    E_INFANT_POPULATION + E_SCHOOL_AGE_POPULATION + E_ADOLESCENT_POPULATION AS E_CHILDREN_TOTAL,
+    E_BUILT_SURFACE_M2,
+    E_NUM_SCHOOLS,
+    E_NUM_HCS,
+    E_NUM_SHELTERS,
+    E_NUM_WASH
 FROM AOTS.TC_ECMWF.ADMIN_ALL_PRECIP_MAT
 WHERE COUNTRY = %s AND ADMIN_LEVEL = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
 """
@@ -1078,6 +1132,22 @@ _BASE_DATA_TTL = _TILE_TTL * 4  # 60 minutes
 _MERCATOR_BASE_CACHE_MAX = 16
 _ADMIN_BASE_CACHE_MAX = 16
 
+# Real feature added here (2026-08, cross-repo, user-requested): River's
+# real per-country impact numbers (MERCATOR_TILE_RIVER_MAT/ADMIN_ALL_RIVER_
+# MAT/the 4 river facility tables) now carry a real STEP_H column meaning a
+# CUMULATIVE window (24/72/120/168h — matches DATAPIPELINE's own
+# RIVER_LEADTIME_STEPS_H and pages/map_shell_concept.py's own ms-river-
+# window options exactly), not a single-day snapshot — see
+# docs/hazard_accumulation_windows.md for the full writeup. 168h (the full
+# real forecast horizon) is the backward-compat default for any caller that
+# doesn't pass a window at all: since each window is a real cumulative
+# union, the 168h row already equals what the OLD unconditional MAX()-
+# across-every-STEP_H query used to return (the true union IS the same as
+# "worst case across the entire horizon" once every smaller window's data
+# is a subset of it) — so this default preserves today's exact existing
+# behavior for anything not yet updated, not merely an approximation of it.
+_RIVER_WINDOW_DEFAULT = 168
+
 
 def _hazard_variant(hazard: str, wind_threshold: int, gust_threshold: Optional[int],
                      rp_tier: Optional[str], threshold_mm: Optional[float],
@@ -1093,7 +1163,16 @@ def _hazard_variant(hazard: str, wind_threshold: int, gust_threshold: Optional[i
     if hazard == "gust":
         return ("gust", gust_threshold)
     if hazard == "river":
-        return ("river", rp_tier)
+        # Real fix (2026-08, cross-repo, user-requested): `window_h` reused
+        # here as river's own CUMULATIVE lead-time window (24-168h) — this
+        # generic slot already existed for rain, only ever populated for
+        # hazard="rain" before now. River's real per-country impact numbers
+        # (MERCATOR_TILE_RIVER_MAT etc.) now carry a real STEP_H column that
+        # means "cumulative through this many hours" (see
+        # _RIVER_WINDOW_DEFAULT's own comment below) — folding it into the
+        # cache-key variant here means Wind@50kt/River@rp10+72h/River@rp10+
+        # 168h are correctly three separate cache entries, never collide.
+        return ("river", rp_tier, window_h or _RIVER_WINDOW_DEFAULT)
     if hazard == "rain":
         return ("rain", threshold_mm, window_h)
     return ("wind", wind_threshold)
@@ -1316,7 +1395,7 @@ class _DataCache:
                             merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "river":
                         impact_rows = _run_query(_MERCATOR_RIVER_IMPACT_ONLY_SQL, [
-                            code, forecast_date, rp_tier,
+                            code, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT,
                         ])
                         if impact_rows:
                             merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
@@ -1435,7 +1514,7 @@ class _DataCache:
                             merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
                     elif hazard == "river":
                         impact_rows = _run_query(_ADMIN_RIVER_IMPACT_ONLY_SQL, [
-                            code, admin_level, forecast_date, rp_tier,
+                            code, admin_level, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT,
                         ])
                         if impact_rows:
                             merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
@@ -1615,7 +1694,7 @@ class _DataCache:
                                           [code, storm, forecast_date, gust_threshold])
                     elif hazard == "river":
                         rows = _run_query(_FACILITY_RIVER_SQL[layer_type],
-                                          [code, forecast_date, rp_tier])
+                                          [code, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT])
                     elif hazard == "rain":
                         rows = _run_query(_FACILITY_PRECIP_SQL[layer_type],
                                           [code, forecast_date, threshold_mm, window_h])
@@ -1720,7 +1799,7 @@ _cache = _DataCache()
 
 _FACILITY_IMPACT_SQL: dict[str, str] = {
     "schools": """
-        SELECT SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
@@ -1732,13 +1811,13 @@ _FACILITY_IMPACT_SQL: dict[str, str] = {
           AND ALL_DATA:geometry::STRING IS NOT NULL
     """,
     "shelters": """
-        SELECT NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "wash": """
-        SELECT NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.WASH_IMPACT_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND WIND_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
@@ -1747,7 +1826,7 @@ _FACILITY_IMPACT_SQL: dict[str, str] = {
 
 _FACILITY_GUST_SQL: dict[str, str] = {
     "schools": """
-        SELECT SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SCHOOL_GUST_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND GUST_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
@@ -1759,24 +1838,29 @@ _FACILITY_GUST_SQL: dict[str, str] = {
           AND ALL_DATA:geometry::STRING IS NOT NULL
     """,
     "shelters": """
-        SELECT NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SHELTER_GUST_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND GUST_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "wash": """
-        SELECT NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.WASH_GUST_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s AND GUST_THRESHOLD = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
 }
 
-# River facility queries aggregate across STEP_H (same real multi-step-per-tier
-# duplication documented for _MERCATOR_RIVER_IMPACT_ONLY_SQL, which applies
-# identically to every *_RIVER_MAT facility table — confirmed live:
-# SCHOOL_RIVER_MAT alone had 159,652 rows for only 39,913 distinct schools at
-# rp10, a 4x duplication exactly matching rp10's 4 real STEP_H values).
+# Real fix (2026-08, cross-repo, user-requested): these used to aggregate
+# across EVERY STEP_H unconditionally (same gap documented above for
+# _MERCATOR_RIVER_IMPACT_ONLY_SQL — confirmed live: SCHOOL_RIVER_MAT alone
+# had 159,652 rows for only 39,913 distinct schools at rp10, a 4x
+# duplication matching rp10's 4 real STEP_H values at the time). Now filter
+# `AND STEP_H = %s` (the real requested cumulative window — see
+# _RIVER_WINDOW_DEFAULT's own comment) instead of blindly collapsing every
+# window together; MAX(...)/GROUP BY kept as the same defensive-no-op
+# pattern the impact queries above use (should be one real row per ZONE_ID
+# per window already).
 #
 # GROUP BY ZONE_ID, not by name/type columns — real bug found+fixed here: these
 # queries used to group by descriptive columns (SCHOOL_NAME, NAME+TYPE+...),
@@ -1791,44 +1875,44 @@ _FACILITY_GUST_SQL: dict[str, str] = {
 # away without merging distinct real facilities.
 _FACILITY_RIVER_SQL: dict[str, str] = {
     "schools": """
-        SELECT MAX(SCHOOL_NAME) AS SCHOOL_NAME, MAX(EDUCATION_LEVEL) AS EDUCATION_LEVEL,
+        SELECT ZONE_ID, MAX(SCHOOL_NAME) AS SCHOOL_NAME, MAX(EDUCATION_LEVEL) AS EDUCATION_LEVEL,
                MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.SCHOOL_RIVER_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
     "health": """
-        SELECT NAME, FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
+        SELECT ZONE_ID, NAME, FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
                ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LATITUDE,
                ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LONGITUDE
         FROM (
-            SELECT MAX(NAME) AS NAME, MAX(HEALTH_AMENITY_TYPE) AS FACILITY_TYPE,
+            SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(HEALTH_AMENITY_TYPE) AS FACILITY_TYPE,
                    MAX(OPERATOR_TYPE) AS OPERATOR_TYPE,
                    MAX(PROBABILITY) AS PROBABILITY,
                    MAX(ALL_DATA:geometry::STRING) AS GEOM_STR
             FROM AOTS.TC_ECMWF.HC_RIVER_MAT
-            WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+            WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
               AND ALL_DATA:geometry::STRING IS NOT NULL
             GROUP BY ZONE_ID
         )
     """,
     "shelters": """
-        SELECT MAX(NAME) AS NAME, MAX(SHELTER_TYPE) AS SHELTER_TYPE, MAX(CATEGORY) AS CATEGORY,
+        SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(SHELTER_TYPE) AS SHELTER_TYPE, MAX(CATEGORY) AS CATEGORY,
                MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.SHELTER_RIVER_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
     "wash": """
-        SELECT MAX(NAME) AS NAME, MAX(WASH_TYPE) AS WASH_TYPE, MAX(CATEGORY) AS CATEGORY,
+        SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(WASH_TYPE) AS WASH_TYPE, MAX(CATEGORY) AS CATEGORY,
                MAX(PROBABILITY) AS PROBABILITY,
                MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.WASH_RIVER_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
@@ -1837,7 +1921,7 @@ _FACILITY_RIVER_SQL: dict[str, str] = {
 # Rain facility queries — no STEP_H duplication (confirmed live), plain SELECT.
 _FACILITY_PRECIP_SQL: dict[str, str] = {
     "schools": """
-        SELECT SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SCHOOL_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
@@ -1849,13 +1933,13 @@ _FACILITY_PRECIP_SQL: dict[str, str] = {
           AND ALL_DATA:geometry::STRING IS NOT NULL
     """,
     "shelters": """
-        SELECT NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, SHELTER_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.SHELTER_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
     """,
     "wash": """
-        SELECT NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
+        SELECT ZONE_ID, NAME, WASH_TYPE, CATEGORY, PROBABILITY, LATITUDE, LONGITUDE
         FROM AOTS.TC_ECMWF.WASH_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
           AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
@@ -2045,7 +2129,24 @@ def _fetch_admin_tile(
 # ---------------------------------------------------------------------------
 
 _RASTER_PALETTES: dict[str, dict] = {
-    'PROBABILITY':             {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'linear', 'fixed_max': 1.0},
+    # Real bug found+fixed here (2026-08, user-reported: real river
+    # PROBABILITY values under ~11% all rendered as the same near-white
+    # color, near-invisible against the basemap — most real river risk IS
+    # under 11%, e.g. Bangladesh's own real rp10 average is 0.08%): scale
+    # changed 'linear'->'log'. fixed_max DELIBERATELY dropped (real live
+    # verification caught this: a fixed 1.0/100% ceiling, even under a log
+    # scale, still barely used the ramp for a real country whose actual
+    # max probability never exceeds ~6% — confirmed live for PHL/river/
+    # rp10, real max 5.9%, real min 2.0%, both compress into the bottom
+    # ~2 color buckets of 10 under a fixed-100%-ceiling scale). No
+    # `fixed_max` here means _get_minmax falls through to the same fully
+    # real-data-driven (min AND max) log scaling every OTHER log-scale
+    # prop in this dict already uses (POPULATION, E_POPULATION, etc.) —
+    # consistent with the rest of this dict, and actually uses the full
+    # color ramp for whatever this country's own real probability range
+    # is, instead of reserving most of it for probabilities that never
+    # occur in the real data.
+    'PROBABILITY':             {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
     'POPULATION':              {'colors': ['#add8e6','#8cc5d3','#6bb2c0','#4a9bad','#33849a','#216d87','#165674','#0d3f51','#06283d','#011129'], 'scale': 'log'},
     'E_POPULATION':            {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
     'CHILDREN_TOTAL':          {'colors': ['#e8d5f5','#d0a8ed','#b87de5','#9e52dd','#8429d4','#6b1fb0','#53178c','#3c1068','#260844','#110022'], 'scale': 'log'},
@@ -2074,6 +2175,77 @@ _RASTER_PALETTES: dict[str, dict] = {
     'E_NUM_SCHOOLS':           {'colors': ['#fff7bc','#fee391','#fec44f','#fe9929','#ec7014','#cc4c02','#993404','#662506','#3d1604','#1a0900'], 'scale': 'log'},
     'E_NUM_HCS':               {'colors': ['#edf8fb','#ccece6','#99d8c9','#66c2a4','#41ae76','#238b45','#006d2c','#00441b','#002d12','#001a09'], 'scale': 'log'},
 }
+
+
+# Real combined-exposure raster (2026-08, user-reported): mirrors
+# pages/map_shell_concept.py's own _EXPOSURE_E_PROP_MAP 1:1 — the only 6
+# Exposure props with a genuine raw-count × PROBABILITY relationship (each
+# hazard's own per-threshold DataFrame already merges the SAME
+# country-wide raw base column onto itself via _ensure_mercator_base_one,
+# see ensure_mercator's own docstring, so no extra query is needed to fetch
+# it). Deliberately does NOT cover "In Need" (E_*_IN_NEED) — those are
+# vulnerability-weighted, not a simple raw*probability product, so there is
+# no single real formula to generalize to N simultaneous hazards without
+# further research; combining stays scoped to Probability/Classification/
+# these 6 props until that's actually investigated.
+_COMBINED_EXPOSURE_RAW_COL: dict[str, str] = {
+    "E_POPULATION": "POPULATION",
+    "E_CHILDREN_TOTAL": "CHILDREN_TOTAL",
+    "E_INFANT_POPULATION": "INFANT_POPULATION",
+    "E_SCHOOL_AGE_POPULATION": "SCHOOL_AGE_POPULATION",
+    "E_ADOLESCENT_POPULATION": "ADOLESCENT_POPULATION",
+    "E_BUILT_SURFACE_M2": "BUILT_SURFACE_M2",
+}
+
+# Real bug found+fixed here (2026-08, caught by a scientific-soundness
+# review before shipping): combining ALL active hazards pairwise via the
+# independence formula (1-prod(1-Pi)) is a real overstatement for Wind vs
+# Gust specifically — gust speed is a near-deterministic function of
+# sustained wind at the same place/time (physically the SAME wind field,
+# not an independent hazard), so treating Pwind/Pgust as independent can
+# inflate the "either hits" probability by ~35-40% relative in a realistic
+# case (e.g. Pwind=0.6, Pgust=0.55 correlated in reality vs independence
+# giving ~0.82). pages/map_shell_concept.py's own _hazard_contribution_
+# content already made this exact call for the aggregate-total Hazard
+# Contribution popup — it combines only two super-families (TC vs Flood)
+# under independence, deliberately treating Wind+Gust as ONE family (never
+# combined against each other) because they're not independent events.
+# This tile-level combination now mirrors that same family split: within a
+# family, take max() (the more/less-severe measurement of the SAME
+# underlying event, not two separate risks); ACROSS families (TC vs Flood),
+# still combine via independence — River vs Rain are less tightly coupled
+# than Wind vs Gust (different physical processes, genuinely independent
+# forecast cycles — see this function's own "storm doubles as..." comment)
+# but still not truly independent (same storm's precipitation field drives
+# both), so this remains a labeled approximation, not an exact value — see
+# _buildTileTooltip's own combined-hazard disclosure in maplibre_tiles.js.
+_TC_FAMILY = frozenset({"wind", "gust"})
+_FLOOD_FAMILY = frozenset({"river", "rain"})
+
+
+def _combine_family_aware(merged: pd.DataFrame, used_hazard_names: list[str]) -> np.ndarray:
+    """Real independence-formula combination across the TC/Flood FAMILIES
+    (not across every individual hazard) — see _TC_FAMILY/_FLOOD_FAMILY's
+    own comment for the full "why". Within a family, uses max() across
+    whichever of that family's hazards are active; a family with zero
+    active hazards contributes nothing (not treated as probability 0 in a
+    way that would still multiply in — it's simply absent from the
+    cross-family product).
+    """
+    def _family_max(family: frozenset) -> Optional[np.ndarray]:
+        cols = [f'PROBABILITY_{hz}' for hz in used_hazard_names if hz in family]
+        if not cols:
+            return None
+        arr = merged[cols].apply(pd.to_numeric, errors='coerce').fillna(0.0).to_numpy(dtype=np.float64)
+        return np.max(arr, axis=1)
+
+    p_tc = _family_max(_TC_FAMILY)
+    p_flood = _family_max(_FLOOD_FAMILY)
+    if p_tc is not None and p_flood is not None:
+        return 1.0 - (1.0 - p_tc) * (1.0 - p_flood)
+    if p_tc is not None:
+        return p_tc
+    return p_flood
 
 
 def _hex_to_rgba(h: str) -> tuple[int, int, int, int]:
@@ -2118,13 +2290,53 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             return None
 
         fixed_max = spec.get('fixed_max')
-        if fixed_max is not None:
+        scale = spec.get('scale')
+        # Real bug found+fixed here (2026-08, user-reported: real river
+        # PROBABILITY values under ~11% all rendered as the same near-white
+        # color, making most real risk visually invisible): `scale=='log'`
+        # now takes priority over `fixed_max` for the MIN endpoint — a
+        # log-scale palette needs a real, data-driven positive floor
+        # (log(0) is undefined; anchoring at 0 like the old linear-only
+        # branch below did would break/degenerate the log math entirely).
+        # `fixed_max` (e.g. PROBABILITY's real 1.0 ceiling) still wins for
+        # the MAX endpoint when set, so the scale stays an absolute,
+        # cross-country-comparable 0–100% ceiling — just with its LOW end
+        # spread out logarithmically instead of linearly compressed into
+        # one bucket.
+        if scale == 'log':
+            pos = col_data[col_data > 0]
+            if pos.empty:
+                return None
+            min_val = float(pos.min())
+            max_val = float(fixed_max) if fixed_max is not None else float(col_data.max())
+            if max_val <= min_val:
+                # Real bug found+fixed here (2026-08, user-reported: River's
+                # own "Hazard Probability" exposure view rendered a FULLY
+                # TRANSPARENT tile despite real, confirmed-correct non-zero
+                # data underneath). This used to `return None` (treated as
+                # "no data to paint") whenever every real positive value in
+                # view happened to be IDENTICAL — min==max, zero variance.
+                # That's a real, not-rare case for River specifically: rare
+                # RP tiers (rp10 = a 1-in-10-year event) mean many real tiles
+                # only ever have exactly ONE flooded ensemble member (1/51),
+                # so a small real flood naturally produces a uniform,
+                # zero-variance PROBABILITY distribution — genuinely present
+                # data, not an absence of it. Widen geometrically around the
+                # single shared value (÷3 / ×3) instead of giving up — places
+                # it at the midpoint of the log scale (neither artificially
+                # muted at the bottom nor overstated at the top), same
+                # honest-single-point-distribution treatment regardless of
+                # which log-scale column hits this case.
+                min_val = min_val / 3.0
+                max_val = max_val * 3.0
+            result = (min_val, max_val)
+        elif fixed_max is not None:
             # Linear scale with known ceiling (e.g. probability 0–1).
             # Anchor min at 0 so the full palette is used correctly.
             result = (0.0, float(fixed_max))
-        elif spec.get('scale') == 'rwi':
+        elif scale == 'rwi':
             result = (-1.0, 1.0)
-        elif spec.get('scale') == 'smod':
+        elif scale == 'smod':
             result = (10.0, 30.0)
         else:
             pos = col_data[col_data > 0]
@@ -2137,6 +2349,90 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             result = (min_val, max_val)
         _minmax_cache[cache_key] = (result[0], result[1], time.time())
         return result
+
+
+def _paint_tile_from_color_indices(ws, ss, es, ns, idx, palette_rgba,
+                                     tile_w, tile_dw, merc_tile_s, merc_tile_dh):
+    """Shared pixel-scatter/WEBP-encode tail for MAT-based raster tiles —
+    extracted unchanged from _fetch_raster_tile's own former inline tail
+    (2026-08, to let the new combined-hazard endpoint reuse this exact
+    vectorized projection/scatter code instead of duplicating it).
+
+    `ws`/`ss`/`es`/`ns` (z=14 cell geo-bounds) and `idx` (palette color
+    index) must already be validity- AND finite-filtered and row-aligned
+    (same length/order) by the caller — this function does no value
+    scaling or NaN handling of its own, since single-hazard vs combined/
+    classification tiles each compute `idx` via different logic upstream.
+    """
+    img_arr = np.zeros((512, 512, 4), dtype=np.uint8)
+    if len(idx) == 0:
+        return None
+
+    # Map z=14 cell bounds to pixel coordinates.
+    # X: longitude is linear in Web Mercator — straightforward.
+    # Y: latitude is logarithmic in Web Mercator — must project before scaling
+    #    or tiles drift visibly at low zoom levels.
+    #
+    # Use floor() for both edges then +1 for right/bottom. This guarantees that
+    # adjacent display tiles round shared cell boundaries identically (both
+    # floor to the same pixel), preventing 1-pixel transparent gaps where the
+    # basemap bleeds through. The +1 on px1/py1 ensures minimum 1-pixel coverage
+    # without relying on ceil() which can disagree with the neighbouring tile's
+    # floor() when the boundary falls exactly on a pixel.
+    px0 = np.floor((ws - tile_w) / tile_dw * 512).astype(np.int32)
+    px1 = np.floor((es - tile_w) / tile_dw * 512).astype(np.int32) + 1
+    merc_ns = np.log(np.tan(np.pi / 4 + np.radians(ns) / 2))
+    merc_ss = np.log(np.tan(np.pi / 4 + np.radians(ss) / 2))
+    py0 = np.floor((1.0 - (merc_ns - merc_tile_s) / merc_tile_dh) * 512).astype(np.int32)
+    py1 = np.floor((1.0 - (merc_ss - merc_tile_s) / merc_tile_dh) * 512).astype(np.int32) + 1
+
+    # Vectorized scatter-paint — replaces a Python-level `for i in
+    # range(len(vals))` loop that re-executed per pixel-rectangle on every
+    # cache-miss tile (found to be the single biggest per-request CPU cost
+    # in the 2026-08 performance audit). Numpy's documented behavior for
+    # fancy-index assignment with duplicate indices (`arr[idx] = values`)
+    # applies each value in array order, last one wins — exactly the same
+    # last-row-wins semantics the original loop had at cell-boundary
+    # overlaps, just computed without a per-row Python iteration. Verified
+    # byte-identical to the original loop across 400+ randomized trials
+    # (including boundary-clipped and heavily-overlapping cases) before
+    # being wired in here — see .perf_scratch_test/ for that check.
+    palette_rgba_arr = np.asarray(palette_rgba, dtype=np.uint8)
+    x0v = np.maximum(0, px0)
+    y0v = np.maximum(0, py0)
+    x1v = np.minimum(512, np.maximum(x0v + 1, px1))
+    y1v = np.minimum(512, np.maximum(y0v + 1, py1))
+    wv = np.maximum(0, x1v - x0v)
+    hv = np.maximum(0, y1v - y0v)
+    counts = (wv * hv).astype(np.int64)
+    total = int(counts.sum())
+
+    if total > 0:
+        # cum_start[i] = pixel index where row i's block begins in the flat
+        # `total`-length arrays below — rows are laid out in order, so
+        # duplicate flat_idx writes at shared-boundary overlaps still
+        # resolve last-row-wins.
+        cum_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
+        pixel_offset = np.arange(total) - np.repeat(cum_start, counts)
+        w_per_pixel = np.repeat(wv, counts)
+        dy = pixel_offset // w_per_pixel
+        dx = pixel_offset % w_per_pixel
+        abs_y = np.repeat(y0v, counts) + dy
+        abs_x = np.repeat(x0v, counts) + dx
+        colors = palette_rgba_arr[np.repeat(idx, counts)]
+        flat_idx = abs_y.astype(np.int64) * 512 + abs_x.astype(np.int64)
+        img_arr.reshape(-1, 4)[flat_idx] = colors
+
+    if not img_arr.any():
+        return None
+
+    img = Image.fromarray(img_arr, 'RGBA')
+    buf = io.BytesIO()
+    # Lossless WebP eliminates DCT block compression artifacts at tile boundaries.
+    # Lossy encoding (quality=80) compresses each tile independently, amplifying
+    # any sub-pixel colour difference at edges into a visible seam line.
+    img.save(buf, 'WEBP', lossless=True, method=4)
+    return buf.getvalue()
 
 
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
@@ -2198,9 +2494,6 @@ def _fetch_raster_tile(
         return None
     min_val, max_val = minmax
 
-    # Build RGBA canvas — vectorised numpy using exact tile bounds (no seams).
-    img_arr = np.zeros((512, 512, 4), dtype=np.uint8)
-
     vals = pd.to_numeric(sub[prop], errors='coerce').to_numpy(dtype=np.float64)
     ws   = sub['BW'].to_numpy(dtype=np.float64)
     ss   = sub['BS'].to_numpy(dtype=np.float64)
@@ -2252,72 +2545,497 @@ def _fetch_raster_tile(
         tens = np.floor(vals / 10).astype(np.int32)
         idx = np.clip(tens - 1, 0, n_colors - 1)
 
-    # Map z=14 cell bounds to pixel coordinates.
-    # X: longitude is linear in Web Mercator — straightforward.
-    # Y: latitude is logarithmic in Web Mercator — must project before scaling
-    #    or tiles drift visibly at low zoom levels.
-    #
-    # Use floor() for both edges then +1 for right/bottom. This guarantees that
-    # adjacent display tiles round shared cell boundaries identically (both
-    # floor to the same pixel), preventing 1-pixel transparent gaps where the
-    # basemap bleeds through. The +1 on px1/py1 ensures minimum 1-pixel coverage
-    # without relying on ceil() which can disagree with the neighbouring tile's
-    # floor() when the boundary falls exactly on a pixel.
+    # A second, independent validity stage on top of the earlier `valid`
+    # mask — `t` (the scaled 0-1 value) can still be non-finite in edge
+    # cases the raw-value check didn't catch (e.g. degenerate min==max
+    # divisions). Drop those rows now so _paint_tile_from_color_indices
+    # can assume every row it receives is already finite/paintable.
+    finite = np.isfinite(t)
+    ws, ss, es, ns, idx = ws[finite], ss[finite], es[finite], ns[finite], idx[finite]
+
+    return _paint_tile_from_color_indices(
+        ws, ss, es, ns, idx, palette_rgba,
+        tile_w, tile_dw, _merc_tile_s, _merc_tile_dh,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Combined-hazard raster (real multi-hazard Probability/Classification for
+# Country Analysis, replacing what would otherwise be N stacked single-
+# hazard raw layers — see map_shell_concept.py's own "Hazard Probability"
+# radio / ms-hazard-view-mode SegmentedControl for the UI trigger)
+# ---------------------------------------------------------------------------
+# Deliberately reuses _cache.ensure_mercator/_cache._mercator UNCHANGED —
+# each active hazard is warmed via the exact same call the single-hazard
+# /tiles/raster/... path already makes, so (a) no new SQL, no new cache-key
+# shape is needed, and (b) if the user later switches back to a single
+# active hazard, that hazard's data may already be warm from having been
+# combined here. Only the small per-TILE_ID subset for the ONE requested
+# display tile is ever merged across hazards — never the full per-country
+# DataFrames — keeping this cheap even for large countries.
+
+# Mirrors pages/map_shell_concept.py's WIND/GUST/RIVER/RAIN hex constants —
+# duplicated on purpose (this FastAPI process never imports the Dash page
+# module), same cross-file duplication convention this repo already has for
+# _LAYER_TO_PROP/propMap/ePropMap (see CLAUDE.md's "Property name
+# duplication" note) — keep in sync if those hex values ever change.
+_CLASSIFICATION_HAZARD_RGBA: dict[str, tuple[int, int, int, int]] = {
+    "wind":  (232, 89, 12, 255),   # WIND  #e8590c
+    "gust":  (255, 169, 77, 255),  # GUST  #ffa94d
+    "river": (24, 100, 171, 255),  # RIVER #1864ab
+    "rain":  (77, 171, 247, 255),  # RAIN  #4dabf7
+}
+# Mirrors HAZARD_BOTH_COLOR/HAZARD_TRIPLE_COLOR (same file/reason as above).
+_CLASSIFICATION_BOTH_RGBA = (108, 122, 137, 255)    # #6c7a89
+_CLASSIFICATION_TRIPLE_RGBA = (61, 69, 80, 255)     # #3d4550
+# Matches _DOUBLE_OVERLAP_PATTERN/_TRIPLE_OVERLAP_PATTERN's own CSS
+# (repeating-linear-gradient: 2px rgba(255,255,255,0.3) then 4px transparent,
+# 6px period) — user-confirmed choice (2026-08) to match the existing Hazard
+# Contribution popup's overlap convention exactly, reproduced here as real
+# per-pixel raster blending since this is a WEBP tile, not a DOM element.
+_CLASSIFICATION_STRIPE_PERIOD_PX = 6
+_CLASSIFICATION_STRIPE_WIDTH_PX = 2
+_CLASSIFICATION_STRIPE_BLEND = 0.3
+
+
+def _paint_classification_tile(ws, ss, es, ns, p_matrix, hazard_names, bounds_valid,
+                                 tile_w, tile_dw, merc_tile_s, merc_tile_dh):
+    """Per-tile hazard-classification raster: which active hazard(s) hit
+    each z=14 cell. `p_matrix` is (n_rows, n_hazards) raw per-hazard
+    PROBABILITY values (0 = that hazard didn't hit this cell), `hazard_names`
+    is the column order of `p_matrix` (must line up 1:1).
+
+    1 hazard hit → that hazard's own solid color (_CLASSIFICATION_HAZARD_
+    RGBA). 2 → _CLASSIFICATION_BOTH_RGBA + a single 45-degree white-hatch
+    stripe. 3+ → _CLASSIFICATION_TRIPLE_RGBA + the criss-cross (45- AND
+    135-degree) variant. Cells hit by zero active hazards are skipped
+    entirely (transparent), same "0 = no data" convention every other prop
+    in this file already uses.
+
+    Does its own small geometry projection (cell bounds → pixel rects)
+    rather than reusing _paint_tile_from_color_indices, because striping
+    needs each expanded pixel's own absolute (x, y) canvas position — that
+    helper only ever assigns one flat color per source row.
+    """
+    active_mask = p_matrix > 0
+    hit_count = active_mask.sum(axis=1)
+    valid = bounds_valid & (hit_count >= 1)
+    if not valid.any():
+        return None
+    ws, ss, es, ns = ws[valid], ss[valid], es[valid], ns[valid]
+    active_mask, hit_count = active_mask[valid], hit_count[valid]
+
+    n = len(hit_count)
+    base = np.zeros((n, 4), dtype=np.float64)
+    smode = np.zeros(n, dtype=np.int32)  # 0=solid, 1=single hatch, 2=criss-cross
+
+    single = hit_count == 1
+    if single.any():
+        hazard_colors = np.array([_CLASSIFICATION_HAZARD_RGBA[h] for h in hazard_names], dtype=np.float64)
+        which = np.argmax(active_mask[single], axis=1)
+        base[single] = hazard_colors[which]
+
+    double = hit_count == 2
+    base[double] = np.array(_CLASSIFICATION_BOTH_RGBA, dtype=np.float64)
+    smode[double] = 1
+
+    triple = hit_count >= 3
+    base[triple] = np.array(_CLASSIFICATION_TRIPLE_RGBA, dtype=np.float64)
+    smode[triple] = 2
+
+    # z=14 cell bounds -> pixel rects, same projection as
+    # _paint_tile_from_color_indices (see that function's own comments for
+    # the full "why floor()+1" rationale) — duplicated here rather than
+    # shared since this function needs per-pixel absolute (x, y), not just a
+    # flat per-row color.
     px0 = np.floor((ws - tile_w) / tile_dw * 512).astype(np.int32)
     px1 = np.floor((es - tile_w) / tile_dw * 512).astype(np.int32) + 1
     merc_ns = np.log(np.tan(np.pi / 4 + np.radians(ns) / 2))
     merc_ss = np.log(np.tan(np.pi / 4 + np.radians(ss) / 2))
-    py0 = np.floor((1.0 - (merc_ns - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32)
-    py1 = np.floor((1.0 - (merc_ss - _merc_tile_s) / _merc_tile_dh) * 512).astype(np.int32) + 1
+    py0 = np.floor((1.0 - (merc_ns - merc_tile_s) / merc_tile_dh) * 512).astype(np.int32)
+    py1 = np.floor((1.0 - (merc_ss - merc_tile_s) / merc_tile_dh) * 512).astype(np.int32) + 1
 
-    # Vectorized scatter-paint — replaces a Python-level `for i in
-    # range(len(vals))` loop that re-executed per pixel-rectangle on every
-    # cache-miss tile (found to be the single biggest per-request CPU cost
-    # in the 2026-08 performance audit). Numpy's documented behavior for
-    # fancy-index assignment with duplicate indices (`arr[idx] = values`)
-    # applies each value in array order, last one wins — exactly the same
-    # last-row-wins semantics the original loop had at cell-boundary
-    # overlaps, just computed without a per-row Python iteration. Verified
-    # byte-identical to the original loop across 400+ randomized trials
-    # (including boundary-clipped and heavily-overlapping cases) before
-    # being wired in here — see .perf_scratch_test/ for that check.
-    palette_rgba_arr = np.asarray(palette_rgba, dtype=np.uint8)
     x0v = np.maximum(0, px0)
     y0v = np.maximum(0, py0)
     x1v = np.minimum(512, np.maximum(x0v + 1, px1))
     y1v = np.minimum(512, np.maximum(y0v + 1, py1))
-    finite = np.isfinite(t)
-    wv = np.where(finite, np.maximum(0, x1v - x0v), 0)
-    hv = np.where(finite, np.maximum(0, y1v - y0v), 0)
+    wv = np.maximum(0, x1v - x0v)
+    hv = np.maximum(0, y1v - y0v)
     counts = (wv * hv).astype(np.int64)
     total = int(counts.sum())
 
-    if total > 0:
-        # cum_start[i] = pixel index where row i's block begins in the flat
-        # `total`-length arrays below — rows are laid out in order, so
-        # duplicate flat_idx writes at shared-boundary overlaps still
-        # resolve last-row-wins.
-        cum_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
-        pixel_offset = np.arange(total) - np.repeat(cum_start, counts)
-        w_per_pixel = np.repeat(wv, counts)
-        dy = pixel_offset // w_per_pixel
-        dx = pixel_offset % w_per_pixel
-        abs_y = np.repeat(y0v, counts) + dy
-        abs_x = np.repeat(x0v, counts) + dx
-        colors = palette_rgba_arr[np.repeat(idx, counts)]
-        flat_idx = abs_y.astype(np.int64) * 512 + abs_x.astype(np.int64)
-        img_arr.reshape(-1, 4)[flat_idx] = colors
+    img_arr = np.zeros((512, 512, 4), dtype=np.uint8)
+    if total == 0:
+        return None
+
+    cum_start = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    pixel_offset = np.arange(total) - np.repeat(cum_start, counts)
+    w_per_pixel = np.repeat(wv, counts)
+    dy = pixel_offset // w_per_pixel
+    dx = pixel_offset % w_per_pixel
+    abs_y = (np.repeat(y0v, counts) + dy).astype(np.int64)
+    abs_x = (np.repeat(x0v, counts) + dx).astype(np.int64)
+    row_idx = np.repeat(np.arange(n), counts)
+    base_px = base[row_idx]
+    smode_px = smode[row_idx]
+
+    period, width, blend = (_CLASSIFICATION_STRIPE_PERIOD_PX, _CLASSIFICATION_STRIPE_WIDTH_PX,
+                             _CLASSIFICATION_STRIPE_BLEND)
+    pos1 = np.mod(abs_x + abs_y, period)   # 45-degree band
+    pos2 = np.mod(abs_x - abs_y, period)   # 135-degree band (criss-cross only)
+    hit1 = (pos1 < width) & (smode_px >= 1)
+    hit2 = (pos2 < width) & (smode_px >= 2)
+
+    white = np.array([255.0, 255.0, 255.0, 255.0])
+    colors = base_px.copy()
+    colors[hit1] = colors[hit1] * (1 - blend) + white * blend
+    colors[hit2] = colors[hit2] * (1 - blend) + white * blend
+    colors[:, 3] = 255.0
+    colors = np.clip(colors, 0, 255).astype(np.uint8)
+
+    flat_idx = abs_y * 512 + abs_x
+    img_arr.reshape(-1, 4)[flat_idx] = colors
 
     if not img_arr.any():
         return None
 
     img = Image.fromarray(img_arr, 'RGBA')
     buf = io.BytesIO()
-    # Lossless WebP eliminates DCT block compression artifacts at tile boundaries.
-    # Lossy encoding (quality=80) compresses each tile independently, amplifying
-    # any sub-pixel colour difference at edges into a visible seam line.
     img.save(buf, 'WEBP', lossless=True, method=4)
     return buf.getvalue()
+
+
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
+def _fetch_combined_raster_tile(
+    country: str, storm: str, mode: str,
+    z: int, x: int, y: int,
+    wind_on: bool, wind_forecast_date: Optional[str], wind_threshold: int,
+    gust_on: bool, gust_threshold: Optional[int],
+    river_on: bool, river_forecast_date: Optional[str], rp_tier: Optional[str], river_window: Optional[int],
+    rain_on: bool, rain_forecast_date: Optional[str], threshold_mm: Optional[float], window_h: Optional[int],
+    prop: Optional[str] = None,
+) -> bytes | None:
+    """Real combined-hazard raster tile — `mode="probability"` blends every
+    simultaneously-active hazard's raw PROBABILITY into one independence-
+    formula value per cell; `mode="classification"` colors each cell by
+    WHICH hazard(s) hit it (see _paint_classification_tile); `mode="exposure"`
+    (real feature added here per explicit user request — Population/Children/
+    Built-up used to render as N stacked, separately-weighted single-hazard
+    rasters when 2+ hazards were active, visually looking like a doubled/
+    muddied overlay) requires `prop` to be one of _COMBINED_EXPOSURE_RAW_COL's
+    keys and colors each cell by that raw count × the SAME combined
+    probability the "probability" branch computes — i.e. real expected
+    impact under P(any active hazard hits this cell), not N separate
+    per-hazard expected-impact values stacked on top of each other.
+
+    `storm` doubles as the placeholder "storm" cache-key component for
+    river/rain (they have no real storm concept — see _hazardUrlParts's own
+    `placeholderStorm` in maplibre_tiles.js, same convention). Each hazard
+    family resolves its OWN forecast_date independently (river/rain are NOT
+    storm-scoped and can genuinely lag wind's own cycle — see
+    get_tile_impact_totals_by_threshold's own docstring in
+    snowflake_utils.py) rather than sharing one path-segment value — a real
+    bug caught before this endpoint ever shipped: an earlier draft used one
+    shared {forecast_date} for all 4 hazards.
+
+    Query-param shape otherwise mirrors ms-tile-config-store's own
+    per-hazard fields 1:1 (pages/map_shell_concept.py's
+    _build_hazard_tile_config), so the frontend URL-builder
+    (applyCombinedHazardLayer in maplibre_tiles.js) needs zero new
+    Dash-side state beyond what already exists.
+    """
+    active: list[tuple[str, dict]] = []
+    if wind_on and wind_forecast_date:
+        active.append(("wind", dict(forecast_date=wind_forecast_date, wind_threshold=wind_threshold,
+                                     gust_threshold=None, rp_tier=None, threshold_mm=None, window_h=None)))
+    if gust_on and wind_forecast_date:
+        active.append(("gust", dict(forecast_date=wind_forecast_date, wind_threshold=wind_threshold,
+                                     gust_threshold=gust_threshold, rp_tier=None, threshold_mm=None, window_h=None)))
+    if river_on and river_forecast_date:
+        # Real bug found+fixed here (2026-08, user-reported: Classification
+        # mode "doesn't react at all to the day accumulation slider — it
+        # only shows the 7d accumulation, which is misleading"). This used
+        # to hardcode window_h=None here regardless of the caller's real
+        # river_window — _hazard_variant/ensure_mercator then silently fell
+        # back to _RIVER_WINDOW_DEFAULT (168h/the full horizon) every time,
+        # exactly matching the reported symptom. Rain's own entry right
+        # below already correctly threads its real window_h; river's own
+        # never did, in this specific combined-raster path (the single-
+        # hazard path — _build_hazard_tile_config's own tile_prop/river_window
+        # fields — was already fixed earlier this session; this combined/
+        # classification path is a separate code path that needed the same
+        # fix independently).
+        active.append(("river", dict(forecast_date=river_forecast_date, wind_threshold=wind_threshold,
+                                      gust_threshold=None, rp_tier=rp_tier, threshold_mm=None, window_h=river_window)))
+    if rain_on and rain_forecast_date:
+        active.append(("rain", dict(forecast_date=rain_forecast_date, wind_threshold=wind_threshold,
+                                     gust_threshold=None, rp_tier=None, threshold_mm=threshold_mm, window_h=window_h)))
+    if not active:
+        return None
+
+    def _ensure_one(item: tuple[str, dict]):
+        hz, p = item
+        _cache.ensure_mercator(country, storm, p["forecast_date"], p["wind_threshold"], hz,
+                               p["gust_threshold"], p["rp_tier"], p["threshold_mm"], p["window_h"])
+        variant = _hazard_variant(hz, p["wind_threshold"], p["gust_threshold"],
+                                    p["rp_tier"], p["threshold_mm"], p["window_h"])
+        key = (country, storm, p["forecast_date"]) + variant
+        return hz, _cache._mercator.get(key), key
+
+    # Independent per-hazard Snowflake round-trips (same reasoning as
+    # ensure_mercator's own multi-country fan-out above) — safe to run
+    # concurrently via the shared executor rather than N sequential loads.
+    if len(active) > 1:
+        results = list(_SHARED_EXECUTOR.map(_ensure_one, active))
+    else:
+        results = [_ensure_one(item) for item in active]
+    hazard_dfs = {hz: df for hz, df, _key in results if df is not None and not df.empty}
+    hazard_keys = {hz: key for hz, df, key in results if df is not None and not df.empty}
+    if not hazard_dfs:
+        return None
+
+    like_pat = _quadkey_like_pattern(z, x, y)
+    prefix = like_pat[:-1] if like_pat.endswith('%') else None
+
+    def _tile_mask(df: pd.DataFrame):
+        if prefix is not None:
+            return df['TILE_ID'].str.startswith(prefix, na=False)
+        return df['TILE_ID'] == like_pat
+
+    # Merge ONLY this one display tile's own rows across hazards (never the
+    # full per-country DataFrames) — cheap even for large countries. Bounds
+    # (BW/BS/BE/BN) are identical for a given TILE_ID across every hazard
+    # (all merge onto the SAME cached base df, see ensure_mercator's own
+    # _ensure_mercator_base_one call) — combine_first backfills bounds from
+    # whichever hazard's row has them when an outer-merge leaves a gap.
+    merged = None
+    used_hazard_names: list[str] = []
+    for hz, df in hazard_dfs.items():
+        if 'PROBABILITY' not in df.columns:
+            continue
+        sub = df.loc[_tile_mask(df), ['TILE_ID', 'BW', 'BS', 'BE', 'BN', 'PROBABILITY']].copy()
+        if sub.empty:
+            continue
+        sub = sub.rename(columns={'PROBABILITY': f'PROBABILITY_{hz}'})
+        used_hazard_names.append(hz)
+        if merged is None:
+            merged = sub
+            continue
+        merged = merged.merge(sub, on='TILE_ID', how='outer', suffixes=('', '_dup'))
+        for c in ('BW', 'BS', 'BE', 'BN'):
+            dup = c + '_dup'
+            if dup in merged.columns:
+                merged[c] = merged[c].combine_first(merged[dup])
+                merged = merged.drop(columns=[dup])
+    if merged is None or merged.empty or not used_hazard_names:
+        return None
+
+    prob_cols = [f'PROBABILITY_{hz}' for hz in used_hazard_names]
+    p_matrix = merged[prob_cols].apply(pd.to_numeric, errors='coerce').fillna(0.0).to_numpy(dtype=np.float64)
+
+    raw_col = _COMBINED_EXPOSURE_RAW_COL.get(prop or "")
+    if mode == "exposure" and raw_col:
+        # The raw base column (POPULATION/CHILDREN_TOTAL/...) is identical
+        # for a given TILE_ID across every hazard — each hazard's own
+        # per-threshold DataFrame already carries it merged in from the SAME
+        # cached country-wide base df (_ensure_mercator_base_one). Pull it
+        # from whichever active hazard has it, once — no extra query.
+        for hz in used_hazard_names:
+            src = hazard_dfs[hz]
+            if raw_col not in src.columns:
+                continue
+            raw_sub = src.loc[_tile_mask(src), ['TILE_ID', raw_col]].drop_duplicates('TILE_ID')
+            merged = merged.merge(raw_sub, on='TILE_ID', how='left')
+            break
+
+    tile_w, tile_s, tile_e, tile_n = _tile_bounds(z, x, y)
+    tile_dw = tile_e - tile_w
+    merc_tile_n = math.log(math.tan(math.pi / 4 + math.radians(tile_n) / 2))
+    merc_tile_s = math.log(math.tan(math.pi / 4 + math.radians(tile_s) / 2))
+    merc_tile_dh = merc_tile_n - merc_tile_s
+
+    ws = merged['BW'].to_numpy(dtype=np.float64)
+    ss = merged['BS'].to_numpy(dtype=np.float64)
+    es = merged['BE'].to_numpy(dtype=np.float64)
+    ns = merged['BN'].to_numpy(dtype=np.float64)
+    bounds_valid = np.isfinite(ws) & np.isfinite(ss) & np.isfinite(es) & np.isfinite(ns)
+
+    if mode == "classification":
+        return _paint_classification_tile(ws, ss, es, ns, p_matrix, used_hazard_names, bounds_valid,
+                                            tile_w, tile_dw, merc_tile_s, merc_tile_dh)
+
+    # Family-aware combination — see _combine_family_aware/_TC_FAMILY's own
+    # docstring for the full "why" (max() within TC={wind,gust} and
+    # Flood={river,rain}, independence formula only ACROSS those two
+    # families). Shared by BOTH mode=="probability" (color the probability
+    # itself) and mode=="exposure" (color raw_count × this same combined
+    # probability).
+    p_combined_full = _combine_family_aware(merged, used_hazard_names)
+
+    if mode == "exposure" and raw_col and raw_col in merged.columns:
+        raw_vals = pd.to_numeric(merged[raw_col], errors='coerce').to_numpy(dtype=np.float64)
+        combined_vals = raw_vals * p_combined_full
+        # Same "0 = no data, transparent" convention every single-hazard E_*
+        # raster already uses (_fetch_raster_tile's own `vals != 0` branch).
+        valid = bounds_valid & np.isfinite(combined_vals) & (combined_vals != 0)
+        if not valid.any():
+            return None
+        v_ws, v_ss, v_es, v_ns, vals = ws[valid], ss[valid], es[valid], ns[valid], combined_vals[valid]
+
+        spec = _RASTER_PALETTES[prop]
+        palette_rgba = _PALETTE_RGBA[prop]
+        n_colors = len(palette_rgba)
+        if len(used_hazard_names) == 1:
+            # Real bug found+fixed here (2026-08, backend correctness
+            # review): nothing server-side previously stopped mode=
+            # "exposure" from being called with only ONE active hazard —
+            # client-side gating (see this function's own docstring) is the
+            # only thing that normally routes a single hazard to the plain
+            # /tiles/raster/... endpoint instead. In that case combined_vals
+            # is numerically identical to that hazard's own E_* value, but
+            # scaling against raw_col's min/max (below) would paint it a
+            # visibly different, generally lighter color than /tiles/
+            # raster/'s own rendering of the exact same data (raw's own max
+            # is always >= E_*'s own max). Use the SAME E_*-column min/max
+            # _fetch_raster_tile itself uses for a single hazard, so this
+            # endpoint is pixel-consistent with the single-hazard one
+            # whenever it's ever hit with just one active hazard.
+            minmax = _get_minmax(hazard_keys[used_hazard_names[0]], prop)
+        else:
+            # Real bug found+fixed here (2026-08, caught via live pixel-level
+            # verification before shipping): this used to enclose EACH
+            # active hazard's own separately-cached E_* min/max and take the
+            # union range across them. Two DIFFERENT hazards' own E_* ranges
+            # are NOT comparable — river's own country-wide E_population max
+            # can be far smaller than rain's simply because river's own
+            # highest PROBABILITY anywhere is lower, not because the
+            # underlying population is smaller — mixing those two
+            # independently-scaled ranges produced a genuinely non-monotonic
+            # result verified live: a combined cell mapped to a LOWER color
+            # bucket than either individual hazard's own rendering of the
+            # exact same tile, despite combined_E being mathematically >=
+            # max(E_a, E_b) always (p_combined >= max(p_a, p_b) for any
+            # probabilities in [0,1]). Fixed by scaling against the RAW
+            # column's own min/max instead (raw_col, e.g. POPULATION not
+            # E_POPULATION) — hazard-independent (every active hazard's df
+            # already carries the exact same country-wide raw base column,
+            # see _ensure_mercator_base_one), so this is a single self-
+            # consistent range no matter which/how many hazards are
+            # combined, and combined_E <= raw always holds, so this range
+            # can never under- or over-shoot in a way that breaks
+            # monotonicity again.
+            minmax = None
+            for hz in used_hazard_names:
+                minmax = _get_minmax(hazard_keys[hz], raw_col)
+                if minmax is not None:
+                    break
+        if minmax is not None:
+            min_val, max_val = minmax
+        else:
+            min_val, max_val = float(np.min(vals)), float(np.max(vals))
+        if max_val <= min_val:
+            max_val = min_val + 1.0
+
+        # Real bug found+fixed here (2026-08, backend correctness review):
+        # this used to hardcode the log-scale formula regardless of
+        # spec['scale'] — harmless today since every _COMBINED_EXPOSURE_
+        # RAW_COL prop happens to be registered 'log', but a silent-wrong-
+        # color risk if any of them is ever retuned to 'linear'/'rwi'. Now
+        # mirrors _fetch_raster_tile's own scale dispatch exactly.
+        if spec['scale'] == 'log':
+            safe = np.where(vals > 0, vals, np.nan)
+            log_range = math.log(max_val) - math.log(min_val) if max_val != min_val and min_val > 0 else 1.0
+            t = (np.log(safe) - math.log(min_val)) / log_range if min_val > 0 else \
+                (vals - min_val) / (max_val - min_val)
+        elif spec['scale'] == 'rwi':
+            t = (vals - (-1.0)) / 2.0
+        else:
+            t = (vals - min_val) / (max_val - min_val) if max_val != min_val else np.zeros_like(vals)
+        t = np.clip(t, 0.0, 1.0)
+        idx = np.clip(np.floor(t * (n_colors - 1)).astype(np.int32), 0, n_colors - 1)
+        finite = np.isfinite(t)
+        v_ws, v_ss, v_es, v_ns, idx = v_ws[finite], v_ss[finite], v_es[finite], v_ns[finite], idx[finite]
+        if len(idx) == 0:
+            return None
+        return _paint_tile_from_color_indices(v_ws, v_ss, v_es, v_ns, idx, palette_rgba,
+                                                tile_w, tile_dw, merc_tile_s, merc_tile_dh)
+
+    # mode == "probability" (default, and exposure's own fallback when
+    # `prop` isn't a real _COMBINED_EXPOSURE_RAW_COL key).
+    valid = bounds_valid & np.isfinite(p_combined_full) & (p_combined_full > 0)
+    if not valid.any():
+        return None
+    ws, ss, es, ns, p_combined = ws[valid], ss[valid], es[valid], ns[valid], p_combined_full[valid]
+
+    spec = _RASTER_PALETTES['PROBABILITY']
+    palette_rgba = _PALETTE_RGBA['PROBABILITY']
+    n_colors = len(palette_rgba)
+    # Real bug found+fixed here (2026-08, user-reported: real low
+    # probabilities "seem to not appear" — confirmed live: most real river
+    # PROBABILITY data is well under 11%, e.g. Bangladesh's own rp10
+    # average is 0.08%): this used to hardcode a linear 0-100% scale
+    # regardless of _RASTER_PALETTES['PROBABILITY']'s own scale (now
+    # 'log' — see that dict's own comment).
+    #
+    # Real bug found+fixed here (2026-08, follow-up review): an EARLIER
+    # version of this fix picked ONE arbitrary active hazard's own
+    # country-wide PROBABILITY min/max via _get_minmax — but `p_combined`
+    # is the family-aware COMBINED value (_combine_family_aware), which is
+    # mathematically >= any single contributing hazard's own value for a
+    # genuinely multi-hazard cell. Scaling against one hazard's own
+    # (smaller) range clipped every well-differentiated high-combined-risk
+    # cell to the same saturated top color (t clipped to 1.0), and could
+    # make the legend's own displayed max understate what's actually
+    # painted. Same class of bug the mode=="exposure" branch above already
+    # fixed via a hazard-independent raw_col — no direct equivalent exists
+    # for probability itself, so instead this derives a real bound for the
+    # COMBINED quantity: apply the SAME family-max/cross-family-
+    # independence formula _combine_family_aware uses per-cell, but to
+    # each family's own country-wide PROBABILITY min/max (from
+    # _get_minmax) instead of per-cell values — max_val this way is a
+    # real, provable upper bound no true combined value can exceed
+    # (1-(1-max_tc)(1-max_flood) >= any real p_tc/p_flood combination), so
+    # t can never wrongly clip a genuinely-differentiated high cell to the
+    # single top bucket.
+    def _family_probability_range(family):
+        mins = [mm[0] for hz in used_hazard_names if hz in family
+                 for mm in [_get_minmax(hazard_keys[hz], 'PROBABILITY')] if mm is not None]
+        maxs = [mm[1] for hz in used_hazard_names if hz in family
+                 for mm in [_get_minmax(hazard_keys[hz], 'PROBABILITY')] if mm is not None]
+        if not mins:
+            return None
+        return max(mins), max(maxs)  # family-combine is max() — mirrors _combine_family_aware exactly
+
+    tc_range = _family_probability_range(_TC_FAMILY)
+    flood_range = _family_probability_range(_FLOOD_FAMILY)
+    if tc_range is not None and flood_range is not None:
+        min_val = 1.0 - (1.0 - tc_range[0]) * (1.0 - flood_range[0])
+        max_val = 1.0 - (1.0 - tc_range[1]) * (1.0 - flood_range[1])
+    elif tc_range is not None:
+        min_val, max_val = tc_range
+    elif flood_range is not None:
+        min_val, max_val = flood_range
+    else:
+        min_val, max_val = float(np.min(p_combined)), float(np.max(p_combined))
+    if max_val <= min_val:
+        max_val = min_val + 1e-6
+
+    if spec['scale'] == 'log':
+        safe = np.where(p_combined > 0, p_combined, np.nan)
+        log_range = math.log(max_val) - math.log(min_val) if max_val != min_val and min_val > 0 else 1.0
+        t = (np.log(safe) - math.log(min_val)) / log_range if min_val > 0 else \
+            (p_combined - min_val) / (max_val - min_val)
+    else:
+        t = (p_combined - min_val) / (max_val - min_val) if max_val != min_val else np.zeros_like(p_combined)
+    t = np.clip(t, 0.0, 1.0)
+    idx = np.clip(np.floor(t * (n_colors - 1)).astype(np.int32), 0, n_colors - 1)
+    finite = np.isfinite(t)
+    ws, ss, es, ns, idx = ws[finite], ss[finite], es[finite], ns[finite], idx[finite]
+    if len(idx) == 0:
+        return None
+
+    return _paint_tile_from_color_indices(ws, ss, es, ns, idx, palette_rgba,
+                                            tile_w, tile_dw, merc_tile_s, merc_tile_dh)
 
 
 # ---------------------------------------------------------------------------
@@ -3056,8 +3774,99 @@ _RIVER_PROB_ENSEMBLE_SIZE = 51
 # — same rationale as precip's own 4h TTL, reused directly.
 _RIVER_EXTENT_TTL = _PRECIP_RAW_TTL
 
-# See module comment above ("STEP_H CHOICE").
-_RIVER_EXTENT_STEP_H = 24
+# Real feature added here (2026-08, user-requested): the raw river-extent
+# layer used to hardcode a single lead time (T+24h — see this module's own
+# "STEP_H CHOICE" comment above, now superseded), which turned out to be
+# the ONE lead time with genuinely zero real flood signal for every country
+# this app has ever onboarded — confirmed live by downloading the actual
+# parquet directly and checking every step_h: PHL/BGD both show 0 rows at
+# 24h, but real (for BGD, massive — 1.2M+ rows by day 7) coverage at every
+# later lead time. River flooding is slow-onset (unlike wind), so a single
+# fixed early lead time was never going to work for every country/event.
+# Fixed the same way Rainfall already handles its own 2D (window × depth)
+# real data shape — a real, user-selectable lead-time control
+# (ms-river-window, mirroring ms-rain-window's exact SegmentedControl
+# pattern) instead of one hardcoded constant. 72h is the default: the
+# shortest lead time Ahead-of-the-Storm-DATAPIPELINE's own downstream
+# impact pipeline treats as meaningful at all (confirmed live: its own
+# ingested FILE_PATHs for river never go below 72h — 24h/48h are never
+# even ingested downstream), and has real, decent coverage for both
+# onboarded countries (7,442 PHL / 115,776 BGD z14-pixel rows at 72h,
+# vs 0/0 at the old 24h default).
+#
+# ACCUMULATION SEMANTICS (2026-08, follow-up fix, user-requested): the
+# control above was first built as a single-day SNAPSHOT picker — "step_h"
+# selected the ONE exact lead time to render (`step_h_col == step_h` below),
+# discarding every other real day's flood signal. That doesn't match how a
+# user actually reads a "1d/2d/3d.../7d" picker (nor how Rainfall's own
+# window control behaves — real T+0->T+window ACCUMULATED mm, monotonically
+# non-decreasing as the window grows). River's source rows have no built-in
+# cumulative field to lean on the way precip's tp Zarr does (tp is already
+# stored cumulative-from-T+0 upstream — see _PrecipRawCache's own "shape
+# (51, 25, 481, 1440)... mm accumulated from T+0" comment) — each row here is
+# a genuinely discrete "member M's RP-tier extent covers this pixel AT lead
+# time step_h" fact, so accumulation has to be built explicitly: a pixel/
+# member now counts as flooded within a selected window if it floods at ANY
+# real lead time from 24h up through the selected step_h (`step_h_col <=
+# step_h`, see the row-group loop in ensure_river_extent below) — the
+# existing per-tile bitmask OR-merge already implements a set union with
+# ZERO other code changes needed, since OR-ing bits from multiple qualifying
+# days into the same running tile_bits dict IS a union by construction.
+# Selecting "7d" is therefore now the full real 7-day flood footprint (every
+# member that floods a pixel on ANY of the 7 real days), monotonically
+# non-decreasing as the window grows — matching Rainfall's own accumulation
+# behavior conceptually, even though the underlying math differs (boolean
+# set union of per-day member sets here, vs summed mm there).
+#
+# GRANULARITY IS DAILY-ONLY (24h steps), UNLIKE PRECIP'S 6H: this is a real
+# data-cadence difference, not an arbitrary omission — GloFAS's own river
+# discharge/extent product is emitted at daily lead times only (this list,
+# [24, 48, ..., 168], IS GloFAS's real native step cadence — see this
+# module's own "STEP_H CHOICE" comment above), whereas ECMWF's precipitation
+# forecast (MET_FORECASTS/tp) is emitted 6-hourly, which is what lets
+# Rainfall's own window control offer a real 6h option. There is no real 6h
+# (or 12h) river-extent data anywhere upstream to accumulate even if this
+# control offered it.
+#
+# SCOPE NOTE (2026-08): this accumulation fix applies ONLY to this raw,
+# country/storm-independent GLOBAL preview layer. The real per-country
+# IMPACT numbers (population/schools/HCs/shelters/WASH — MERCATOR_TILE_
+# RIVER_MAT/ADMIN_ALL_RIVER_MAT/the 4 river facility tables, see those
+# queries' own "River-flood sibling queries" comment above) are a SEPARATE
+# code path that already has its own real STEP_H column per row but
+# currently MAX()-aggregates across EVERY available STEP_H with no window
+# filter at all — i.e. those numbers always mean "worst case across the
+# entire forecast horizon," not "worst case within the selected window,"
+# and have no window control exposed in Country Analysis mode at all. This
+# is a real, known inconsistency versus this raw layer (and versus Rain,
+# which is correctly windowed on both the raw AND impact-number sides) —
+# left as an explicit, documented, deliberately out-of-scope follow-up per
+# a direct user scoping decision, not an oversight. See
+# docs/hazard_accumulation_windows.md for the full writeup.
+#
+# UI EXPOSES A SUBSET (2026-08-07, user-requested): pages/map_shell_concept.py's
+# own ms-river-window control used to offer all 7 of these as separate
+# buttons (mirroring this list exactly) — trimmed to a 4-option subset
+# (24/72/120/168h) in that file's own _RIVER_EXTENT_STEP_HOURS, since 7
+# near-identical "Nd" pills weren't adding real decision value. This list
+# stays the full 7-value set — it documents the real underlying data
+# cadence, not just what the UI currently exposes — and `step_h` here is
+# unvalidated (any int works), so 48/96/144 remain reachable via a direct
+# API call even though no UI button requests them anymore.
+_RIVER_EXTENT_STEP_HOURS = [24, 48, 72, 96, 120, 144, 168]
+_RIVER_EXTENT_DEFAULT_STEP_H = 72
+
+# Real feature added here (2026-08, multi-agent audit): the 4-value UI
+# subset (matches pages/map_shell_concept.py's own ms-river-window
+# _RIVER_EXTENT_STEP_HOURS exactly, per that file's own "UI-only subset"
+# comment) — used ONLY by _prewarm_raw_caches' background loop below, to
+# proactively warm every real window a user could actually select, not
+# just this cache's own 72h default. Deliberately a subset of the full
+# 7-value _RIVER_EXTENT_STEP_HOURS above (not that full list) — 48h/96h/
+# 144h have no UI button that could ever request them, so warming them in
+# the background would be pure wasted Snowflake/stage I/O for data no real
+# request will ever need.
+_PREWARM_RIVER_WINDOWS_H = [24, 72, 120, 168]
 
 # See module comment above ("RESOLUTION CHOICE") — GloFAS's own native
 # 0.05deg domain (-60..60 lat x -180..180 lon), rendered at real zoom-14 Web
@@ -3112,14 +3921,45 @@ _LATEST_3_RIVER_EXTENT_SQL = """
 # tile / 51). Deliberately a different hue family from the OLD (legacy)
 # river-probability teal ramp and from precip's purple ramp, so all three
 # stay visually distinguishable.
+#
+# Real bug found+fixed here (2026-08, user-reported: "2% seems to not
+# appear" — caught while live-verifying the step_h fix above, on a REAL
+# confirmed-nonzero row that still rendered as the transparent fallback):
+# bucket 0 (below 10% member-agreement) used to be fully transparent
+# (0,0,0,0) — genuinely, visually IDENTICAL to a cell with zero real
+# signal at all (the `probs > 0` filter already excludes true zeros
+# upstream in _fetch_river_extent_raster_tile; this bucket only ever
+# received REAL, already-filtered-nonzero probabilities, e.g. a real
+# member_count=1/51=1.96% cell). A single ensemble member predicting
+# flooding here is real, meaningful (if low-confidence) signal that was
+# being silently rendered as indistinguishable from "no flood risk at
+# all" — the exact same problem confirmed separately in the Probability
+# (Hazard Probability) exposure raster's own fixed linear 0-100% scale.
+# Now a faint but genuinely visible version of the same lightest hue,
+# rather than literally invisible.
+#
+# Real bug found+fixed here too (2026-08, user-reported, same underlying
+# class of issue as the fix above, one step further): alpha=40 (bucket 0,
+# <10% member-agreement — where a real, confirmed-correct single-member
+# 1/51≈2% signal lands) is STILL functionally near-invisible against a
+# light basemap — blends to within a few RGB values of pure white. Live-
+# verified this wasn't a data/computation bug: a real BGD tile confirmed
+# byte-for-byte matching probability (0.0196) in both this raw cache AND
+# MERCATOR_TILE_RIVER_MAT's own real E_population layer, yet only the
+# solid-colored E_population tile was visually noticeable, not this one.
+# Every alpha below scaled up by closing the gap to full opacity (255) by
+# ~30% at each tier — meaningfully lifts the faint low end (40->105, closer
+# to bucket 1's own old value) while barely touching the already-solid top
+# end (245->248), preserving the low-to-high visual progression rather than
+# flattening every tier to the same near-opaque look.
 _RIVER_EXTENT_PROB_BREAKS = [0.10, 0.25, 0.40, 0.60, 0.80]
 _RIVER_EXTENT_PROB_COLORS: list[tuple[int, int, int, int]] = [
-    (0,   0,   0,   0),
-    (178, 235, 242, 90),
-    (77,  208, 225, 140),
-    (0,   172, 193, 180),
-    (0,   105, 146, 215),
-    (1,   50,  96,  245),
+    (178, 235, 242, 105),
+    (178, 235, 242, 140),
+    (77,  208, 225, 175),
+    (0,   172, 193, 203),
+    (0,   105, 146, 227),
+    (1,   50,  96,  248),
 ]
 
 class _RiverExtentCache:
@@ -3147,8 +3987,11 @@ class _RiverExtentCache:
     """
 
     def __init__(self) -> None:
-        self._grids: dict[tuple[str, str], dict] = {}       # (forecast_time, rp_tier) -> grid entry
-        self._loaded_at: dict[tuple[str, str], float] = {}   # (forecast_time, rp_tier) -> epoch seconds
+        # Real feature added here (2026-08): step_h joined the cache key
+        # alongside (forecast_time, rp_tier) — see _RIVER_EXTENT_STEP_HOURS'
+        # own comment for why a single hardcoded lead time never worked.
+        self._grids: dict[tuple[str, str, int], dict] = {}       # (forecast_time, rp_tier, step_h) -> grid entry
+        self._loaded_at: dict[tuple[str, str, int], float] = {}   # (forecast_time, rp_tier, step_h) -> epoch seconds
         self._load_lock = threading.Lock()
         self._latest_lock = threading.Lock()
         self._latest: dict[str, tuple[str, str, float]] = {}  # rp_tier -> (forecast_time, stage_path, resolved_at)
@@ -3177,19 +4020,28 @@ class _RiverExtentCache:
         return resolved[0] if resolved else None
 
     def ensure_river_extent(self, forecast_time: Optional[str],
-                              rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> Optional[str]:
+                              rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER,
+                              step_h: int = _RIVER_EXTENT_DEFAULT_STEP_H) -> Optional[str]:
         """Ensure the sparse zoom-14-tile flood-extent table for
-        (`forecast_time`, `rp_tier`) is loaded in memory.
+        (`forecast_time`, `rp_tier`, `step_h`) is loaded in memory.
 
         `forecast_time` of None/""/"latest" always resolves to the current
         latest cycle FOR THAT TIER (different tiers can, in principle, have
         different latest dates, though in practice they land together).
         `rp_tier` defaults to rp10 (the slider's own default) for backward
         compatibility with every existing caller that doesn't pass it yet.
-        Returns the resolved forecast_time string actually loaded (a plain
-        date like "2026-07-14" — this data is keyed by DATE, unlike dis24's
-        full datetime FORECAST_TIME), or None if no data exists at all for
-        this (forecast_time, rp_tier) combination, or globally for this tier.
+        `step_h` defaults to _RIVER_EXTENT_DEFAULT_STEP_H (72h) — one of
+        _RIVER_EXTENT_STEP_HOURS, the CUMULATIVE lead-time window to render:
+        a member counts as flooding a pixel if it does so at ANY real lead
+        time from 24h up through `step_h` (real union, not a single-day
+        snapshot — see that constant's own "ACCUMULATION SEMANTICS" comment
+        for the full rationale/history). Returns the resolved forecast_time
+        string actually loaded (a
+        plain date like "2026-07-14" — this data is keyed by DATE, unlike
+        dis24's full datetime FORECAST_TIME), or None if no data exists at
+        all for this (forecast_time, rp_tier) combination, or globally for
+        this tier — a real step_h with zero rows for the requested area
+        still resolves (returns the date), just renders an empty tile.
         """
         latest = self._resolve_latest(rp_tier)
         if latest is None:
@@ -3207,7 +4059,7 @@ class _RiverExtentCache:
         # EVERY single call for a non-"latest" forecast_time (e.g. every
         # hover over a fixed historical/demo date), even when the table
         # was already fully loaded and fresh in memory.
-        key = (forecast_time, rp_tier)
+        key = (forecast_time, rp_tier, step_h)
         if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
             return forecast_time
 
@@ -3259,15 +4111,32 @@ class _RiverExtentCache:
                         rg_idx, columns=["pixel_lat", "pixel_lon", "member", "step_h"]
                     )
                     rows_scanned += tbl.num_rows
-                    step_h = tbl.column("step_h").to_numpy(zero_copy_only=False)
-                    step_mask = step_h == _RIVER_EXTENT_STEP_H
+                    # Real feature added here (2026-08): step_h_col (this
+                    # row group's own per-row lead-time values) is compared
+                    # against the caller-selected `step_h` PARAMETER now,
+                    # not a hardcoded module constant — named distinctly to
+                    # avoid shadowing that parameter.
+                    #
+                    # Real fix (2026-08, follow-up): `<=`, not `==` — this is
+                    # now a CUMULATIVE window (every real lead time from 24h
+                    # up through the selected step_h), not a single-day
+                    # snapshot. See _RIVER_EXTENT_STEP_HOURS' own "ACCUMULATION
+                    # SEMANTICS" comment above for the full rationale. No
+                    # other change is needed for this to be a real set UNION
+                    # across the qualifying days: rows from multiple days now
+                    # flow into the SAME per-batch/per-tile bitmask OR-merge
+                    # below, and OR-ing member bits from day 1 and day 3 into
+                    # the same tile's bitmask already IS "member flooded this
+                    # tile on day 1 OR day 3" — exactly the desired union.
+                    step_h_col = tbl.column("step_h").to_numpy(zero_copy_only=False)
+                    step_mask = step_h_col <= step_h
                     if not step_mask.any():
                         del tbl
                         continue
                     lat = tbl.column("pixel_lat").to_numpy(zero_copy_only=False)[step_mask].astype(np.float64)
                     lon = tbl.column("pixel_lon").to_numpy(zero_copy_only=False)[step_mask].astype(np.float64)
                     member = tbl.column("member").to_numpy(zero_copy_only=False)[step_mask].astype(np.int64)
-                    del tbl, step_h, step_mask
+                    del tbl, step_h_col, step_mask
                     rows_kept += lat.size
                     if lat.size == 0:
                         continue
@@ -3378,14 +4247,15 @@ class _RiverExtentCache:
                 "prob_by_tile": dict(zip(tile_ids, probability.tolist())),
             }
             self._loaded_at[key] = time.time()
-            log.info("  RiverExtent: z14 tile table ready %s/%s (scanned %d rows, kept %d @step_h=%d, "
+            log.info("  RiverExtent: z14 tile table ready %s/%s (scanned %d rows, kept %d @step_h<=%d, "
                       "%d members seen, %d distinct z14 tiles with >=1 member flooded, %.1fs)",
-                      rp_tier, forecast_time, rows_scanned, rows_kept, _RIVER_EXTENT_STEP_H,
+                      rp_tier, forecast_time, rows_scanned, rows_kept, step_h,
                       len(members_seen), n_tiles, elapsed)
         return forecast_time
 
-    def get_grid(self, forecast_time: str, rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> Optional[dict]:
-        return self._grids.get((forecast_time, rp_tier))
+    def get_grid(self, forecast_time: str, rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER,
+                  step_h: int = _RIVER_EXTENT_DEFAULT_STEP_H) -> Optional[dict]:
+        return self._grids.get((forecast_time, rp_tier, step_h))
 
 
 _river_extent_cache = _RiverExtentCache()
@@ -3393,7 +4263,8 @@ _river_extent_cache = _RiverExtentCache()
 
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
 def _fetch_river_extent_raster_tile(forecast_time: str, z: int, x: int, y: int,
-                                       rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER) -> bytes | None:
+                                       rp_tier: str = _RIVER_EXTENT_DEFAULT_RP_TIER,
+                                       step_h: int = _RIVER_EXTENT_DEFAULT_STEP_H) -> bytes | None:
     """Render a 512x512 RGBA WebP tile from the cached sparse zoom-14-tile
     flood-extent table (see _RiverExtentCache) — THE current implementation
     behind /tiles/raster/river-raw/.../*.webp.
@@ -3413,12 +4284,16 @@ def _fetch_river_extent_raster_tile(forecast_time: str, z: int, x: int, y: int,
     probability, river only ever has this ONE real per-cell metric, so a
     second "Mean" mode was always just describing the identical number
     under a different name/colour). flood-view-as (Mean/Probability) is now
-    rain-only.
+    rain-only. `step_h` (real feature added 2026-08 — see
+    _RIVER_EXTENT_STEP_HOURS' own comment): the CUMULATIVE lead-time window
+    to render (a member counts as flooding a pixel if it does so at ANY
+    real day from 24h through `step_h`, real set union — not a single-day
+    snapshot), mirroring rain's own window selector conceptually.
     """
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
     if resolved is None:
         return None
-    entry = _river_extent_cache.get_grid(resolved, rp_tier)
+    entry = _river_extent_cache.get_grid(resolved, rp_tier, step_h)
     if entry is None:
         return None
     df = entry.get("df")
@@ -3568,7 +4443,25 @@ def _prewarm_raw_caches() -> None:
     interactive and switching tiers previously always paid a real 5-20s
     cold Parquet download (confirmed live) for every user, every time,
     for any tier beyond the one default. ~18 (date, tier) combinations
-    total per cycle — still a background, non-blocking loop."""
+    total per cycle before the window fix below — still a background,
+    non-blocking loop.
+
+    Real gap found+fixed here (2026-08, multi-agent audit): this used to
+    call ensure_river_extent(forecast_time, rp_tier) with no `step_h` at
+    all, silently warming ONLY the function's own default (72h) — real
+    live evidence found the 3 other genuine UI window options (24/120/
+    168h, see pages/map_shell_concept.py's own ms-river-window) were
+    ALWAYS cold no matter how long the server had been running, costing a
+    fresh 6-46s GloFAS Parquet re-download+re-scan the first time any
+    user selected one of them, exactly the same class of "the accumulation
+    window feature works but nothing pre-warms it" gap already fixed
+    elsewhere this session for the per-country tile-server preload
+    callback. Now warms all 4 real UI-exposed windows (deliberately NOT
+    the full 7-value backend set _RIVER_EXTENT_STEP_HOURS documents —
+    48h/96h/144h have no UI button that could ever request them, see that
+    constant's own comment — warming them here would be pure wasted
+    background I/O) per (date, tier), bringing the real total to ~72
+    (date, tier, window) combinations per cycle."""
     while True:
         try:
             rows = _run_query(_LATEST_3_PRECIP_RAW_SQL, [])
@@ -3611,16 +4504,28 @@ def _prewarm_raw_caches() -> None:
             if not latest_times:
                 log.info("Prewarm: river-raw/%s — no data currently available to warm", rp_tier)
                 continue
+            # Real fix (2026-08, multi-agent audit): loop over every real
+            # UI-exposed window too, not just the function's own 72h
+            # default — see this function's own docstring for the full
+            # "why". _PREWARM_RIVER_WINDOWS_H is this file's own copy of
+            # the UI's real 4-value set (import-independence convention,
+            # same reasoning as _RIVER_WINDOW_DEFAULT's own 3-copy
+            # duplication elsewhere in this codebase).
             for forecast_time in latest_times:
-                try:
-                    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
-                    if resolved is not None:
-                        log.info("Prewarm: river-raw/%s cache warm (forecast_time=%s)", rp_tier, resolved)
-                except Exception as e:
-                    log.error("Prewarm: river-raw/%s warm-up failed for %s: %s", rp_tier, forecast_time, e)
+                for step_h in _PREWARM_RIVER_WINDOWS_H:
+                    try:
+                        resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
+                        if resolved is not None:
+                            log.info("Prewarm: river-raw/%s@%sh cache warm (forecast_time=%s)",
+                                      rp_tier, step_h, resolved)
+                    except Exception as e:
+                        log.error("Prewarm: river-raw/%s@%sh warm-up failed for %s: %s",
+                                  rp_tier, step_h, forecast_time, e)
             # Evict anything that has aged out of the rolling window for
             # THIS tier only — under the SAME lock loads use, so an eviction
             # can never race an in-progress download for that exact key.
+            # Keyed on forecast_time alone (k[0]), regardless of window
+            # (k[2]) — a stale date is stale at every window, not just one.
             with _river_extent_cache._load_lock:
                 this_tier_keys = {k for k in _river_extent_cache._grids.keys() if k[1] == rp_tier}
                 stale = {k for k in this_tier_keys if k[0] not in latest_times}
@@ -3868,7 +4773,7 @@ _RIVER_MERCATOR_STATS_SQL = """
             MAX(E_BUILT_SURFACE_M2) AS E_BUILT_SURFACE_M2, MAX(E_NUM_SCHOOLS) AS E_NUM_SCHOOLS,
             MAX(E_NUM_HCS) AS E_NUM_HCS, MAX(E_NUM_SHELTERS) AS E_NUM_SHELTERS, MAX(E_NUM_WASH) AS E_NUM_WASH
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-        WHERE COUNTRY {country_clause} AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY {country_clause} AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
         GROUP BY ZONE_ID
     )
     SELECT
@@ -3969,7 +4874,7 @@ def _fetch_tile_stats(
             return _stats_from_row(rows[0], _GUST_RIVER_STATS_MAPPING) if rows else {}
         if hazard == "river":
             rows = _run_query(_RIVER_MERCATOR_STATS_SQL.replace("{country_clause}", clause),
-                              [*codes, forecast_date, rp_tier, *codes, zoom_level])
+                              [*codes, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT, *codes, zoom_level])
             return _stats_from_row(rows[0], _GUST_RIVER_STATS_MAPPING) if rows else {}
         if hazard == "rain":
             rows = _run_query(_RAIN_MERCATOR_STATS_SQL.replace("{country_clause}", clause),
@@ -4139,7 +5044,7 @@ _RIVER_ADMIN_STATS_SQL = """
             MAX(E_BUILT_SURFACE_M2) AS E_BUILT_SURFACE_M2, MAX(E_NUM_SCHOOLS) AS E_NUM_SCHOOLS,
             MAX(E_NUM_HCS) AS E_NUM_HCS, MAX(E_NUM_SHELTERS) AS E_NUM_SHELTERS, MAX(E_NUM_WASH) AS E_NUM_WASH
         FROM AOTS.TC_ECMWF.ADMIN_ALL_RIVER_MAT
-        WHERE COUNTRY {country_clause} AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY {country_clause} AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
         GROUP BY TILE_ID, ADMIN_LEVEL
     )
     SELECT
@@ -4226,7 +5131,7 @@ def _fetch_admin_stats(
             return _stats_from_row(rows[0], _GUST_RIVER_STATS_MAPPING) if rows else {}
         if hazard == "river":
             rows = _run_query(_RIVER_ADMIN_STATS_SQL.replace("{country_clause}", clause),
-                              [*codes, forecast_date, rp_tier, *codes, admin_level])
+                              [*codes, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT, *codes, admin_level])
             return _stats_from_row(rows[0], _GUST_RIVER_STATS_MAPPING) if rows else {}
         if hazard == "rain":
             rows = _run_query(_RAIN_ADMIN_STATS_SQL.replace("{country_clause}", clause),
@@ -4392,6 +5297,74 @@ def raster_tile(
     )
 
 
+@app.get("/tiles/raster-combined/{country}/{storm}/{mode}/{z}/{x}/{y}.webp",
+         response_class=Response)
+def raster_combined_tile(
+    country: str, storm: str,
+    mode: str,
+    z: int, x: int, y: int,
+    wind_on: bool = Query(False),
+    wind_forecast_date: Optional[str] = Query(None),
+    wind_threshold: int = Query(50),
+    gust_on: bool = Query(False),
+    gust_threshold: Optional[int] = Query(None),
+    river_on: bool = Query(False),
+    river_forecast_date: Optional[str] = Query(None),
+    rp_tier: Optional[str] = Query(None),
+    river_window: Optional[int] = Query(None),
+    rain_on: bool = Query(False),
+    rain_forecast_date: Optional[str] = Query(None),
+    threshold_mm: Optional[float] = Query(None),
+    window_h: Optional[int] = Query(None),
+    prop: Optional[str] = Query(None),
+) -> Response:
+    """Return a 512x512 RGBA WebP raster tile combining every active hazard
+    (`mode="probability"`: one independence-formula blended value; `mode=
+    "classification"`: which hazard(s) hit each cell; `mode="exposure"`:
+    real expected impact for `prop` — required, must be one of
+    _COMBINED_EXPOSURE_RAW_COL's keys — under the SAME combined probability)
+    — see _fetch_combined_raster_tile's own docstring, including why each
+    hazard family carries its OWN forecast_date query param instead of one
+    shared path segment. Only invoked client-side when 2+ hazards are
+    simultaneously active in Probability mode, or whenever Classification
+    mode is selected at all; a single active hazard keeps using the
+    existing /tiles/raster/... route regardless of `prop`.
+
+    `river_window` (real param added 2026-08, user-reported: Classification
+    mode never reacted to the river-window slider at all, always showing
+    the full 168h/7-day footprint) is kept separate from `window_h` (Rain's
+    own) for the same reason _fetch_combined_facility_rows' own river_window/
+    window_h split exists — River and Rain can be simultaneously active here
+    with genuinely different windows.
+    """
+    if mode not in ("probability", "classification", "exposure"):
+        raise HTTPException(status_code=400, detail=f"invalid mode: {mode}")
+    prop_upper = prop.upper() if prop else None
+    if mode == "exposure" and prop_upper not in _COMBINED_EXPOSURE_RAW_COL:
+        raise HTTPException(status_code=400, detail=f"invalid/unsupported exposure prop: {prop}")
+    try:
+        webp_bytes = _fetch_combined_raster_tile(
+            country.upper(), storm, mode, z, x, y,
+            wind_on, wind_forecast_date, wind_threshold,
+            gust_on, gust_threshold,
+            river_on, river_forecast_date, rp_tier, river_window,
+            rain_on, rain_forecast_date, threshold_mm, window_h,
+            prop_upper,
+        )
+    except Exception as exc:
+        log.error("raster_combined_tile error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not webp_bytes:
+        # Same "transparent tile, not 204" reasoning as raster_tile above.
+        return Response(content=_TRANSPARENT_WEBP, media_type="image/webp",
+                        headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
+    return Response(
+        content=webp_bytes,
+        media_type="image/webp",
+        headers={"Cache-Control": f"public, max-age={_TILE_TTL}"},
+    )
+
+
 @app.get("/geojson/facilities/{layer_type}/{country}/{storm}/{forecast_date}",
          response_class=Response)
 def facility_geojson(
@@ -4451,6 +5424,35 @@ def facility_geojson(
 # already used throughout this file; the route above wraps the cached gzip
 # bytes in a fresh Response object each time (cheap) rather than caching
 # the Response itself.
+def _facility_color_for_prob(base_color: str, prob: float) -> tuple[str, int]:
+    """Real color/radius-by-probability breakpoints — shared by the
+    single-hazard and combined-hazard facility GeoJSON builders so the two
+    code paths can never visually diverge for the same underlying number.
+
+    Real feature added here (2026-08, user-requested, tightened further
+    after a first pass still read as too large): default no-data radius
+    4px→3px→2px, colored-tier max 25px→18px→10px, increase between
+    adjacent tiers now a uniform 1px (aside from the first no-data→lowest-
+    tier jump, 2px) — much smaller markers overall, minimal visual jump
+    between probability tiers.
+    """
+    if prob <= 0:
+        return base_color, 2
+    if prob <= 0.15:
+        return "#FFFF00", 4
+    if prob <= 0.30:
+        return "#FFD700", 5
+    if prob <= 0.45:
+        return "#FFA500", 6
+    if prob <= 0.60:
+        return "#FF8C00", 7
+    if prob <= 0.75:
+        return "#FF4500", 8
+    if prob <= 0.90:
+        return "#DC143C", 9
+    return "#8B0000", 10
+
+
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
 def _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind_threshold,
                                     hazard, gust_threshold, rp_tier, threshold_mm, window_h, combine):
@@ -4464,26 +5466,274 @@ def _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind
         if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
             continue
         prob = float(row.get("PROBABILITY") or 0) if combine else 0.0
-        if prob <= 0:
-            color, radius = base_color, 4
-        elif prob <= 0.15:
-            color, radius = "#FFFF00", 10
-        elif prob <= 0.30:
-            color, radius = "#FFD700", 12
-        elif prob <= 0.45:
-            color, radius = "#FFA500", 15
-        elif prob <= 0.60:
-            color, radius = "#FF8C00", 18
-        elif prob <= 0.75:
-            color, radius = "#FF4500", 20
-        elif prob <= 0.90:
-            color, radius = "#DC143C", 22
-        else:
-            color, radius = "#8B0000", 25
+        color, radius = _facility_color_for_prob(base_color, prob)
         props = {k.lower(): _safe_prop(v)
                  for k, v in row.items()
                  if k not in ("LATITUDE", "LONGITUDE")
                  and (combine or k != "PROBABILITY")}
+        props.update({
+            "_color": color, "_radius": radius,
+            "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
+        })
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
+            "properties": props,
+        })
+    return gzip.compress(
+        json.dumps({"type": "FeatureCollection", "features": features}).encode(),
+        compresslevel=6,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Combined-hazard facility markers (2026-08, user-reported via screenshot:
+# facility points only ever reflected ONE hazard — whichever facility_hazard
+# in pages/map_shell_concept.py's priority order won — while the raster
+# background underneath had already been fixed to show a real combined
+# raster for 2+ active hazards. This closes that same gap for point
+# features: merges each active hazard's own facility table by ZONE_ID (now
+# selected for schools/shelters/wash too, not just health — see the SQL
+# dicts above) and combines PROBABILITY via the SAME family-aware formula
+# _combine_family_aware uses for the raster (max within TC={wind,gust}/
+# Flood={river,rain}, independence only across families).
+# ---------------------------------------------------------------------------
+
+def _fetch_one_hazard_facility_rows(layer_type: str, code: str, hazard: str, storm: str,
+                                      forecast_date: str, wind_threshold: int,
+                                      gust_threshold: Optional[int], rp_tier: Optional[str],
+                                      threshold_mm: Optional[float], window_h: Optional[int]) -> list[dict]:
+    """Real per-hazard facility row fetch for combined-hazard merging —
+    mirrors _DataCache.ensure_facility's own inner _load_one, but (a) keeps
+    ZONE_ID on every row (never popped) so the caller can merge across
+    hazards by it, and (b) skips the single-hazard "no rows -> base layer"
+    fallback — a hazard contributing nothing to a combined fetch should
+    just be absent from the merge, not silently swapped in as an unrelated
+    uncolored base layer for every OTHER hazard's own real data too.
+    """
+    if hazard == "gust":
+        rows = _run_query(_FACILITY_GUST_SQL[layer_type], [code, storm, forecast_date, gust_threshold])
+    elif hazard == "river":
+        rows = _run_query(_FACILITY_RIVER_SQL[layer_type], [code, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT])
+    elif hazard == "rain":
+        rows = _run_query(_FACILITY_PRECIP_SQL[layer_type], [code, forecast_date, threshold_mm, window_h])
+    else:
+        rows = _run_query(_FACILITY_IMPACT_SQL[layer_type], [code, storm, forecast_date, wind_threshold])
+    if layer_type == "health" and hazard in ("wind", "gust", "rain") and rows:
+        # Same ZONE_ID -> coords enrichment ensure_facility's own _load_one
+        # does (health's lean wind/gust/rain queries carry no LATITUDE/
+        # LONGITUDE of their own) — river's own health query already
+        # resolves them directly via ST_CENTROID, untouched here.
+        coords = _cache._ensure_hc_coords_one(hazard, code, storm, forecast_date)
+        enriched = []
+        for row in rows:
+            lat_lon = coords.get(row.get("ZONE_ID"))
+            if lat_lon is None:
+                continue
+            row["LATITUDE"], row["LONGITUDE"] = lat_lon
+            enriched.append(row)
+        rows = enriched
+    return rows
+
+
+def _fetch_combined_facility_rows(
+    layer_type: str, country: str, storm: str,
+    wind_on: bool, wind_forecast_date: Optional[str], wind_threshold: int,
+    gust_on: bool, gust_threshold: Optional[int],
+    river_on: bool, river_forecast_date: Optional[str], rp_tier: Optional[str], river_window: Optional[int],
+    rain_on: bool, rain_forecast_date: Optional[str], threshold_mm: Optional[float], window_h: Optional[int],
+) -> list[dict]:
+    """Merge every active hazard's own facility rows by ZONE_ID, combining
+    PROBABILITY via the same family-aware formula _combine_family_aware
+    uses for the raster. Base/descriptive fields (NAME, TYPE, LATITUDE,
+    LONGITUDE, etc) are filled in from whichever hazard's own row has them
+    first — mirrors maplibre_tiles.js's own _combineHazardTileProps
+    convention for the hover-tooltip path (base fields are hazard-
+    independent, "fill in from whichever response has them" is correct,
+    not a real MAX/SUM decision).
+
+    `river_window`/`window_h` are kept as two SEPARATE params (2026-08,
+    real bug avoided here, not just fixed after the fact): River and Rain
+    can both be simultaneously active within the SAME combined fetch, and
+    their own real window option sets differ (river: 24/72/120/168h, rain:
+    6/24/72/120h) — a single shared `window_h` param here would have forced
+    them onto the same numeric value whenever both are checked at once,
+    silently corrupting whichever one didn't match the shared value. The
+    single-hazard endpoints (_DataCache.ensure_mercator etc.) don't have
+    this problem — they only ever resolve ONE hazard per request, so
+    reusing the one generic `window_h` slot there is safe.
+    """
+    active: list[tuple[str, str]] = []
+    if wind_on and wind_forecast_date:
+        active.append(("wind", wind_forecast_date))
+    if gust_on and wind_forecast_date:
+        active.append(("gust", wind_forecast_date))
+    if river_on and river_forecast_date:
+        active.append(("river", river_forecast_date))
+    if rain_on and rain_forecast_date:
+        active.append(("rain", rain_forecast_date))
+    if not active:
+        return []
+
+    codes = [c.upper() for c in country.split('+') if c.strip()]
+
+    def _fetch(item: tuple[str, str]) -> tuple[str, list[dict]]:
+        hz, fdate = item
+        # river_window and window_h(rain) are deliberately picked apart
+        # here, not both passed through unconditionally — see this
+        # function's own docstring for why sharing one slot would be wrong
+        # whenever river+rain are simultaneously active.
+        w = river_window if hz == "river" else (window_h if hz == "rain" else None)
+        all_rows: list[dict] = []
+        for code in codes:
+            all_rows.extend(_fetch_one_hazard_facility_rows(
+                layer_type, code, hz, storm, fdate,
+                wind_threshold, gust_threshold, rp_tier, threshold_mm, w))
+        return hz, all_rows
+
+    if len(active) > 1:
+        results = list(_SHARED_EXECUTOR.map(_fetch, active))
+    else:
+        results = [_fetch(item) for item in active]
+
+    by_zone: dict[str, dict] = {}
+    probs_by_zone: dict[str, dict[str, float]] = {}
+    for hz, rows in results:
+        for row in rows:
+            zid = row.get("ZONE_ID")
+            if zid is None:
+                continue
+            entry = by_zone.setdefault(zid, {})
+            for k, v in row.items():
+                if k in ("ZONE_ID", "PROBABILITY") or v is None:
+                    continue
+                if entry.get(k) is None:
+                    entry[k] = v
+            prob = row.get("PROBABILITY")
+            if prob is not None:
+                # Real bug found+fixed here (2026-08, backend correctness
+                # review): a literal NaN PROBABILITY (e.g. a 0/0 upstream
+                # aggregate) would silently poison max() below in an order-
+                # dependent way (NaN never compares greater than anything
+                # in plain Python) — non-reproducible across requests.
+                # _combine_family_aware's own raster path already guards
+                # this via pandas fillna(0.0); mirrored here so the two
+                # implementations can't ever disagree on the same input.
+                try:
+                    prob_f = float(prob)
+                except (TypeError, ValueError):
+                    prob_f = None
+                if prob_f is not None and not math.isnan(prob_f):
+                    probs_by_zone.setdefault(zid, {})[hz] = prob_f
+
+    if not by_zone:
+        # Real bug found+fixed here (2026-08, backend correctness review):
+        # single-hazard mode (_DataCache.ensure_facility) always falls back
+        # to _FACILITY_BASE_SQL when a hazard's own query returns zero rows,
+        # so facility points stay visible (uncolored) even with no real
+        # impact data. This combined path had no equivalent — every active
+        # hazard genuinely returning nothing (e.g. a small country with no
+        # schools inside any active hazard's footprint) rendered ZERO
+        # markers instead of the same plain base layer.
+        base_rows: list[dict] = []
+        for code in codes:
+            base_rows.extend(_run_query(_FACILITY_BASE_SQL[layer_type], [code]))
+        return base_rows
+
+    out = []
+    for zid, entry in by_zone.items():
+        hz_probs = probs_by_zone.get(zid, {})
+        tc_vals = [hz_probs[h] for h in ("wind", "gust") if h in hz_probs]
+        flood_vals = [hz_probs[h] for h in ("river", "rain") if h in hz_probs]
+        p_tc = max(tc_vals) if tc_vals else None
+        p_flood = max(flood_vals) if flood_vals else None
+        if p_tc is not None and p_flood is not None:
+            combined_p = 1.0 - (1.0 - p_tc) * (1.0 - p_flood)
+        else:
+            combined_p = p_tc if p_tc is not None else (p_flood if p_flood is not None else 0.0)
+        entry["ZONE_ID"] = zid
+        entry["PROBABILITY"] = combined_p
+        out.append(entry)
+    return out
+
+
+@app.get("/geojson/facilities-combined/{layer_type}/{country}/{storm}",
+         response_class=Response)
+def facility_geojson_combined(
+    layer_type: str,
+    country: str, storm: str,
+    wind_on: bool = Query(False),
+    wind_forecast_date: Optional[str] = Query(None),
+    wind_threshold: int = Query(50),
+    gust_on: bool = Query(False),
+    gust_threshold: Optional[int] = Query(None),
+    river_on: bool = Query(False),
+    river_forecast_date: Optional[str] = Query(None),
+    rp_tier: Optional[str] = Query(None),
+    river_window: Optional[int] = Query(None),
+    rain_on: bool = Query(False),
+    rain_forecast_date: Optional[str] = Query(None),
+    threshold_mm: Optional[float] = Query(None),
+    window_h: Optional[int] = Query(None),
+) -> Response:
+    """Real combined-hazard facility GeoJSON — colors/sizes each facility by
+    the family-aware combined PROBABILITY across every simultaneously-active
+    hazard (see _fetch_combined_facility_rows), instead of picking one
+    hazard's own facility table. Only invoked client-side when 2+ hazards
+    are simultaneously active (see _register_ms_facility_layer in
+    pages/map_shell_concept.py); a single active hazard keeps using the
+    existing /geojson/facilities/... route.
+
+    `river_window` (real param added 2026-08, kept separate from `window_h`)
+    is River's own real cumulative lead-time window — see
+    _fetch_combined_facility_rows' own docstring for why this can't safely
+    share `window_h` (Rain's own window) when both hazards are active at
+    once.
+    """
+    if layer_type not in _FACILITY_BASE_COLORS:
+        raise HTTPException(status_code=404, detail=f"Unknown layer type: {layer_type}")
+    try:
+        body = _fetch_combined_facility_geojson_body(
+            layer_type, country, storm,
+            wind_on, wind_forecast_date, wind_threshold,
+            gust_on, gust_threshold,
+            river_on, river_forecast_date, rp_tier, river_window,
+            rain_on, rain_forecast_date, threshold_mm, window_h,
+        )
+        return Response(
+            content=body,
+            media_type="application/geo+json",
+            headers={"Content-Encoding": "gzip", "Cache-Control": "public, max-age=300"},
+        )
+    except Exception as exc:
+        log.error("facility_geojson_combined error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
+def _fetch_combined_facility_geojson_body(
+    layer_type, country, storm,
+    wind_on, wind_forecast_date, wind_threshold,
+    gust_on, gust_threshold,
+    river_on, river_forecast_date, rp_tier, river_window,
+    rain_on, rain_forecast_date, threshold_mm, window_h,
+):
+    base_color = _FACILITY_BASE_COLORS[layer_type]
+    rows = _fetch_combined_facility_rows(
+        layer_type, country.upper(), storm,
+        wind_on, wind_forecast_date, wind_threshold,
+        gust_on, gust_threshold,
+        river_on, river_forecast_date, rp_tier, river_window,
+        rain_on, rain_forecast_date, threshold_mm, window_h,
+    )
+    features = []
+    for row in rows:
+        lat, lon = row.get("LATITUDE"), row.get("LONGITUDE")
+        if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+            continue
+        prob = float(row.get("PROBABILITY") or 0)
+        color, radius = _facility_color_for_prob(base_color, prob)
+        props = {k.lower(): _safe_prop(v) for k, v in row.items() if k not in ("LATITUDE", "LONGITUDE")}
         props.update({
             "_color": color, "_radius": radius,
             "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
@@ -4720,6 +5970,7 @@ def preload_precip_raw(forecast_time: str) -> dict:
 def river_raw_raster_tile(
     forecast_time: str, z: int, x: int, y: int,
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
+    step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
 ) -> Response:
     """Global river FLOOD-EXTENT (per-member, real return-period tier)
     RASTER tile — THE endpoint the frontend should use. See the
@@ -4750,9 +6001,13 @@ def river_raw_raster_tile(
     exceedance-probability, so an earlier Mean/Probability toggle here was
     always describing the identical number under a different name/colour;
     see _fetch_river_extent_raster_tile's own docstring).
+
+    `step_h` is a CUMULATIVE window (real member-flood union across every
+    real day from 24h through `step_h`, not a single-day snapshot — see
+    _RIVER_EXTENT_STEP_HOURS' own "ACCUMULATION SEMANTICS" comment).
     """
     try:
-        webp_bytes = _fetch_river_extent_raster_tile(forecast_time, z, x, y, rp_tier)
+        webp_bytes = _fetch_river_extent_raster_tile(forecast_time, z, x, y, rp_tier, step_h)
     except Exception as exc:
         log.error("river_raw_raster_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -4774,6 +6029,7 @@ def river_raw_tile_value(
     lon: float = Query(...),
     lat: float = Query(...),
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER),
+    step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
 ) -> dict:
     """Point lookup for the raw river-extent raster's hover tooltip — same
     real gap/fix as precip_raw_tile_value above. Same quadkey-lookup
@@ -4785,11 +6041,16 @@ def river_raw_tile_value(
     Real perf fix (2026-08, user-reported: "it's still quite slow") — uses
     the entry's own "prob_by_tile" dict (built once, see _RiverExtentCache's
     own comment on it) instead of a linear `df[df['TILE_ID'] == qk]` scan
-    across every distinct z14 tile in the table on every single hover."""
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+    across every distinct z14 tile in the table on every single hover.
+
+    `step_h` is a CUMULATIVE window (see river_raw_raster_tile's own
+    docstring) — the returned probability is the fraction of members
+    flooding this pixel at ANY real day up through `step_h`, not just on
+    `step_h` itself."""
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
     if resolved is None:
         return {}
-    entry = _river_extent_cache.get_grid(resolved, rp_tier)
+    entry = _river_extent_cache.get_grid(resolved, rp_tier, step_h)
     if entry is None:
         return {}
     prob_by_tile = entry.get("prob_by_tile")
@@ -4800,13 +6061,14 @@ def river_raw_tile_value(
     prob = prob_by_tile.get(qk)
     if prob is None or (isinstance(prob, float) and math.isnan(prob)):
         return {}
-    return {"probability": float(prob), "rp_tier": rp_tier}
+    return {"probability": float(prob), "rp_tier": rp_tier, "step_h": step_h}
 
 
 @app.get("/stats/river-raw/{forecast_time}")
 def get_river_raw_stats(
     forecast_time: str,
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
+    step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
 ) -> dict:
     """Legend range for the river flood-extent raster (see _RiverExtentCache
     above). Not currently called by the frontend (the Dash app builds its
@@ -4821,12 +6083,16 @@ def get_river_raw_stats(
     `is_standin` is True for rp2/rp5: the frontend uses this to show a
     real, data-driven "not natively computed, RP10 used as an upper-bound
     estimate" note rather than a silently-wrong-looking layer.
+
+    `step_h` is a CUMULATIVE window (see river_raw_raster_tile's own
+    docstring), echoed back verbatim — this endpoint's own [0,1] breaks/
+    ensemble_size shape is unaffected by the window itself.
     """
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
     is_standin = rp_tier in _RIVER_EXTENT_STANDIN_RP_TIERS
     if resolved is None:
         return {"min": None, "max": None, "forecast_time": None,
-                 "rp_tier": rp_tier, "is_standin": is_standin}
+                 "rp_tier": rp_tier, "step_h": step_h, "is_standin": is_standin}
     return {
         "min": 0.0,
         "max": 1.0,
@@ -4834,6 +6100,7 @@ def get_river_raw_stats(
         "ensemble_size": _RIVER_PROB_ENSEMBLE_SIZE,
         "forecast_time": resolved,
         "rp_tier": rp_tier,
+        "step_h": step_h,
         "is_standin": is_standin,
     }
 
@@ -4842,15 +6109,18 @@ def get_river_raw_stats(
 def preload_river_raw(
     forecast_time: str,
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
+    step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
 ) -> dict:
     """Pre-warm the river flood-extent cache (the sparse zoom-14-tile
-    probability table, computed once in ensure_river_extent() — no separate
-    "mode" to pass here). Returns immediately; the ~28MB parquet download +
-    row-group processing happens in a background thread (same
-    fire-and-forget style as /preload/precip-raw/{forecast_time})."""
+    probability table, computed once in ensure_river_extent()) for one real
+    (forecast_time, rp_tier, step_h) combination — `step_h` a CUMULATIVE
+    window, see river_raw_raster_tile's own docstring. Returns immediately;
+    the ~28-56MB parquet download + row-group processing happens in a
+    background thread (same fire-and-forget style as
+    /preload/precip-raw/{forecast_time})."""
     def _load():
         try:
-            _river_extent_cache.ensure_river_extent(forecast_time, rp_tier)
+            _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
         except Exception as e:
             log.error("Preload river-raw error: %s", e)
     threading.Thread(target=_load, daemon=True).start()

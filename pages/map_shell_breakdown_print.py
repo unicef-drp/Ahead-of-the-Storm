@@ -29,7 +29,7 @@ dash.register_page(__name__, path="/breakdown-print", name="Full Impact Breakdow
 
 def layout(lang="en", zoom_countries=None, date=None, run=None,
             wind=None, river=None, rain=None, surge=None,
-            windidx=None, riveridx=None, rainidx=None, surgeidx=None, rainwindow=None, **kwargs):
+            windidx=None, riveridx=None, rainidx=None, surgeidx=None, rainwindow=None, riverwindow=None, **kwargs):
     # Deliberately imported HERE (request time), not at module level.
     # Dash's pages/ auto-loader (dash/_pages.py) walks the pages/ folder and
     # unconditionally exec_module()s every file with "register_page" in it —
@@ -72,6 +72,11 @@ def layout(lang="en", zoom_countries=None, date=None, run=None,
     river_idx = int(riveridx) if riveridx is not None else None
     rain_idx = int(rainidx) if rainidx is not None else None
     surge_idx = int(surgeidx) if surgeidx is not None else None
+    # River's own window is a real int (24/72/120/168 — used directly as a
+    # STEP_H SQL bind param downstream), unlike rain_window which stays a
+    # string throughout (it's a _RAIN_MM_BY_WINDOW dict KEY, not a bind
+    # param) — cast explicitly rather than passing the raw URL string through.
+    river_window = int(riverwindow) if riverwindow is not None else None
     # Rainfall's own accumulation window ("6"/"24"/"72"/"120") — which of the
     # 4 lines in its multi-line curve is "current" (see _rain_threshold_chart).
 
@@ -130,6 +135,6 @@ def layout(lang="en", zoom_countries=None, date=None, run=None,
         ms._impact_breakdown_content(countries, None, expand_admin1=True,
                                        wind_on=wind_on, river_on=river_on, rain_on=rain_on, surge_on=surge_on,
                                        wind_idx=wind_idx, river_idx=river_idx, rain_idx=rain_idx, surge_idx=surge_idx,
-                                       rain_window=rainwindow, date=date, run=run),
+                                       rain_window=rainwindow, river_window=river_window, date=date, run=run),
     ], style={"background": "#ffffff", "maxWidth": "1400px", "margin": "0 auto", "padding": "32px",
                "fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", "color": "#16232c"})

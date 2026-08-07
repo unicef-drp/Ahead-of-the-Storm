@@ -1346,15 +1346,36 @@ def get_gust_tile_impacts(country: str, storm: str, forecast_date: str, gust_thr
         return pd.DataFrame()
 
 
+# Real feature added here (2026-08, cross-repo, user-requested): mirrors
+# services/tile_server.py's own _RIVER_WINDOW_DEFAULT exactly (that file's
+# own comment has the full rationale — 168h/the full real forecast horizon
+# is a backward-compat-EXACT default, not an approximation, since the real
+# cumulative union at 168h already equals what the OLD unconditional MAX()-
+# across-every-STEP_H query used to return). Duplicated here rather than
+# imported since this module stays import-independent of the tile-server
+# process (same convention already used for _PRECIP_RATE_WINDOWS_H etc.).
+_RIVER_WINDOW_DEFAULT = 168
+
+
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd.DataFrame:
+def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str,
+                            window_h: int = _RIVER_WINDOW_DEFAULT) -> pd.DataFrame:
     """
     Real per-tile RIVER flood-extent impact totals — MERCATOR_TILE_RIVER_MAT,
-    keyed by COUNTRY + FORECAST_TIME + RP_TIER (not storm-scoped at all, see
-    services/tile_server.py's own _MERCATOR_RIVER_SQL comment). MAX(...)-
-    aggregated across STEP_H (multiple lead-time rows per tile for the same RP
-    tier) — same "at least this severity, at some point in the forecast
-    horizon" semantics the map's own river raster already uses server-side.
+    keyed by COUNTRY + FORECAST_TIME + RP_TIER + STEP_H (not storm-scoped at
+    all, see services/tile_server.py's own _MERCATOR_RIVER_IMPACT_ONLY_SQL
+    comment).
+
+    `window_h` (real param added 2026-08, cross-repo — see
+    docs/hazard_accumulation_windows.md): River's real per-country impact
+    numbers now carry a real STEP_H column meaning a CUMULATIVE window
+    (24/72/120/168h), not a single-day snapshot — each STEP_H row is
+    already the correct real union for that window, so this is now a plain
+    `= %s` filter, not a MAX()-across-everything collapse. Defaults to the
+    full real forecast horizon (168h) for any caller that doesn't pass a
+    window yet — see _RIVER_WINDOW_DEFAULT's own comment for why that's an
+    EXACT backward-compat default, not merely an approximation of the old
+    unconditional-MAX behavior.
 
     Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION,
     E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
@@ -1374,11 +1395,11 @@ def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd
             MAX(E_NUM_SHELTERS)          AS E_NUM_SHELTERS,
             MAX(E_NUM_WASH)              AS E_NUM_WASH
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
         GROUP BY ZONE_ID
         """
-        df = _run_query(query, params=[country, forecast_time, rp_tier])
-        logger.info("Loaded %d river tile impact rows (%s/%s/%s)", len(df), country, forecast_time, rp_tier)
+        df = _run_query(query, params=[country, forecast_time, rp_tier, window_h or _RIVER_WINDOW_DEFAULT])
+        logger.info("Loaded %d river tile impact rows (%s/%s/%s/%sh)", len(df), country, forecast_time, rp_tier, window_h)
         return df.copy()
     except Exception as e:
         logger.error("Error querying MERCATOR_TILE_RIVER_MAT: %s", e)
@@ -1389,20 +1410,30 @@ def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str) -> pd
 def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window_h) -> pd.DataFrame:
     """
     Real per-tile RAINFALL impact totals — MERCATOR_TILE_PRECIP_MAT, keyed by
-    COUNTRY + FORECAST_TIME + THRESHOLD_MM + WINDOW_H. Only E_POPULATION is a
-    real hazard-conditional exposure column on this table (confirmed live —
-    every other exposure column there is a bare, hazard-UNCONDITIONAL
-    duplicate of the base layer, not a real rain-specific exposed count, see
-    services/tile_server.py's own MERCATOR_TILE_PRECIP_MAT comment) — schools/
-    health centers/shelters/WASH are deliberately NOT selected here; callers
-    must treat rain as having no real facility-exposure signal at all, not
-    silently substitute the unconditional base count.
+    COUNTRY + FORECAST_TIME + THRESHOLD_MM + WINDOW_H.
 
-    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION.
+    Real fix (2026-08): this table used to only carry a real hazard-
+    conditional E_POPULATION column — every other exposure column was a
+    bare, hazard-UNCONDITIONAL duplicate of the base layer, so schools/
+    health centers/shelters/WASH/age-bands were deliberately excluded here.
+    That gap was traced to an incomplete port in DATAPIPELINE's
+    create_precip_tile_view() and fixed at the source — this table now
+    carries the full E_* breakdown, same shape as wind's own
+    MERCATOR_TILE_IMPACT_MAT (minus the E_*_IN_NEED columns, which come from
+    a separate vulnerability table wind has and precip doesn't — see this
+    file's own module docstring on precip's scope).
+
+    Returns pandas.DataFrame with columns: ZONE_ID, ADMIN_ID, PROBABILITY,
+    E_POPULATION, E_SCHOOL_AGE_POPULATION, E_INFANT_POPULATION,
+    E_ADOLESCENT_POPULATION, E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS,
+    E_NUM_SHELTERS, E_NUM_WASH, E_SMOD_CLASS, E_SMOD_CLASS_L1, E_RWI.
     """
     try:
         query = """
-        SELECT ZONE_ID, PROBABILITY, E_POPULATION
+        SELECT ZONE_ID, ADMIN_ID, PROBABILITY, E_POPULATION,
+               E_SCHOOL_AGE_POPULATION, E_INFANT_POPULATION, E_ADOLESCENT_POPULATION,
+               E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH,
+               E_SMOD_CLASS, E_SMOD_CLASS_L1, E_RWI
         FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
         """
@@ -1433,12 +1464,16 @@ _TOTALS_IMPACT_COLS = [
     "E_ADOLESCENT_POPULATION", "E_NUM_SCHOOLS", "E_NUM_HCS",
     "E_NUM_SHELTERS", "E_NUM_WASH",
 ]
-# MERCATOR_TILE_PRECIP_MAT only ever carries a real hazard-conditional
-# E_POPULATION column (see get_rain_tile_impacts's own docstring — the
-# other exposure columns on that table are hazard-unconditional base
-# duplicates, not real per-threshold facility/age counts) — a narrower
-# column list than wind/gust/river's, not an oversight.
-_TOTALS_PRECIP_IMPACT_COLS = ["E_POPULATION"]
+# Real fix (2026-08): MERCATOR_TILE_PRECIP_MAT used to only carry a real
+# hazard-conditional E_POPULATION column — every other exposure column was a
+# hazard-unconditional base duplicate, not a real per-threshold facility/age
+# count, so this list was deliberately narrower than wind/gust/river's own.
+# That gap was traced to an incomplete port in DATAPIPELINE's
+# create_precip_tile_view()/create_precip_admin_view() (never computed E_*
+# for anything but population) and fixed at the source — precip's MAT
+# tables now carry the full E_* breakdown, same shape as every other
+# hazard, so this is just _TOTALS_IMPACT_COLS again.
+_TOTALS_PRECIP_IMPACT_COLS = _TOTALS_IMPACT_COLS
 
 
 def _zero_precip_impact_totals() -> dict:
@@ -1464,7 +1499,8 @@ def _row_to_impact_totals(row) -> dict:
 
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> dict:
+def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date: str, zoom_level: int = 14,
+                                          river_window: int = _RIVER_WINDOW_DEFAULT) -> dict:
     """
     One-round-trip-per-hazard replacement for fanning out get_tile_impacts/
     get_gust_tile_impacts/get_river_tile_impacts across every threshold tier
@@ -1492,6 +1528,13 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     is genuinely all-NULL for this country (a real dataset gap), 0 when the
     threshold tier simply has no matching rows (a real, confirmed-zero
     exposure at that tier).
+
+    `river_window` (real param added 2026-08): River's own per-RP-tier
+    curve reflects this ONE real cumulative window (24/72/120/168h,
+    default the full 168h horizon) — see get_river_tile_impacts's own
+    docstring for the underlying STEP_H semantics. Unlike precip's own 2D
+    "river" this stays a flat {rp_tier: {...}} shape at whichever single
+    window is currently selected, not a window x tier grid.
 
     Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
     _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS/
@@ -1557,19 +1600,31 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     try:
         river_forecast_time = get_latest_river_forecast_time(country)
         if river_forecast_time is not None:
+            # Real fix (2026-08, cross-repo, user-requested): used to have
+            # no STEP_H filter at all (unconditional MAX() across the
+            # entire forecast horizon, ignoring any window selection). Now
+            # filters to the caller's real cumulative `river_window`
+            # (default 168h/the full horizon — see _RIVER_WINDOW_DEFAULT's
+            # own comment for why that's an EXACT backward-compat default).
+            # Deliberately NOT expanded into a full 2D (tier x window)
+            # structure the way precip's own "river"-sibling key below is
+            # 2D (window x mm) — this feeds one curve (per-RP-tier) at
+            # whichever ONE window is currently selected, not a picker
+            # over every window at once; expanding to a real 2D curve
+            # picker is a separate, not-yet-requested UI feature.
             river_df = _run_query(
                 """
                 WITH per_zone_max AS (
                     SELECT RP_TIER, ZONE_ID, """ + ", ".join(f"MAX({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
                     FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-                    WHERE COUNTRY = %s AND FORECAST_TIME = %s
+                    WHERE COUNTRY = %s AND FORECAST_TIME = %s AND STEP_H = %s
                     GROUP BY RP_TIER, ZONE_ID
                 )
                 SELECT RP_TIER, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
                 FROM per_zone_max
                 GROUP BY RP_TIER
                 """,
-                params=[country, river_forecast_time],
+                params=[country, river_forecast_time, river_window or _RIVER_WINDOW_DEFAULT],
             )
             by_tier = {str(row["RP_TIER"]): _row_to_impact_totals(row) for _, row in river_df.iterrows()}
             result["river"] = {tier: by_tier.get(tier, _zero_impact_totals()) for tier in _TOTALS_RIVER_RP_TIERS}
