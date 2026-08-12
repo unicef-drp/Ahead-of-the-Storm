@@ -1,5 +1,5 @@
 -- ============================================================================
--- AGENT COST TRACKING — Per-Query Breakdown (Token + Warehouse)
+-- AGENT COST TRACKING: Per-Query Breakdown (Token + Warehouse)
 -- ============================================================================
 -- Primary source: SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY
 -- Provides exact per-query token and credit breakdown with ~45-min latency.
@@ -7,24 +7,24 @@
 -- Warehouse cost (est.): WAREHOUSE_METERING_HISTORY for SF_AI_WH.
 --   Uses actual credits_used (per-second billing, 60-second minimum).
 --   Per-query cost is prorated: actual hourly warehouse cost / queries in that hour.
---   Labeled "(est.)" throughout — it is an approximation.
+--   Labeled "(est.)" throughout. It is an approximation.
 --
 -- Output:
---   SECTION 1 — Individual query log (most recent first)
---   SECTION 2 — Daily summary
---   SECTION 3 — Period summary
+--   SECTION 1: Individual query log (most recent first)
+--   SECTION 2: Daily summary
+--   SECTION 3: Period summary
 --
 -- Token columns (from tokens_granular JSON, per Snowflake docs):
---   cache_read_input  — tokens served from prompt cache (lowest cost)
---   cache_write_input — tokens written to prompt cache (one-time cache creation cost)
---   input             — uncached input tokens
---   output            — output / completion tokens
+--   cache_read_input  : tokens served from prompt cache (lowest cost)
+--   cache_write_input : tokens written to prompt cache (one-time cache creation cost)
+--   input             : uncached input tokens
+--   output            : output / completion tokens
 --
--- Warehouse size reference (Gen1, credits/hour — source: Snowflake docs):
+-- Warehouse size reference (Gen1, credits/hour; source: Snowflake docs):
 --   XS=1  S=2  M=4  L=8  XL=16  2XL=32  3XL=64  4XL=128
 --   SF_AI_WH is XS → 1 credit/hr
 --   The script uses actual credits_used from WAREHOUSE_METERING_HISTORY, so
---   the size table above is for reference only — no formula change needed.
+--   the size table above is for reference only; no formula change needed.
 --
 -- REQUIRES: ACCOUNTADMIN or access to SNOWFLAKE.ACCOUNT_USAGE
 -- ============================================================================
@@ -71,7 +71,7 @@ queries_per_hour AS (
 -- ============================================================================
 -- Step 3: Get hourly warehouse credits for SF_AI_WH
 -- Uses actual credits_used from WAREHOUSE_METERING_HISTORY multiplied by
--- $CREDIT_PRICE_USD. Reflects real per-second uptime — a warm but idle XS
+-- $CREDIT_PRICE_USD. Reflects real per-second uptime. A warm but idle XS
 -- warehouse may show < 1 credit/hr.
 -- ============================================================================
 wh_hourly AS (

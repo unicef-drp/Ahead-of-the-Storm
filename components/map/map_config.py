@@ -13,7 +13,7 @@ mapbox_token = os.environ.get("MAPBOX_ACCESS_TOKEN") or None
 if mapbox_token:
     logger.info("Mapbox token found (length: %d characters)", len(mapbox_token))
 else:
-    logger.warning("Mapbox token not found — will use OpenStreetMap fallback")
+    logger.warning("Mapbox token not found, will use OpenStreetMap fallback")
 
 def get_tile_layer_url():
     """Get the appropriate tile layer URL based on whether Mapbox token is available."""

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 04_data/03_base_layer_tables.sql — Base Layer MAT Tables
+-- 04_data/03_base_layer_tables.sql: Base Layer MAT Tables
 -- ============================================================================
 -- Country-static tables that do NOT require a storm/forecast/threshold.
 -- They serve two roles in SQL/Snowflake mode (IMPACT_DATA_SOURCE=SQL):
@@ -12,7 +12,7 @@
 --   2. FALLBACK when no impact data exists: if any layer comes back empty after
 --      the impact query, the app falls back to these tables to show base context
 --      data (SMOD, RWI, population, facility counts, admin boundaries). A yellow
---      "Base Layers Only — No Impact Data Available" alert is shown, hurricane
+--      "Base Layers Only: No Impact Data Available" alert is shown, hurricane
 --      track/envelope controls and CCI/probability layer options are disabled,
 --      and the Report page displays a "No Impact Data" warning instead of the
 --      report template.
@@ -26,7 +26,7 @@
 --   admin_views/{COUNTRY}_admin{N}.parquet    -> BASE_ADMIN_GEOM_MAT
 --
 -- Custom data (geodb/custom/) is merged into these files by the pipeline
--- before upload — the app sees one authoritative file per country.
+-- before upload, the app sees one authoritative file per country.
 --
 -- Only applies when IMPACT_DATA_SOURCE=SQL. LOCAL and BLOB deployments read
 -- parquet files directly and are unaffected.
@@ -36,7 +36,7 @@
 --           is reconstructed in Python using mercantile.quadkey_to_tile() +
 --           mercantile.bounds() + shapely.geometry.box(). Avoids 100-400 bytes
 --           of WKB per row.
---   HCs:    No explicit lat/lon in source parquet — extracted at table creation
+--   HCs:    No explicit lat/lon in source parquet: extracted at table creation
 --           via ST_Y/ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(...)))) matching
 --           the pattern used by get_hc_impacts() in snowflake_utils.py.
 --   Admin:  Full polygon geometry stored as native GEOGRAPHY type. Queried back
@@ -73,8 +73,8 @@ USE SCHEMA TC_ECMWF;
 --     num_schools, num_hcs, num_shelters, num_wash
 --   New (PNG, ...): above + population, school_age_population,
 --     infant_population, adolescent_population
--- Variant column access returns NULL for absent columns — no discrimination needed.
--- NO geometry stored — reconstruct from quadkey using mercantile in Python.
+-- Variant column access returns NULL for absent columns; no discrimination needed.
+-- NO geometry stored. Reconstruct from quadkey using mercantile in Python.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS BASE_MERCATOR_TILE_MAT
 CLUSTER BY (COUNTRY, ZOOM_LEVEL)
@@ -126,7 +126,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/school_views/
 -- BASE_HC_MAT
 -- ----------------------------------------------------------------------------
 -- Source: hc_views/{COUNTRY}_health_centers.parquet
--- Columns from HealthSites.io (or custom override). No explicit lat/lon —
+-- Columns from HealthSites.io (or custom override). No explicit lat/lon:
 -- coordinates extracted from WKB geometry using ST_Y/ST_X, matching the
 -- pattern used by get_hc_impacts() in snowflake_utils.py.
 -- ----------------------------------------------------------------------------
@@ -195,7 +195,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/wash_views/
 -- BASE_ADMIN_GEOM_MAT
 -- ----------------------------------------------------------------------------
 -- Source: admin_views/{COUNTRY}_admin{N}.parquet
--- Admin boundary polygons with demographic data — no storm required.
+-- Admin boundary polygons with demographic data; no storm required.
 -- Pattern '.*_admin[0-9]+\.parquet' excludes CCI files (*_admin1_cci.parquet).
 --
 -- Geometry stored as native GEOGRAPHY type (WKB hex → TO_GEOGRAPHY).

@@ -1,7 +1,7 @@
 """
 Dashboard Styling Configuration
 Contains the color palette registry and legend helper for the map UI.
-all_colors is loaded from tile_palettes.json — the single source of truth for
+all_colors is loaded from tile_palettes.json, the single source of truth for
 all palette data shared between Python (legends) and JavaScript (MapLibre).
 """
 import json

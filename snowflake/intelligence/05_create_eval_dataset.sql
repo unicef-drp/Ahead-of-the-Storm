@@ -1,10 +1,10 @@
 -- ============================================================================
--- Evaluation dataset for HURRICANE_INTELLIGENCE — table and test cases
+-- Evaluation dataset for HURRICANE_INTELLIGENCE: table and test cases
 -- Native Cortex Agent Evaluations
 --
 -- GROUND_TRUTH_DATA:   JSON with ground_truth_invocations (tools expected to fire).
 --                      PARSE_JSON('{"ground_truth_invocations": []}') for refusal/wrong_hazard
---                      cases — no tools should fire. NULL is NOT allowed by Snowflake.
+--                      cases. No tools should fire. NULL is NOT allowed by Snowflake.
 -- GROUND_TRUTH_OUTPUT: Expected response text for answer_correctness scoring.
 --                      NULL = skip answer_correctness for this case (unverified).
 -- ============================================================================
@@ -25,11 +25,11 @@
 --
 -- 2. Pin the query to a specific forecast date (e.g. "28 October 2025 forecast")
 --    so GROUND_TRUTH_OUTPUT stays stable when new data arrives.
---    DO NOT use "latest forecast" if to fill in ground truth — it will
+--    DO NOT use "latest forecast" if to fill in ground truth; it will
 --    become stale the moment new data is ingested.
 --
 -- 3. Fill in GROUND_TRUTH_OUTPUT with the key facts the response must contain.
---    Keep it short — the answer_correctness judge checks semantic match, not exact
+--    Keep it short: the answer_correctness judge checks semantic match, not exact
 --    wording. Include: the key numeric value, storm, forecast date, wind threshold.
 --    Example: 'Expected population at risk: 260,194. Storm: MELISSA.
 --              Forecast: October 28, 2025 00Z UTC. Wind threshold: 50kt.'
@@ -514,7 +514,7 @@ INSERT INTO AOTS.TC_ECMWF.HURRICANE_INTELLIGENCE_EVAL_DATASET
     (ID, CATEGORY, INPUT_QUERY, GROUND_TRUTH_DATA, GROUND_TRUTH_OUTPUT, SHOULD_REFUSE, EXPECTED_QUERY_CLASSIFICATION)
 SELECT
     'TR-03', 'trend',
-    'Full situation report for Jamaica Melissa — first time this storm appears in data.',
+    'Full situation report for Jamaica Melissa, first time this storm appears in data.',
     PARSE_JSON('{"ground_truth_invocations": [
         {"tool_name": "get_country_iso3_code"},
         {"tool_name": "get_expected_impact_values"}
@@ -731,7 +731,7 @@ SELECT
 
 
 -- ── CATEGORY 7: Wrong hazard type ────────────────────────────────────────────
--- Agent must refuse — not answer using wind exposure data as a proxy.
+-- Agent must refuse, not answer using wind exposure data as a proxy.
 -- No tools should fire. GROUND_TRUTH_DATA uses empty invocations array (NULL not allowed by Snowflake).
 
 INSERT INTO AOTS.TC_ECMWF.HURRICANE_INTELLIGENCE_EVAL_DATASET
@@ -800,7 +800,7 @@ SELECT
     'HZ-07', 'wrong_hazard',
     'How many people are at risk from flooding AND wind exposure in Jamaica from Melissa?',
     PARSE_JSON('{"ground_truth_invocations": []}'),
-    'This question cannot be answered from available forecast data. Flood risk data is not available. Wind exposure data is available — ask separately if needed.',
+    'This question cannot be answered from available forecast data. Flood risk data is not available. Wind exposure data is available; ask separately if needed.',
     true, 'refusal'
 ;
 

@@ -127,7 +127,7 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
 
     IMPORTANT: IMPACT_DATA_SOURCE=SQL connects directly to Snowflake MAT tables and
     bypasses the file store (giga_store) entirely. It works regardless of IMPACT_DATA_STORE
-    (LOCAL/BLOB/SNOWFLAKE), as long as Snowflake credentials are configured — which the app
+    (LOCAL/BLOB/SNOWFLAKE), as long as Snowflake credentials are configured, which the app
     always requires for TC_TRACKS and PIPELINE_COUNTRIES anyway.
 
     Args:
@@ -195,13 +195,12 @@ def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
             result.columns = [_norm(c) for c in result.columns]
         source_label = f"SQL/{data_type}"
     else:
-        # STAGE path — original behaviour
+        # STAGE path: original behaviour
         from gigaspatial.core.io.readers import read_dataset
         result = read_dataset(filepath, giga_store)
         source_label = f"STAGE/{filepath}"
-        # Normalize column names to match SQL path convention (E_population, tile_id, probability…).
-        # Previously only CCI files were normalized; admin_impact files also need it so the
-        # tooltip can find E_population etc. regardless of how the pipeline wrote them.
+        # Normalize column names to match SQL path convention (E_population, tile_id, probability…)
+        # so the tooltip can find E_population etc. regardless of how the pipeline wrote them.
         if not result.empty:
             result.columns = [_norm(c) for c in result.columns]
 

@@ -1,8 +1,8 @@
 -- ==============================================================================
--- snowflake/notification/99_send_alert_TEST.sql — TEST VERSION
+-- snowflake/notification/99_send_alert_TEST.sql: TEST VERSION
 -- ==============================================================================
 -- Pinned to MELISSA / JAM for development and testing.
--- DO NOT deploy to production — use 02_send_alert_procedure.sql instead.
+-- DO NOT deploy to production. Use 02_send_alert_procedure.sql instead.
 -- Differences from production:
 --   - FORECAST_TIME pinned to 2025-10-27 00Z (not rolling -3 days)
 --   - COUNTRY_CODE = 'CUB' filter active
@@ -127,9 +127,9 @@ def main(session):
     }
 
     ss_scale = {
-        34:  {'category': 'Storm Force (34kt)',            'damage': 'storm-force conditions — downed branches, localized power outages'},
-        40:  {'category': 'Storm Force (40kt)',            'damage': 'storm-force conditions — downed trees, power outages'},
-        50:  {'category': 'Strong Storm Force (50kt)',     'damage': 'strong storm-force conditions — significant structural and tree damage'},
+        34:  {'category': 'Storm Force (34kt)',            'damage': 'storm-force conditions: downed branches, localized power outages'},
+        40:  {'category': 'Storm Force (40kt)',            'damage': 'storm-force conditions: downed trees, power outages'},
+        50:  {'category': 'Strong Storm Force (50kt)',     'damage': 'strong storm-force conditions: significant structural and tree damage'},
         64:  {'category': 'Category 1 Hurricane (64kt)',  'damage': 'very dangerous winds; roof, shingle and siding damage; power outages lasting days'},
         83:  {'category': 'Category 2 Hurricane (83kt)',  'damage': 'extremely dangerous winds; major roof and siding damage; near-total power loss lasting days to weeks'},
         96:  {'category': 'Category 3 Hurricane (96kt)',  'damage': 'devastating damage; roof decking removal; no electricity or water for days to weeks'},
@@ -324,7 +324,7 @@ def main(session):
             thresh_ctx = '; '.join(thresh_ctx_parts)
 
             if pop_delta is not None:
-                direction = 'INCREASING — up' if pop_delta > 0 else 'DECREASING — down'
+                direction = 'INCREASING (up)' if pop_delta > 0 else 'DECREASING (down)'
                 trend_str = (f"{direction} {fmt_n(abs(pop_delta))} from previous run "
                              f"({fmt_n(prev_pop)} → {fmt_n(exp['total_population'])} people at 50kt)")
             else:
@@ -374,7 +374,7 @@ def main(session):
             combined_prompt = (
                 'Generate three sections of HTML text for an alert email sent to '
                 'UNICEF emergency responders.\n\n'
-                'Output EXACTLY this structure — no other text before, between, or after the markers:\n'
+                'Output EXACTLY this structure (no other text before, between, or after the markers):\n'
                 '===SUMMARY===\n'
                 '(your summary here)\n'
                 '===NARRATIVE===\n'
@@ -383,9 +383,9 @@ def main(session):
                 '(your shift text here, or leave blank if Centroid shift in DATA is "not available")\n\n'
                 '--- SECTION REQUIREMENTS ---\n\n'
                 '===SUMMARY=== (1–2 sentences maximum)\n'
-                'The headline read — for someone who may only read this one line.\n'
+                'The headline read (for someone who may only read this one line).\n'
                 'Cover: storm name, country, 50kt exposure (people + children), top region at risk.\n'
-                'Make it urgent and human — this is the first thing a responder sees.\n'
+                'Make it urgent and human. This is the first thing a responder sees.\n'
                 'Do NOT mention trend, timing, or higher wind thresholds here.\n\n'
                 '===NARRATIVE=== (4–6 sentences)\n'
                 'MUST include:\n'
@@ -396,11 +396,11 @@ def main(session):
                 '- EVERY wind threshold in DATA with population > 0. For 64kt+: state '
                 'population AND damage consequences (from DATA). Do not omit these.\n'
                 '- Whether overall exposure is growing or shrinking vs the previous forecast\n'
-                'TONE: Brief an emergency response manager — explain consequences, not just '
+                'TONE: Brief an emergency response manager. Explain consequences, not just '
                 'numbers. The headline totals are already shown above; your value is the '
                 'risk profile and implications.\n\n'
                 '===SHIFT=== (2–3 sentences, or blank if Centroid shift is "not available")\n'
-                'Explain what the shift in forecast impact means — not just the numbers, '
+                'Explain what the shift in forecast impact means, not just the numbers, '
                 'but what it tells us about how the risk picture is evolving.\n'
                 'MUST include:\n'
                 '- Direction and distance of the shift\n'
@@ -410,7 +410,7 @@ def main(session):
                 'note that concentration of risk is increasing. Are areas seeing their first '
                 'meaningful exposure? Note that too.\n'
                 'LANGUAGE RULES:\n'
-                '- A decrease in expected exposure is a positive development — phrase it as '
+                '- A decrease in expected exposure is a positive development: phrase it as '
                 '"X fewer children at risk" or "reduced exposure", not "loses children"\n'
                 '- WRONG: "The storm has shifted" or "The storm track moved N km"\n'
                 '- RIGHT: "The latest forecast shows the expected impact footprint shifting '
@@ -419,7 +419,7 @@ def main(session):
                 'resources, where to focus response, or what responders should do)\n'
                 'This is a change in the probability distribution of impact, not a track move.\n\n'
                 '--- RULES FOR ALL THREE SECTIONS ---\n'
-                '- Valid HTML sentences only — no markdown, no bullet points\n'
+                '- Valid HTML sentences only: no markdown, no bullet points\n'
                 '- Never invent any number not present in DATA\n'
                 '- Never use: "ensemble", "probabilistic", "members", "spread", "percentile"\n'
                 '- Use conditional language for impacts: "could", "may", "risk of", "potential for"\n'
@@ -707,7 +707,7 @@ def main(session):
                 '<div style="border-top:1px solid #e8e8e8; margin:18px 0;"></div>'
 
                 '<h3 style="color:#1CABE2; border-left:4px solid #1CABE2; padding-left:10px; margin:0 0 12px; font-size:1em; text-transform:uppercase; letter-spacing:0.5px;">'
-                'Expected Impact — Storm-Force Winds (50kt)</h3>'
+                'Expected Impact: Storm-Force Winds (50kt)</h3>'
                 + impact_bullets + map_section + admin_table + shift_section + timing_box +
                 '<div style="border-top:1px solid #e8e8e8; margin:18px 0;"></div>'
 
@@ -728,13 +728,13 @@ def main(session):
                 '<p style="font-size:0.86em; color:#999; border-top:1px solid #e0e0e0; padding-top:10px; margin:0;">'
                 '&#9888; This alert was generated automatically by an AI system based on probabilistic '
                 'model outputs, not observed conditions. Numbers reflect expected values across the '
-                'forecast ensemble — figures should be carefully reviewed and verified before use.</p>'
+                'forecast ensemble; figures should be carefully reviewed and verified before use.</p>'
                 '</div>'
                 '<div style="background:#1CABE2; padding:10px 24px;"></div>'
                 '</div>'
             )
 
-            subject = f'ALERT: {storm_name} — {pair["country_name"]}'
+            subject = f'ALERT: {storm_name}, {pair["country_name"]}'
 
             # ── 5: Cache in ALERT_SENT_LOG ────────────────────────────────────
             session.sql(f"""

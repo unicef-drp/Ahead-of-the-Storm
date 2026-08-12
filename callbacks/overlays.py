@@ -50,7 +50,7 @@ _LAYER_DISPLAY_NAMES = {
 #   A server callback sends GeoJSON through Dash's _dash-update-component POST,
 #   which nginx caps at 50 MB and Dash serialises synchronously. Large countries
 #   (e.g. Mexico with ~30 k schools) exceed the limit and return HTTP 413.
-#   An async fetch runs entirely in the browser — Dash never touches the payload.
+#   An async fetch runs entirely in the browser; Dash never touches the payload.
 # =============================================================================
 
 _EMPTY_FC = '{"type":"FeatureCollection","features":[]}'

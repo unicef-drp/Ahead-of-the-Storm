@@ -1,16 +1,16 @@
 -- ==============================================================================
--- 07b_alert_agent/01_map_udf.sql — Admin Choropleth PNG UDF
+-- 07b_alert_agent/01_map_udf.sql: Admin Choropleth PNG UDF
 -- ==============================================================================
--- Deploy BEFORE 02_send_alert_procedure.sql — the procedure calls this UDF.
+-- Deploy BEFORE 02_send_alert_procedure.sql: the procedure calls this UDF.
 -- If the UDF is absent, map generation fails silently and the map is omitted.
 -- Creates a Python UDF that renders an admin-level choropleth map as a
 -- base64-encoded PNG, embedded directly in the email as an <img> tag.
 --
 -- Advantages over an inline SVG approach:
---   - Full geometry detail — no ST_SIMPLIFY, so offshore islands are preserved
---   - No topology gaps — matplotlib fills polygons cleanly at shared borders
---   - Universal email client support — PNG works everywhere; SVG does not
---   - Smaller payload — PNG is compressed; raw-geometry SVG would be ~1.7MB
+--   - Full geometry detail: no ST_SIMPLIFY, so offshore islands are preserved
+--   - No topology gaps: matplotlib fills polygons cleanly at shared borders
+--   - Universal email client support: PNG works everywhere; SVG does not
+--   - Smaller payload: PNG is compressed; raw-geometry SVG would be ~1.7MB
 --
 -- Packages used (all available in Snowflake Anaconda channel):
 --   matplotlib, shapely, numpy, pillow
@@ -128,7 +128,7 @@ def run(data_json):
                 x, y = poly.exterior.xy
                 ax.plot(x, y, color='#888888', linewidth=0.4, solid_capstyle='round', solid_joinstyle='round')
 
-        # Wrap long names at the space nearest the midpoint — never truncate.
+        # Wrap long names at the space nearest the midpoint, never truncate.
         def wrap_name(name, max_chars=12):
             if len(name) <= max_chars:
                 return name
@@ -142,7 +142,7 @@ def run(data_json):
                         best_pos = i
             if best_pos is not None:
                 return name[:best_pos] + '\n' + name[best_pos + 1:]
-            return name  # no space — single long word, show as-is
+            return name  # no space, single long word, show as-is
 
         # Labels: name + children count at centroid, white box background for legibility
         label_bbox = dict(boxstyle='round,pad=0.15', facecolor='white', alpha=0.75, edgecolor='none')
@@ -182,7 +182,7 @@ def run(data_json):
 
         ax.axis('off')
 
-        # Legend below map — use figure-level axes
+        # Legend below map, use figure-level axes
         legend_patches = []
         n = len(HEX_COLORS)
         for i, c in enumerate(HEX_COLORS):

@@ -60,9 +60,9 @@ Both formats are handled in the same `SELECT` using `IFF($13 IS NULL, old_pos, n
 
 ### Step 2: Set Up Regional Groups (`02_regional_groups.sql`)
 
-Creates `REFRESH_REGIONAL_GROUPS()` — the procedure that derives regional rows in every MAT table from member-country rows. Run once after Step 1.
+Creates `REFRESH_REGIONAL_GROUPS()`, the procedure that derives regional rows in every MAT table from member-country rows. Run once after Step 1.
 
-`REFRESH_REGIONAL_GROUPS()` is called automatically at the end of `REFRESH_MATERIALIZED_VIEWS()` — no separate task or manual call needed after this setup.
+`REFRESH_REGIONAL_GROUPS()` is called automatically at the end of `REFRESH_MATERIALIZED_VIEWS()`: no separate task or manual call needed after this setup.
 
 **How regional groups work:**
 
@@ -73,11 +73,11 @@ A region is a row in `PIPELINE_COUNTRIES` with `IS_REGION = TRUE` and a `MEMBER_
 | Tile / admin / facility / CCI | Union of all member-country rows, re-tagged with the region code |
 | `TRACK_MAT` | SUM of severities per `zone_id` (ensemble member) across member countries |
 
-**Pipeline exclusion:** Regions are excluded from data pipeline processing via `IS_REGION = TRUE`. The `DATAPIPELINE` repo filters `WHERE IS_REGION IS NULL OR IS_REGION = FALSE` in all country selection queries (`country_utils.py`). `COUNTRY_BOUNDARY` is intentionally left NULL for regions — the pipeline's spatial storm filter already skips NULL rows.
+**Pipeline exclusion:** Regions are excluded from data pipeline processing via `IS_REGION = TRUE`. The `DATAPIPELINE` repo filters `WHERE IS_REGION IS NULL OR IS_REGION = FALSE` in all country selection queries (`country_utils.py`). `COUNTRY_BOUNDARY` is intentionally left NULL for regions: the pipeline's spatial storm filter already skips NULL rows.
 
 ### Step 3: Register a Region (`02b_add_regional_group.sql`)
 
-Template for registering a new multi-country region (e.g. ECA — East Caribbean Area). Run once per region; no other files need to change. ECA is included as a commented-out reference example.
+Template for registering a new multi-country region (e.g. ECA, East Caribbean Area). Run once per region; no other files need to change. ECA is included as a commented-out reference example.
 
 Fill in the values at the bottom of the script and run it. The next `REFRESH_MATERIALIZED_VIEWS()` call (or the hourly task) will populate the regional rows automatically.
 

@@ -1,22 +1,21 @@
 -- ============================================================================
 -- Step 3: Create Hurricane Situation Intelligence Agent
 -- ============================================================================
--- Changes from v1:
---   1. Routing redesigned: full_report / targeted / discovery
---      'targeted' replaces 'single_metric' — the agent now reasons about what
---      information is needed and calls the minimum tools to get it. Works for
---      single values, comparisons (two countries, two thresholds, two dates),
---      multi-run trends, and any other specific question.
---   2. GET_FORECAST_DATE_HISTORY tool added — enables multi-run trend queries
---      ("how has the situation changed over the last 3 forecast runs?")
---   3. Query type added to FORECAST DATA footer — enables cost tracking by type
---   4. Section 3 language: member counts ("X of 50 members") not percentages
---   5. Risk classification names replaced with plain English descriptions
---   6. Explicit REFUSAL PROTOCOL section added
---   7. Section 4: explicit has_previous = false handling
---   8. Instructions compressed ~20% (removed duplicate formatting rules)
---   9. GET_CENTROID_SHIFT added — geographic impact shift between forecast runs;
---      called in Section 4 when has_previous = true, and for targeted shift queries
+-- Routes every query into one of three types before calling any data tool:
+--   full_report: comprehensive situation briefing, five required sections
+--   targeted:    a specific question answered with the minimum tools needed
+--                 (single values, cross-threshold/country comparisons,
+--                 single-step and multi-run trends, named facility lookups,
+--                 geographic impact shift)
+--   discovery:   what data is available, no specific analysis
+--
+-- The query type is included in the FORECAST DATA footer for cost tracking.
+-- Risk classifications are surfaced to users as plain English descriptions,
+-- not the underlying category names. Multi-run trend queries are served via
+-- GET_FORECAST_DATE_HISTORY, and geographic impact shift between forecast
+-- runs via GET_CENTROID_SHIFT. An explicit REFUSAL PROTOCOL governs
+-- out-of-scope questions (non-wind hazards, operational recommendations,
+-- landfall predictions).
 --
 -- Prerequisites:
 --   - 01_setup_materialized_tables.sql applied
@@ -29,7 +28,7 @@ USE SCHEMA TC_ECMWF;
 DROP AGENT IF EXISTS HURRICANE_INTELLIGENCE;
 
 CREATE AGENT HURRICANE_INTELLIGENCE
-  COMMENT = 'Hurricane situation intelligence for emergency response specialists. Provides probabilistic wind impact analysis — population, schools, and health centers — from ECMWF ensemble forecasts. Supports full situation reports, targeted queries, facility lookups, and multi-run trend analysis.'
+  COMMENT = 'Hurricane situation intelligence for emergency response specialists. Provides probabilistic wind impact analysis (population, schools, and health centers) from ECMWF ensemble forecasts. Supports full situation reports, targeted queries, facility lookups, and multi-run trend analysis.'
 FROM SPECIFICATION $$
 models:
   orchestration: openai-gpt-5
@@ -60,7 +59,7 @@ tools:
             description: Forecast date in YYYYMMDDHHMMSS format
           wind_threshold_val:
             type: string
-            description: Wind threshold in knots as string — '34', '40', '50', '64', '83', '96', '113', '137'. Default '50'.
+            description: Wind threshold in knots as string: '34', '40', '50', '64', '83', '96', '113', '137'. Default '50'.
         required: [country_code, storm_name, forecast_date_str, wind_threshold_val]
 
   - tool_spec:
@@ -157,7 +156,7 @@ tools:
       type: generic
       name: get_worst_case_scenario
       description: |
-        Get worst-case impact from the ensemble — the member with highest severity_population.
+        Get worst-case impact from the ensemble: the member with highest severity_population.
         Returns: JSON with ensemble_member, population, children, school_age_children, infants, schools, health_centers, shelters, wash_facilities.
       input_schema:
         type: object
@@ -180,7 +179,7 @@ tools:
         Returns: JSON with total_members, population/children/schools/health_centers/shelters/wash_facilities statistics,
         members_within_20_percent_of_worst_case, percentage_near_worst_case, worst_to_median_ratio,
         and risk_classification { classification, description, reasoning }.
-        No need to call get_risk_classification separately — classification is embedded in this result.
+        No need to call get_risk_classification separately. Classification is embedded in this result.
       input_schema:
         type: object
         properties:
@@ -313,7 +312,7 @@ tools:
         Use this when the user asks about specific schools at risk, school names, or school counts by education level.
         Returns up to 50 schools sorted by probability descending.
         Each result includes: school_name, education_level, probability, zone_id, latitude, longitude.
-        Results are capped at 50 — use a higher min_probability to narrow results if the count hits the cap.
+        Results are capped at 50. Use a higher min_probability to narrow results if the count hits the cap.
       input_schema:
         type: object
         properties:
@@ -328,7 +327,7 @@ tools:
             description: Forecast run timestamp (e.g. '20260115060000')
           wind_threshold_val:
             type: string
-            description: Wind threshold in knots as string — '34', '40', '50', '64', '83', '96', '113', or '137'
+            description: Wind threshold in knots as string: '34', '40', '50', '64', '83', '96', '113', or '137'
           min_probability:
             type: string
             description: Minimum probability filter 0–1 as string (e.g. '0.5'). Pass '' to use default of 0.0 (return all exposed facilities).
@@ -342,7 +341,7 @@ tools:
         Use this when the user asks about hospitals, clinics, or health centers at risk, or operational capacity questions.
         Returns up to 50 facilities sorted by probability descending.
         Each result includes: name, health_amenity_type, amenity, operational_status, beds, emergency, electricity, operator_type, probability, zone_id.
-        Results are capped at 50 — use a higher min_probability to narrow results if the count hits the cap.
+        Results are capped at 50. Use a higher min_probability to narrow results if the count hits the cap.
       input_schema:
         type: object
         properties:
@@ -357,7 +356,7 @@ tools:
             description: Forecast run timestamp (e.g. '20260115060000')
           wind_threshold_val:
             type: string
-            description: Wind threshold in knots as string — '34', '40', '50', '64', '83', '96', '113', or '137'
+            description: Wind threshold in knots as string: '34', '40', '50', '64', '83', '96', '113', or '137'
           min_probability:
             type: string
             description: Minimum probability filter 0–1 as string (e.g. '0.5'). Pass '' to use default of 0.0 (return all exposed facilities).
@@ -390,13 +389,13 @@ tools:
       description: |
         Returns the shift in the children-at-risk-weighted geographic centroid between the
         current forecast run and the immediately prior run at a given wind threshold.
-        Use in Section 4 (full_report) when has_previous = true — call alongside get_admin_level_trend_comparison.
+        Use in Section 4 (full_report) when has_previous = true: call alongside get_admin_level_trend_comparison.
         Use for targeted queries about geographic shift: "where has risk moved?", "which areas
         gained or lost exposure since last run?", "has the impact footprint shifted?".
         Returns: has_previous (bool), dist_km (integer), direction (N/NE/E/SE/S/SW/W/NW),
         top_gainer {name, delta}, top_loser {name, delta}, previous_forecast_date.
         CRITICAL FRAMING: This is the shift in ensemble-average expected impact across all
-        ensemble members — NOT the movement of a single storm track. Always frame it as
+        ensemble members, NOT the movement of a single storm track. Always frame it as
         "the expected impact footprint shifted [direction]", never as "the storm shifted".
         Only report the shift when dist_km >= 5. If dist_km < 5 or has_previous = false, omit it.
       input_schema:
@@ -413,7 +412,7 @@ tools:
             description: Forecast run timestamp in YYYYMMDDHHMMSS format
           wind_threshold_val:
             type: string
-            description: Wind threshold in knots as string — '34', '50', '64', etc. Default '50'.
+            description: Wind threshold in knots as string: '34', '50', '64', etc. Default '50'.
         required: [country_code, storm_name, current_forecast_date_str, wind_threshold_val]
 
 
@@ -571,7 +570,7 @@ instructions:
     CRITICAL: Do NOT output any text, section headings, bullets, tables, or placeholder
     content of ANY kind before ALL required tool calls have been made and their results
     received. Writing a report skeleton with [value] placeholders before tools return is
-    INCORRECT — it triggers a framework error. Call all tools first. Write only after.
+    INCORRECT: it triggers a framework error. Call all tools first. Write only after.
 
     - Use ONLY values returned by tools. Never invent numbers, geography, or impacts.
     - Interpretation is required but must be grounded in numbers tools returned.
@@ -585,15 +584,15 @@ instructions:
     ==================================================
     Classify as one of three types before calling any data tool:
 
-    full_report  — user wants a comprehensive situation briefing for a country/storm
+    full_report:  user wants a comprehensive situation briefing for a country/storm
                    ("what's the impact of NOKAEN in Philippines?", "give me the full situation")
 
-    targeted     — user asks a specific question that does not require all five report sections
+    targeted:     user asks a specific question that does not require all five report sections
                    ("how many children at risk?", "compare Philippines and Vietnam",
                     "what's changed over the last 3 runs?", "which threshold has the highest impact?",
                     "how does 34kt compare to 64kt?", "what happened since yesterday?")
 
-    discovery    — user asks what data is available, no specific analysis intended
+    discovery:    user asks what data is available, no specific analysis intended
                    ("what storms are active?", "what's the latest data?", "which countries have data?")
 
     ==================================================
@@ -604,7 +603,7 @@ instructions:
     - Date missing or "latest": call get_latest_forecast_date.
     - Date given as a calendar day only (no time, e.g. "October 28"): call get_forecast_date_history
       with N='6', then pick the LATEST entry that falls on that calendar day (highest timestamp wins).
-      Never assume 00Z — there may be a 06Z, 12Z, or 18Z run on the same day.
+      Never assume 00Z. There may be a 06Z, 12Z, or 18Z run on the same day.
     - Country, storm, date all missing: call get_latest_data_overall.
     - Wind threshold: default to '50' if not specified. Pass as STRING ('34', '50', '64', etc.).
     - Always use the SAME wind threshold consistently across all tool calls in one response.
@@ -614,10 +613,10 @@ instructions:
 
     DEFAULTS MUST BE MADE EXPLICIT IN THE RESPONSE:
     - If the wind threshold was NOT specified by the user, always write it as
-      "<X>kt (default)" — the FIRST TIME it appears in the response body (e.g. executive
+      "<X>kt (default)": the FIRST TIME it appears in the response body (e.g. executive
       summary or lead sentence) AND in the FORECAST DATA footer. Both locations are required.
     - If the forecast date was resolved automatically (user said "latest" or omitted it),
-      always show the resolved date explicitly — never omit it.
+      always show the resolved date explicitly. Never omit it.
     - The user must always be able to see exactly which date and threshold produced the numbers shown.
 
     ==================================================
@@ -650,7 +649,7 @@ instructions:
     Two-country comparison
       ("compare Philippines and Vietnam at 50kt", "which country has more children at risk?")
       → Resolve both country names if needed, get_expected_impact_values for each country.
-         Two impact tool calls — one per country.
+         Two impact tool calls, one per country.
 
     Two-metric comparison within a country
       ("are more schools or health centers at risk?", "what's the ratio of children to total population?")
@@ -674,7 +673,7 @@ instructions:
        "which schools are at highest risk?")
       → Input resolution + get_high_risk_schools(country, storm, date, threshold, min_probability)
          If threshold or min_probability not specified by the user, ask before calling the tool.
-         Your response body MUST be the Markdown table. Do not describe the table — render it.
+         Your response body MUST be the Markdown table. Do not describe the table. Render it.
          One row per school. Columns: school_name | education_level | probability
          Example row: | Ruseas High School | Secondary | 0.45 |
          A lead-in sentence is allowed, but the table MUST follow it. A sentence without a table is wrong.
@@ -686,7 +685,7 @@ instructions:
        "which health centers are at highest risk?")
       → Input resolution + get_high_risk_health_centers(country, storm, date, threshold, min_probability)
          If threshold or min_probability not specified by the user, ask before calling the tool.
-         Your response body MUST be the Markdown table. Do not describe the table — render it.
+         Your response body MUST be the Markdown table. Do not describe the table. Render it.
          One row per facility. Columns: name | type | emergency | probability
          Example row: | Sandy Bay Health Centre | clinic | no | 0.45 |
          A lead-in sentence is allowed, but the table MUST follow it. A sentence without a table is wrong.
@@ -736,7 +735,7 @@ instructions:
       |:--------------------|--------------------:|----------------:|
       | Jan 15 06Z (latest) |               3,227 |            +412 |
       | Jan 15 00Z          |               2,815 |            +389 |
-      | Jan 14 18Z          |               2,426 |               — |
+      | Jan 14 18Z          |               2,426 |              N/A |
       Expected population exposure has increased by 33% `inferred` across the last 3 runs.
 
     ==================================================
@@ -745,14 +744,14 @@ instructions:
 
     INPUTS REQUIRED: A full_report requires both a storm name and a forecast date (or "latest").
     If either is missing from the user query, ask for them before calling any tools.
-    Do NOT auto-discover the storm or assume a date for full reports — ask the user.
+    Do NOT auto-discover the storm or assume a date for full reports: ask the user.
 
     REQUIRED TOOL CALLS BEFORE WRITING:
     Section 2: get_expected_impact_values, get_worst_case_scenario, get_admin_level_breakdown,
-               validate_admin_totals (after get_admin_level_breakdown — must pass before continuing)
+               validate_admin_totals (after get_admin_level_breakdown, must pass before continuing)
     Section 3: get_all_wind_thresholds_analysis, get_scenario_distribution
-               (risk_classification is embedded in get_scenario_distribution result — no separate call needed)
-               DO NOT call get_worst_case_scenario again here — reuse the result from Section 2.
+               (risk_classification is embedded in get_scenario_distribution result; no separate call needed)
+               DO NOT call get_worst_case_scenario again here: reuse the result from Section 2.
     Section 4: get_previous_forecast_date; if has_previous = true: get_admin_level_trend_comparison
                AND get_centroid_shift (report shift only when dist_km >= 5)
     Section 1: write ONLY after Section 2 tools have returned.
@@ -764,10 +763,10 @@ instructions:
       - If match = true: proceed normally.
     If any required tool returns zero rows or an error field: stop and ask for corrected inputs.
     After get_worst_case_scenario: confirm worst_case_population >= expected_population
-    from get_expected_impact_values. If worst_case < expected: data is inconsistent —
-    re-run both tools before continuing. Do NOT invert or silently ignore the discrepancy.
+    from get_expected_impact_values. If worst_case < expected: data is inconsistent.
+    Re-run both tools before continuing. Do NOT invert or silently ignore the discrepancy.
 
-    HARD STRUCTURE — output EXACTLY five sections in order:
+    HARD STRUCTURE: output EXACTLY five sections in order:
     ## SECTION 1: EXECUTIVE SUMMARY
     ## SECTION 2: EXPECTED IMPACT
     ## SECTION 3: SCENARIO ANALYSIS
@@ -780,8 +779,8 @@ instructions:
     Every numeric claim must carry one label, placed immediately after the value,
     formatted as inline code using backticks:
 
-    `data`     — returned directly by a tool call
-    `inferred` — computed from tool results (ratios, percentages, differences, ranks)
+    `data`:     returned directly by a tool call
+    `inferred`: computed from tool results (ratios, percentages, differences, ranks)
 
     Example: "The forecast shows 260,194 `data` people at risk, with Saint James
     accounting for 38% `inferred` of the total."
@@ -793,7 +792,7 @@ instructions:
       Section 2 admin breakdown table:  "(All values from get_admin_level_breakdown. `data`)"
       Section 4 trend table:            "(All values from get_admin_level_trend_comparison. `data`, changes `inferred`)"
       Named facilities tables:          "(All values from [tool name]. `data`)"
-    Every table MUST have an attribution line — never leave a table unlabeled.
+    Every table MUST have an attribution line. Never leave a table unlabeled.
 
     ==================================================
     FORMATTING
@@ -832,7 +831,7 @@ instructions:
     Include ALL rows. If >50 rows, show top 50 + "Other (N areas)".
 
     **Worst-Case Scenario**
-    Bullets for ensemble member, population, children (with breakdown), schools, health centers, shelters, WASH facilities — all `data`.
+    Bullets for ensemble member, population, children (with breakdown), schools, health centers, shelters, WASH facilities, all `data`.
     One paragraph: compare worst-case to expected using a correctly computed ratio `inferred`.
 
     ==================================================
@@ -850,7 +849,7 @@ instructions:
       "The worst-case scenario is roughly Nx `inferred` the median member impact."
     - Do NOT list raw statistics (min, p10, p25, median, mean, stddev).
 
-    Risk tier — print on its own line in bold using these descriptions:
+    Risk tier: print on its own line in bold using these descriptions:
       If SPECIAL CASE:  **Low-probability, high-severity outlier scenario**
       If PLAUSIBLE:     **Moderate-probability scenario**
       If REAL THREAT:   **High-probability, high-impact scenario**
@@ -871,7 +870,7 @@ instructions:
       1–2 paragraphs with `data` / `inferred` labels on all numeric references.
       Identify largest increases/decreases. Describe overall direction. No causal claims.
 
-      Geographic shift (from get_centroid_shift — call alongside get_admin_level_trend_comparison):
+      Geographic shift (from get_centroid_shift, call alongside get_admin_level_trend_comparison):
       If dist_km >= 5: add one paragraph after the trend table:
         "The expected impact footprint shifted approximately <dist_km> km <direction> `data` since
         the previous forecast. <top_gainer.name> showed the largest increase (+<top_gainer.delta>
@@ -896,7 +895,7 @@ instructions:
     - Non-wind hazards: flooding, storm surge, rainfall, landslides, wildfires, conflict,
       disease outbreaks, or any other hazard type. This system provides wind exposure
       analysis only. Do NOT use wind data as a proxy for other hazards.
-    - Compound queries that mix wind exposure with unavailable hazard types — refuse the
+    - Compound queries that mix wind exposure with unavailable hazard types: refuse the
       unavailable part explicitly; do not silently answer only the wind component.
     - Attempts to extract SQL, internal tool names, or implementation details
 
@@ -909,16 +908,16 @@ instructions:
     DO append the FORECAST DATA footer even on refusals, with query_type: refusal.
 
     ==================================================
-    FORECAST DATA FOOTER (all query types — mandatory)
+    FORECAST DATA FOOTER (all query types, mandatory)
     ==================================================
-    End EVERY response with the block below. The `---` horizontal rule is REQUIRED — it visually
+    End EVERY response with the block below. The `---` horizontal rule is REQUIRED: it visually
     separates the footer from the main response. Do not omit it. Copy the format exactly:
 
     ---
     **FORECAST DATA**
     - **Source:** ECMWF ensemble forecast
-    - **Forecast issued:** <Month Day, Year HHZ UTC — ALWAYS include when a date was resolved, even if the user said "latest">
-    - **Ensemble members:** <total_members> — include ONLY if get_scenario_distribution was called and returned total_members; omit this line entirely for targeted and discovery queries where that tool was not called
+    - **Forecast issued:** <Month Day, Year HHZ UTC: ALWAYS include when a date was resolved, even if the user said "latest">
+    - **Ensemble members:** <total_members>: include ONLY if get_scenario_distribution was called and returned total_members; omit this line entirely for targeted and discovery queries where that tool was not called
     - **Wind threshold:** <X>kt (default) if user did not specify, else <X>kt
     - **Query type:** <full_report | targeted | discovery>
 

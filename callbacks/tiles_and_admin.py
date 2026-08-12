@@ -4,19 +4,19 @@ Tile and admin layer callbacks.
 Controls the Leaflet choropleth layers (raster tiles and admin polygons) that display
 impact data on the map. Responsibilities:
 
-- `juggle_toggles_*` — compute hideout dicts and disable radio options whenever the
+- `juggle_toggles_*`: compute hideout dicts and disable radio options whenever the
   selected layer, probability toggle, or in-need switch changes. Both tile and admin
   variants delegate to `_compute_layer_toggle_outputs`.
-- `toggle_probability_*` — independently update the probability hideout and its legend
+- `toggle_probability_*`: independently update the probability hideout and its legend
   min/max labels from pre-computed stats stored in `tiles-stats-store` / `admin-stats-store`.
-- `update_in_need_*_switches_disabled` — enable the "people in need" switches only when
+- `update_in_need_*_switches_disabled`: enable the "people in need" switches only when
   population/children-total is selected AND probability overlay is active AND vuln data exists.
-- `toggle_tiles_legend` / `toggle_admin_legend` — show exactly one legend panel at a time,
+- `toggle_tiles_legend` / `toggle_admin_legend`: show exactly one legend panel at a time,
   updating min/max labels from stats without iterating features.
-- `_switch_styles` / `update_in_need_switch_styles` — colour-code the in-need toggle
+- `_switch_styles` / `update_in_need_switch_styles`: colour-code the in-need toggle
   switches (green = at-risk active, blue = in-need active).
-- `toggle_layer_mode` — swap visibility of the tiles vs. admin control panels.
-- Infrastructure legend factory loop — show/hide per-layer infrastructure legends.
+- `toggle_layer_mode`: swap visibility of the tiles vs. admin control panels.
+- Infrastructure legend factory loop: show/hide per-layer infrastructure legends.
 """
 import logging
 
@@ -29,7 +29,7 @@ from layouts.panels import _SWITCH_TRACK_BASE, _SWITCH_LABEL_BASE
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# SECTION: CONSTANTS — LAYER PROPERTY MAPS
+# SECTION: CONSTANTS - LAYER PROPERTY MAPS
 # Maps radio-group selection values to GeoJSON/stats property names. Used by
 # toggle callbacks and load_all_layers (imported by dashboard.py).
 # =============================================================================
@@ -57,12 +57,12 @@ _LAYER_TO_IN_NEED_PROP = {
 
 
 # =============================================================================
-# SECTION: CONSTANTS — DISPLAY AND STYLING
+# SECTION: CONSTANTS - DISPLAY AND STYLING
 # Derived maps for probability overlay and in-need variants.
 # =============================================================================
 
 # Maps radio selection → expected-value property name for the probability overlay.
-# For base-layer-only props (settlement, rwi) there is no E_ variant — fall back to raw probability.
+# For base-layer-only props (settlement, rwi) there is no E_ variant, fall back to raw probability.
 _LAYER_TO_PROB_PROP = {
     "population":     "E_population",
     "children-total": "E_children_total",
@@ -171,7 +171,7 @@ def _compute_layer_toggle_outputs(selected_layer, prob_checked, base_layers_only
 
 
 # =============================================================================
-# SECTION: TILE LAYER CALLBACKS — JUGGLE AND IN-NEED
+# SECTION: TILE LAYER CALLBACKS - JUGGLE AND IN-NEED
 # Control which radio options are enabled and compute hideout dicts for the tile
 # raster layer.
 # =============================================================================
@@ -223,7 +223,7 @@ def update_in_need_tiles_switches_disabled(layer, prob_checked, tiles_stats):
 
 
 # =============================================================================
-# SECTION: ADMIN LAYER CALLBACKS — JUGGLE AND IN-NEED
+# SECTION: ADMIN LAYER CALLBACKS - JUGGLE AND IN-NEED
 # Same as tile layer callbacks but for admin polygon choropleth.
 # =============================================================================
 

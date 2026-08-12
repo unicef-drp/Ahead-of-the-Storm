@@ -1,4 +1,4 @@
-# Snowflake Intelligence — Hurricane Situation Analysis
+# Snowflake Intelligence: Hurricane Situation Analysis
 
 SQL scripts to set up the Snowflake Cortex AI agent (`HURRICANE_INTELLIGENCE`) that generates actionable intelligence reports from the materialized tables.
 
@@ -6,17 +6,17 @@ SQL scripts to set up the Snowflake Cortex AI agent (`HURRICANE_INTELLIGENCE`) t
 
 The agent queries the `*_MAT` tables (set up in `../mat_tables/`) using 18 stored procedures as tools, and generates five-section situation reports for emergency response specialists:
 
-1. **Executive Summary** — threat level and key concerns
-2. **Expected Impact** — probabilistic impact values with admin breakdowns
-3. **Scenario Analysis** — ensemble distribution and worst-case likelihood
-4. **Trend Analysis** — comparison between current and previous forecast runs
-5. **Key Takeaways** — critical findings
+1. **Executive Summary**: threat level and key concerns
+2. **Expected Impact**: probabilistic impact values with admin breakdowns
+3. **Scenario Analysis**: ensemble distribution and worst-case likelihood
+4. **Trend Analysis**: comparison between current and previous forecast runs
+5. **Key Takeaways**: critical findings
 
 ---
 
 ## Prerequisites
 
-- MAT tables set up and populated — run `../mat_tables/` scripts first
+- MAT tables set up and populated: run `../mat_tables/` scripts first
 - Snowflake account with ACCOUNTADMIN role (or `CREATE SNOWFLAKE INTELLIGENCE ON ACCOUNT` privilege)
 - Warehouse `SF_AI_WH` must exist (used for agent queries; kept separate from `AOTS_WH` for cost monitoring)
 
@@ -37,7 +37,7 @@ ADD AGENT HURRICANE_INTELLIGENCE;
 
 ### Step 2: Create Agent (`02_create_agent.sql`)
 
-Creates `HURRICANE_INTELLIGENCE` — the Cortex AI agent.
+Creates `HURRICANE_INTELLIGENCE`, the Cortex AI agent.
 
 ### Step 3: Create Stored Procedures (`03_create_stored_procedures.sql`)
 
@@ -45,7 +45,7 @@ Creates **18 stored procedures** that serve as agent tools. All query `*_MAT` ta
 
 | # | Procedure | Description |
 |---|---|---|
-| 1 | `GET_EXPECTED_IMPACT_VALUES` | Expected (probabilistic) impact — population, schools, HCs, shelters, WASH |
+| 1 | `GET_EXPECTED_IMPACT_VALUES` | Expected (probabilistic) impact: population, schools, HCs, shelters, WASH |
 | 2 | `GET_SINGLE_METRIC` | One named metric efficiently (13 supported metrics) |
 | 3 | `GET_WORST_CASE_SCENARIO` | Worst-case ensemble member from `TRACK_MAT` |
 | 4 | `GET_SCENARIO_DISTRIBUTION` | Distribution statistics + risk classification across ensemble members |
@@ -81,7 +81,7 @@ Returns the shift in the **children-at-risk-weighted geographic centroid** betwe
 }
 ```
 
-This is **not** the movement of a single storm track — it is the change in where the expected impact (averaged across all 50 ensemble members) is concentrated geographically.
+This is **not** the movement of a single storm track. It is the change in where the expected impact (averaged across all 50 ensemble members) is concentrated geographically.
 
 **Important implementation note:** `GET_PREVIOUS_FORECAST_DATE` is a stored procedure and must be called with `CALL` syntax inside `snowflake.createStatement`, not as a UDF in a `SELECT`. The result is a JSON string that needs `JSON.parse()` before use.
 
@@ -128,12 +128,12 @@ The agent handles missing parameters gracefully:
 
 ## Key Agent Behaviour Rules
 
-- **Date normalisation**: all procedures use `RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')` on every date WHERE clause — handles 8-digit, 14-digit, and ISO formats.
-- **Calendar-day date resolution**: when user gives a date with no time (e.g. "28 October 2025"), agent must call `get_forecast_date_history` with N=6 and pick the LATEST entry on that calendar day — never assume 00Z.
-- **Named facility tables**: `GET_HIGH_RISK_SCHOOLS` and `GET_HIGH_RISK_HEALTH_CENTERS` return up to 20 results. Agent must render the full Markdown table — do not describe the table, render it.
+- **Date normalisation**: all procedures use `RPAD(REGEXP_REPLACE(?, '[^0-9]', ''), 14, '0')` on every date WHERE clause, handles 8-digit, 14-digit, and ISO formats.
+- **Calendar-day date resolution**: when user gives a date with no time (e.g. "28 October 2025"), agent must call `get_forecast_date_history` with N=6 and pick the LATEST entry on that calendar day; never assume 00Z.
+- **Named facility tables**: `GET_HIGH_RISK_SCHOOLS` and `GET_HIGH_RISK_HEALTH_CENTERS` return up to 20 results. Agent must render the full Markdown table: do not describe the table, render it.
 - **Context reuse prevention**: agent re-runs tools fresh every query even if date/storm appears in conversation history.
 - **Full report requires storm + date**: if either is missing from a full_report query, agent must ask before calling any tools.
-- **Provenance labels**: `data` / `inferred` — no brackets, after the value. Every table requires a table-level attribution line immediately below it.
+- **Provenance labels**: `data` / `inferred`, no brackets, after the value. Every table requires a table-level attribution line immediately below it.
 - **Refusal must be clean and final**: one sentence stating what is out of scope, then stop. No alternatives or workarounds.
 
 ---
@@ -146,7 +146,7 @@ Agent quality is measured with Snowflake Native Cortex Agent Evaluations. Datase
 
 | Evalset name | View | Cases | Purpose |
 |---|---|---|---|
-| `HURRICANE_INTELLIGENCE_EVALSET` | `EVAL_ALL` | 75+ | Full baseline — run after any agent change |
+| `HURRICANE_INTELLIGENCE_EVALSET` | `EVAL_ALL` | 75+ | Full baseline: run after any agent change |
 | `HURRICANE_INTELLIGENCE_MIXED_EVALSET` | `EVAL_MIXED` | 11 | Quick cross-category regression check (1 per category) |
 | `HURRICANE_INTELLIGENCE_SINGLE_METRICS_EVALSET` | `EVAL_SINGLE_METRICS` | 14 | Single-metric precision (all supported metrics) |
 | `HURRICANE_INTELLIGENCE_FULL_REPORTS_EVALSET` | `EVAL_FULL_REPORTS` | 5 | Five-section report quality |
@@ -156,7 +156,7 @@ Agent quality is measured with Snowflake Native Cortex Agent Evaluations. Datase
 
 ---
 
-## Data Layer — 6 Views in TC_ECMWF
+## Data Layer: 6 Views in TC_ECMWF
 
 All `*_RAW` views point to materialized `*_MAT` tables.
 

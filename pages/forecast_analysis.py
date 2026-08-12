@@ -16,6 +16,7 @@ Data flow:
 """
 import logging
 import math
+import threading
 
 from dash import html, dcc, Input, Output, State, callback
 import dash
@@ -48,34 +49,147 @@ ROOT_DATA_DIR = config.ROOT_DATA_DIR or "geodb"
 # Initialize data store
 giga_store = get_data_store()
 
-# Load active countries from Snowflake
-countries_df = get_active_countries()
-
-# Build country options list for dropdowns
+# countries_df/COUNTRY_OPTIONS/DEFAULT_COUNTRY/metadata_df/unique_dates/
+# date_options/default_date start as safe empty defaults here, NOT via a
+# blocking Snowflake call at import time. use_pages=True imports every
+# page module eagerly at app startup regardless of whether a user ever
+# visits this one, so a synchronous get_active_countries()/
+# get_snowflake_data() here (measured ~3.3s combined cold) used to block
+# the ENTIRE app's readiness on data this page's own layout doesn't need
+# until someone actually navigates to /analysis. _load_analysis_data()
+# below does the real fetch, called lazily from layout() (this module's
+# own callable Dash Pages layout, see that function's docstring) on first
+# real visit, guarded so it only ever runs once per process. Callbacks
+# further down in this file reference these same names as module-level
+# globals (Python resolves them at CALL time, not import time), so this
+# is safe as long as layout() has always run before any callback can
+# fire, true by construction: a callback's Input can't exist in the DOM
+# until Dash has actually called layout() to render it.
+countries_df = pd.DataFrame()
 COUNTRY_OPTIONS = []
-if not countries_df.empty:
-    COUNTRY_OPTIONS = [
-        {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
-        for _, row in countries_df.iterrows()
-    ]
-    # Set default country to JAM if available, otherwise first in list
-    DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
-else:
-    DEFAULT_COUNTRY = None
-    logger.warning("No country options available - country dropdown will be empty")
+DEFAULT_COUNTRY = None
+metadata_df = pd.DataFrame()
+unique_dates = []
+date_options = []
+default_date = None
+_analysis_data_loaded = False
+# Guards the check-then-act on _analysis_data_loaded below. Without this,
+# two concurrent gunicorn threads (real deployed topology: gthread worker,
+# multiple threads per process, see entrypoint.sh) hitting /analysis for
+# the first time in a fresh process can both read _analysis_data_loaded as
+# False before either sets it True, both proceed into the body, and both
+# then mutate the SAME shared cached DataFrame object get_snowflake_data()
+# returns by reference (its own @ttl_cache returns one cached object to
+# every caller within the TTL, not a fresh copy per call) with no
+# synchronization, an unguarded concurrent in-place mutation of shared
+# state. Reproduced live during a code-review pass (both threads landing
+# on the identical object id()).
+_analysis_data_lock = threading.Lock()
+# Real Snowflake network stalls have no timeout floor anywhere in this
+# codebase's connector setup (no login_timeout/network_timeout/
+# socket_timeout configured in components/data/snowflake_utils.py), so a
+# genuinely hung get_active_countries()/get_snowflake_data() call during
+# the very first /analysis visit in a process's life would otherwise wedge
+# _analysis_data_lock forever: every later visitor piles onto the same
+# lock.acquire() with no way out, and since production runs a SINGLE
+# gunicorn worker with 8 threads and no periodic restart (entrypoint.sh),
+# enough concurrent visitors during that window exhausts every thread and
+# freezes the whole app, not just this page. A bounded acquire timeout
+# turns that into a visible, recoverable "selectors temporarily empty,
+# retry" for later visitors instead of an unrecoverable full-app hang; the
+# one request actually doing the hung Snowflake call still hangs (nothing
+# short of a real connector-level timeout fixes that), but it no longer
+# drags every other request down with it.
+_ANALYSIS_DATA_LOCK_TIMEOUT_S = 30
+
+
+def _load_analysis_data():
+    """Real, one-time (per process) Snowflake fetch of the country list and
+    forecast metadata this page's selectors need, deferred out of module
+    import time (see the comment above). Idempotent: a second call is a
+    cheap no-op guarded by _analysis_data_loaded, matching this page's
+    module-level globals staying valid for the lifetime of the process
+    (get_active_countries/get_snowflake_data are themselves @ttl_cache'd
+    upstream, so this function re-running would just re-read from that
+    cache anyway, but the guard avoids even that on every page visit).
+
+    Double-checked locking around _analysis_data_loaded (see
+    _analysis_data_lock's own comment): the cheap unlocked check below lets
+    every call AFTER the first stay lock-free, matching the read-mostly
+    access pattern every other cache in this codebase uses. The lock
+    acquire itself is bounded (_ANALYSIS_DATA_LOCK_TIMEOUT_S, see that
+    constant's own comment): on timeout this returns without setting
+    _analysis_data_loaded, so the caller renders with whatever
+    (possibly still-empty) selector data currently exists rather than
+    hanging this request indefinitely too."""
+    global countries_df, COUNTRY_OPTIONS, DEFAULT_COUNTRY
+    global metadata_df, unique_dates, date_options, default_date
+    global _analysis_data_loaded
+    if _analysis_data_loaded:
+        return
+    if not _analysis_data_lock.acquire(timeout=_ANALYSIS_DATA_LOCK_TIMEOUT_S):
+        logger.error(
+            "_load_analysis_data: timed out after %ss waiting for another "
+            "thread's in-progress load (likely a hung Snowflake call); "
+            "rendering with whatever selector data currently exists "
+            "instead of hanging this request too",
+            _ANALYSIS_DATA_LOCK_TIMEOUT_S,
+        )
+        return
+    try:
+        if _analysis_data_loaded:
+            return
+        countries_df = get_active_countries()
+        if not countries_df.empty:
+            COUNTRY_OPTIONS = [
+                {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
+                for _, row in countries_df.iterrows()
+            ]
+            # Set default country to JAM if available, otherwise first in list
+            DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)
+        else:
+            DEFAULT_COUNTRY = None
+            logger.warning("No country options available - country dropdown will be empty")
+
+        # .copy(): get_snowflake_data() is @ttl_cache'd with a single global
+        # slot shared by every caller in the process (including
+        # pages/dashboard.py's own direct calls), returning the SAME cached
+        # object by reference on every hit, not a fresh copy per call.
+        # Mutating it in place (the DATE/TIME columns below) would mutate
+        # that shared object for every other current and future caller too,
+        # not just this page's own local view of it.
+        metadata_df = get_snowflake_data().copy()
+        if not metadata_df.empty:
+            metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date.astype(str)
+            metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
+            unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
+        else:
+            unique_dates = []
+
+        # Pre-compute date options for efficiency (moved here from module
+        # level, same reasoning: depends on unique_dates, which depends on
+        # the fetch above).
+        if unique_dates:
+            date_options = []
+            for date_str in unique_dates:
+                date_obj = pd.to_datetime(date_str).date()
+                date_options.append({
+                    "value": date_str,
+                    "label": date_obj.strftime('%b %d, %Y')
+                })
+            default_date = date_options[0]['value'] if date_options else None
+        else:
+            date_options = []
+            default_date = None
+
+        _analysis_data_loaded = True
+    finally:
+        _analysis_data_lock.release()
+
 
 dash.register_page(
     __name__, path="/analysis", name="Forecast Analysis"
 )
-
-# Load initial metadata and pre-process for efficiency
-metadata_df = get_snowflake_data()
-if not metadata_df.empty:
-    metadata_df['DATE'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.date.astype(str)
-    metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('%H:%M')
-    unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
-else:
-    unique_dates = []
 
 def make_custom_header():
     """Use the standard header which now includes Last Updated timestamp"""
@@ -152,8 +266,14 @@ def create_wind_threshold_tabs_content(metric_prefix, metric_label):
         ),
     ]
 
-# Selector section
-selectors_section = dmc.Paper([
+# Selector section: a function, not a static module-level component tree,
+# so it reads COUNTRY_OPTIONS/DEFAULT_COUNTRY at CALL time (after
+# _load_analysis_data() has populated them), not at import time when
+# they're still the empty placeholder defaults. Called from
+# make_single_page_layout() below, itself called via this module's
+# callable layout() on each real page visit.
+def _make_selectors_section():
+    return dmc.Paper([
     dmc.Group(
         [
             dmc.Stack(
@@ -418,8 +538,8 @@ def make_single_page_layout():
     return dmc.Stack(
         [
             # Selectors at top
-            selectors_section,
-            
+            _make_selectors_section(),
+
             # Main content area
             dmc.Paper(
                 [
@@ -511,7 +631,7 @@ def make_single_page_layout():
 
 def make_single_page_appshell():
     """Create appshell with custom header using existing footer and appshell structure"""
-    
+
     return dmc.AppShell(
         [
             dmc.AppShellHeader(make_custom_header(), px=15, zIndex=2000),
@@ -526,26 +646,30 @@ def make_single_page_appshell():
         footer={"height": "80"},
     )
 
-# Use the single-page appshell
-layout = make_single_page_appshell()
+def layout(**kwargs):
+    """Dash Pages' own callable-layout convention (see map_shell_concept.py's
+    own layout() for the same pattern already established in this
+    codebase): called fresh on each real navigation to /analysis, not once
+    at app-startup import time, since app.py sets
+    suppress_callback_exceptions=True (the one thing that would otherwise
+    force Dash to eagerly call every registered page's layout once at
+    startup to build its own validation_layout, see dash.dash.py's own
+    "Set validation_layout" block). _load_analysis_data() runs its real
+    Snowflake fetch here, guarded so it only ever does real work on the
+    FIRST visit in this process's lifetime; every callback further down in
+    this file still reads countries_df/COUNTRY_OPTIONS/metadata_df/
+    unique_dates/date_options/default_date as plain module-level globals,
+    which is safe because a callback's own Input can't exist in the DOM
+    for Dash to fire it until this function has already run once and
+    rendered them. **kwargs absorbs whatever Dash's own page-navigation
+    callback passes (path_variables/query_parameters/states); this page
+    has no path/query params of its own to read."""
+    _load_analysis_data()
+    return make_single_page_appshell()
 
 # =============================================================================
 # CALLBACKS FOR HURRICANE SELECTORS
 # =============================================================================
-
-# Pre-compute date options for efficiency
-if unique_dates:
-    date_options = []
-    for date_str in unique_dates:
-        date_obj = pd.to_datetime(date_str).date()
-        date_options.append({
-            "value": date_str,
-            "label": date_obj.strftime('%b %d, %Y')
-        })
-    default_date = date_options[0]['value'] if date_options else None
-else:
-    date_options = []
-    default_date = None
 
 def _col(src, col):
     """N/A when column absent or all-NaN; otherwise sum. Used across multiple callbacks."""
@@ -573,10 +697,10 @@ def update_forecast_dates(country):
 def update_forecast_times(selected_date):
     """Get available forecast times for selected date, with most recent time as default"""
     all_possible_times = ["00:00", "06:00", "12:00", "18:00"]
-    
+
     if not selected_date or metadata_df.empty:
         return [{"value": t, "label": f"{t} UTC", "disabled": True} for t in all_possible_times], "00:00"
-    
+
     # Get available times for selected date (metadata_df already has DATE and TIME columns)
     available_times = sorted(metadata_df[metadata_df['DATE'] == selected_date]['TIME'].unique())
     
@@ -1174,11 +1298,21 @@ def update_threshold_selectors(storm, date, time, current_threshold):
     Input("analysis-built-surface-threshold-selector", "value"),
     Input("analysis-country-select", "value"),
     Input("analysis-forecast-date", "value"),
-    Input("analysis-forecast-time", "value"),
-    Input("analysis-metrics-tabs", "value")],  # Trigger on tab switch to force update
+    Input("analysis-forecast-time", "value")],
+    # No Input on analysis-metrics-tabs (tab switch): tab_values is
+    # identical across all 9 tabs regardless of which is active (see this
+    # function's own "Return the same values for all 9 tabs" comment
+    # below), and dmc.Tabs mounts every TabsPanel's DOM upfront rather than
+    # lazily per-tab-click (see make_single_page_layout's own dmc.Tabs
+    # usage: all 9 TabsPanel children are nested directly at layout-build
+    # time), so a tab switch never needs a fresh value. A tab-switch Input
+    # here used to force a full 414-output recompute+resend on every click
+    # for values that never actually changed; the layout-build/threshold/
+    # selector Inputs above already keep every tab's DOM correctly
+    # populated whenever the underlying data actually changes.
     prevent_initial_call=True
 )
-def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thresh, infants_thresh, adolescents_thresh, schools_thresh, health_thresh, shelters_thresh, wash_thresh, built_surface_thresh, country, forecast_date, forecast_time, active_tab):
+def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thresh, infants_thresh, adolescents_thresh, schools_thresh, health_thresh, shelters_thresh, wash_thresh, built_surface_thresh, country, forecast_date, forecast_time):
     """Update impact metrics for all three scenarios when Load Impact Summary button is clicked"""
 
     # Use the store value as primary
@@ -1302,7 +1436,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
         
         # PIN/CHIN sub-lines
         # SQL: in-need columns already in df (MERCATOR_TILE_VULNERABILITY_MAT LEFT JOIN)
-        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN) — no extra download needed.
+        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN), no extra download needed.
         # Stage: read vulnerability CSV and tracks parquet directly from stage.
         pin_pop = pin_children = pin_infant = pin_schoolage = pin_adolescent = ""
         pin_pop_det = pin_children_det = pin_infant_det = pin_schoolage_det = pin_adolescent_det = ""
@@ -1329,7 +1463,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
             _gdf_for_pin = gdf_tracks if gdf_tracks is not None else pd.DataFrame()
 
             if config.IMPACT_DATA_SOURCE == 'SQL':
-                # Expected — from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
+                # Expected: from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
                 if not _df_for_pin.empty:
                     pin_pop        = _in_need_fmt(_df_for_pin['E_people_in_need'].sum()       if 'E_people_in_need'       in _df_for_pin.columns else None)
                     pin_children   = _in_need_fmt(_df_for_pin['E_children_in_need'].sum()     if 'E_children_in_need'     in _df_for_pin.columns else None)
@@ -1337,7 +1471,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                     pin_schoolage  = _in_need_fmt(_df_for_pin['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in _df_for_pin.columns else None)
                     pin_adolescent = _in_need_fmt(_df_for_pin['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in _df_for_pin.columns else None)
 
-                # DET + Worst — from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
+                # DET + Worst: from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
                 if not _gdf_for_pin.empty and 'zone_id' in _gdf_for_pin.columns:
                     _hi = high_impact_member
                     det_row   = _gdf_for_pin[_gdf_for_pin['zone_id'] == 51]
@@ -1355,7 +1489,7 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
                     pin_schoolage_worst  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
                     pin_adolescent_worst = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
             else:
-                # Stage path — read vulnerability CSV and tracks parquet directly
+                # Stage path: read vulnerability CSV and tracks parquet directly
                 vuln_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability.csv"
                 vuln_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", vuln_filename)
                 if giga_store.file_exists(vuln_filepath):

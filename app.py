@@ -26,7 +26,7 @@ app = Dash(
         {"name": "AoS Hurricane Impact", "content": "width=device-width, initial-scale=1"}
     ],
     external_stylesheets=[
-        dmc.styles.ALL,
+        *dmc.styles.ALL,
         "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css",
     ],
     external_scripts=[
@@ -52,7 +52,7 @@ def serve_tile_palettes_js():
         with open(_PALETTES_JSON) as f:
             data = _json.load(f)
         js = (
-            "// Auto-generated from tile_palettes.json — edit that file, not this endpoint.\n"
+            "// Auto-generated from tile_palettes.json; edit that file, not this endpoint.\n"
             "window._AOTS_PALETTES = "   + _json.dumps(data["palettes"])   + ";\n"
             "window._AOTS_PROP_MAP = "   + _json.dumps(data["prop_map"])   + ";\n"
             "window._AOTS_E_PROP_MAP = " + _json.dumps(data["e_prop_map"]) + ";\n"
@@ -67,28 +67,24 @@ def serve_tile_palettes_js():
 def serve_map_static(filename):
     from flask import make_response
     resp = make_response(send_from_directory(_MAP_COMPONENTS_DIR, filename))
-    # "no-cache" (not "no-store") — still hits the server on every page load
+    # "no-cache" (not "no-store"): still hits the server on every page load
     # to revalidate, so active JS edits are never served stale, but Flask's
     # send_from_directory sets ETag/Last-Modified by default, so an
     # unchanged file returns a tiny 304 instead of re-transferring the full
-    # ~40KB body every time (2026-08 performance audit found this was
-    # unconditionally re-fetched on every fresh page load).
+    # ~40KB body on every page load.
     resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
 @server.route("/alert-email/<track_id>/<forecast_time>/<country_code>")
 def serve_alert_email(track_id, forecast_time, country_code):
-    """Real Alert email HTML (AOTS.TC_ECMWF.ALERT_SENT_LOG.EMAIL_BODY), served
-    as a normal page — backs both the alert-email-modal iframe's `src` and
+    """Serves the alert email HTML (AOTS.TC_ECMWF.ALERT_SENT_LOG.EMAIL_BODY)
+    as a normal page: backs both the alert-email-modal iframe's `src` and
     its "Open in new tab" link (pages/map_shell_concept.py's
-    _open_alert_email_detail). Real bug found+fixed here: this used to be a
-    giant `data:text/html;charset=utf-8,<percent-encoded ~700KB body>` URI
-    built client-side — real emails are large enough (embedded base64 map
-    images) that the percent-encoded URI could balloon past practical
-    browser limits for a fresh top-level navigation, so "Open in new tab"
-    opened a blank tab that only rendered after a manual refresh. A real
-    HTTP GET has no such size quirk."""
+    _open_alert_email_detail). Served via a real HTTP GET rather than a
+    client-side `data:text/html;charset=utf-8,...` URI: alert emails embed
+    base64 map images and can reach ~700KB, which a percent-encoded data:
+    URI is not a reliable size for a fresh top-level navigation to carry."""
     from components.data.snowflake_utils import get_alert_email_body
     body = get_alert_email_body(track_id, forecast_time, country_code)
     if body is None:
@@ -124,25 +120,14 @@ def navbar_is_open(opened, navbar):
 
 if __name__ == "__main__":
     # dev_tools_ui=False: several pages (map_shell_concept.py) inject
-    # components into controls-body reactively (Country Analysis mode only) —
+    # components into controls-body reactively (Country Analysis mode only);
     # callbacks referencing their ids are legitimately absent from the very
     # first layout snapshot, which the renderer flags as a "nonexistent
     # object" ReferenceError even though the components mount and work
-    # correctly once that mode is entered (confirmed: zero such errors once
-    # Country Analysis mode has rendered once, and every control keeps
-    # working). dev_tools_props_check (prop type/value validation) and
+    # correctly once that mode is entered; no such errors occur once
+    # Country Analysis mode has rendered, and every control keeps working.
+    # dev_tools_props_check (prop type/value validation) and
     # dev_tools_validate_callbacks (circular-dependency checks) are separate
-    # flags that don't gate this specific renderer warning or its overlay —
-    # only dev_tools_ui does. Hot reload/dev_tools_hot_reload is untouched.
-    # dev_tools_ui=False: several pages (map_shell_concept.py) inject
-    # components into controls-body reactively (Country Analysis mode only) —
-    # callbacks referencing their ids are legitimately absent from the very
-    # first layout snapshot, which the renderer flags as a "nonexistent
-    # object" ReferenceError even though the components mount and work
-    # correctly once that mode is entered (confirmed: zero such errors once
-    # Country Analysis mode has rendered once, and every control keeps
-    # working). dev_tools_props_check (prop type/value validation) and
-    # dev_tools_validate_callbacks (circular-dependency checks) are separate
-    # flags that don't gate this specific renderer warning or its overlay —
+    # flags that don't gate this specific renderer warning or its overlay;
     # only dev_tools_ui does. Hot reload/dev_tools_hot_reload is untouched.
     app.run(debug=True, dev_tools_ui=False)

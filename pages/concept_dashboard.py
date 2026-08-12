@@ -1,12 +1,12 @@
 """
 Concept preview: Simple / Expert mode split for the main dashboard.
 
-NOT wired to Snowflake, the tile server, or MapLibre — every number, narrative
+NOT wired to Snowflake, the tile server, or MapLibre: every number, narrative
 sentence, and map area on this page is a hardcoded placeholder. Purpose: let a
 real Mantine/Dash render of the Simple-vs-Expert idea (and a placeholder
 narrative panel sourced from a hypothetical per-storm narrative table) be
 judged in the actual app shell before touching pages/dashboard.py or
-layouts/panels.py. Not linked from the header nav on purpose — reachable only
+layouts/panels.py. Not linked from the header nav on purpose: reachable only
 by visiting /concept directly.
 """
 import dash
@@ -25,9 +25,9 @@ _DISPLAY_NONE = {"display": "none"}
 _HAZARD_COLORS = {"wind": PRIMARY_COLOR, "gust": "orange", "river": "teal", "rain": "grape"}
 
 # ---------------------------------------------------------------------------
-# Hardcoded example content only — stands in for a future per-storm narrative
-# table (see conversation: "AI generates small narratives, stored in a table,
-# pulled into the dashboard"). No such table exists yet; this is layout only.
+# Hardcoded example content only, stands in for a future per-storm narrative
+# table populated by an AI-generated summary pipeline. No such table exists
+# yet; this is layout only.
 # ---------------------------------------------------------------------------
 _NARRATIVE = {
     "headline": "Tropical Storm BAVI is expected to pass north-east of Luzon.",
@@ -77,8 +77,8 @@ def _section_header(title, subtitle):
 
 
 # ---------------------------------------------------------------------------
-# SIMPLE MODE — narrative-first briefing, modeled on the reference concept.
-# Six persistent, always-reachable destinations (dmc.Tabs, not an accordion —
+# SIMPLE MODE: narrative-first briefing, modeled on the reference concept.
+# Six persistent, always-reachable destinations (dmc.Tabs, not an accordion:
 # every destination is visible up front, none require knowing they're there).
 # ---------------------------------------------------------------------------
 _HAZARD_TREND = {"rain": "up", "river": "flat", "runoff": "up", "wind": "down"}
@@ -87,9 +87,9 @@ _SCENARIOS = [
     ("Most Likely", "blue", "Most likely",
      "The single most probable outcome across all ensemble members.", "1.2M"),
     ("Worse Than Expected", "orange", "~20% chance",
-     "A plausible, more severe outcome — track shifts closer to the coast.", "2.1M"),
+     "A plausible, more severe outcome: track shifts closer to the coast.", "2.1M"),
     ("Best Case", "teal", "~15% chance",
-     "A plausible, less severe outcome — storm weakens or veers away.", "480K"),
+     "A plausible, less severe outcome: storm weakens or veers away.", "480K"),
 ]
 
 _CHILDREN_STATS = [
@@ -134,7 +134,7 @@ def _tab_scenario_explorer():
 def _tab_impact_children():
     return dmc.Stack([
         _section_header("IMPACT ON CHILDREN",
-                         "Every number below is specific to children — not total population — using "
+                         "Every number below is specific to children (not total population), using "
                          "UNICEF's Child Cyclone Index (CCI) to flag the most vulnerable areas."),
         dmc.SimpleGrid([
             dmc.Paper([dmc.Text(k, size="xs", c="dimmed", fw=700, tt="uppercase"),
@@ -198,7 +198,7 @@ def _simple_nav_and_content():
         ("changed", "What Changed", _tab_what_changed),
         ("sources", "Data & Sources", _tab_data_sources),
     ]
-    # "Switch to Expert Mode" isn't repeated here — the SegmentedControl in the
+    # "Switch to Expert Mode" isn't repeated here: the SegmentedControl in the
     # top bar already does that job, visibly on every tab; a second copy nested
     # in the nav would be a redundant, easy-to-miss-or-duplicate control.
     return dmc.Tabs([
@@ -246,7 +246,7 @@ def _simple_map_placeholder():
             dmc.Text("MOST LIKELY SCENARIO", size="xs", fw=700, c="dimmed", style={"letterSpacing": "0.06em"}),
         ], justify="space-between", mb="sm"),
         html.Div(
-            "Map preview — not connected to live tile server",
+            "Map preview, not connected to live tile server",
             style={
                 "height": "360px", "borderRadius": "8px",
                 "background": "linear-gradient(135deg, #eef6fa 0%, #dcecf4 40%, #f5e9d8 70%, #f0d9c8 100%)",
@@ -283,7 +283,7 @@ def _simple_summary_sidebar():
 
 
 def _simple_mode():
-    # The Situation Summary sidebar stays constant across all six tabs — it's
+    # The Situation Summary sidebar stays constant across all six tabs. It's
     # the persistent "at a glance" panel, not tied to whichever detail view
     # you're currently reading.
     return dmc.Grid([
@@ -293,7 +293,7 @@ def _simple_mode():
 
 
 # ---------------------------------------------------------------------------
-# EXPERT MODE — reuses the validated hazard-rail pattern (checkbox + slider +
+# EXPERT MODE: reuses the validated hazard-rail pattern (checkbox + slider +
 # plain-language readout, no accordions) plus a real-lead-time timeline
 # ---------------------------------------------------------------------------
 def _hazard_row(hz_key, label, checked, preview=False):
@@ -358,7 +358,7 @@ def _expert_map_and_timeline():
         ], p="xs", shadow="xs", withBorder=True),
         dmc.Paper([
             html.Div(
-                "Map preview — not connected to live tile server",
+                "Map preview, not connected to live tile server",
                 style={
                     "height": "420px", "borderRadius": "8px",
                     "background": "linear-gradient(135deg, #eef6fa 0%, #dcecf4 40%, #f5e9d8 70%, #f0d9c8 100%)",
@@ -404,7 +404,7 @@ def _topbar():
     return dmc.Group([
         dmc.Group([
             dmc.Badge("PROTOTYPE", color="grape", variant="filled", size="sm"),
-            dmc.Text("Simple / Expert mode concept — no live data connected", size="sm", fw=600, c="dimmed"),
+            dmc.Text("Simple / Expert mode concept, no live data connected", size="sm", fw=600, c="dimmed"),
         ], gap=10),
         dmc.Group([
             dmc.Text("Philippines · Typhoon BAVI · Jul 5, 2026 06:00", size="xs", c="dimmed"),
@@ -446,7 +446,7 @@ layout = make_single_page_appshell()
 
 
 # ---------------------------------------------------------------------------
-# Callbacks — layout/state only, no data
+# Callbacks: layout/state only, no data
 # ---------------------------------------------------------------------------
 @callback(
     Output("concept-simple-wrap", "style"),
@@ -475,24 +475,24 @@ _RIVER_CATS = [
 _RAIN_MM_BY_WINDOW = {6: [25, 50, 75], 24: [35, 70, 103], 72: [45, 90, 133], 120: [50, 100, 150]}
 _RAIN_TIERS = ["Moderate rain", "Heavy rain", "Extreme rain"]
 _TIMELINE = [
-    (None, "Now — BAVI is a Category 3 hurricane 140km east of Batangas."),
-    (6, "+6h — Outer bands reach the coast, flash-flood risk elevated."),
-    (24, "+24h — Landfall expected as a Category 2 storm."),
-    (72, "+72h — Weakening inland, flood risk persists from saturated ground."),
-    (120, "+120h — System dissipates, residual upland flood risk."),
+    (None, "Now: BAVI is a Category 3 hurricane 140km east of Batangas."),
+    (6, "+6h: Outer bands reach the coast, flash-flood risk elevated."),
+    (24, "+24h: Landfall expected as a Category 2 storm."),
+    (72, "+72h: Weakening inland, flood risk persists from saturated ground."),
+    (120, "+120h: System dissipates, residual upland flood risk."),
 ]
 
 
 @callback(Output("concept-wind-readout", "children"), Input("concept-wind-slider", "value"))
 def _wind_readout(idx):
     c = _WIND_CATS[idx or 0]
-    return f"{c[0]} — {c[1]} · {c[2]}kt sustained wind"
+    return f"{c[0]}: {c[1]} · {c[2]}kt sustained wind"
 
 
 @callback(Output("concept-gust-readout", "children"), Input("concept-gust-slider", "value"))
 def _gust_readout(idx):
     c = _WIND_CATS[idx or 0]
-    return f"{c[0]} — {c[1]} · {c[3]} m/s gusts"
+    return f"{c[0]}: {c[1]} · {c[3]} m/s gusts"
 
 
 @callback(Output("concept-river-readout", "children"), Input("concept-river-slider", "value"))

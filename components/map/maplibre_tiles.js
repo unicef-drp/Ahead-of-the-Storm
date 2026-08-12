@@ -4,7 +4,7 @@
 // Architecture: MapLibre (zIndex 0) sits behind Leaflet (zIndex 1, transparent).
 // Leaflet handles all user interaction (pan/zoom/hover).
 // MapLibre is synced to Leaflet by hooking directly into Leaflet's 'move' event,
-// which fires on every drag frame — no Dash callback latency.
+// which fires on every drag frame: no Dash callback latency.
 //
 // Exposes on window:
 //   applyTileConfig(config)
@@ -78,7 +78,7 @@ window._aots_maplibre = new maplibregl.Map({
     });
 
     // Drives window._aots_map_tiles_loading (see _initGlobalLoadingIndicator
-    // below) — 'dataloading' fires for every tile/source fetch MapLibre
+    // below): 'dataloading' fires for every tile/source fetch MapLibre
     // kicks off (raster hazard tiles, MVT vector tiles), 'idle' fires once
     // everything currently requested has actually finished rendering.
     window._aots_maplibre.on('dataloading', function () {
@@ -99,7 +99,7 @@ window._aots_maplibre = new maplibregl.Map({
             applyTileConfig(window._aots_pending_tile_config);
             window._aots_pending_tile_config = null;
         }
-        // Global raw layers (precip-raw/river-raw) — independent of the
+        // Global raw layers (precip-raw/river-raw), independent of the
         // country-scoped tile config above, see applyGlobalRawConfig below.
         if (window.applyGlobalRawConfig && window._aots_pending_global_raw_config) {
             window.applyGlobalRawConfig(window._aots_pending_global_raw_config);
@@ -127,7 +127,7 @@ var _initInterval = setInterval(function () {
 // 3. Leaflet → MapLibre real-time sync
 // ---------------------------------------------------------------------------
 // Hook into Leaflet's 'move' event (fires every frame during drag) so MapLibre
-// follows instantly — no Dash callback latency, no 800ms flyTo animation lag.
+// follows instantly: no Dash callback latency, no 800ms flyTo animation lag.
 
 // MapLibre tileSize:256 sources display at the same visual scale as Leaflet when
 // MapLibre zoom = Leaflet zoom - 1. Without this -1 offset the basemap appears
@@ -154,33 +154,26 @@ function _getP(props, name) {
     return null;
 }
 
-// Real gap found+fixed here (2026-08, user-reported: are these tooltips
-// translated, or just carried over from the old dashboard? — they were
-// neither): _mapT() is the browser-side counterpart to pages/map_shell_
-// concept.py's own _t() — window.AOTS_MAP_I18N is populated once at page
-// load from that file's _MAP_TOOLTIP_TRANSLATIONS (ms-map-i18n-store's own
-// clientside bridge), covering exactly the vocabulary these tooltip
-// builders need. Falls back to the English key itself when untranslated,
-// same "never show a blank tooltip" contract _t() already has server-side.
+// Browser-side counterpart to pages/map_shell_concept.py's own _t().
+// window.AOTS_MAP_I18N is populated once at page load from that file's
+// _MAP_TOOLTIP_TRANSLATIONS (ms-map-i18n-store's own clientside bridge),
+// covering the vocabulary these tooltip builders need. Falls back to the
+// English key itself when untranslated, same "never show a blank tooltip"
+// contract _t() has server-side.
 function _mapT(key) {
     var dict = window.AOTS_MAP_I18N;
     return (dict && dict[key]) || key;
 }
 
-// Shared design tokens for every map-hover tooltip below — real fix here
-// (2026-08): body text used to mix #555/#777/#888/#333 somewhat
-// interchangeably across the 8 tooltip-building functions with no clear
-// role assigned to each, an artifact of these tooltips having been carried
-// over from the old dashboard.py verbatim rather than redesigned for this
-// page. These 4 values are the SAME hex constants pages/map_shell_
-// concept.py's own Python-side UI already uses pervasively for the
-// equivalent roles (#16232c primary text, #57707e secondary label text,
-// #8ea0ab dimmed/muted text, #eef2f5 divider) — reusing them here is a
-// real, verifiable match to the new page's own palette, not an invented
-// one. Per-feature-type TITLE colors (tracks/envelopes/schools/health/
-// shelters/wash/river-raw/precip-raw each keep their own distinct hue) are
-// intentionally left as-is — those are meaningful visual differentiation
-// between layers, not an inconsistency to fix.
+// Shared design tokens for every map-hover tooltip below. Matches the hex
+// constants pages/map_shell_concept.py's own Python-side UI uses
+// pervasively for the equivalent roles (#16232c primary text, #57707e
+// secondary label text, #8ea0ab dimmed/muted text, #eef2f5 divider), so
+// body text stays a verifiable match to the page's own palette across all
+// 8 tooltip-building functions. Per-feature-type TITLE colors
+// (tracks/envelopes/schools/health/shelters/wash/river-raw/precip-raw each
+// keep their own distinct hue) are intentionally left as-is: meaningful
+// visual differentiation between layers, not an inconsistency.
 var _AOTS_TT_LABEL = '#57707e';
 var _AOTS_TT_VALUE = '#16232c';
 var _AOTS_TT_SUB    = '#8ea0ab';
@@ -214,26 +207,40 @@ function _buildTileTooltip(feature, perHazardProbs) {
     var p = feature.properties || {};
     var G = function(name) { return _getP(p, name); };
     // Admin layer ids are hazard-suffixed (aots-admin-layer-wind / -gust /
-    // -river / -rain) since hazards became independently toggleable layers —
-    // match by prefix rather than an exact id that no longer exists.
+    // -river / -rain) since hazards became independently toggleable layers.
+    // Match by prefix rather than an exact id that no longer exists.
     var isAdmin = !!(feature.layer && feature.layer.id && feature.layer.id.indexOf('aots-admin-layer') === 0);
 
-    // Real bug found+fixed here (2026-08, user-reported: "it should be
-    // 'tropical cyclone' instead of hurricane"), then extended into a real
-    // feature (user-requested: show each active hazard's own probability
-    // PLUS a combined one): this label used to hardcode "Hurricane Impact
-    // Probability" regardless of which hazard's data was actually shown,
-    // and only ever fetched ONE hazard even when several were active
-    // (fixed wind > gust > river > rain priority). `perHazardProbs`
-    // (optional — see _combineHazardTileProps/_visibleRasterHazards) is
-    // now passed by the caller whenever more than one hazard is active for
-    // this tile, so BOTH the combined figure (this feature's own real
-    // MAX-combined `p.PROBABILITY`) and each hazard's own individual
-    // number render, instead of silently showing only whichever hazard
-    // happened to win the old fixed priority order.
+    // Label reflects whichever hazard(s) this feature actually represents,
+    // rather than a single hardcoded hazard name. `perHazardProbs`
+    // (optional, see _visibleRasterHazards) is passed by the caller
+    // whenever more than one hazard is active for this tile, so both the
+    // combined figure and each hazard's own individual number render.
+    //
+    // For the TILE hover path (this function's normal caller,
+    // _runNetworkHoverLookup), `p.PROBABILITY` comes straight from the
+    // server's /tile-value-combined endpoint, which computes the real
+    // per-tile bitmask union, the same methodology the raster itself
+    // paints with (_combine_bitmask_aware in tile_server.py).
+    //
+    // The ADMIN/region hover path gets the same treatment where it
+    // applies: with 2+ hazards active in Regions view, `p.PROBABILITY`
+    // arrives already unioned on the combined admin MVT feature
+    // (_combine_bitmask_aware_admin), read directly by
+    // _showAdminTooltipImmediate. _combineHazardTileProps' MAX only runs
+    // for the genuinely-still-stacked per-hazard admin case (non-combinable
+    // Exposure props): see the combinedInfo branch below, which describes
+    // whichever hazard this feature actually is.
     var hazardMatch = feature.layer && feature.layer.id && feature.layer.id.match(/^aots-(?:tiles|admin)-layer-(\w+)/);
     var hazard = hazardMatch ? hazardMatch[1] : 'wind';
-    var _HAZARD_TT_LABELS = { wind: 'Tropical Cyclone', gust: 'Gust', river: 'River Flooding', rain: 'Rainfall' };
+    // 'combined' is the hazard key the COMBINED admin layer's own id
+    // ('aots-admin-layer-combined') yields through the regex above; it
+    // only ever reaches the single-hazard label line below in the
+    // degenerate case where exactly one per-hazard probability came back
+    // on a combined feature, but a real label beats silently falling back
+    // to wind's ("Tropical Cyclone") for a multi-hazard layer.
+    var _HAZARD_TT_LABELS = { wind: 'Tropical Cyclone', gust: 'Gust', river: 'River Flooding', rain: 'Rainfall',
+                              combined: 'Combined Hazard' };
     var hazardLabel = _mapT(_HAZARD_TT_LABELS[hazard] || _HAZARD_TT_LABELS.wind);
 
     var prob   = G('PROBABILITY') || 0;
@@ -278,7 +285,7 @@ function _buildTileTooltip(feature, perHazardProbs) {
     };
 
     // Title colors stay per-feature-type (meaningful visual differentiation
-    // between admin/tile layers, not an inconsistency) — only the BODY text
+    // between admin/tile layers, not an inconsistency); only the BODY text
     // scale below was actually inconsistent (see _AOTS_TT_* tokens' own
     // comment) and gets normalized here.
     var titleColor = isAdmin ? '#2e7d32' : '#4169E1';
@@ -292,25 +299,50 @@ function _buildTileTooltip(feature, perHazardProbs) {
     if (prob > 0) {
         html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">' + _mapT('Expected Impact') + ':</div>';
         if (perHazardProbs && perHazardProbs.length > 1) {
-            // Multiple hazards active for this tile — show the real
-            // MAX-combined figure first, then each hazard's own real
-            // number as a sub-row (same visual convention the age-band
-            // rows below already use for "detail under a bold parent").
-            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+            // Multiple hazards active for this tile: show the combined
+            // figure first, then each hazard's own real number as a
+            // sub-row (same visual convention the age-band rows below
+            // already use for "detail under a bold parent").
+            //
+            // The methodology disclosure is a small (ⓘ) info glyph carrying
+            // the explanation as a native `title` attribute; shows on
+            // hover/click without permanently occupying space, same
+            // "detail on demand, not always shown" spirit as this file's
+            // own _layer_label_with_info pattern in map_shell_concept.py
+            // (Python-side dmc components there, plain HTML title attribute
+            // here since this whole tooltip is hand-built HTML, not a Dash
+            // component tree).
+            //
+            // The wording differs by what this specific feature actually
+            // computes. When the COMBINED admin layer is what's rendered,
+            // PROBABILITY is a real per-member union computed server-side
+            // (_combine_bitmask_aware_admin), taken per grid cell and then
+            // area-averaged over the region, exactly as every single-hazard
+            // region probability is defined upstream, which is what makes
+            // the combined figure comparable with the per-hazard rows
+            // printed directly under it. The TILE path's PROBABILITY is the
+            // same real per-tile union computed at the single point under
+            // the cursor. The remaining MAX-based case (N stacked
+            // per-hazard admin layers, which applyTileConfig still uses for
+            // non-combinable Exposure props like In Need / RWI / poverty)
+            // gets its own wording, since that path genuinely computes a
+            // MAX rather than a union: the disclosure has to describe what
+            // THIS feature actually is.
+            var isCombinedAdmin = !!(feature.layer && feature.layer.id === 'aots-admin-layer-combined');
+            var combinedInfo;
+            if (isAdmin && !isCombinedAdmin) {
+                combinedInfo = _mapT('Combined = highest individual hazard probability, not a joint measurement.');
+            } else if (isCombinedAdmin) {
+                combinedInfo = _mapT('Real fraction of the 51-member ensemble where at least one active hazard hits, computed per grid cell and averaged over the region, the same way each single-hazard region figure is computed.');
+            } else {
+                combinedInfo = _mapT('Real fraction of the 51-member ensemble where at least one active hazard hits this exact tile.');
+            }
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob)
+                  + ' <span title="' + _esc(combinedInfo) + '" style="cursor:help;color:' + _AOTS_TT_SUB + ';font-size:10px;">ⓘ</span></div>';
             perHazardProbs.forEach(function(hp) {
                 var lbl = _mapT(_HAZARD_TT_LABELS[hp.hazard] || hp.hazard);
                 html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + lbl + ': ' + _fmtPct(hp.prob) + '</div>';
             });
-            // Real disclosure added here (2026-08, scientific-soundness
-            // review): "Combined" here is the highest of the active
-            // hazards' own real probabilities (see _combineHazardTileProps'
-            // own MAX-not-SUM comment) — an honest, conservative choice,
-            // but still an approximation a planner could otherwise read as
-            // a precise joint measurement. Same spirit as pages/
-            // map_shell_concept.py's own _hazard_contribution_content
-            // overlap_note disclosure for its independence-based estimate.
-            html += '<div style="font-size:9px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:1px;">'
-                  + _mapT('Combined = highest individual hazard probability, not a joint measurement.') + '</div>';
         } else {
             html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + hazardLabel + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
         }
@@ -345,42 +377,57 @@ function _buildTileTooltip(feature, perHazardProbs) {
     return html;
 }
 
-// Real gap found+fixed here (2026-08, user-reported: "there are no
-// tooltips for the raw layers still... on the map directly, like we had
-// already for the storms"): the two GLOBAL, country-independent raw
-// hazard rasters (river-extent/precip-rate) had NO hover mechanism at all
-// — _buildTileTooltip above is built entirely around the per-country
-// impact-tile schema (population/schools/etc.), which these two layers
-// don't have (see /tile-value/river-raw and /tile-value/precip-raw in
-// services/tile_server.py — {probability, rp_tier} / {mean_mm,
-// probability} only), so a separate, much simpler tooltip is built here
-// instead of trying to force them through that schema.
+// Builds the hover tooltip for the two GLOBAL, country-independent raw
+// hazard rasters (river-extent/precip-rate). _buildTileTooltip above is
+// built entirely around the per-country impact-tile schema
+// (population/schools/etc.), which these two layers don't have (see
+// /tile-value/river-raw and /tile-value/precip-raw in
+// services/tile_server.py: {probability, rp_tier} / {mean_mm,
+// probability} only), so a separate, simpler tooltip is built here instead
+// of forcing them through that schema.
 function _buildRawLayerTooltip(rawLayer, props, rawConfig) {
     var _esc = function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
     if (rawLayer === 'river') {
         var rpTier = (props.rp_tier || (rawConfig && rawConfig.rp_tier) || 'rp10').toUpperCase();
+        var stepH = props.step_h != null ? props.step_h : (rawConfig && rawConfig.river_step_h != null ? rawConfig.river_step_h : 72);
+        // A specific member has a real boolean flooded/not-flooded fact,
+        // not a "% of members agree" fraction; river_raw_tile_value
+        // returns `flooded` (not `probability`) whenever `member` is
+        // passed server-side.
+        if (props.member != null) {
+            return '<div style="font-size:13px;font-weight:600;color:#00ACC1;margin-bottom:3px;">' + _mapT('River Flooding') + ': ' + _mapT('Member') + ' ' + props.member + '</div>'
+                 + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Return period') + ': ' + _esc(rpTier) + ', ' + _mapT('accumulation window') + ': ≤' + stepH + 'h</div>'
+                 + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + (props.flooded ? _mapT('Flooded under this member') : _mapT('Not flooded under this member')) + '</div>'
+                 + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real GloFAS discharge exceeding the return-period threshold, matched against JRC\'s historical flood-extent map, not a simulated depth/extent for this specific event.') + '</div>';
+        }
         var prob = props.probability;
         return '<div style="font-size:13px;font-weight:600;color:#00ACC1;margin-bottom:3px;">' + _mapT('River Flooding') + '</div>'
              + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Return period') + ': ' + _esc(rpTier) + '</div>'
              + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Member agreement') + ': ' + _fmtPct(prob) + '</div>'
-             + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real GloFAS discharge exceeding the return-period threshold, matched against JRC\'s historical flood-extent map — not a simulated depth/extent for this specific event.') + '</div>';
+             + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real GloFAS discharge exceeding the return-period threshold, matched against JRC\'s historical flood-extent map, not a simulated depth/extent for this specific event.') + '</div>';
     }
     // precip
-    var lines = ['<div style="font-size:13px;font-weight:600;color:#3CB34B;margin-bottom:3px;">' + _mapT('Rainfall') + '</div>'];
     var windowH = (rawConfig && rawConfig.window_h != null) ? rawConfig.window_h : 6;
+    // A specific member has its own real rate, not the ensemble mean or
+    // an exceedance probability across members.
+    if (props.member != null) {
+        return '<div style="font-size:13px;font-weight:600;color:#3CB34B;margin-bottom:3px;">' + _mapT('Rainfall') + ': ' + _mapT('Member') + ' ' + props.member + '</div>'
+             + '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('This member\'s rate') + ': ' + Number(props.member_mm).toFixed(1) + 'mm / ' + windowH + 'h</div>'
+             + '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real forecasted precipitation (a flood-risk indicator, not a flood forecast).') + '</div>';
+    }
+    var lines = ['<div style="font-size:13px;font-weight:600;color:#3CB34B;margin-bottom:3px;">' + _mapT('Rainfall') + '</div>'];
     if (props.mean_mm !== null && props.mean_mm !== undefined) {
         lines.push('<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Ensemble-mean rate') + ': ' + Number(props.mean_mm).toFixed(1) + 'mm / ' + windowH + 'h</div>');
     }
     if (props.probability !== null && props.probability !== undefined) {
         var thresholdMm = (rawConfig && rawConfig.threshold_mm != null) ? rawConfig.threshold_mm : 10.0;
-        // Real gap found+fixed here (2026-08, user-reported): "100mm" alone
-        // is ambiguous without the accumulation window it's measured over
-        // (100mm over 6h is a very different storm than 100mm over 120h) —
-        // now states the same "Xmm / Yh" window the mean-rate line above
-        // already includes, instead of a bare threshold with no period.
+        // "100mm" alone is ambiguous without the accumulation window it's
+        // measured over (100mm over 6h is a very different storm than
+        // 100mm over 120h): states the same "Xmm / Yh" window the
+        // mean-rate line above already includes.
         lines.push('<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + _mapT('Probability') + ' >' + thresholdMm + 'mm / ' + windowH + 'h: ' + _fmtPct(props.probability) + '</div>');
     }
-    lines.push('<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real forecasted precipitation — a flood-risk indicator, not a flood forecast.') + '</div>');
+    lines.push('<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';font-style:italic;margin-top:4px;">' + _mapT('Real forecasted precipitation (a flood-risk indicator, not a flood forecast).') + '</div>');
     return lines.join('');
 }
 
@@ -410,27 +457,31 @@ function _getTooltipEl() {
 
 // Admin layer ids are hazard-suffixed (aots-admin-layer-wind/-gust/-river/-rain).
 // Only pass ids that actually exist in the current style to
-// queryRenderedFeatures — MapLibre throws if asked to query an id that isn't
+// queryRenderedFeatures: MapLibre throws if asked to query an id that isn't
 // in the style. queryRenderedFeatures only ever returns features from
 // currently-visible layers, so passing every hazard's id here is safe even
 // when several hazards are simultaneously toggled on.
 function _AOTS_ADMIN_LAYER_IDS(map) {
-    return _AOTS_HAZARDS
+    var ids = _AOTS_HAZARDS
         .map(function (hz) { return 'aots-admin-layer-' + hz; })
         .filter(function (id) { return !!map.getLayer(id); });
+    // The COMBINED admin layer is the one actually rendered whenever 2+
+    // hazards are active in Regions view; the per-hazard ids above are
+    // all hidden then, so without adding it here the region hover would
+    // return nothing in exactly the case this layer exists for. Same
+    // "only pass ids that exist in the current style" guard, and
+    // queryRenderedFeatures still only ever returns features from VISIBLE
+    // layers, so listing it alongside the per-hazard ids is safe in both
+    // directions.
+    if (map.getLayer(_AOTS_COMBINED_IDS.adminLayer)) ids.push(_AOTS_COMBINED_IDS.adminLayer);
+    return ids;
 }
 
-// Several hazards can be visible at once (independently toggleable) — real
-// feature added here (2026-08, user-requested, after fixing the "always
-// says Hurricane/wind" mislabeling bug): this used to return only the
-// FIRST visible hazard in a fixed wind > gust > river > rain priority
-// order, so whenever Sustained Wind was active alongside River Flooding/
-// Rainfall, the hover tooltip only ever showed wind's own data — flood's
-// own real probability for that exact tile was silently never fetched or
-// shown at all. Now returns EVERY visible per-country hazard (same fixed
-// order, for stable display order) so the caller can fetch all of them and
-// show each one's own real probability plus a combined figure — see
-// _combineHazardTileProps below.
+// Several hazards can be visible at once (independently toggleable).
+// Returns EVERY visible per-country hazard, in a fixed wind > gust > river
+// > rain order (for stable display order), so the caller can fetch all of
+// them and show each one's own real probability plus a combined figure:
+// see _combineHazardTileProps below.
 function _visibleRasterHazards(map, config) {
     var out = [];
     for (var i = 0; i < _AOTS_HAZARDS.length; i++) {
@@ -440,17 +491,15 @@ function _visibleRasterHazards(map, config) {
             out.push(hz);
         }
     }
-    // Real bug found+fixed here (2026-08, user-reported: "map tooltips are
-    // gone"): when 2+ hazards combine into ONE raster (Classification mode,
-    // or Probability mode with a combinable Exposure prop — see
-    // applyTileConfig's own useCombined), every individual per-hazard layer
-    // above is hidden in favor of aots-combined-layer, so `out` stayed
-    // empty here and the hover handler fell through to "nothing visible,
-    // hide tooltip" even though a real raster WAS on screen underneath the
-    // cursor. Reuse the SAME active-hazard membership the combined layer
-    // itself renders (mirrors _combinedActiveHazardCount) as a fallback —
-    // each hazard's own tile-value is still fetched and combined exactly
-    // like the already-working non-combined multi-hazard-stack case does.
+    // When 2+ hazards combine into ONE raster (Classification mode, or
+    // Probability mode with a combinable Exposure prop, see
+    // applyTileConfig's own useCombined), every individual per-hazard
+    // layer above is hidden in favor of aots-combined-layer, so `out`
+    // stays empty from the loop above even though a real raster is on
+    // screen. Fall back to the SAME active-hazard membership the combined
+    // layer itself renders (mirrors _combinedActiveHazardCount): each
+    // hazard's own tile-value is still fetched and combined exactly like
+    // the non-combined multi-hazard-stack case.
     if (out.length === 0 && map.getLayer(_AOTS_COMBINED_IDS.tilesLayer) &&
         map.getLayoutProperty(_AOTS_COMBINED_IDS.tilesLayer, 'visibility') === 'visible') {
         for (var j = 0; j < _AOTS_HAZARDS.length; j++) {
@@ -461,7 +510,7 @@ function _visibleRasterHazards(map, config) {
     return out;
 }
 
-// Base/context fields — identical regardless of which hazard's own query
+// Base/context fields: identical regardless of which hazard's own query
 // returned them (population/facility counts describe who lives in this
 // tile, not a hazard-specific quantity), so combining just means "fill in
 // from whichever hazard's response happens to have them", not a real
@@ -471,28 +520,39 @@ var _AOTS_TT_BASE_FIELDS = [
     'BUILT_SURFACE_M2', 'SMOD_CLASS', 'RWI', 'MODERATE_POVERTY_PROB', 'SEVERE_POVERTY_PROB',
     'NUM_SCHOOLS', 'NUM_HCS', 'NUM_SHELTERS', 'NUM_WASH',
 ];
-// PROBABILITY + every real "expected impact" (E_*) field — genuinely
-// hazard-specific, real MAX-combined below (same "MAX not SUM avoids
-// double-counting the same population cell just because two active
-// hazards both threaten it" principle pages/map_shell_concept.py's own
-// _fetch_real_combined_tile_totals_uncached already uses server-side for
-// the country-wide Impact Summary total — applied here at single-tile
-// granularity instead, client-side, since each hazard's own tile-value
-// response is already fetched individually).
+// PROBABILITY + every real "expected impact" (E_*) field: genuinely
+// hazard-specific, MAX-combined below (MAX not SUM avoids double-counting
+// the same population cell just because two active hazards both threaten
+// it). This function (_combineHazardTileProps) is only used by the
+// ADMIN/region hover path (_showAdminTooltipImmediate). The TILE hover
+// path instead calls the server's /tile-value-combined endpoint directly,
+// which computes a true per-tile bitmask union
+// (services/tile_server.py's _combine_bitmask_aware[_points]): see
+// _buildTileTooltip's own header comment. The admin/region path uses the
+// equivalent server-side union (_combine_bitmask_aware_admin +
+// /tiles/admin-combined) whenever a combined admin layer exists (2+ active
+// hazards in Regions view), read directly by _showAdminTooltipImmediate.
+// This function still covers the cases that legitimately stack N separate
+// per-hazard admin layers: a non-combinable Exposure prop (In Need /
+// settlement / RWI / poverty, see applyTileConfig's own isCombinableProp),
+// where no combined layer exists to read from. Its MAX over the four
+// facility-count E_NUM_* fields also remains the real behaviour even on
+// the combined tile, which deliberately doesn't recompute those either:
+// see _fetch_admin_combined_tile's own "remaining limitation" note in
+// tile_server.py.
 var _AOTS_TT_E_FIELDS = [
     'E_POPULATION', 'E_INFANT_POPULATION', 'E_SCHOOL_AGE_POPULATION', 'E_ADOLESCENT_POPULATION',
     'E_BUILT_SURFACE_M2', 'E_NUM_SCHOOLS', 'E_NUM_HCS', 'E_NUM_SHELTERS', 'E_NUM_WASH',
 ];
 
-// Real feature added here (2026-08, user-requested): combines multiple
-// per-hazard tile-value responses ({hazard, props} pairs) into ONE props
-// object (real MAX-combined PROBABILITY/E_* fields, base fields filled in
-// from whichever hazard has them) plus a perHazardProbs list (each
-// hazard's OWN real probability, for the individual breakdown rows
+// Combines multiple per-hazard tile-value responses ({hazard, props}
+// pairs) into ONE props object (MAX-combined PROBABILITY/E_* fields, base
+// fields filled in from whichever hazard has them) plus a perHazardProbs
+// list (each hazard's own probability, for the individual breakdown rows
 // _buildTileTooltip renders under the combined figure). People/Children In
-// Need stays wind-only (real limitation — no vulnerability pipeline exists
-// for gust/river/rain, same as the country-level function's own
-// docstring), only ever taken from wind's own result.
+// Need stays wind-only (no vulnerability pipeline exists for gust/river/
+// rain, same as the country-level function's own docstring), only ever
+// taken from wind's own result.
 function _combineHazardTileProps(hazardResults) {
     var combined = {};
     var perHazardProbs = [];
@@ -529,23 +589,16 @@ function _combineHazardTileProps(hazardResults) {
 }
 
 // Which of the two GLOBAL raw rasters (see _AOTS_GLOBAL_RAW_IDS) are
-// currently visible — these are a completely separate rendering system
+// currently visible: these are a completely separate rendering system
 // from the per-country hazard tiles above (no `config.country` dependency
 // at all), so this is checked as its own fallback in the hover handler
 // rather than folded into _visibleRasterHazards.
-//
-// Real bug found+fixed here (2026-08, user-reported: hovering the BAVI
-// demo scenario's own raster — which deliberately shows BOTH raw layers
-// at once, see _DEMO_SCENARIOS' own comment — never showed a tooltip):
-// this used to return a single layer name, always preferring 'river' over
-// 'precip' whenever BOTH were visible, regardless of which one actually
-// had real data under the cursor. River's flood-extent coverage is sparse
-// (most pixels return {} even where precip genuinely has data right
-// there), so a hover over a precip-only spot silently fell through to
-// "river returned nothing" and hid the tooltip — even though the cursor
-// was sitting on real, visibly-painted rain data the whole time. Now
-// returns EVERY visible raw layer so the caller can query all of them and
-// show whichever (or both) actually have data at this point.
+// Returns EVERY visible raw layer (both river and precip can be visible at
+// once, e.g. the BAVI demo scenario, see _DEMO_SCENARIOS' own comment) so
+// the caller can query all of them and show whichever (or both) actually
+// have data at this point. River's flood-extent coverage is sparse (most
+// pixels return {} even where precip genuinely has data right there), so a
+// single-layer pick would silently miss real data under the cursor.
 function _visibleRawLayers(map) {
     var ids = _AOTS_GLOBAL_RAW_IDS;
     var out = [];
@@ -566,18 +619,16 @@ function _setupHoverTooltips(lMap) {
     var _pending_request = null;
     var _last_lon = null;
     var _last_lat = null;
-    // Real perf bug found+fixed here (2026-08, user-reported: "it's very
-    // slow"): the network-lookup half of this handler (raster tile /
-    // raw-layer fetches) used to fire on every single mousemove tick that
-    // cleared the tiny 0.001°-movement threshold — for a fast-moving mouse
-    // that's easily 10-20+ concurrent fetches/sec, most of them immediately
-    // superseded and thrown away, but still real network+JSON-parse work
-    // piling up. _hoverDebounceTimer defers the actual network lookup
-    // until the mouse has been briefly still (80ms) — long enough to feel
-    // instant to a human hovering, short enough to filter out fetches for
-    // positions the cursor has already moved past. The cheap, local,
-    // no-network admin-vector-layer check stays fully immediate (no
-    // debounce) since queryRenderedFeatures has no network cost at all.
+    // The network-lookup half of this handler (raster tile / raw-layer
+    // fetches) would otherwise fire on every mousemove tick that clears the
+    // tiny 0.001°-movement threshold: for a fast-moving mouse that's
+    // easily 10-20+ concurrent fetches/sec if left undebounced.
+    // _hoverDebounceTimer defers the actual network lookup until the mouse
+    // has been briefly still (80ms), long enough to feel instant to a
+    // human hovering, short enough to filter out fetches for positions the
+    // cursor has already moved past. The cheap, local, no-network
+    // admin-vector-layer check stays fully immediate (no debounce) since
+    // queryRenderedFeatures has no network cost at all.
     var _hoverDebounceTimer = null;
     var _HOVER_DEBOUNCE_MS = 80;
 
@@ -592,12 +643,49 @@ function _setupHoverTooltips(lMap) {
         el.style.top  = y + 'px';
     };
 
-    // Admin vector-layer check — several hazards' own admin layers
+    // Admin vector-layer check: several hazards' own admin layers
     // (aots-admin-layer-{hazard}) can render a feature at the SAME queried
     // point simultaneously, same real multi-hazard combine as the network
-    // tile-value path above, just synchronous/local (no fetch needed —
+    // tile-value path above, just synchronous/local (no fetch needed,
     // queryRenderedFeatures already returns each hazard's own properties).
     var _showAdminTooltipImmediate = function(adminFeatures, clientX, clientY) {
+        // When the COMBINED admin layer is what's rendered (2+ active
+        // hazards AND view_mode === 'admin'), its own MVT feature already
+        // carries a server-computed per-region, per-member union in
+        // PROBABILITY (_combine_bitmask_aware_admin in tile_server.py):
+        // the same methodology the combined raster paints with. Read it
+        // directly instead of deriving a client-side MAX across N separate
+        // single-hazard admin layers' properties.
+        //
+        // The per-hazard MAX path below covers every case this doesn't:
+        // exactly one hazard active, view_mode === 'tiles', or a
+        // non-combinable Exposure prop (In Need / settlement / RWI /
+        // poverty) where applyTileConfig deliberately keeps stacking real
+        // per-hazard admin layers.
+        var combinedFeature = null;
+        for (var ci = 0; ci < adminFeatures.length; ci++) {
+            var cf = adminFeatures[ci];
+            if (cf.layer && cf.layer.id === _AOTS_COMBINED_IDS.adminLayer) { combinedFeature = cf; break; }
+        }
+        if (combinedFeature) {
+            var cprops = combinedFeature.properties || {};
+            // Each active hazard's OWN real marginal probability travels
+            // on the same feature (PROBABILITY_WIND/_GUST/_RIVER/_RAIN),
+            // so the per-hazard breakdown rows still render with zero
+            // extra requests. Absent key = that hazard isn't active (or
+            // has no row for this region): skipped, never shown as 0.
+            var cPerHazard = [];
+            _AOTS_HAZARDS.forEach(function (hz) {
+                var v = _getP(cprops, 'PROBABILITY_' + hz.toUpperCase());
+                if (v !== null && v !== undefined) cPerHazard.push({ hazard: hz, prob: v });
+            });
+            el.innerHTML = _buildTileTooltip(
+                { properties: cprops, layer: { id: _AOTS_COMBINED_IDS.adminLayer } }, cPerHazard);
+            el.style.display = 'block';
+            _positionTooltipEl(clientX, clientY);
+            return;
+        }
+
         var hazardResults = adminFeatures.map(function(f) {
             var m = f.layer && f.layer.id && f.layer.id.match(/^aots-admin-layer-(\w+)/);
             return { hazard: m ? m[1] : 'wind', props: f.properties };
@@ -612,16 +700,16 @@ function _setupHoverTooltips(lMap) {
         _positionTooltipEl(clientX, clientY);
     };
 
-    // Real perf fix (2026-08, multi-agent audit): this branch was
-    // deliberately left undebounced (no network cost, see its own comment
-    // below) — but _showAdminTooltipImmediate's el.innerHTML write followed
-    // immediately by _positionTooltipEl's el.offsetWidth/offsetHeight read
-    // is a classic write→read layout-thrash pattern, and mousemove can fire
-    // well above 60Hz on some trackpads/mice — every tick forced a
-    // synchronous layout recalculation while hovering an admin region.
-    // Coalesced to at most once per animation frame via requestAnimationFrame
-    // (still feels instant to a human, caps the real DOM/layout cost at the
-    // browser's own paint rate instead of the raw input rate).
+    // This branch is deliberately left undebounced (no network cost, see
+    // its own comment below), but _showAdminTooltipImmediate's
+    // el.innerHTML write followed immediately by _positionTooltipEl's
+    // el.offsetWidth/offsetHeight read is a write→read layout-thrash
+    // pattern, and mousemove can fire well above 60Hz on some
+    // trackpads/mice, which would force a synchronous layout recalculation
+    // on every tick while hovering an admin region. Coalesced to at most
+    // once per animation frame via requestAnimationFrame (still feels
+    // instant to a human, caps the DOM/layout cost at the browser's own
+    // paint rate instead of the raw input rate).
     var _adminTooltipRAF = null;
     var _adminTooltipPending = null;
     var _flushAdminTooltip = function() {
@@ -639,25 +727,20 @@ function _setupHoverTooltips(lMap) {
         }
     };
 
-    // The network-lookup half of the hover handler — deferred via
+    // The network-lookup half of the hover handler: deferred via
     // _hoverDebounceTimer below, never called directly from 'mousemove'.
     function _runNetworkHoverLookup(lon, lat, clientX, clientY) {
         var map = window._aots_maplibre;
         var config = window._aots_tile_config;
         var rawConfig = window._aots_global_raw_config;
 
-        // For the raster tile layer, use the API endpoint. Several hazards can be
-        // visible simultaneously — real feature added here (2026-08,
-        // user-requested): query EVERY visible hazard's own tile-value in
-        // parallel and combine them (see _combineHazardTileProps), instead
-        // of the old fixed wind > gust > river > rain priority that only
-        // ever fetched/showed ONE. Per-country hazard tiles need a
-        // selected country; the two GLOBAL raw rasters (river-raw/precip-raw
-        // — see _visibleRawLayers) don't, and are the normal Global-mode
-        // state (real gap found+fixed here, 2026-08: this whole hover
-        // mechanism used to bail out entirely whenever no country was
-        // selected, so those two layers never had ANY hover tooltip, on
-        // the map, at all).
+        // For the raster tile layer, use the API endpoint. Several hazards
+        // can be visible simultaneously: query EVERY visible hazard's own
+        // tile-value in parallel and combine them (see
+        // _combineHazardTileProps). Per-country hazard tiles need a
+        // selected country; the two GLOBAL raw rasters (river-raw/precip-raw,
+        // see _visibleRawLayers) don't, and are the normal Global-mode
+        // state.
         var hoverHazards = (config && config.country) ? _visibleRasterHazards(map, config) : [];
         var rawLayers = hoverHazards.length === 0 ? _visibleRawLayers(map) : [];
         if (hoverHazards.length === 0 && rawLayers.length === 0) {
@@ -675,73 +758,86 @@ function _setupHoverTooltips(lMap) {
             ? (hoverHazards.length > 0 ? config : rawConfig).tile_server_url : 'http://localhost:8001';
 
         if (hoverHazards.length > 0) {
-            var hazardFetches = hoverHazards.map(function(hz) {
-                var hoverParts = _hazardUrlParts(hz, config);
-                var url = base + '/tile-value/'
-                    + encodeURIComponent(config.country) + '/'
-                    + encodeURIComponent(hoverParts.storm) + '/'
-                    + encodeURIComponent(hoverParts.forecast_date)
-                    + '?lon=' + lon.toFixed(6)
-                    + '&lat=' + lat.toFixed(6)
-                    + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
-                    + hoverParts.qs;
-                return fetch(url).then(function(r) { return r.json(); })
-                    .then(function(props) { return (props && Object.keys(props).length > 0) ? { hazard: hz, props: props } : null; })
-                    .catch(function() { return null; });
-            });
-            Promise.all(hazardFetches).then(function(results) {
+            // ONE request to /tile-value-combined computes the real
+            // per-tile bitmask union server-side (the same methodology
+            // the raster underneath paints with) instead of a client-side
+            // MAX across N parallel /tile-value/ fetches; see that
+            // endpoint's own docstring in tile_server.py. Query-param shape
+            // mirrors applyCombinedHazardLayer's own raster-combined URL
+            // builder exactly (same config fields, same wire names), so
+            // there is one source of truth for "how to ask the server for
+            // every active hazard at once" across both the paint path and
+            // the hover path.
+            var url = base + '/tile-value-combined/'
+                + encodeURIComponent(config.country) + '/'
+                + encodeURIComponent(config.storm || 'NONE')
+                + '?lon=' + lon.toFixed(6)
+                + '&lat=' + lat.toFixed(6)
+                + '&wind_on=' + (!!config.wind_visible)
+                + '&wind_forecast_date=' + encodeURIComponent(config.forecast_date || '')
+                + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
+                + '&gust_on=' + (!!config.gust_visible)
+                + (config.gust_threshold != null ? '&gust_threshold=' + config.gust_threshold : '')
+                + '&river_on=' + (!!config.river_visible)
+                + '&river_forecast_date=' + encodeURIComponent(config.river_forecast_date || '')
+                + (config.rp_tier ? '&rp_tier=' + encodeURIComponent(config.rp_tier) : '')
+                + (config.river_window != null ? '&river_window=' + config.river_window : '')
+                + '&rain_on=' + (!!config.rain_visible)
+                + '&rain_forecast_date=' + encodeURIComponent(config.rain_forecast_date || '')
+                + (config.threshold_mm != null ? '&threshold_mm=' + config.threshold_mm : '')
+                + (config.window_h != null ? '&window_h=' + config.window_h : '');
+            fetch(url).then(function(r) { return r.json(); }).then(function(result) {
                 if (req._cancelled) return;
-                var hits = results.filter(Boolean);
-                if (hits.length === 0) {
+                var combinedProps = result && result.combinedProps;
+                var perHazardProbs = (result && result.perHazardProbs) || [];
+                if (!combinedProps || Object.keys(combinedProps).length === 0) {
                     el.style.display = 'none';
                     return;
                 }
-                var combined = _combineHazardTileProps(hits);
-                // Build a fake feature object compatible with _buildTileTooltip
-                // — layer id tags it with the SINGLE highest-probability
+                // Layer id tags it with the SINGLE highest-probability
                 // hazard (for the single-hazard label path / title-color
-                // fallback), while perHazardProbs drives the real
-                // multi-hazard breakdown whenever more than one hit.
-                var topHazard = hits.reduce(function(best, h) {
-                    return (!best || (_getP(h.props, 'PROBABILITY') || 0) > (_getP(best.props, 'PROBABILITY') || 0)) ? h : best;
-                }, null).hazard;
-                var feature = { properties: combined.combinedProps, layer: { id: 'aots-tiles-layer-' + topHazard } };
-                el.innerHTML = _buildTileTooltip(feature, combined.perHazardProbs);
+                // fallback), derived from the server's own perHazardProbs.
+                var topHazard = perHazardProbs.reduce(function(best, h) {
+                    return (!best || h.prob > best.prob) ? h : best;
+                }, null);
+                var feature = { properties: combinedProps, layer: { id: 'aots-tiles-layer-' + (topHazard ? topHazard.hazard : 'wind') } };
+                el.innerHTML = _buildTileTooltip(feature, perHazardProbs);
                 el.style.display = 'block';
                 _positionTooltipEl(clientX, clientY);
+            }).catch(function() {
+                if (req._cancelled) return;
+                el.style.display = 'none';
             });
             return;
         }
 
-        // Real bug found+fixed here (2026-08, user-reported: hovering the
-        // BAVI demo scenario — which deliberately shows BOTH raw layers at
-        // once — never showed a tooltip): query EVERY visible raw layer in
-        // parallel and combine whichever ones actually have real data at
-        // this point, instead of picking one layer up front and giving up
-        // silently when THAT ONE happens to have no coverage here (river's
-        // flood-extent data is sparse — most pixels return {} even where
-        // precip genuinely has real data right there).
+        // Query EVERY visible raw layer in parallel and combine whichever
+        // ones actually have real data at this point, rather than picking
+        // one layer up front (river's flood-extent data is sparse, most
+        // pixels return {} even where precip genuinely has real data right
+        // there).
         var fetches = rawLayers.map(function(layer) {
             var url = null;
             if (layer === 'river' && rawConfig && rawConfig.river_forecast_time) {
                 url = base + '/tile-value/river-raw/' + encodeURIComponent(rawConfig.river_forecast_time)
                     + '?lon=' + lon.toFixed(6) + '&lat=' + lat.toFixed(6)
                     + '&rp_tier=' + encodeURIComponent(rawConfig.rp_tier || 'rp10')
-                    + '&step_h=' + (rawConfig.river_step_h != null ? rawConfig.river_step_h : 72);
+                    + '&step_h=' + (rawConfig.river_step_h != null ? rawConfig.river_step_h : 72)
+                    // See _buildRawLayerTooltip's own member branch.
+                    + (rawConfig.river_member != null ? '&member=' + rawConfig.river_member : '');
             } else if (layer === 'precip' && rawConfig && rawConfig.precip_forecast_time) {
-                // mode=rawConfig.rain_mode — real bug found+fixed here
-                // (2026-08, user-reported: "still showing precipitation
-                // tool-tips everywhere if there is nothing"): the raster
-                // only ever paints ONE of mean/probability at a time (see
-                // precip_raw_tile_value's own docstring for the full
-                // "why" — a real-but-unremarkable mean rate could clear
-                // its own low bar while the map was actually painting,
-                // and showing nothing for, Probability mode).
+                // mode=rawConfig.rain_mode: the raster only ever paints
+                // ONE of mean/probability at a time (see
+                // precip_raw_tile_value's own docstring for the full "why"),
+                // so the tooltip has to request the same mode the map is
+                // actually rendering rather than always both.
                 url = base + '/tile-value/precip-raw/' + encodeURIComponent(rawConfig.precip_forecast_time)
                     + '?lon=' + lon.toFixed(6) + '&lat=' + lat.toFixed(6)
                     + '&mode=' + encodeURIComponent(rawConfig.rain_mode || 'mean')
                     + '&window_h=' + (rawConfig.window_h != null ? rawConfig.window_h : 6)
-                    + '&threshold_mm=' + (rawConfig.threshold_mm != null ? rawConfig.threshold_mm : 10.0);
+                    + '&threshold_mm=' + (rawConfig.threshold_mm != null ? rawConfig.threshold_mm : 10.0)
+                    // See _buildRawLayerTooltip's own member branch.
+                    + (rawConfig.precip_member != null ? '&member=' + rawConfig.precip_member : '');
             }
             if (!url) return Promise.resolve(null);
             return fetch(url).then(function(r) { return r.json(); })
@@ -790,8 +886,8 @@ function _setupHoverTooltips(lMap) {
         _last_lon = lon; _last_lat = lat;
 
         // Check admin vector layer first (queryRenderedFeatures works for
-        // vector layers) — country-scoped only, same as before. Stays
-        // immediate/undebounced — no network cost.
+        // vector layers): country-scoped only, same as before. Stays
+        // immediate/undebounced: no network cost.
         if (config && config.country) {
             var pt2 = e.containerPoint;
             var adminFeatures2 = map.queryRenderedFeatures([pt2.x, pt2.y], { layers: _AOTS_ADMIN_LAYER_IDS(map) });
@@ -821,7 +917,7 @@ function _setupLeafletSync(lMap) {
     lMap._aots_sync_attached = true;
 
     // During Leaflet zoom animation the 'move' event fires many times.
-    // Use rAF to deduplicate — at most one MapLibre jumpTo per frame.
+    // Use rAF to deduplicate: at most one MapLibre jumpTo per frame.
     var _raf_pending = false;
     lMap.on('move', function () {
         if (_raf_pending) return;
@@ -953,34 +1049,19 @@ function buildColorExpression(prop, stats) {
         var logMin = Math.log10(effectiveMin);
         var logMax = Math.log10(maxV);
         if (logMin >= logMax) {
-            // Real bug found+fixed here (2026-08, multi-agent audit):
-            // used to paint colors[n-1] (the DARKEST/most severe tier)
-            // unconditionally for every degenerate (min==max, zero
-            // real variance) value — the same edge case
-            // services/tile_server.py's own _get_minmax() was fixed for
-            // earlier this session, but that Python fix only reaches the
-            // raster/Tiles view (which paints real pixels server-side);
-            // this Admin/Regions vector-fill path never calls that
-            // function at all, so it kept its own, differently-wrong
-            // fallback. Confirmed live: the SAME real degenerate dataset
-            // (PHL river rp10/120h admin_level=1 E_NUM_HCS, both real
-            // rows = 0.0196078431372549) rendered near-black on Admin/
-            // Regions while the equivalent raster Tile rendered a
-            // moderate mid-tone — a real, user-visible inconsistency
-            // between the two view modes for identical data. Python's
-            // own fix places a degenerate value at the GEOMETRIC
-            // MIDPOINT of a widened log range (min/3 .. max*3) rather
-            // than either extreme — for an even palette split that
-            // lands at colors[Math.floor((n-1)/2)] (e.g. index 4 of 10,
-            // live-confirmed against Python's own real output for a
-            // real Wind E_NUM_SHELTERS degenerate case this session:
-            // #dd3497, palette index 4). Matching that here instead of
-            // re-deriving the exact widen-and-digitize math in a
-            // declarative MapLibre expression (not straightforward —
-            // this is a fixed ['case',...] color pick, not a real numeric
-            // recompute), so a degenerate value now reads as a genuinely
-            // moderate severity in BOTH view modes, not falsely alarming
-            // in one and not falsely muted in the other.
+            // Degenerate case: min == max, zero real variance in the data.
+            // services/tile_server.py's own _get_minmax() (used by the
+            // raster/Tiles view) places a degenerate value at the GEOMETRIC
+            // MIDPOINT of a widened log range (min/3 .. max*3) rather than
+            // either extreme, for an even palette split that lands at
+            // colors[Math.floor((n-1)/2)]. This Admin/Regions vector-fill
+            // path never calls that function (it colors via a declarative
+            // MapLibre expression, not a server-side numeric recompute), so
+            // it can't re-derive the exact widen-and-digitize math here.
+            // Hardcoding the equivalent middle color keeps a degenerate
+            // value reading as moderate severity in both view modes for
+            // identical data, instead of one view falsely alarming
+            // (darkest tier) and the other falsely muted.
             return ['case',
                 ['<=', ['coalesce', ['get', propUp], ['get', prop], 0], 0], 'transparent',
                 colors[Math.floor((n - 1) / 2)]
@@ -1005,7 +1086,7 @@ function buildColorExpression(prop, stats) {
     }
 
     // Default: linear scale
-    // IMPORTANT: do NOT add a hardcoded 0,'transparent' before linStops —
+    // IMPORTANT: do NOT add a hardcoded 0,'transparent' before linStops:
     // linStops already starts at 0, creating a duplicate stop → MapLibre "strictly ascending" error.
     var linStep = maxV / n;
     var linStops = [];
@@ -1028,17 +1109,17 @@ function buildColorExpression(prop, stats) {
 // ---------------------------------------------------------------------------
 // 5. Apply tile config (core function)
 // ---------------------------------------------------------------------------
-// Hazards are independently toggleable layers — each gets its own suffixed
+// Hazards are independently toggleable layers: each gets its own suffixed
 // MapLibre source/layer pair (aots-mercator-wind vs aots-mercator-gust vs
 // aots-mercator-river vs aots-mercator-rain, etc.) so any combination can be
 // visible on the map at once (e.g. Wind + River together).
 var _AOTS_HAZARDS = ['wind', 'gust', 'river', 'rain'];
 
-// `suffix` (optional) — distinguishes EXTRA per-storm-group layers (see
+// `suffix` (optional): distinguishes EXTRA per-storm-group layers (see
 // "MULTI-STORM GROUPS" section below) from the primary/default set, so a
 // country hit by Storm B (not the primary-resolved Storm A) still gets its
 // own real map tiles instead of silently reusing Storm A's. Omit/empty for
-// the primary group — produces the exact same ids as before this existed.
+// the primary group: produces the exact same ids as before this existed.
 function _hazardLayerIds(hazardKey, suffix) {
     var suf = suffix ? ('-' + suffix) : '';
     return {
@@ -1051,12 +1132,12 @@ function _hazardLayerIds(hazardKey, suffix) {
 
 // Per-hazard path-segment + query-string values. River/rain are NOT
 // storm-scoped at all (see tile_server.py's MERCATOR_TILE_RIVER_MAT/
-// MERCATOR_TILE_PRECIP_MAT comments — keyed by COUNTRY + FORECAST_TIME(+
+// MERCATOR_TILE_PRECIP_MAT comments, keyed by COUNTRY + FORECAST_TIME(+
 // RP_TIER / +THRESHOLD_MM+WINDOW_H), no STORM/TRACK_ID column exists for
-// them) — but every tile-server endpoint still has a {storm} URL path
+// them), but every tile-server endpoint still has a {storm} URL path
 // segment for structural consistency with wind/gust, so river/rain requests
 // fill it with an inert placeholder (config.storm, already a real non-empty
-// string whenever a country/storm is resolved — reused rather than adding a
+// string whenever a country/storm is resolved, reused rather than adding a
 // second required config field only to populate an ignored path segment).
 // The real identity for river/rain comes entirely from their own
 // forecast_date (river_forecast_date/rain_forecast_date) + hazard-specific
@@ -1070,13 +1151,12 @@ function _hazardUrlParts(hazardKey, config) {
         };
     }
     if (hazardKey === 'river') {
-        // Real feature added here (2026-08, cross-repo, user-requested):
-        // River's own real cumulative window (see pages/map_shell_concept.py's
+        // River's own cumulative window (see pages/map_shell_concept.py's
         // _build_hazard_tile_config, "river_window" field for the full
-        // "why NOT config.window_h" rationale — that field is Rain's own,
+        // "why NOT config.window_h" rationale: that field is Rain's own,
         // genuinely different value/option-set). Reuses the SAME generic
         // window_h query param name server-side (services/tile_server.py's
-        // _hazard_variant already treats window_h as hazard-agnostic) —
+        // _hazard_variant already treats window_h as hazard-agnostic):
         // only this config FIELD name differs, not the wire param name.
         return {
             storm: placeholderStorm, forecast_date: config.river_forecast_date,
@@ -1093,15 +1173,15 @@ function _hazardUrlParts(hazardKey, config) {
     return { storm: config.storm, forecast_date: config.forecast_date, qs: '&hazard=wind' };
 }
 
-// `group` (optional — see "MULTI-STORM GROUPS" below): a
+// `group` (optional, see "MULTI-STORM GROUPS" below): a
 // {country, storm, forecast_date, stats, admin_stats, suffix} bundle
 // overriding the primary config's own country/storm/forecast_date/stats for
 // this one extra layer pair, when a country is affected by a DIFFERENT real
-// storm than the one the primary group already resolved (wind/gust only —
+// storm than the one the primary group already resolved (wind/gust only,
 // river/rain aren't storm-scoped, see _hazardUrlParts's own comment, so a
 // single shared forecast_date/rp_tier/threshold_mm already covers every
 // selected country there... except when countries genuinely have different
-// river/rain forecast_dates too, not yet handled by groups — same scope
+// river/rain forecast_dates too, not yet handled by groups, same scope
 // decision as the docstring in pages/map_shell_concept.py's
 // _build_hazard_tile_config: wind/gust groups only for this round).
 function applyHazardLayer(map, config, hazardKey, group) {
@@ -1110,21 +1190,17 @@ function applyHazardLayer(map, config, hazardKey, group) {
         ? { storm: group.storm, forecast_date: group.forecast_date, qs: _hazardUrlParts(hazardKey, config).qs }
         : _hazardUrlParts(hazardKey, config);
     var country       = group ? group.country : config.country;
-    // Real bug found+fixed here (2026-08, original form): for Wind/Gust
-    // specifically, the MapLibre probability raster used to render
-    // regardless of tc-view-as ("Envelopes" vs "Probability Raster"), even
-    // while "Envelopes" was selected. Generalized (2026-08, follow-up): this
-    // per-hazard MapLibre raster/admin layer — the WHOLE Exposure-driven
-    // system (Population/Children/.../Hazard Probability) — is now hidden
-    // for EVERY hazard (not just Wind/Gust) whenever
-    // config.hazard_render_mode === "raw" (pages/map_shell_concept.py's
-    // ms-hazard-render-mode switch, top of the Hazard tab): Wind/Gust show
-    // their Leaflet envelope polygons instead (tc_view_as stays a real,
-    // unchanged consumer of this same mode — see _sync_tc_view_as), River/
-    // Rain show the global raw cross-border raster instead (applyGlobal
-    // RawConfig, driven by hazard_render_mode too). "classification" mode
-    // hides this layer differently (see applyTileConfig's own useCombined
-    // branch, which skips this function's per-hazard loop entirely).
+    // This per-hazard MapLibre raster/admin layer, the whole
+    // Exposure-driven system (Population/Children/.../Hazard Probability),
+    // is hidden for every hazard whenever config.hazard_render_mode ===
+    // "raw" (pages/map_shell_concept.py's ms-hazard-render-mode switch, top
+    // of the Hazard tab): Wind/Gust show their Leaflet envelope polygons
+    // instead (tc_view_as is a consumer of this same mode, see
+    // _sync_tc_view_as), River/Rain show the global raw cross-border raster
+    // instead (applyGlobalRawConfig, driven by hazard_render_mode too).
+    // "classification" mode hides this layer differently (see
+    // applyTileConfig's own useCombined branch, which skips this function's
+    // per-hazard loop entirely).
     var hazardRenderMode = config.hazard_render_mode || 'probability';
     var visible       = !!config[hazardKey + '_visible'] && hazardRenderMode !== 'raw';
     var base          = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
@@ -1137,7 +1213,7 @@ function applyHazardLayer(map, config, hazardKey, group) {
     var adminProp     = config.admin_prop || null;
     var _defaultProp  = 'population';
 
-    // River/rain requests have no real forecast_date to run without — skip
+    // River/rain requests have no real forecast_date to run without: skip
     // entirely (leave any existing layer hidden) rather than firing a request
     // that can only 404/return empty (e.g. river_forecast_date not yet
     // resolved because the country has no river data at all).
@@ -1220,7 +1296,7 @@ function applyHazardLayer(map, config, hazardKey, group) {
 
     // Only show layers if a prop was explicitly selected AND this hazard is
     // visible, gated by the Tiles/Regions view switch (cmdbar-detail in
-    // map_shell_concept.py's command bar) — Tiles (raster) and Regions
+    // map_shell_concept.py's command bar): Tiles (raster) and Regions
     // (admin polygons) are mutually exclusive, never shown at once.
     var viewMode = config.view_mode || 'tiles';
     if (tileProp && viewMode === 'tiles') setTileLayerProp(ids.tilesLayer, 'tiles', tileProp, stats, hazardKey, group);
@@ -1231,28 +1307,36 @@ function applyHazardLayer(map, config, hazardKey, group) {
 
 // ---------------------------------------------------------------------------
 // MULTI-STORM GROUPS: when selected countries are hit by genuinely
-// DIFFERENT real storms on the same date (rare but real — confirmed via
-// _build_hazard_tile_config's own multi-country resolution, which used to
-// silently pick only the first-resolved storm for every selected country),
-// each additional storm gets its own suffixed wind/gust source+layer pair
-// so its own country's map tiles render for real instead of the primary
-// group's storm being force-applied everywhere. config.extra_wind_groups /
-// config.extra_gust_groups (arrays, possibly absent/empty — the overwhelming
+// DIFFERENT storms on the same date (rare but real), each additional storm
+// gets its own suffixed wind/gust source+layer pair so its own country's
+// map tiles render correctly instead of the primary group's storm being
+// applied everywhere. config.extra_wind_groups /
+// config.extra_gust_groups (arrays, possibly absent/empty, the overwhelming
 // common case of one shared storm) drive this; the primary/default
 // wind/gust layers above are completely unaffected when they're empty.
 function _applyExtraHazardGroups(map, config) {
     ['wind', 'gust'].forEach(function (hazardKey) {
         var groups = config['extra_' + hazardKey + '_groups'] || [];
-        var prevCount = (window._aots_extra_group_counts && window._aots_extra_group_counts[hazardKey]) || 0;
         groups.forEach(function (group, i) {
             group.suffix = 'x' + i;
             applyHazardLayer(map, config, hazardKey, group);
         });
-        // Remove any surplus extra-group layers/sources left over from a
-        // previous render with MORE groups than this one (e.g. a country
-        // whose distinct storm was just deselected) — same-index suffixes
-        // are reused across renders, so anything from `groups.length` up to
-        // the old `prevCount` is now stale.
+    });
+    _pruneStaleExtraHazardGroups(map, config);
+}
+
+// Remove any surplus extra-group layers/sources left over from a previous
+// render with MORE groups than this one (e.g. a country whose distinct storm
+// was just deselected): same-index suffixes are reused across renders, so
+// anything from `groups.length` up to the previously recorded count is now
+// stale. Called from every render path that can change the group set,
+// including applyTileConfig's combined-hazard branch (which doesn't render
+// the groups at all), so an orphaned layer+source can never outlive the
+// selection that created it.
+function _pruneStaleExtraHazardGroups(map, config) {
+    ['wind', 'gust'].forEach(function (hazardKey) {
+        var groups = (config && config['extra_' + hazardKey + '_groups']) || [];
+        var prevCount = (window._aots_extra_group_counts && window._aots_extra_group_counts[hazardKey]) || 0;
         for (var i = groups.length; i < prevCount; i++) {
             var ids = _hazardLayerIds(hazardKey, 'x' + i);
             [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
@@ -1267,25 +1351,100 @@ function _applyExtraHazardGroups(map, config) {
     });
 }
 
-// Combined-hazard raster (real multi-hazard Probability/Classification) —
+// Combined-hazard raster (real multi-hazard Probability/Classification),
 // see services/tile_server.py's _fetch_combined_raster_tile for the "why":
 // one real blended/classified raster instead of stacking N separate
 // per-hazard raw layers. ONE MapLibre source/layer, reused across every
-// mode — only the URL (and visibility) changes.
-var _AOTS_COMBINED_IDS = { mercatorSource: 'aots-combined-source', tilesLayer: 'aots-combined-layer' };
+// mode: only the URL (and visibility) changes.
+// `adminLayer` is deliberately named 'aots-admin-layer-combined' rather
+// than the 'aots-combined-…' prefix its two raster siblings use: the
+// 'aots-admin-layer' prefix is a real, load-bearing CONTRACT elsewhere in
+// this file: _buildTileTooltip detects an admin feature with
+// `id.indexOf('aots-admin-layer') === 0` and derives its hazard key with
+// /^aots-(?:tiles|admin)-layer-(\w+)/, and _AOTS_ADMIN_LAYER_IDS builds the
+// hover query list from that same shape. Naming it consistently with the
+// raster siblings instead would silently make the combined region tooltip
+// render as a TILE tooltip. The SOURCE id has no such contract, so it keeps
+// the 'aots-combined-' prefix.
+var _AOTS_COMBINED_IDS = {
+    mercatorSource: 'aots-combined-source',
+    tilesLayer:     'aots-combined-layer',
+    adminSource:    'aots-combined-admin-source',
+    adminLayer:     'aots-admin-layer-combined',
+};
+
+// Combined-ADMIN color-scale ranges. The per-hazard admin layers each get
+// their own config.admin_stats_{hazard} straight from /admin-stats/; the
+// combined layer has no such server-side stats endpoint of its own, and
+// two DIFFERENT hazards' ranges are not interchangeable, so this derives
+// one self-consistent range from the active hazards' own stats, mirroring
+// the same logic services/tile_server.py's own combined RASTER uses for
+// exactly this problem:
+//   - 'probability': min of mins, max = min(1, SUM of maxes). A true
+//     union's probability can never exceed the sum of its constituents'
+//     (union bound, P(A∪B) <= P(A)+P(B), holds without any independence
+//     assumption), looser than the exact max but a real bound, so a
+//     genuinely-high combined region can never be wrongly clipped into the
+//     top color bucket, and the legend doesn't rescale as you pan.
+//   - combinable E_* props: scaled against their RAW column's own range
+//     (population, not E_population). Two hazards' own E_* ranges aren't
+//     comparable (river's country-wide E_population max can be far smaller
+//     than rain's purely because river's highest probability is lower), so
+//     mixing them directly would produce a non-monotonic result: a
+//     combined value painted a LOWER bucket than either hazard alone,
+//     despite combined_E >= max(E_a, E_b) always holding. The raw column
+//     is hazard-independent and always >= the combined value, so it can
+//     never break monotonicity.
+var _AOTS_COMBINED_EXPOSURE_RAW_STAT = {
+    'E_population':              'population',
+    'E_children_total':          'children_total',
+    'E_infant_population':       'infant_population',
+    'E_school_age_population':   'school_age_population',
+    'E_adolescent_population':   'adolescent_population',
+    'E_built_surface_m2':        'built_surface_m2',
+};
+
+function _combinedAdminStats(config) {
+    var active = _AOTS_HAZARDS.filter(function (hz) {
+        return config[hz + '_visible'] && config[hz + '_has_data'];
+    });
+    var out = {};
+    // Base/raw columns (population/children/built-up/RWI/poverty/…) are
+    // identical across hazards (they describe who lives in the region,
+    // not a hazard-specific quantity), so "first hazard that has it wins"
+    // is a real fill-in, not a combine decision.
+    active.forEach(function (hz) {
+        var s = config['admin_stats_' + hz] || {};
+        Object.keys(s).forEach(function (k) { if (out[k] === undefined) out[k] = s[k]; });
+    });
+    var pmin = null, psum = 0, anyProb = false;
+    active.forEach(function (hz) {
+        var s = (config['admin_stats_' + hz] || {})['probability'];
+        if (!s) return;
+        anyProb = true;
+        if (s.min != null && (pmin === null || s.min < pmin)) pmin = s.min;
+        psum += (s.max || 0);
+    });
+    if (anyProb) out['probability'] = { min: (pmin !== null ? pmin : 0), max: Math.min(1, psum) };
+    Object.keys(_AOTS_COMBINED_EXPOSURE_RAW_STAT).forEach(function (eProp) {
+        var rawProp = _AOTS_COMBINED_EXPOSURE_RAW_STAT[eProp];
+        if (out[rawProp]) out[eProp] = out[rawProp];
+    });
+    return out;
+}
 
 // Mirrors services/tile_server.py's _COMBINED_EXPOSURE_RAW_COL keys exactly
 // (same cross-file duplication convention this repo already has for
-// propMap/ePropMap — see CLAUDE.md's "Property name duplication" note) —
-// the only Exposure props with a real raw-count × probability relationship,
-// so the only ones a combined mode="exposure" raster can legitimately color.
+// propMap/ePropMap): the only Exposure props with a real raw-count ×
+// probability relationship, so the only ones a combined mode="exposure"
+// raster can legitimately color.
 var _AOTS_COMBINABLE_EXPOSURE_PROPS = [
     'E_POPULATION', 'E_CHILDREN_TOTAL', 'E_INFANT_POPULATION',
     'E_SCHOOL_AGE_POPULATION', 'E_ADOLESCENT_POPULATION', 'E_BUILT_SURFACE_M2',
 ];
 
 // How many of the 4 hazards are both checked AND have real data behind
-// them — same has_data signal any_hazard_on already uses server-side (see
+// them: same has_data signal any_hazard_on already uses server-side (see
 // _build_hazard_tile_config's own wind_has_data/gust_has_data/river_has_
 // data/rain_has_data comment), so a checked-but-disabled/no-data checkbox
 // never counts as "active" here either.
@@ -1299,13 +1458,22 @@ function _hideCombinedHazardLayer(map) {
     if (map.getLayer(_AOTS_COMBINED_IDS.tilesLayer)) {
         map.setLayoutProperty(_AOTS_COMBINED_IDS.tilesLayer, 'visibility', 'none');
     }
+    // The combined ADMIN layer hides alongside the raster everywhere the
+    // raster hides (the two early-returns in applyTileConfig, the
+    // hazards_hidden branch, and the non-combined per-hazard branch),
+    // rather than being left for each caller to remember: every existing
+    // call site means "hide the whole combined rendering", not "hide its
+    // raster half".
+    if (map.getLayer(_AOTS_COMBINED_IDS.adminLayer)) {
+        map.setLayoutProperty(_AOTS_COMBINED_IDS.adminLayer, 'visibility', 'none');
+    }
 }
 
 function applyCombinedHazardLayer(map, config) {
     var ids = _AOTS_COMBINED_IDS;
     var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
     // The combined tile-server endpoint has 3 real modes (probability/
-    // classification/exposure — see _fetch_combined_raster_tile) — "raw"
+    // classification/exposure, see _fetch_combined_raster_tile): "raw"
     // render mode never routes here at all (see applyTileConfig's own
     // useCombined, which is always false for "raw"). "exposure" (real
     // raw-count × combined-probability expected impact) applies whenever
@@ -1324,34 +1492,93 @@ function applyCombinedHazardLayer(map, config) {
         return;
     }
 
+    // Honours config.view_mode (cmdbar-detail in map_shell_concept.py's
+    // command bar) mutually exclusively, same as the single-hazard path
+    // (applyHazardLayer): Tiles => combined raster, Regions => combined
+    // admin polygons, never both.
+    //
+    // "classification" is the ONE deliberate exception: it stays on the
+    // raster even in Regions view. It colors each cell by WHICH hazard(s)
+    // hit it: a per-pixel fact with no honest single-value equivalent for
+    // a whole admin region (a region containing one wind-only tile and one
+    // flood-only tile has no single true classification), which is why the
+    // server rejects mode="classification" for /tiles/admin-combined at
+    // all rather than quietly serving something else.
+    var viewMode = config.view_mode || 'tiles';
+    var adminProp = config.admin_prop || null;
+    var useAdmin = viewMode === 'admin' && mode !== 'classification';
+    // Vector tiles are fetched inside a MapLibre Web Worker which cannot
+    // resolve relative URLs, same absBase fallback applyHazardLayer's own
+    // admin source already needs for SPCS proxy mode (base === '').
+    var absBase = base !== '' ? base : window.location.origin;
+
+    // ONE shared per-hazard query string for BOTH combined routes: they
+    // take an identical param shape by design (see admin_combined_tile's
+    // own docstring in tile_server.py), so a new hazard field can never be
+    // added to the raster URL and forgotten on the admin one.
+    //
+    // Only an ON hazard's own params go into the URL. A switched-off hazard
+    // contributes nothing to a combined tile, so leaving its threshold/date/
+    // window out keeps the tile URL byte-identical while that (still fully
+    // interactive) slider moves, which keeps MapLibre serving the tiles it
+    // already has instead of refetching a whole viewport for identical
+    // bytes. wind_forecast_date is shared by Wind and Gust, so it is sent
+    // whenever either is on.
+    var windOn = !!config.wind_visible, gustOn = !!config.gust_visible;
+    var riverOn = !!config.river_visible, rainOn = !!config.rain_visible;
+    var sharedQs = '?wind_on=' + windOn + '&gust_on=' + gustOn
+        + '&river_on=' + riverOn + '&rain_on=' + rainOn;
+    if (windOn || gustOn) {
+        sharedQs += '&wind_forecast_date=' + encodeURIComponent(config.forecast_date || '');
+    }
+    if (windOn) {
+        sharedQs += '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50);
+    }
+    if (gustOn && config.gust_threshold != null) {
+        sharedQs += '&gust_threshold=' + config.gust_threshold;
+    }
+    if (riverOn) {
+        sharedQs += '&river_forecast_date=' + encodeURIComponent(config.river_forecast_date || '');
+        if (config.rp_tier) sharedQs += '&rp_tier=' + encodeURIComponent(config.rp_tier);
+        // River's own cumulative lead-time window, kept separate from
+        // window_h (Rain's own, below) for the same reason _hazardUrlParts's
+        // own river branch keeps them separate: both hazards can be active
+        // at once with genuinely different windows. Omitting it would let
+        // the server default (_RIVER_WINDOW_DEFAULT, the full 168h horizon)
+        // win over the real ms-river-window selection.
+        if (config.river_window != null) sharedQs += '&river_window=' + config.river_window;
+    }
+    if (rainOn) {
+        sharedQs += '&rain_forecast_date=' + encodeURIComponent(config.rain_forecast_date || '');
+        if (config.threshold_mm != null) sharedQs += '&threshold_mm=' + config.threshold_mm;
+        if (config.window_h != null) sharedQs += '&window_h=' + config.window_h;
+    }
+
     var rasterUrl = base
         + '/tiles/raster-combined/'
         + encodeURIComponent(config.country) + '/'
         + encodeURIComponent(storm) + '/'
         + mode
         + '/{z}/{x}/{y}.webp'
-        + '?wind_on=' + (!!config.wind_visible)
-        + '&wind_forecast_date=' + encodeURIComponent(config.forecast_date || '')
-        + '&wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
-        + '&gust_on=' + (!!config.gust_visible)
-        + (config.gust_threshold != null ? '&gust_threshold=' + config.gust_threshold : '')
-        + '&river_on=' + (!!config.river_visible)
-        + '&river_forecast_date=' + encodeURIComponent(config.river_forecast_date || '')
-        + (config.rp_tier ? '&rp_tier=' + encodeURIComponent(config.rp_tier) : '')
-        // Real bug found+fixed here (2026-08, user-reported: "Classification
-        // doesn't react at all to the day accumulation slider — it only
-        // shows the 7d accumulation, which is misleading"). This param was
-        // simply never sent here at all — the server-side default
-        // (_RIVER_WINDOW_DEFAULT, the full 168h horizon) silently won every
-        // time regardless of ms-river-window's real selection. Kept separate
-        // from window_h (Rain's own, below) for the same reason
-        // _hazardUrlParts's own river branch already keeps them separate.
-        + (config.river_window != null ? '&river_window=' + config.river_window : '')
-        + '&rain_on=' + (!!config.rain_visible)
-        + '&rain_forecast_date=' + encodeURIComponent(config.rain_forecast_date || '')
-        + (config.threshold_mm != null ? '&threshold_mm=' + config.threshold_mm : '')
-        + (config.window_h != null ? '&window_h=' + config.window_h : '')
+        + sharedQs
+        // `prop` is raster-only: the server has to decide which single
+        // quantity to paint into each pixel. The admin MVT carries EVERY
+        // property instead and buildColorExpression picks client-side, so
+        // sending it there would be meaningless.
         + (mode === 'exposure' ? '&prop=' + propUpper : '');
+
+    var adminUrl = absBase
+        + '/tiles/admin-combined/'
+        + encodeURIComponent(config.country) + '/'
+        + encodeURIComponent(storm) + '/'
+        // "classification" never reaches this URL (useAdmin is false for
+        // it, and the server rejects it outright): mapped to the nearest
+        // real admin mode purely so the string is always valid if the
+        // source is created while classification happens to be selected.
+        + (mode === 'exposure' ? 'exposure' : 'probability')
+        + '/{z}/{x}/{y}.pbf'
+        + sharedQs
+        + '&admin_level=1';
 
     if (map.getSource(ids.mercatorSource)) {
         map.getSource(ids.mercatorSource).setTiles([rasterUrl]);
@@ -1361,29 +1588,68 @@ function applyCombinedHazardLayer(map, config) {
         });
     }
 
+    if (map.getSource(ids.adminSource)) {
+        map.getSource(ids.adminSource).setTiles([adminUrl]);
+    } else {
+        map.addSource(ids.adminSource, {
+            // Same minzoom/maxzoom as applyHazardLayer's own per-hazard
+            // admin source: admin polygons are served over the same real
+            // zoom band regardless of how many hazards feed them.
+            type: 'vector', tiles: [adminUrl], minzoom: 4, maxzoom: 10,
+        });
+    }
+
     if (!map.getLayer(ids.tilesLayer)) {
         map.addLayer({
             id: ids.tilesLayer,
             type: 'raster',
             source: ids.mercatorSource,
-            layout: { visibility: 'visible' },
+            layout: { visibility: 'none' },
             paint: { 'raster-opacity': 0.8, 'raster-fade-duration': 0, 'raster-resampling': 'nearest' },
         });
-    } else {
-        map.setLayoutProperty(ids.tilesLayer, 'visibility', 'visible');
     }
+
+    var adminStats = _combinedAdminStats(config);
+    if (!map.getLayer(ids.adminLayer)) {
+        map.addLayer({
+            id: ids.adminLayer,
+            type: 'fill',
+            source: ids.adminSource,
+            // Matches the MVT layer name _fetch_admin_combined_tile encodes
+            // ("admin"), identical to the single-hazard admin tiles: one
+            // less thing that can differ between the two paths.
+            'source-layer': 'admin',
+            layout: { visibility: 'none' },
+            paint: {
+                'fill-color': buildColorExpression(adminProp || 'population', adminStats),
+                'fill-opacity': 0.6,
+                'fill-outline-color': 'rgba(0,0,0,0.2)',
+            }
+        });
+    } else if (adminProp) {
+        map.setPaintProperty(ids.adminLayer, 'fill-color', buildColorExpression(adminProp, adminStats));
+    }
+
+    // Mutually exclusive, exactly like applyHazardLayer's own tail: the
+    // admin layer additionally needs a real admin_prop selected (nothing
+    // to color by otherwise), same gate the single-hazard path uses.
+    map.setLayoutProperty(ids.tilesLayer, 'visibility', useAdmin ? 'none' : 'visible');
+    map.setLayoutProperty(ids.adminLayer, 'visibility', (useAdmin && adminProp) ? 'visible' : 'none');
 }
 
-// Real bug found+fixed here (2026-08, follow-up review): every hide path
-// below (the two early-returns in applyTileConfig, and
-// setHazardsHiddenOverride) used to only touch the PRIMARY (non-suffixed)
-// hazard layer ids, leaving any multi-storm "extra group" layers
-// (_applyExtraHazardGroups' own 'x0'/'x1'/... suffixed wind/gust layers,
-// see #248) fully visible and interactive — a real gap made newly visible
-// now that the primary hide actually sticks (see the hazards_hidden branch
-// below's own comment). `config` may be null/undefined here (the "no
-// country selected" early-return calls this before config is validated).
-function _hideAllHazardLayers(map, config) {
+// Hides every PER-HAZARD raster/admin layer: the four primary ones AND every
+// multi-storm "extra group" ('x0'/'x1'/… suffixed wind/gust) layer the
+// current config describes (_applyExtraHazardGroups, see #248): a suffixed
+// layer left visible keeps painting and stays hoverable, so every hide path
+// has to cover both sets. `config` may be null/undefined here (the "no
+// country selected" early-return in applyTileConfig calls this before config
+// is validated).
+//
+// The combined layer is left untouched: callers that mean "hide the whole
+// hazard rendering" pair this with _hideCombinedHazardLayer (see
+// _hideAllHazardLayers), while applyTileConfig's combined branch uses it
+// alone, so nothing paints underneath the combined layer.
+function _hidePerHazardLayers(map, config) {
     _AOTS_HAZARDS.forEach(function (hazardKey) {
         var ids = _hazardLayerIds(hazardKey);
         [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
@@ -1399,6 +1665,10 @@ function _hideAllHazardLayers(map, config) {
             });
         }
     });
+}
+
+function _hideAllHazardLayers(map, config) {
+    _hidePerHazardLayers(map, config);
     _hideCombinedHazardLayer(map);
 }
 
@@ -1408,7 +1678,7 @@ function applyTileConfig(config) {
 
     if (!map || !window._aots_maplibre_ready) {
         window._aots_pending_tile_config = config;
-        console.log('[AoTS] MapLibre not ready — stored as pending config');
+        console.log('[AoTS] MapLibre not ready, stored as pending config');
         return;
     }
 
@@ -1417,73 +1687,51 @@ function applyTileConfig(config) {
         return;
     }
 
-    // Real bug found+fixed here: this assignment used to happen AFTER the
-    // applyHazardLayer loop below. setTileLayerProp (called from inside
-    // applyHazardLayer) doesn't receive `config` as a parameter — it reads
-    // window._aots_tile_config directly to compute each layer's visibility
-    // (`config[hazardKey + '_visible']`). With the assignment still pointing
-    // at the PREVIOUS config at that moment, a hazard whose visibility flips
-    // from off to on in this exact render (e.g. checking "Gust" for the
-    // first time) got its layer set back to 'none' using the stale
-    // pre-toggle value — confirmed live via Playwright: the Gust checkbox
-    // stayed checked and the raster URL was correctly rebuilt, but the
-    // layer's own visibility never flipped to 'visible', so nothing ever
-    // rendered. Wind never showed this bug only because it's already
-    // visible=true from the very first render. Moving this assignment BEFORE
-    // the loop means every call this render already sees its own fresh
-    // config, not last render's.
+    // Must be assigned BEFORE the applyHazardLayer loop below.
+    // setTileLayerProp (called from inside applyHazardLayer) doesn't
+    // receive `config` as a parameter: it reads window._aots_tile_config
+    // directly to compute each layer's visibility
+    // (`config[hazardKey + '_visible']`). Assigning it here first means
+    // every call this render sees its own fresh config, not the previous
+    // render's.
     window._aots_tile_config = config;
 
-    // Real bug found+fixed here (2026-08, user-reported: "the eye icon to
-    // deactivate all hazards at once... is not working anymore"): clicking
-    // the HAZARDS eye icon updates ms-hazards-hidden-store, which is a real
-    // server Input to _build_hazard_tile_config (see config.hazards_hidden's
-    // own comment in pages/map_shell_concept.py) — so every click
-    // round-trips through the server and calls applyTileConfig again via
-    // ms-tile-config-store's own Output. Neither the per-hazard loop below
-    // nor the combined-layer branch ever read hazards_hidden — only the eye
-    // icon's OWN immediate client-side setHazardsHiddenOverride call did (a
-    // one-shot direct layer hide with no lasting effect on later renders).
-    // That meant this round-trip's applyTileConfig call always ran AFTER
-    // the immediate hide and silently re-showed every hazard layer. This
-    // check makes the server-computed config authoritative — hidden stays
-    // hidden across ANY future render, not just until the next config
-    // change — while setHazardsHiddenOverride's own direct-hide call still
-    // provides the instant (pre-round-trip) visual feedback.
+    // Clicking the HAZARDS eye icon updates ms-hazards-hidden-store, which
+    // is a server Input to _build_hazard_tile_config (see
+    // config.hazards_hidden's own comment in pages/map_shell_concept.py):
+    // every click round-trips through the server and calls applyTileConfig
+    // again via ms-tile-config-store's own Output. This check makes the
+    // server-computed config authoritative: hidden stays hidden across
+    // any future render, not just until the next config change, while
+    // setHazardsHiddenOverride's own direct-hide call still provides
+    // instant (pre-round-trip) visual feedback.
     if (config.hazards_hidden) {
         _hideAllHazardLayers(map, config);
         return;
     }
 
-    // Combined-hazard branch (2026-08) — driven by ms-hazard-render-mode
+    // Combined-hazard branch: driven by ms-hazard-render-mode
     // (pages/map_shell_concept.py's Hazard-tab switch, independent of the
-    // Exposure tab's own selection — see _hazard_render_mode_switch's own
+    // Exposure tab's own selection, see _hazard_render_mode_switch's own
     // docstring for the full 3-mode model):
-    // - "classification": ALWAYS the combined classification raster,
+    // - "classification": always the combined classification raster,
     //   regardless of active-hazard count or Exposure's selection.
     // - "probability" (default/neutral): combined whenever 2+ hazards are
     //   simultaneously active AND the currently-resolved Exposure prop has a
-    //   real combined formula — "probability" itself (independence-formula
-    //   blend) or one of _AOTS_COMBINABLE_EXPOSURE_PROPS (real raw-count ×
-    //   combined-probability expected impact — see _fetch_combined_raster_
-    //   tile's own mode="exposure" docstring in tile_server.py). Real bug
-    //   found+fixed here (2026-08, user-reported: "it still seems like for
-    //   the population and children layers that there are two or more
-    //   probability layers overlaid") — combining used to be gated on the
-    //   Exposure tab's "Hazard Probability" radio specifically
-    //   (config.combine_hazard_probability), so Population/Children/Built-up
-    //   fell through to N separate per-hazard rasters stacked at 0.8 opacity
-    //   each whenever 2+ hazards were active, visually reading as a doubled/
-    //   muddied overlay. "In Need"/settlement/RWI/poverty props have no real
-    //   combined formula (not a simple raw×probability product) — they keep
-    //   falling through to the unchanged per-hazard loop below, same as
-    //   before this switch existed.
-    // - "raw": never combined here at all — Wind/Gust show Leaflet
+    //   real combined value: "probability" itself (real per-tile bitmask
+    //   union, _combine_bitmask_aware, no independence formula) or one of
+    //   _AOTS_COMBINABLE_EXPOSURE_PROPS (real raw-count × combined-probability
+    //   expected impact, see _fetch_combined_raster_tile's own
+    //   mode="exposure" docstring in tile_server.py). "In Need"/settlement/
+    //   RWI/poverty props have no real combined formula (not a simple
+    //   raw×probability product): they fall through to the unchanged
+    //   per-hazard loop below.
+    // - "raw": never combined here at all; Wind/Gust show Leaflet
     //   envelopes (tc_view_as, unaffected), River/Rain show the separate
-    //   GLOBAL raw layer (applyGlobalRawConfig) — this branch's job is just
+    //   GLOBAL raw layer (applyGlobalRawConfig): this branch's job is just
     //   to hide every per-hazard MapLibre raster (see applyHazardLayer's own
     //   hazard_render_mode gate, reused here via the unchanged per-hazard
-    //   loop below — no combined layer involved).
+    //   loop below, no combined layer involved).
     var hazardRenderMode = config.hazard_render_mode || 'probability';
     var propUpper = (config.tile_prop || '').toUpperCase();
     var isCombinableProp = config.tile_prop === 'probability'
@@ -1492,12 +1740,13 @@ function applyTileConfig(config) {
         hazardRenderMode === 'probability' && isCombinableProp && _combinedActiveHazardCount(config) >= 2
     );
     if (useCombined) {
-        _AOTS_HAZARDS.forEach(function (hazardKey) {
-            var ids = _hazardLayerIds(hazardKey);
-            [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
-                if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
-            });
-        });
+        // Every per-hazard layer hides, INCLUDING the multi-storm extra-group
+        // ones: the combined layer already accounts for every active hazard,
+        // so any per-hazard raster left visible would paint a second 0.8-
+        // opacity layer over the same country and stay hoverable. Stale
+        // groups are pruned here too, since this branch never renders them.
+        _hidePerHazardLayers(map, config);
+        _pruneStaleExtraHazardGroups(map, config);
         applyCombinedHazardLayer(map, config);
     } else {
         _hideCombinedHazardLayer(map);
@@ -1507,14 +1756,6 @@ function applyTileConfig(config) {
         _applyExtraHazardGroups(map, config);
     }
 
-    // Real perf fix (2026-08, multi-agent audit) — this used to unconditionally
-    // clone map.getStyle() (MapLibre's ENTIRE internal stylesheet — every
-    // source + layer + compiled paint/layout expression) into a plain JS
-    // object just to log layer ids, on every hazard toggle / debounced-
-    // slider-settle / view-mode switch, regardless of whether devtools was
-    // even open to see it. Removed rather than gated behind a debug flag —
-    // no such flag exists anywhere else in this file to stay consistent with.
-
     // Sync to current Leaflet viewport (Leaflet is the source of truth for position)
     var lMap = window._leaflet_maps && window._leaflet_maps['main-map'];
     if (lMap) {
@@ -1523,20 +1764,20 @@ function applyTileConfig(config) {
 }
 
 window.applyTileConfig = applyTileConfig;
-// Exposed for pages/map_shell_concept.py's _register_ms_facility_layer —
+// Exposed for pages/map_shell_concept.py's _register_ms_facility_layer:
 // facility markers (schools/health/shelters/wash) need the exact same
 // per-hazard storm/forecast_date/query-string resolution the raster layers
 // use, rather than duplicating river/rain's independent-forecast_date logic
 // a second time client-side.
 window._hazardUrlParts = _hazardUrlParts;
-// Exposed for the same reason — facility markers now also route to the
+// Exposed for the same reason: facility markers now also route to the
 // combined-hazard endpoint whenever 2+ hazards are active, reusing this
 // SAME active-hazard count the raster's own useCombined branch uses,
 // rather than re-deriving it a second time client-side.
 window._combinedActiveHazardCount = _combinedActiveHazardCount;
 
 // Temporary, purely-visual "hide all hazards" preview (see the HAZARDS label
-// click handler in pages/map_shell_concept.py) — never touches
+// click handler in pages/map_shell_concept.py): never touches
 // window._aots_tile_config itself, so un-hiding just re-applies it verbatim.
 function setHazardsHiddenOverride(hidden) {
     var map = window._aots_maplibre;
@@ -1553,14 +1794,14 @@ window.setHazardsHiddenOverride = setHazardsHiddenOverride;
 // 6. Layer toggle helpers
 // ---------------------------------------------------------------------------
 
-// `hazardKey`/`group` (optional, passed explicitly by applyHazardLayer) —
+// `hazardKey`/`group` (optional, passed explicitly by applyHazardLayer):
 // falls back to deriving hazardKey from the layerId's own suffix (the
 // original behavior, still correct for the PRIMARY/default group's plain
 // ids like "aots-tiles-layer-wind") when omitted, for any other caller.
 // Deliberately NOT derived this way when a `group` is given: an extra
 // group's layer id (e.g. "aots-tiles-layer-wind-x0") has a numbered suffix
 // as its last '-'-token, which isn't a real hazard key at all and would
-// silently fall back to 'wind' even for a gust group — explicit params
+// silently fall back to 'wind' even for a gust group, explicit params
 // avoid that ambiguity entirely.
 function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
     var map = window._aots_maplibre;
@@ -1568,8 +1809,8 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
 
     if (!hazardKey) {
         // Layer ids never contain another '-' inside the hazard key itself,
-        // so the last '-'-separated token is always exactly the hazard key
-        // — true only for the primary/default (non-grouped) id shape.
+        // so the last '-'-separated token is always exactly the hazard key,
+        // true only for the primary/default (non-grouped) id shape.
         var _idParts = layerId.split('-');
         hazardKey = _idParts[_idParts.length - 1];
         if (_AOTS_HAZARDS.indexOf(hazardKey) === -1) hazardKey = 'wind';
@@ -1633,8 +1874,8 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
         var src = map.getSource(mercatorSource);
         if (src) src.setTiles([newUrl]);
 
-        // Same hazard_render_mode gate as applyHazardLayer's own `visible`
-        // — see that function's own comment on this.
+        // Same hazard_render_mode gate as applyHazardLayer's own `visible`:
+        // see that function's own comment on this.
         var hazardVisible = !!config[hazardKey + '_visible'] && (config.hazard_render_mode || 'probability') !== 'raw';
         if (map.getLayer(layerId)) {
             map.setLayoutProperty(layerId, 'visibility', (prop && hazardVisible) ? 'visible' : 'none');
@@ -1645,7 +1886,7 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
 
     // Admin layer: keep existing vector fill-color approach
     if (!map.getLayer(layerId)) {
-        console.warn('[AoTS] setTileLayerProp: layer not found:', layerId, '— layers:', map.getStyle() ? map.getStyle().layers.map(function(l){return l.id;}) : 'no style');
+        console.warn('[AoTS] setTileLayerProp: layer not found:', layerId, ', layers:', map.getStyle() ? map.getStyle().layers.map(function(l){return l.id;}) : 'no style');
         return;
     }
     console.log('[AoTS] setTileLayerProp', layerId, prop);
@@ -1679,37 +1920,35 @@ window.dash_clientside.maplibre = {
 };
 
 // ---------------------------------------------------------------------------
-// 8. Global raw layers — raw precip-rate raster + raw river-discharge raster
+// 8. Global raw layers: raw precip-rate raster + raw river-discharge raster
 // ---------------------------------------------------------------------------
 // UNLIKE every hazard in section 5 above (applyTileConfig/applyHazardLayer),
-// these two layers are GLOBAL and country/storm-INDEPENDENT — a single
+// these two layers are GLOBAL and country/storm-INDEPENDENT: a single
 // worldwide tp/dis24 Zarr file covers the whole map for one forecast cycle
 // (see services/tile_server.py's own "Global raw precipitation-rate
 // endpoints"/"Global raw river-discharge endpoints" sections). They must
 // keep rendering with no country selected at all (the default Global view),
 // so this is deliberately a fully separate function/config/pending-config
-// path from applyTileConfig — NOT folded into _AOTS_HAZARDS or gated by
+// path from applyTileConfig: NOT folded into _AOTS_HAZARDS or gated by
 // config.country the way every other hazard layer is.
 //
-// Visibility is driven by the EXISTING ms-river-on ("River Flooding")/
-// ms-rain-on ("Rainfall") checkboxes (config.precip_visible/river_visible,
-// resolved by _build_global_raw_config in pages/map_shell_concept.py) — no
-// dedicated raw-layer checkboxes anymore. config.rain_mode ("mean"|
-// "probability", from the flood-view-as SegmentedControl, now nested under
-// Rainfall's own controls) selects which server-side aggregation the
-// precip-raw endpoint renders — RAIN ONLY. River has no Mean mode (removed
-// per explicit user request: unlike rain, it has no second independent
-// quantity, so a Mean toggle there was always describing the identical
-// per-cell member-agreement fraction under a different name/colour) and
-// always renders Probability, with no mode query param at all. Both
-// endpoints are fully pre-colored server-side (fixed breakpoint ramps), so
-// there is no client-side color/radius styling needed for either layer.
+// Visibility is driven by the ms-river-on ("River Flooding")/ms-rain-on
+// ("Rainfall") checkboxes (config.precip_visible/river_visible, resolved by
+// _build_global_raw_config in pages/map_shell_concept.py): there are no
+// separate raw-layer checkboxes. config.rain_mode ("mean"|"probability",
+// from the flood-view-as SegmentedControl nested under Rainfall's own
+// controls) selects which server-side aggregation the precip-raw endpoint
+// renders. RAIN ONLY. River has no Mean mode: unlike rain, it has no
+// second independent quantity, so a Mean toggle there would only describe
+// the identical per-cell member-agreement fraction under a different
+// name/colour. River always renders Probability, with no mode query param
+// at all. Both endpoints are fully pre-colored server-side (fixed
+// breakpoint ramps), so there is no client-side color/radius styling
+// needed for either layer.
 //
-// River-raw used to be a sparse vector/circle layer (one point per discharge
-// cell) — the user explicitly flagged that as wrong ("I only see points not
-// proper rasters this doesn't look right"). It's now a real interpolated
-// raster from the same /tiles/raster/{precip-raw,river-raw}/... family as
-// precip-raw, just with source id 'river' vs 'precip'.
+// River-raw is a real interpolated raster from the same
+// /tiles/raster/{precip-raw,river-raw}/... family as precip-raw, just with
+// source id 'river' vs 'precip', not a sparse vector/circle layer.
 
 var _AOTS_GLOBAL_RAW_IDS = {
     precipSource: 'aots-precip-raw-source',
@@ -1734,18 +1973,23 @@ function applyGlobalRawConfig(config) {
     // --- Precip-raw raster (radar-style rain-rate / exceedance-probability tiles) ---
     // window_h/threshold_mm (resolved by _build_global_raw_config in
     // pages/map_shell_concept.py from the SAME ms-rain-window/ms-rain-slider
-    // controls the country-scoped rain hazard already uses — see
-    // _hazardUrlParts's own 'rain' branch above for the identical query-param
-    // naming convention) — real bug fixed here: these two controls used to
-    // do nothing for this raw layer, which always rendered a hardcoded
-    // server-side default of 6h/10mm regardless of what was selected.
+    // controls the country-scoped rain hazard already uses, see
+    // _hazardUrlParts's own 'rain' branch above for the identical
+    // query-param naming convention) drive the actual raster request rather
+    // than the server's hardcoded 6h/10mm default.
     var precipTime = config.precip_forecast_time;
     if (precipTime) {
         var precipWindowH = config.window_h != null ? config.window_h : 6;
         var precipThresholdMm = config.threshold_mm != null ? config.threshold_mm : 10.0;
+        // precip_member (resolved by _build_global_raw_config from
+        // ensemble-member-select, same control that already filters
+        // Wind/Gust tracks/envelopes): when set, the server ignores
+        // mode/threshold_mm entirely and renders that one member's own
+        // rate instead of the aggregate mean/probability.
         var precipUrl = base + '/tiles/raster/precip-raw/' + encodeURIComponent(precipTime)
             + '/{z}/{x}/{y}.webp?mode=' + rainMode
-            + '&window_h=' + precipWindowH + '&threshold_mm=' + precipThresholdMm;
+            + '&window_h=' + precipWindowH + '&threshold_mm=' + precipThresholdMm
+            + (config.precip_member != null ? '&member=' + config.precip_member : '');
         var precipSrc = map.getSource(ids.precipSource);
         if (precipSrc) {
             precipSrc.setTiles([precipUrl]);
@@ -1766,32 +2010,35 @@ function applyGlobalRawConfig(config) {
             map.setLayoutProperty(ids.precipLayer, 'visibility', config.precip_visible ? 'visible' : 'none');
         }
     } else if (map.getLayer(ids.precipLayer)) {
-        // No real tp data at all (genuinely empty environment) — hide rather
+        // No real tp data at all (genuinely empty environment): hide rather
         // than point at a forecast_time that doesn't exist.
         map.setLayoutProperty(ids.precipLayer, 'visibility', 'none');
     }
 
     // --- River-raw raster (interpolated discharge / exceedance-probability tiles) ---
-    // rp_tier (resolved by _build_global_raw_config from ms-river-slider) —
-    // real bug fixed here: this used to always request the server's default
-    // rp10 regardless of what the slider was set to. No mode param — the endpoint
-    // always renders Probability.
+    // rp_tier (resolved by _build_global_raw_config from ms-river-slider)
+    // drives the actual raster request rather than the server's rp10
+    // default. No mode param: the endpoint always renders Probability.
     var riverTime = config.river_forecast_time;
     var riverRpTier = config.rp_tier || 'rp10';
-    // river_step_h (resolved by _build_global_raw_config from the NEW
-    // ms-river-window control) — real bug fixed here: this used to always
-    // request the server's hardcoded T+24h default, which real live data
-    // confirmed has ZERO flood signal for every onboarded country (river
-    // flooding is slow-onset — see ms-river-window's own comment in
-    // pages/map_shell_concept.py for the full "why"). Now a CUMULATIVE
-    // window server-side (real member-flood union across every real day
-    // from 24h through this value, not a single-day snapshot — see
-    // tile_server.py's own "ACCUMULATION SEMANTICS" comment); this line
-    // itself needs no change, it's the same query param either way.
+    // river_step_h (resolved by _build_global_raw_config from the
+    // ms-river-window control) drives the actual raster request rather
+    // than the server's hardcoded T+24h default: river flooding is
+    // slow-onset (see ms-river-window's own comment in
+    // pages/map_shell_concept.py), so a fixed T+24h snapshot has no flood
+    // signal for most onboarded countries. Server-side this is a
+    // CUMULATIVE window (member-flood union across every day from 24h
+    // through this value, not a single-day snapshot, see tile_server.py's
+    // own "ACCUMULATION SEMANTICS" comment).
     var riverStepH = config.river_step_h != null ? config.river_step_h : 72;
     if (riverTime) {
+        // river_member (same source/rationale as precip_member above):
+        // when set, renders that one member's own flood extent (flat
+        // single-color mask) instead of the aggregate member-agreement
+        // gradient.
         var riverUrl = base + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
-            + '/{z}/{x}/{y}.webp?rp_tier=' + riverRpTier + '&step_h=' + riverStepH;
+            + '/{z}/{x}/{y}.webp?rp_tier=' + riverRpTier + '&step_h=' + riverStepH
+            + (config.river_member != null ? '&member=' + config.river_member : '');
         var riverSrc = map.getSource(ids.riverSource);
         if (riverSrc) {
             riverSrc.setTiles([riverUrl]);
@@ -1812,7 +2059,7 @@ function applyGlobalRawConfig(config) {
             map.setLayoutProperty(ids.riverLayer, 'visibility', config.river_visible ? 'visible' : 'none');
         }
     } else if (map.getLayer(ids.riverLayer)) {
-        // No real dis24 data at all — hide rather than point at a
+        // No real dis24 data at all: hide rather than point at a
         // forecast_time that doesn't exist.
         map.setLayoutProperty(ids.riverLayer, 'visibility', 'none');
     }
@@ -1821,26 +2068,24 @@ function applyGlobalRawConfig(config) {
 window.applyGlobalRawConfig = applyGlobalRawConfig;
 
 // ---------------------------------------------------------------------------
-// Global loading indicator (top bar, next to the country selector — see
-// pages/map_shell_concept.py's _ms_loading_badge). Real bug found+fixed
-// here: dcc.Loading's own target_components mechanism never actually shows
-// a spinner for ms-tile-config-store, even nested as a direct child of the
-// Loading component (confirmed live via Playwright — polled the DOM every
-// 150ms through multiple genuinely-slow, 1.6-3.0s measured real callback
-// round-trips and it never appeared). Dash's OWN generic top-level
-// indicator (a `._dash-loading-callback`-classed div Dash itself inserts
-// directly under #react-entry-point while ANY callback is in flight) DID
-// reliably appear for the exact same requests in the same test — so this
-// reuses that already-proven signal via a plain MutationObserver instead of
-// trusting target_components again.
-// Real gap found+fixed here: the Dash-callback signal above never covers
-// MapLibre's OWN tile network activity (raster WebP hazard tiles, MVT
-// vector tiles) — those load via MapLibre GL's internal networking, kicked
-// off directly from applyHazardLayer/setTileLayerProp with no Dash
-// callback (server OR clientside) involved at all. That's exactly what a
-// user watching colours paint onto the map calls "the layers loading", so
-// the badge needs to reflect it too, not just Dash's own request/response
-// cycle. window._aots_map_tiles_loading is toggled by MapLibre's own
+// Global loading indicator (top bar, next to the country selector, see
+// pages/map_shell_concept.py's _ms_loading_badge). dcc.Loading's own
+// target_components mechanism does not reliably show a spinner for
+// ms-tile-config-store, even nested as a direct child of the Loading
+// component. Dash's own generic top-level indicator (a
+// `._dash-loading-callback`-classed div Dash inserts directly under
+// #react-entry-point while ANY callback is in flight) does reliably appear
+// for the same requests, so this reuses that signal via a plain
+// MutationObserver instead of relying on target_components.
+//
+// The Dash-callback signal alone never covers MapLibre's OWN tile network
+// activity (raster WebP hazard tiles, MVT vector tiles): those load via
+// MapLibre GL's internal networking, kicked off directly from
+// applyHazardLayer/setTileLayerProp with no Dash callback (server OR
+// clientside) involved at all. That's what a user watching colours paint
+// onto the map perceives as "the layers loading", so the badge needs to
+// reflect it too, not just Dash's own request/response cycle.
+// window._aots_map_tiles_loading is toggled by MapLibre's own
 // 'dataloading'/'idle' events (wired up right after the map is constructed
 // in initMaplibre above) and OR'd into the same check.
 window._aots_map_tiles_loading = false;
@@ -1848,27 +2093,23 @@ function _initGlobalLoadingIndicator() {
     var badge = document.getElementById('ms-global-loading-indicator');
     var mountCheck = document.getElementById('react-entry-point');
     if (!badge || !mountCheck) {
-        // Layout not mounted yet on first DOMContentLoaded fire — retry
+        // Layout not mounted yet on first DOMContentLoaded fire: retry
         // shortly rather than silently giving up (same "poll until ready"
         // pattern initMaplibre already uses above for the map container).
         setTimeout(_initGlobalLoadingIndicator, 200);
         return;
     }
-    // Real bug found+fixed here (2026-08, user-reported: "when a pop-up is
-    // loading, why do the loading indicators not appear?"): this used to
-    // scope both the querySelector AND the MutationObserver to just
-    // #react-entry-point's own subtree. dmc.Modal/dmc.Popover/dmc.Tooltip
-    // all render their content through a Mantine Portal, which by default
-    // (no withinPortal=False anywhere on this page's Modals) appends
-    // directly to <body> as a SIBLING of #react-entry-point, not a
-    // descendant of it. Dash still inserts its `_dash-loading-callback`
-    // marker on the ancestor of whatever DOM node owns the loading
-    // Output — for the Hazard Contribution popup and the Full Impact
-    // Breakdown modal, that ancestor is inside the portaled subtree, so it
-    // was structurally invisible to a querySelector/observer scoped to
-    // #react-entry-point alone, no matter how long the real callback took.
-    // Watching document.body instead covers both #react-entry-point AND
-    // every Mantine portal mounted alongside it.
+    // Scoped to document.body rather than #react-entry-point alone.
+    // dmc.Modal/dmc.Popover/dmc.Tooltip render their content through a
+    // Mantine Portal, which by default (no withinPortal=False anywhere on
+    // this page's Modals) appends directly to <body> as a SIBLING of
+    // #react-entry-point, not a descendant of it. Dash inserts its
+    // `_dash-loading-callback` marker on the ancestor of whatever DOM node
+    // owns the loading Output: for the Hazard Contribution popup and the
+    // Full Impact Breakdown modal, that ancestor is inside the portaled
+    // subtree, structurally invisible to a querySelector/observer scoped to
+    // #react-entry-point alone. Watching document.body instead covers both
+    // #react-entry-point and every Mantine portal mounted alongside it.
     var root = document.body;
     var check = function () {
         var isLoading = !!root.querySelector('._dash-loading-callback')
@@ -1880,21 +2121,20 @@ function _initGlobalLoadingIndicator() {
     // don't mutate the Dash-rendered DOM the MutationObserver below
     // watches) can force an immediate re-check instead of waiting for an
     // unrelated DOM mutation to happen to fire it. Deliberately the real,
-    // synchronous `check` (not the coalesced wrapper below) — an explicit
+    // synchronous `check` (not the coalesced wrapper below): an explicit
     // external caller wants an immediate, accurate answer right now, not a
     // deferred one.
     window._aots_checkLoadingIndicator = check;
-    // Real perf fix (2026-08, multi-agent audit): this MutationObserver
-    // watches all of document.body (deliberately — see the real bug fix
-    // documented above re: Mantine portals rendering outside
-    // #react-entry-point, do NOT narrow the scope back), so it re-fires
-    // `check`'s own full-subtree querySelector scan on every single batch
-    // of DOM mutations anywhere on the page — including this file's own
-    // tooltip repositioning writes (_positionTooltipEl), which compounds
-    // with hover activity. Coalesced to at most once per animation frame
-    // via requestAnimationFrame, same pattern as _showAdminTooltip's own
-    // fix just above — still reflects real state within one paint frame,
-    // just not once per individual mutation record.
+    // This MutationObserver watches all of document.body (deliberately,
+    // see the comment above re: Mantine portals rendering outside
+    // #react-entry-point; do NOT narrow the scope back), so it would
+    // otherwise re-fire `check`'s own full-subtree querySelector scan on
+    // every single batch of DOM mutations anywhere on the page, including
+    // this file's own tooltip repositioning writes (_positionTooltipEl),
+    // which compounds with hover activity. Coalesced to at most once per
+    // animation frame via requestAnimationFrame, same pattern as
+    // _showAdminTooltip's own coalescing above, still reflects real state
+    // within one paint frame, just not once per individual mutation record.
     var _loadingCheckRAF = null;
     var _scheduledCheck = function() {
         if (_loadingCheckRAF !== null) return;
@@ -1907,6 +2147,6 @@ function _initGlobalLoadingIndicator() {
     check();
 }
 document.addEventListener('DOMContentLoaded', _initGlobalLoadingIndicator);
-// Also try immediately (same reasoning as initMaplibre above — dash-render
+// Also try immediately (same reasoning as initMaplibre above, dash-render
 // may have already fired DOMContentLoaded by the time this script runs).
 _initGlobalLoadingIndicator();

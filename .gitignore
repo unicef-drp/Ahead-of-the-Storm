@@ -24,6 +24,8 @@ nohup.out
 .DS_Store
 .idea/
 .claude/
+.dev-pids/
+.dev-logs/
 
 *.share
 
@@ -58,3 +60,4 @@ snowflake_spcs/
 .map_shell_backups/
 .perf_scratch_test/
 .perf_prototype_spike/
+dev.sh

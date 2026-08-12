@@ -11,7 +11,7 @@ Data flow:
   update_exceedance_probability_chart → reads same track Parquet → builds plotly chart
 
 `_giga_store` is a lazily-initialised singleton for the file/blob store. It is separate
-from the `giga_store` in dashboard.py (two instances of the same underlying store — an
+from the `giga_store` in dashboard.py (two instances of the same underlying store, an
 acknowledged limitation). Thread safety within this module is handled via double-checked
 locking in `_get_store()`.
 """
@@ -284,7 +284,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
                                 Sums each severity column; returns 0 for all keys when the
                                 population column is N/A (data exists but all-null). `hc_ok`
-                                gates health-centre and built-surface values — these require
+                                gates health-centre and built-surface values; these require
                                 the HC Parquet file to be present.
                                 """
                                 r = {}
@@ -320,7 +320,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
         # PIN/CHIN sub-lines
         # SQL: in-need columns are already in df (MERCATOR_TILE_VULNERABILITY_MAT LEFT JOIN)
-        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN) — no extra download needed.
+        #      and gdf_tracks (TRACK_VULNERABILITY_MAT LEFT JOIN); no extra download needed.
         # Stage: read vulnerability CSV and tracks parquet directly from stage.
         pin_pop_prob = pin_children_prob = pin_infant_prob = pin_schoolage_prob = pin_adolescent_prob = ""
         pin_pop_low = pin_children_low = pin_infant_low = pin_schoolage_low = pin_adolescent_low = ""
@@ -345,7 +345,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                 return row_df.iloc[0][col]
 
             if config.IMPACT_DATA_SOURCE == 'SQL':
-                # Expected — from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
+                # Expected: from df (MERCATOR_TILE_IMPACT_MAT LEFT JOIN MERCATOR_TILE_VULNERABILITY_MAT)
                 if df is not None:
                     pin_pop_prob        = _in_need_fmt(df['E_people_in_need'].sum()       if 'E_people_in_need'       in df.columns else None)
                     pin_children_prob   = _in_need_fmt(df['E_children_in_need'].sum()     if 'E_children_in_need'     in df.columns else None)
@@ -353,7 +353,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     pin_schoolage_prob  = _in_need_fmt(df['E_school_age_in_need'].sum()   if 'E_school_age_in_need'   in df.columns else None)
                     pin_adolescent_prob = _in_need_fmt(df['E_adolescent_in_need'].sum()   if 'E_adolescent_in_need'   in df.columns else None)
 
-                # DET + Worst — from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
+                # DET + Worst: from gdf_tracks (TRACK_MAT LEFT JOIN TRACK_VULNERABILITY_MAT)
                 _gdf_vt = gdf_tracks if gdf_tracks is not None else pd.DataFrame()
                 if not _gdf_vt.empty and 'zone_id' in _gdf_vt.columns:
                     det_row   = _gdf_vt[_gdf_vt['zone_id'] == DETERMINISTIC_MEMBER_ID]
@@ -371,7 +371,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
                     pin_schoolage_high  = _in_need_fmt(_row_val(worst_row, 'severity_school_age_in_need'))
                     pin_adolescent_high = _in_need_fmt(_row_val(worst_row, 'severity_adolescent_in_need'))
             else:
-                # Stage path — read vulnerability CSV and tracks parquet directly
+                # Stage path: read vulnerability CSV and tracks parquet directly
                 vuln_filename = f"{country}_{storm}_{forecast_datetime}_{ZOOM_LEVEL}_vulnerability.csv"
                 vuln_filepath = os.path.join(ROOT_DATA_DIR, VIEWS_DIR, "mercator_views", vuln_filename)
                 if giga_store.file_exists(vuln_filepath):
@@ -453,7 +453,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
             format_value(probabilistic_results["built_surface_m2"]),
             format_value(high_results["built_surface_m2"]),
             high_member_badge,
-            # PIN/CHIN sub-lines (15 new):
+            # PIN/CHIN sub-lines (15 values):
             pin_pop_low,        pin_pop_prob,        pin_pop_high,
             pin_children_low,   pin_children_prob,   pin_children_high,
             pin_infant_low,     pin_infant_prob,      pin_infant_high,
@@ -468,7 +468,7 @@ def update_impact_metrics(storm, wind_threshold, country, forecast_date, forecas
 
 # =============================================================================
 # SPECIFIC TRACK CONTROLS
-# Controls for the specific-track selector — enable/disable the button,
+# Controls for the specific-track selector: enable/disable the button,
 # populate member options, display impact numbers for the selected track.
 # =============================================================================
 
@@ -993,9 +993,9 @@ def update_exceedance_probability_chart(storm, wind_threshold, country, forecast
 # =============================================================================
 # IN-NEED ARC CHARTS
 # Two concentric arc charts (Children / People):
-#   outer ring  — country total population (100% = full 270° sweep)
-#   middle ring — expected exposed ("at risk")
-#   inner ring  — expected in need
+#   outer ring:  country total population (100% = full 270° sweep)
+#   middle ring: expected exposed ("at risk")
+#   inner ring:  expected in need
 # Angular axis: 0–100 % scale, 270° sweep, clockwise from top
 # Big in-need count displayed above each chart in the panel HTML (ids:
 #   in-need-number-children, in-need-number-people).
@@ -1032,7 +1032,7 @@ def _make_arc_chart(
     exp_deg = _pct_deg(exp_pct)
     nee_deg = _pct_deg(nee_pct)
 
-    _GAP_THETA = 357  # degrees — 3° into the gap past arc start; nearly vertical radial direction → right edges align
+    _GAP_THETA = 357  # degrees: 3° into the gap past arc start; nearly vertical radial direction → right edges align
 
     ring_specs = [
         (_BASES[0], pop_deg, _NAVY,   "Population"),

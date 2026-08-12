@@ -1,5 +1,5 @@
 """
-Dashboard page — Ahead of the Storm.
+Dashboard page: Ahead of the Storm.
 
 This module is the primary page of the Dash multi-page app. It coordinates the
 three-panel interactive map interface for hurricane impact analysis.
@@ -19,28 +19,28 @@ results to map components via Stores.
 
 Key collaborators
 -----------------
-layouts/panels.py          — builds the three-panel layout (map, metrics sidebar,
+layouts/panels.py          : builds the three-panel layout (map, metrics sidebar,
                              controls drawer) and defines all dcc.Store components
-callbacks/metrics.py       — computes and renders impact metric cards (population,
+callbacks/metrics.py       : computes and renders impact metric cards (population,
                              children, schools, health centres) for low/prob/high
                              scenarios; draws the ensemble member arc chart
-callbacks/tiles_and_admin.py — toggles Mercator raster tile layers and admin
+callbacks/tiles_and_admin.py : toggles Mercator raster tile layers and admin
                                choropleth overlays; populates legend min/max labels
-callbacks/overlays.py      — fetches and toggles school/health-centre point overlays
+callbacks/overlays.py      : fetches and toggles school/health-centre point overlays
 
-components/ui/header.py    — top navigation bar with forecast-time badge
-components/ui/footer.py    — bottom footer with partner logos
-components/ui/appshell.py  — composes header, nav, content area, and footer
-components/ui/styling.py   — colour palettes and shared CSS constants
-components/map/map_config.py — MapLibre tile layer URL construction and map defaults
-components/map/javascript.py — client-side JS callbacks for map event handling
-components/data/snowflake_utils.py — thread-local Snowflake connection pool and
+components/ui/header.py    : top navigation bar with forecast-time badge
+components/ui/footer.py    : bottom footer with partner logos
+components/ui/appshell.py  : composes header, nav, content area, and footer
+components/ui/styling.py   : colour palettes and shared CSS constants
+components/map/map_config.py : MapLibre tile layer URL construction and map defaults
+components/map/javascript.py : client-side JS callbacks for map event handling
+components/data/snowflake_utils.py : thread-local Snowflake connection pool and
                                      all TTL-cached query helpers (TC_TRACKS,
                                      TC_ENVELOPES_COMBINED, PIPELINE_COUNTRIES, etc.)
-components/data/data_store_utils.py — data-store factory (LOCAL / BLOB / SNOWFLAKE)
+components/data/data_store_utils.py : data-store factory (LOCAL / BLOB / SNOWFLAKE)
                                       for reading AOTS_ANALYSIS stage Parquet/CSV files
 
-services/tile_server.py    — standalone FastAPI sidecar (port 8001) that renders
+services/tile_server.py    : standalone FastAPI sidecar (port 8001) that renders
                              Mercator raster tiles and admin choropleth polygons
                              on demand from the Snowflake MAT tables
 
@@ -50,7 +50,7 @@ AOTS_ANALYSIS stage Parquet/CSV files; FastAPI tile server on port 8001.
 """
 
 # =============================================================================
-# SECTION 1 — IMPORTS AND CONFIGURATION
+# SECTION 1: IMPORTS AND CONFIGURATION
 # Third-party and internal imports, environment variable resolution.
 # =============================================================================
 
@@ -95,13 +95,13 @@ ZOOM_LEVEL = 14  # tile zoom level baked into mercator CSV filenames
 
 
 # =============================================================================
-# SECTION 2 — STARTUP DATA LOADING
+# SECTION 2: STARTUP DATA LOADING
 # Three Snowflake queries run in parallel at module import time to minimise
 # cold-start latency. Results are stored in module-level globals used by layout
 # and selector callbacks.
 # =============================================================================
 
-# Run the three independent startup queries in parallel — reduces cold-start time
+# Run the three independent startup queries in parallel, reducing cold-start time
 # from ~3× a single query to ~1× (they hit different tables and use separate connections).
 with ThreadPoolExecutor(max_workers=3) as _startup_pool:
     _f_countries = _startup_pool.submit(get_active_countries)
@@ -112,7 +112,7 @@ with ThreadPoolExecutor(max_workers=3) as _startup_pool:
     _latlon_bulk = _f_latlons.result()
 
 # =============================================================================
-# SECTION 3 — COUNTRY AND REGION CONFIGURATION
+# SECTION 3: COUNTRY AND REGION CONFIGURATION
 # Build per-country map centres/zooms (COUNTRY_MAP_CONFIG), region member
 # lookup (REGION_MEMBERS), and the country dropdown options list
 # (COUNTRY_OPTIONS) from startup data.
@@ -193,7 +193,7 @@ if not countries_df.empty:
     else:
         COUNTRY_OPTIONS = country_items
 
-    DEFAULT_COUNTRY = None  # No pre-selection — tracks auto-load for latest forecast on startup
+    DEFAULT_COUNTRY = None  # No pre-selection: tracks auto-load for latest forecast on startup
 else:
     DEFAULT_COUNTRY = None
     logger.info("No country options available - country dropdown will be empty")
@@ -202,7 +202,7 @@ else:
 
 
 # =============================================================================
-# SECTION 4 — IMPACT DATA STORE AND METADATA
+# SECTION 4: IMPACT DATA STORE AND METADATA
 # Initialise the file/blob data store and parse forecast metadata into sorted
 # date/time lists.
 # =============================================================================
@@ -212,7 +212,7 @@ from gigaspatial.core.io.readers import read_dataset
 from gigaspatial.processing.geo import convert_to_geodataframe
 from components.data.data_store_utils import get_data_store, get_impact_data
 
-# Layout module — constants are defined there and re-imported here for use in callbacks
+# Layout module: constants are defined there and re-imported here for use in callbacks
 from layouts.panels import (
     make_single_page_appshell,
     PRIMARY_COLOR, _DISPLAY_NONE, _IMPACT_GRADIENT,
@@ -235,7 +235,7 @@ metadata_df['TIME'] = pd.to_datetime(metadata_df['FORECAST_TIME']).dt.strftime('
 unique_dates = sorted(metadata_df['DATE'].unique(), reverse=True)
 unique_times = sorted(metadata_df['TIME'].unique())
 
-# Get current hurricanes — latest forecast time per track
+# Get current hurricanes: latest forecast time per track
 latest = (metadata_df.assign(dt=pd.to_datetime(metadata_df["DATE"].astype(str) + " " + metadata_df["TIME"]))
             .sort_values(["TRACK_ID","dt"])
             .drop_duplicates("TRACK_ID", keep="last"))
@@ -256,7 +256,7 @@ if 'TIME' in latest_clean.columns:
 
 
 # =============================================================================
-# SECTION 5 — LAYOUT
+# SECTION 5: LAYOUT
 # Single entry point for the page layout. All layout components live in
 # layouts/panels.py.
 # =============================================================================
@@ -265,7 +265,7 @@ layout = make_single_page_appshell(COUNTRY_OPTIONS, DEFAULT_COUNTRY)
 
 
 # =============================================================================
-# SECTION 6 — SELECTOR CALLBACKS
+# SECTION 6: SELECTOR CALLBACKS
 # Country, storm, date, time, and wind-threshold dropdowns. These callbacks
 # have no startup-data write dependency and run on every user interaction.
 # =============================================================================
@@ -318,7 +318,7 @@ def update_individual_country_select(country, _active_countries):
     return [], {"display": "none"}, None
 
 # -----------------------------------------------------------------------------
-# Startup tracks — load ALL active hurricane tracks on page load
+# Startup tracks: load ALL active hurricane tracks on page load
 # -----------------------------------------------------------------------------
 
 @callback(
@@ -330,7 +330,7 @@ def load_startup_tracks(_):
     """
     On page load (and every 15 min refresh), load tracks for ALL active storms
     at the latest forecast time, if that forecast is ≤ 24h old.
-    Writes directly to tracks-data-store — completely independent of country
+    Writes directly to tracks-data-store: completely independent of country
     selection, load-layers button, and selector state.
     Overridden by load_all_layers when the user selects a country and loads layers.
     Only queries TC_TRACKS (no envelopes) for speed.
@@ -351,8 +351,8 @@ def load_startup_tracks(_):
         # Only proceed if forecast is ≤ 20h old.
         # ECMWF runs at 00Z and 12Z; publication delay is ~6h. The 00Z forecast
         # (issued 00:00 UTC) is the latest available until the 12Z forecast arrives
-        # at ~18-20 UTC — a gap of up to 20h from issue time. 11h was too tight and
-        # caused a daily ~7-9h window where tracks disappeared mid-cycle.
+        # at ~18-20 UTC (a gap of up to 20h from issue time), so the threshold must
+        # cover the full gap or tracks would disappear for part of every cycle.
         latest_ft_utc = latest_ft.replace(tzinfo=dt.timezone.utc) if latest_ft.tzinfo is None else latest_ft
         hours_ago = (dt.datetime.now(dt.timezone.utc) - latest_ft_utc).total_seconds() / 3600
         if hours_ago > 20:
@@ -607,7 +607,7 @@ def update_forecast_times(selected_date):
     return time_options, default_time
 
 
-# Note: Storm selection is now handled directly in update_storm_options callback
+# Storm selection defaults are set directly within the update_storm_options callback below.
 
 @callback(
     Output("storm-select", "data"),
@@ -738,7 +738,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
 
 
 # =============================================================================
-# SECTION 7 — DATA LOADING CALLBACK
+# SECTION 7: DATA LOADING CALLBACK
 # The primary data-load callback. Triggered by the 'Load Layers' button. Reads
 # all impact layers from the data store, builds the MapLibre tile config, and
 # writes everything to dcc.Stores in one atomic update.
@@ -752,7 +752,7 @@ def update_wind_threshold_options(storm, date, time, current_threshold):
      Output('layers-loaded-store', 'data'),
      Output('using-base-layers-store', 'data'),
      Output('load-status', 'children'),
-     # GeoJSON layers — written directly to avoid browser round-trip
+     # GeoJSON layers: written directly to avoid browser round-trip
      Output('population-tiles-json', 'data', allow_duplicate=True),
      Output('population-tiles-json', 'zoomToBounds', allow_duplicate=True),
      Output('population-tiles-json', 'key', allow_duplicate=True),
@@ -828,13 +828,13 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     """Fetch and distribute all map layers for the selected country/storm/threshold.
 
     Triggered by the Load Layers button. Runs three data-loading phases in parallel:
-    1. Hurricane data — TC_TRACKS and TC_ENVELOPES_COMBINED from Snowflake
-    2. Infrastructure — schools, health centres, shelters, WASH from Snowflake or stage files
-    3. Impact tiles/admin — Parquet/CSV from AOTS_ANALYSIS stage via giga_store
+    1. Hurricane data: TC_TRACKS and TC_ENVELOPES_COMBINED from Snowflake
+    2. Infrastructure: schools, health centres, shelters, WASH from Snowflake or stage files
+    3. Impact tiles/admin: Parquet/CSV from AOTS_ANALYSIS stage via giga_store
 
     Returns a 64-tuple written atomically to dcc.Stores and GeoJSON components. Early
     returns (missing selections or exception) fill all outputs with empty/disabled defaults.
-    `using_base_layers` is True when no impact files are found — disables impact-derived layers.
+    `using_base_layers` is True when no impact files are found. It disables impact-derived layers.
     """
     logger.info(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     logger.info(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
@@ -1115,7 +1115,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         except Exception as e:
             logger.error(f"Error loading envelopes: {e}")
         
-        # Load Impact Data — check if data files exist for the selected time
+        # Load Impact Data: check if data files exist for the selected time
         date_str = forecast_date.replace('-', '')
         time_str = forecast_time.replace(':', '')
         forecast_datetime_str = f"{date_str}{time_str}00"
@@ -1364,7 +1364,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             # Phase 2: MapLibre fetches PBF tiles on-demand from the tile sidecar.
             # Facility layers (schools, health, shelters, WASH) are also fetched on-demand
             # by async clientside callbacks from /geojson/facilities/ on the tile server.
-            # Skip full GeoJSON loading — only fetch aggregate stats for the legend.
+            # Skip full GeoJSON loading. Only fetch aggregate stats for the legend.
             import urllib.request as _urllib_req
             import urllib.parse as _urllib_parse
             # For regions, expand to '+'-joined member codes for the tile server.
@@ -1382,7 +1382,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                     logger.info(f"✓ Impact data for {country}/{storm}/{forecast_datetime_str}: {list(tiles_stats.keys())[:4]}…")
                 else:
                     using_base_layers = True
-                    logger.info(f"No impact data for {country}/{storm}/{forecast_datetime_str} — base layers only")
+                    logger.info(f"No impact data for {country}/{storm}/{forecast_datetime_str}: base layers only")
                 # Fetch admin-level stats separately (admin regions have much higher pop than H3 tiles)
                 try:
                     _admin_stats_url = (
@@ -1409,14 +1409,14 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 variant="light"
             )
         
-        # Phase 2: tiles/admin data is served by the tile sidecar — no GeoJSON needed here.
+        # Phase 2: tiles/admin data is served by the tile sidecar. No GeoJSON needed here.
         tiles_data = {"type": "FeatureCollection", "features": []}
         admin_data = {"type": "FeatureCollection", "features": []}
 
         if using_base_layers:
             status_alert = dmc.Alert(
                 "No impact data found for this storm and forecast time. Showing base context layers only.",
-                title="Base Layers Only — No Impact Data Available",
+                title="Base Layers Only: No Impact Data Available",
                 color="yellow",
                 variant="light",
             )
@@ -1469,7 +1469,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
         # Phase 2: derive available props from tile server stats (tiles_data is empty GeoJSON).
         # Base columns always present in BASE_MERCATOR_TILE_MAT; impact columns only for storm runs.
-        # Poverty is present in tile (raster) stats but NOT in admin stats — BASE_ADMIN_GEOM_MAT
+        # Poverty is present in tile (raster) stats but NOT in admin stats: BASE_ADMIN_GEOM_MAT
         # has no poverty data (populated only at z=14 tile level, not aggregated to admin boundaries).
         # Poverty availability in admin view therefore comes from admin_stats keys, not _BASE_PROPS.
         _BASE_PROPS = {
@@ -1497,7 +1497,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
         layer_availability = {
             "using_base_layers": using_base_layers,
-            # Facility layers served by tile server on-demand — always available
+            # Facility layers served by tile server on-demand: always available
             "schools": True, "health": True, "shelters": True, "wash": True,
             # Hurricane overlays
             "tracks":    bool(tracks_data    and tracks_data.get('features')),
@@ -1566,7 +1566,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
 
 
 # =============================================================================
-# SECTION 8 — HURRICANE LAYER TOGGLES
+# SECTION 8: HURRICANE LAYER TOGGLES
 # Toggle visibility of hurricane track and envelope GeoJSON layers. Reads from
 # dcc.Stores populated by load_all_layers.
 # =============================================================================
@@ -2119,7 +2119,7 @@ def toggle_envelopes_layer(checked, show_all_envelopes, selected_track, envelope
 
 
 # =============================================================================
-# SECTION 9 — MAPLIBRE CLIENTSIDE CALLBACKS
+# SECTION 9: MAPLIBRE CLIENTSIDE CALLBACKS
 # JavaScript clientside callbacks that drive the MapLibre GL tile layer. These
 # run entirely in the browser and have no Python round-trip.
 # =============================================================================
@@ -2289,7 +2289,7 @@ clientside_callback(
 
 
 # =============================================================================
-# SECTION 10 — TILE SERVER CACHE PRELOAD
+# SECTION 10: TILE SERVER CACHE PRELOAD
 # Background HTTP call to warm the tile-server DataFrame cache when the user
 # changes their selection, so tiles load instantly when 'Load Layers' is clicked.
 # =============================================================================
@@ -2299,7 +2299,7 @@ clientside_callback(
 # Fires whenever the user changes country, storm, forecast date/time, or wind
 # threshold. A daemon thread calls the tile server's /preload endpoint so the
 # DataFrame cache is warm before the user clicks "Load Layers".
-# The callback itself returns nothing visible — it only triggers the side-effect.
+# The callback itself returns nothing visible. It only triggers the side-effect.
 # -----------------------------------------------------------------------------
 
 def _do_preload(country, storm, forecast_date, forecast_time, wind_threshold):
@@ -2316,7 +2316,7 @@ def _do_preload(country, storm, forecast_date, forecast_time, wind_threshold):
         url = f"http://127.0.0.1:8001/preload/{tile_country}/{storm}/{forecast_date_str}"
         requests.get(url, params={"wind_threshold": threshold}, timeout=30)
     except Exception:
-        pass  # Best-effort — never propagate errors back to Dash
+        pass  # Best-effort: never propagate errors back to Dash
 
 
 @callback(
@@ -2343,17 +2343,15 @@ def trigger_tile_preload(country, storm, forecast_date, forecast_time, wind_thre
 
 
 # =============================================================================
-# SECTION 11 — PAGE REGISTRATION
+# SECTION 11: PAGE REGISTRATION
 # Register this module as a Dash page and import callback modules so their
 # @callback decorators fire.
 # =============================================================================
 
-# Register callback modules — importing them causes @callback decorators to fire
+# Register callback modules: importing them causes @callback decorators to fire
 from callbacks import overlays, tiles_and_admin, metrics  # noqa: F401, E402
 
-# Relegated from "/" to "/legacy" — pages/map_shell_concept.py is now the root
-# dashboard. Kept here unlinked (same as /concept and /map-shell were before
-# they had their own reasons to exist) as a working reference/fallback, not
-# routed from any nav.
+# Registered at /legacy, unlinked from any nav. pages/map_shell_concept.py is
+# the root dashboard; this page remains as a working reference/fallback only.
 dash.register_page(__name__, path="/legacy", name="Ahead of the Storm (Legacy)")
 

@@ -5,7 +5,7 @@ Contains JavaScript functions for styling map layers and tooltips
 from dash_extensions.javascript import assign
 
 # =============================================================================
-# MAPLIBRE SYNC — attached to dl.Map eventHandlers
+# MAPLIBRE SYNC: attached to dl.Map eventHandlers
 # =============================================================================
 # These fire on every Leaflet map event and keep MapLibre in sync.
 # Using Leaflet's own event system is more reliable than patching L.Map.prototype.
@@ -80,29 +80,28 @@ function(feature, latlng, context) {
 style_envelopes = assign("""
 function(feature, context) {
     const props = feature.properties || {};
-    // Real bug found+fixed here: `props.severity_population || 0` collapsed
-    // TWO genuinely different cases into the same falsy 0 — (a) no real
-    // severity_population attributable at all (Global mode, or no country
-    // selected — the key is entirely ABSENT from properties, see
+    // Distinguishes two genuinely different cases that a naive
+    // `props.severity_population || 0` would collapse into the same falsy 0:
+    // (a) no real severity_population attributable at all (Global mode, or
+    // no country selected: the key is entirely ABSENT from properties, see
     // _build_ms_envelope_geojson's own comment in pages/map_shell_concept.py)
     // vs (b) a real, CONFIRMED zero for this specific member (Country
-    // Analysis mode, the key IS present with value 0 — TRACK_MAT has one row
+    // Analysis mode, the key IS present with value 0. TRACK_MAT has one row
     // per ensemble member, so a member with no real exposure genuinely has
-    // SEVERITY_POPULATION=0, not a missing row). These need different
-    // colors: (a) still gets the orange/yellow "consensus" overlap-density
-    // fill below; (b) now gets a distinct grey instead, so a member
-    // confirmed to have NO impact never looks like it might have some (it
-    // used to render identically to (a), which is what was reported live).
+    // SEVERITY_POPULATION=0, not a missing row). These get different
+    // colors: (a) gets the orange/yellow "consensus" overlap-density
+    // fill below; (b) gets a distinct grey instead, so a member
+    // confirmed to have NO impact never looks like it might have some.
     const hasSeverityData = props.severity_population !== undefined && props.severity_population !== null;
     const severity_population = hasSeverityData ? props.severity_population : 0;
     const max_population = props.max_population || 1;
     const isGust = props.hazard === 'gust';
 
-    // "Consensus" rendering — case (a) above: no real per-member
+    // "Consensus" rendering (case (a) above): no real per-member
     // severity_population to color by at all. A low, uniform,
     // near-borderless fill so the real per-member envelope polygons (up to
     // 51 of them, all real geometry) alpha-blend into a natural density
-    // gradient where they overlap — darker = more members agree this area
+    // gradient where they overlap: darker = more members agree this area
     // is threatened, lighter = fewer. This is a genuine union-with-overlap-
     // count effect achieved via the browser's own alpha compositing, not a
     // separate computed grid. Gust uses its own lighter orange (#ffa94d,
@@ -115,7 +114,7 @@ function(feature, context) {
     }
 
     // Case (b) above: real severity data exists for this member and it's
-    // confirmed exactly zero — a plain, muted grey, NOT part of the
+    // confirmed exactly zero: a plain, muted grey, NOT part of the
     // yellow->red severity gradient below (that gradient is reserved for
     // members with SOME real impact, how much of it), and NOT the
     // orange/yellow consensus fill either (that would misleadingly suggest
@@ -143,14 +142,14 @@ function(feature, context) {
     };
 
     // Wind: yellow (#FFFF00) -> dark red (#8B0000). Gust: pale yellow
-    // (#FFF3BF) -> burnt orange (#D9480F) — a visually distinct gradient
+    // (#FFF3BF) -> burnt orange (#D9480F), a visually distinct gradient
     // family so a user can tell which hazard a colored envelope belongs to
     // at a glance, not just via the tooltip.
     const color = isGust
         ? interpolateColor('#FFF3BF', '#D9480F', easedSeverity)
         : interpolateColor('#FFFF00', '#8B0000', easedSeverity);
 
-    // Opacity increases with severity — 0.3 to 0.9 range
+    // Opacity increases with severity: 0.3 to 0.9 range
     const fillOpacity = 0.3 + (easedSeverity * 0.6);
     return {color: color, weight: 2, fillColor: color, fillOpacity: fillOpacity};
 }
@@ -170,11 +169,8 @@ function(feature, layer) {
     };
     // _mapT/_AOTS_TT_* are global window functions/vars set by
     // assets/maplibre_tiles.js (same browser window, loaded as a plain
-    // non-module <script>) — real gap found+fixed here (2026-08,
-    // user-reported: are these tooltips translated / matching the new
-    // page's own design, or just carried over from the old dashboard? they
-    // were neither — 100% hardcoded English with an ad hoc, per-function
-    // color/font-size scale). See _mapT's own comment for the full
+    // non-module <script>), providing translated tooltip strings and
+    // theme-aware colors/font sizes. See _mapT's own comment for the full
     // rationale and window.AOTS_MAP_I18N's source (pages/map_shell_
     // concept.py's _MAP_TOOLTIP_TRANSLATIONS via ms-map-i18n-store).
     const member_raw = props.ensemble_member;
@@ -454,4 +450,4 @@ function(feature, layer) {
 }
 """)
 
-# tooltip_tiles and tooltip_admin removed — see note above (MapLibre handles tile/admin tooltips)
+# tooltip_tiles and tooltip_admin removed: see note above (MapLibre handles tile/admin tooltips)

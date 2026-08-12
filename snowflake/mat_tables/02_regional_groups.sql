@@ -1,14 +1,14 @@
 -- ============================================================================
--- 04_data/02_regional_groups.sql — Regional Groups — one-time procedure setup
+-- 04_data/02_regional_groups.sql: Regional Groups (one-time procedure setup)
 -- ============================================================================
 -- Run once after 01_materialized_tables.sql.
 --
 -- What this does:
---   Creates REFRESH_REGIONAL_GROUPS() — the procedure that derives regional
+--   Creates REFRESH_REGIONAL_GROUPS(): the procedure that derives regional
 --   rows in every MAT table from member-country rows already loaded from stage.
 --
 -- REFRESH_REGIONAL_GROUPS() is called automatically at the end of
--- REFRESH_MATERIALIZED_VIEWS() (01_materialized_tables.sql) — no
+-- REFRESH_MATERIALIZED_VIEWS() (01_materialized_tables.sql): no
 -- separate task or manual call needed after this setup.
 --
 --
@@ -78,7 +78,7 @@ $$
 
     var inserts = [
 
-      // MERCATOR_TILE_IMPACT_MAT — union (H3 zone_ids are globally unique)
+      // MERCATOR_TILE_IMPACT_MAT: union (H3 zone_ids are globally unique)
       { name: code + ':MERCATOR_TILE_IMPACT_MAT', sql: `
         INSERT INTO AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
             (FILE_PATH, COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD, ZOOM_LEVEL,
@@ -99,7 +99,7 @@ $$
         WHERE COUNTRY IN (` + inList + `)
       `},
 
-      // ADMIN_ALL_IMPACT_MAT — union (per-island admin regions all retained)
+      // ADMIN_ALL_IMPACT_MAT: union (per-island admin regions all retained)
       { name: code + ':ADMIN_ALL_IMPACT_MAT', sql: `
         INSERT INTO AOTS.TC_ECMWF.ADMIN_ALL_IMPACT_MAT
             (FILE_PATH, ADMIN_LEVEL, COUNTRY, STORM, FORECAST_DATE, WIND_THRESHOLD,
@@ -118,7 +118,7 @@ $$
         WHERE COUNTRY IN (` + inList + `)
       `},
 
-      // TRACK_MAT — SUM per ensemble member (zone_id = track number)
+      // TRACK_MAT: SUM per ensemble member (zone_id = track number)
       // Same ensemble members run over all islands; summing gives region-wide
       // severity per scenario. GEOMETRY omitted (not meaningful for aggregate).
       { name: code + ':TRACK_MAT', sql: `

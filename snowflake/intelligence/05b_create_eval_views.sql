@@ -22,7 +22,7 @@
 --     EVAL_CENTROID_SHIFT       CS cases
 --
 --   Collection views (curated cross-category sets):
---     EVAL_MIXED                1 case per category (11 total) — quick regression check
+--     EVAL_MIXED                1 case per category (11 total), quick regression check
 --
 -- To run an evaluation, set dataset_name in eval_config.yaml to the registered
 -- dataset name (see below) and upload + run:
@@ -44,7 +44,7 @@ USE SCHEMA TC_ECMWF;
 -- ============================================================================
 
 -- ============================================================================
--- Category views — one per category for focused evaluation after a specific change
+-- Category views: one per category for focused evaluation after a specific change
 -- ============================================================================
 
 CREATE OR REPLACE VIEW AOTS.TC_ECMWF.EVAL_FULL_REPORTS AS
@@ -137,7 +137,7 @@ CREATE OR REPLACE VIEW AOTS.TC_ECMWF.EVAL_CENTROID_SHIFT AS
 
 
 -- ============================================================================
--- Collection views — curated cross-category sets
+-- Collection views: curated cross-category sets
 -- ============================================================================
 
 -- Mixed: 1 representative case per category (11 total).
@@ -154,15 +154,15 @@ CREATE OR REPLACE VIEW AOTS.TC_ECMWF.EVAL_MIXED AS
     WHERE ID IN (
         'FR-02',  -- full report, explicit date + threshold
         'SM-01',  -- single metric, latest date resolution
-        'MR-01',  -- missing input — country only
-        'TR-02',  -- trend — better or worse
-        'AB-02',  -- admin breakdown — targeted parish question
-        'RF-01',  -- refusal — operational recommendation
-        'HZ-01',  -- wrong hazard — flooding
+        'MR-01',  -- missing input: country only
+        'TR-02',  -- trend: better or worse
+        'AB-02',  -- admin breakdown: targeted parish question
+        'RF-01',  -- refusal: operational recommendation
+        'HZ-01',  -- wrong hazard: flooding
         'ML-02',  -- multi-language (French)
-        'DQ-01',  -- discovery — active storms
-        'SC-01',  -- named facilities — calendar-day date (regression case)
-        'CS-01'   -- centroid shift — geographic impact footprint shift
+        'DQ-01',  -- discovery: active storms
+        'SC-01',  -- named facilities: calendar-day date (regression case)
+        'CS-01'   -- centroid shift: geographic impact footprint shift
     );
 
 
@@ -173,7 +173,7 @@ CREATE OR REPLACE VIEW AOTS.TC_ECMWF.EVAL_MIXED AS
 -- that can be referenced in eval_config.yaml.
 --
 -- NOTE: ground_truth_output is embedded inside GROUND_TRUTH_DATA by the views
--- above. Do NOT add 'expected_output' mapping here — Snowflake ignores it
+-- above. Do NOT add 'expected_output' mapping here. Snowflake ignores it
 -- silently and answer_correctness will always score 0.
 
 -- Full 72-case baseline (uses a view to get merged GROUND_TRUTH_DATA)
@@ -202,7 +202,7 @@ CALL SYSTEM$CREATE_EVALUATION_DATASET(
     {'query_text': 'INPUT_QUERY', 'expected_tools': 'GROUND_TRUTH_DATA'}
 );
 
--- Category datasets — for focused evaluation after a change to a specific capability
+-- Category datasets: for focused evaluation after a change to a specific capability
 CALL SYSTEM$CREATE_EVALUATION_DATASET('CORTEX AGENT', 'AOTS.TC_ECMWF.EVAL_FULL_REPORTS',     'AOTS.TC_ECMWF.HURRICANE_INTELLIGENCE_FULL_REPORTS_EVALSET',     {'query_text': 'INPUT_QUERY', 'expected_tools': 'GROUND_TRUTH_DATA'});
 CALL SYSTEM$CREATE_EVALUATION_DATASET('CORTEX AGENT', 'AOTS.TC_ECMWF.EVAL_SINGLE_METRICS',   'AOTS.TC_ECMWF.HURRICANE_INTELLIGENCE_SINGLE_METRICS_EVALSET',   {'query_text': 'INPUT_QUERY', 'expected_tools': 'GROUND_TRUTH_DATA'});
 CALL SYSTEM$CREATE_EVALUATION_DATASET('CORTEX AGENT', 'AOTS.TC_ECMWF.EVAL_MISSING_INPUT',    'AOTS.TC_ECMWF.HURRICANE_INTELLIGENCE_MISSING_INPUT_EVALSET',    {'query_text': 'INPUT_QUERY', 'expected_tools': 'GROUND_TRUTH_DATA'});
