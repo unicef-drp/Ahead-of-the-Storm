@@ -56,7 +56,14 @@ The pipeline ships two CSV formats with different column counts:
 
 Both formats are handled in the same `SELECT` using `IFF($13 IS NULL, old_pos, new_pos)` per column. Old-format files return NULL for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, `E_SMOD_CLASS_L1`.
 
-**Adding new columns when the pipeline changes:** see `MAT_TABLE_FIX.md`.
+**Adding new columns when the pipeline changes:**
+1. Confirm the new CSV's exact `$N` column positions via a raw stage read (`SKIP_HEADER = 0` so `$1` is the header row, inspect a few sample rows).
+2. Confirm the existing format discriminator (`$13 IS NULL` for mercator, `$15 IS NULL` for admin) still distinguishes old vs. new format, or pick a new one: must be NULL in the old format, always non-NULL in the new format, and at a different position than any prior discriminator.
+3. Update both places that must stay in sync: the `CREATE OR REPLACE TABLE ... AS SELECT` initial load, and `REFRESH_MATERIALIZED_VIEWS()`'s own `INSERT INTO table (...)` column list plus its `SELECT` expression (Snowflake inserts positionally within that explicit column list).
+4. Rerun the setup script to recreate the tables and update the REFRESH procedure; the scheduled task picks up the new procedure automatically.
+5. Add the new column to the relevant `get_tile_impacts()`/`get_admin_impacts()`/`get_tile_cci()`/`get_admin_cci()` function in `components/data/snowflake_utils.py` (`_norm()` in `data_store_utils.py` handles name normalisation automatically, no changes needed there).
+6. If displaying the new column, update the tile/admin tooltip assign blocks in `components/map/javascript.py`, conditionally showing `N/A` for old countries where the column is NULL.
+7. Verify: cross-check the new column's MAT value against a direct stage read for a known zone_id.
 
 ### Step 2: Set Up Regional Groups (`02_regional_groups.sql`)
 

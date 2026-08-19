@@ -28,9 +28,16 @@ class Config:
     """Centralized configuration class"""
     
     # Snowflake Configuration
+    # SNOWFLAKE_USE_RO=true swaps in SNOWFLAKE_RO_USER/SNOWFLAKE_RO_PASSWORD
+    # (a read-only service account, e.g. AOTS_AZURE_SERVICE) in place of the
+    # normal SNOWFLAKE_USER/SNOWFLAKE_PASSWORD — for locally sanity-checking
+    # a read-only credential before it's used in a real deployment, without
+    # touching the primary credentials. Unset/false: behaves exactly as
+    # before, only SNOWFLAKE_USER/SNOWFLAKE_PASSWORD are read.
     SNOWFLAKE_ACCOUNT = os.getenv('SNOWFLAKE_ACCOUNT')
-    SNOWFLAKE_USER = os.getenv('SNOWFLAKE_USER')
-    SNOWFLAKE_PASSWORD = os.getenv('SNOWFLAKE_PASSWORD')
+    _USE_RO = os.getenv('SNOWFLAKE_USE_RO', 'false').lower() == 'true'
+    SNOWFLAKE_USER = os.getenv('SNOWFLAKE_RO_USER') if _USE_RO else os.getenv('SNOWFLAKE_USER')
+    SNOWFLAKE_PASSWORD = os.getenv('SNOWFLAKE_RO_PASSWORD') if _USE_RO else os.getenv('SNOWFLAKE_PASSWORD')
     SNOWFLAKE_WAREHOUSE = os.getenv('SNOWFLAKE_WAREHOUSE')
     SNOWFLAKE_DATABASE = os.getenv('SNOWFLAKE_DATABASE')
     SNOWFLAKE_SCHEMA = os.getenv('SNOWFLAKE_SCHEMA')

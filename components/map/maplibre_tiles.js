@@ -756,6 +756,11 @@ function _setupHoverTooltips(lMap) {
 
         var base = ((hoverHazards.length > 0 ? config : rawConfig) && (hoverHazards.length > 0 ? config : rawConfig).tile_server_url != null)
             ? (hoverHazards.length > 0 ? config : rawConfig).tile_server_url : 'http://localhost:8001';
+        // Same '' -> window.location.origin fallback as applyGlobalRawConfig
+        // and its raster-source siblings — see that function's own comment
+        // for the full "why" (local dev has no nginx to make '' resolve to
+        // the tile server's own port).
+        base = base !== '' ? base : window.location.origin;
 
         if (hoverHazards.length > 0) {
             // ONE request to /tile-value-combined computes the real
@@ -952,6 +957,10 @@ function swapMaplibreBasemap(name) {
     var tiles;
     if (name === 'Mapbox Light' && token) {
         tiles = ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + token];
+    } else if (name === 'OpenStreetMap') {
+        tiles = ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                 'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                 'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'];
     } else if (name === 'CartoDB Light') {
         tiles = ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
                  'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
@@ -1233,7 +1242,7 @@ function applyHazardLayer(map, config, hazardKey, group) {
         + '&admin_level=1'
         + parts.qs;
 
-    var rasterUrl = base
+    var rasterUrl = absBase
         + '/tiles/raster/'
         + encodeURIComponent(country) + '/'
         + encodeURIComponent(parts.storm) + '/'
@@ -1554,7 +1563,7 @@ function applyCombinedHazardLayer(map, config) {
         if (config.window_h != null) sharedQs += '&window_h=' + config.window_h;
     }
 
-    var rasterUrl = base
+    var rasterUrl = absBase
         + '/tiles/raster-combined/'
         + encodeURIComponent(config.country) + '/'
         + encodeURIComponent(storm) + '/'
@@ -1820,6 +1829,11 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
         // Raster layer: change the tile URL to the new property
         var config = window._aots_tile_config || {};
         var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
+        // Same '' -> window.location.origin fallback as applyGlobalRawConfig
+        // and its other raster-source siblings — see that function's own
+        // comment for the full "why" (local dev has no nginx to make ''
+        // resolve to the tile server's own port).
+        base = base !== '' ? base : window.location.origin;
         var country = group ? group.country : config.country;
         var parts = group
             ? { storm: group.storm, forecast_date: group.forecast_date, qs: _hazardUrlParts(hazardKey, config).qs }
@@ -1968,6 +1982,17 @@ function applyGlobalRawConfig(config) {
 
     var ids  = _AOTS_GLOBAL_RAW_IDS;
     var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
+    // Use window.location.origin as fallback when base is '' (SPCS/nginx
+    // proxy mode, and equally the local-dev "python app.py on :8050 + a
+    // separately-run uvicorn tile server on :8001, no nginx" setup this
+    // project's own CLAUDE.md documents) — same fallback its sibling
+    // functions above (initMaplibre, applyTileConfig, setTileLayerProp)
+    // already apply. Without it, "" resolves as a same-origin relative
+    // path, which under local dev silently hits the Dash app's own port
+    // (8050) instead of the tile server (8001); Dash's use_pages catch-all
+    // then answers with 200 OK + the HTML app shell instead of a 404,
+    // which MapLibre tries and fails to decode as a WebP raster tile.
+    var absBase = base !== '' ? base : window.location.origin;
     var rainMode = (config.rain_mode === 'probability') ? 'probability' : 'mean';
 
     // --- Precip-raw raster (radar-style rain-rate / exceedance-probability tiles) ---
@@ -1986,7 +2011,7 @@ function applyGlobalRawConfig(config) {
         // Wind/Gust tracks/envelopes): when set, the server ignores
         // mode/threshold_mm entirely and renders that one member's own
         // rate instead of the aggregate mean/probability.
-        var precipUrl = base + '/tiles/raster/precip-raw/' + encodeURIComponent(precipTime)
+        var precipUrl = absBase + '/tiles/raster/precip-raw/' + encodeURIComponent(precipTime)
             + '/{z}/{x}/{y}.webp?mode=' + rainMode
             + '&window_h=' + precipWindowH + '&threshold_mm=' + precipThresholdMm
             + (config.precip_member != null ? '&member=' + config.precip_member : '');
@@ -2036,7 +2061,7 @@ function applyGlobalRawConfig(config) {
         // when set, renders that one member's own flood extent (flat
         // single-color mask) instead of the aggregate member-agreement
         // gradient.
-        var riverUrl = base + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
+        var riverUrl = absBase + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
             + '/{z}/{x}/{y}.webp?rp_tier=' + riverRpTier + '&step_h=' + riverStepH
             + (config.river_member != null ? '&member=' + config.river_member : '');
         var riverSrc = map.getSource(ids.riverSource);

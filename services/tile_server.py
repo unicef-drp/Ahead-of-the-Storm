@@ -235,7 +235,21 @@ def _connect() -> snowflake.connector.SnowflakeConnection:
         )
     if SNOWFLAKE_ROLE:
         kwargs["role"] = SNOWFLAKE_ROLE
-    return snowflake.connector.connect(**kwargs)
+    conn = snowflake.connector.connect(**kwargs)
+    # The Snowflake connector sometimes ignores the warehouse param in the
+    # connection string (confirmed under both SPCS OAuth and plain PAT/
+    # password auth — see components/data/snowflake_utils.py's own
+    # get_snowflake_connection() for the same fix). Explicitly set it so
+    # every new thread session actually has an active warehouse.
+    if SNOWFLAKE_WAREHOUSE:
+        cur = conn.cursor()
+        try:
+            cur.execute(f"USE WAREHOUSE {SNOWFLAKE_WAREHOUSE}")
+        except Exception as exc:
+            log.warning("USE WAREHOUSE %s failed: %s", SNOWFLAKE_WAREHOUSE, exc)
+        finally:
+            cur.close()
+    return conn
 
 
 def get_connection() -> snowflake.connector.SnowflakeConnection:
@@ -2312,7 +2326,14 @@ def _fetch_admin_tile(
         [{"name": "admin", "features": features}],
         default_options={"quantize_bounds": (merc_b.left, merc_b.bottom, merc_b.right, merc_b.top)},
     )
-    return bytes(pbf) if not isinstance(pbf, bytes) else pbf
+    raw = bytes(pbf) if not isinstance(pbf, bytes) else pbf
+    # gzip, matching _fetch_mercator_tile's own PBF output above (real
+    # perf-audit finding: admin-region MVT was going out uncompressed while
+    # its mercator sibling already gzipped — purely a historical gap, not a
+    # deliberate choice, since admin-region MVT (property-per-feature,
+    # repeated keys) compresses just as well). _fetch_admin_combined_tile
+    # below has the identical fix for the same reason.
+    return gzip.compress(raw, compresslevel=6)
 
 
 # ---------------------------------------------------------------------------
@@ -2474,6 +2495,43 @@ def _mat_date_to_rain_date(mat_forecast_date: str) -> Optional[str]:
         return None
 
 
+def _raw_date_to_mat(raw_date: Optional[str]) -> Optional[str]:
+    """Reverse of _mat_date_to_river_date/_mat_date_to_rain_date above:
+    River/Rain's own real raw FORECAST_TIME string (whatever
+    get_river_extent_forecast_time_for_date/get_precip_forecast_time_near
+    actually return, e.g. '2026-07-14' for river's date-only cycles or
+    '2026-07-14 06:00:00' for rain's real sub-daily cycle hours -- these
+    are NOT the same shape, river has no time-of-day at all while rain
+    genuinely does, so this must not assume a fixed '000000' suffix the
+    way a naive string-append would) -> mat-format (YYYYMMDDHHMMSS), the
+    format TILE_RIVER_BITMASK_MAT/TILE_PRECIP_BITMASK_MAT's own
+    FORECAST_TIME column is keyed on (see get_river_tile_bitmask/
+    get_rain_tile_bitmask's own docstrings).
+
+    Needed specifically by combined_member_impacts below: unlike
+    _combine_bitmask_aware/_combine_bitmask_aware_admin/
+    _combine_bitmask_aware_points (which all receive an ALREADY-mat-format
+    date via hazard_params/ms-tile-config-store, no conversion needed),
+    this endpoint's own river_forecast_time/rain_forecast_time params come
+    from a DIFFERENT resolver pair (get_river_extent_forecast_time_for_date/
+    get_precip_forecast_time_near) that returns the raw, not mat-format,
+    string -- a real, easy-to-miss format difference between otherwise
+    near-identical call sites, caught in review before this endpoint's own
+    river/rain branches were migrated onto the same MAT-backed getters.
+
+    pd.to_datetime (no fixed `format=`, unlike the mat_date_to_* direction)
+    on purpose: correctly parses BOTH real shapes above without needing to
+    know in advance which hazard's convention it's seeing. Returns None
+    (not a fabricated fallback) on a malformed/missing input, same
+    "caller treats as no resolution" contract as the mat->raw direction."""
+    if not raw_date:
+        return None
+    try:
+        return pd.to_datetime(raw_date).strftime("%Y%m%d%H%M%S")
+    except (ValueError, TypeError):
+        return None
+
+
 def _tile_id_bounds(tile_id: str) -> Optional[tuple[float, float, float, float]]:
     """(west, south, east, north) bounds derived directly from a z14
     quadkey string: no Snowflake/cache lookup needed. A per-tile bitmask
@@ -2565,7 +2623,10 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
     z14 tile at all). No caller of this function should omit it in
     practice.
     """
-    from components.data.snowflake_utils import get_wind_tile_bitmask, get_gust_tile_bitmask
+    from components.data.snowflake_utils import (
+        get_wind_tile_bitmask, get_gust_tile_bitmask,
+        get_river_tile_bitmask, get_rain_tile_bitmask,
+    )
 
     # `country` can be a "PHL+VNM"-shaped multi-country selection (see
     # _quadkey_like_pattern's own siblings, every other country-scoped
@@ -2626,23 +2687,57 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
                 for code in codes:
                     _apply_bits_df(get_gust_tile_bitmask(code, storm, p['forecast_date'], p['gust_threshold']), hz)
         elif hz == 'river':
-            # river_forecast_date arrives here in MAT format ("20260702000000")
-            # because ms-tile-config-store's river_forecast_date comes from
-            # get_latest_river_forecast_time, which reads MAT-format
-            # FORECAST_TIME directly off MERCATOR_TILE_RIVER_MAT, see this
-            # module's own header comment for the full detail. Convert to
-            # RIVER_FORECASTS' own raw plain-date format before resolving.
-            river_date = _mat_date_to_river_date(p.get('forecast_date'))
+            # Real, pre-materialized per-tile-per-member bitmask
+            # (TILE_RIVER_BITMASK_MAT), same shape/query pattern as
+            # wind/gust above, REPLACES the live _river_extent_cache decode
+            # of the raw global GloFAS extent_rp{N}_bymember Parquet (a
+            # real, measured multi-minute cold-cache cost, see
+            # get_river_tile_bitmask's own docstring for the full "why").
+            # `p['forecast_date']` is already mat-format (YYYYMMDDHHMMSS),
+            # matching TILE_RIVER_BITMASK_MAT's own FORECAST_TIME column
+            # directly -- no _mat_date_to_river_date() conversion needed
+            # here (that conversion existed only for _river_extent_cache's
+            # own raw-format requirement, which this table doesn't have).
+            river_date = p.get('forecast_date')
             if river_date:
                 rp_tier = p.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
                 step_h = p.get('window_h') or _RIVER_WINDOW_DEFAULT
-                resolved = _river_extent_cache.ensure_river_extent(river_date, rp_tier, step_h)
-                if resolved is not None:
-                    entry = _river_extent_cache.get_grid(resolved, rp_tier, step_h)
-                    if entry is not None and not entry['df'].empty:
-                        _apply_bits_df(entry['df'][['TILE_ID', 'BITS']], hz)
-        # Rain is handled in a SEPARATE pass below, after `extra_tiles` are
-        # merged into `merged`, see that pass's own comment for why.
+                for code in codes:
+                    _apply_bits_df(get_river_tile_bitmask(code, river_date, rp_tier, step_h), hz)
+        elif hz == 'rain':
+            # Real, pre-materialized per-tile-per-member bitmask
+            # (TILE_PRECIP_BITMASK_MAT), REPLACES the live inline
+            # dense-grid-centroid-sampling this branch used to do (the
+            # rate_grid/exceeds/member_bits construction that used to live
+            # in a SEPARATE pass below, after the extra_tiles merge -- see
+            # get_rain_tile_bitmask's own docstring for the full "why").
+            # Rain now uses the exact same sparse TILE_ID/BITS shape
+            # wind/gust/river already use, so it no longer needs that
+            # special second pass or its own extra_tiles carve-out: a real
+            # sparse per-tile table can contribute extra_tiles rows the
+            # same way the other three hazards already do, handled by the
+            # SAME _apply_bits_df call right here, in the SAME loop.
+            rain_date = p.get('forecast_date')
+            if rain_date:
+                window_h = p.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
+                # NOT _PRECIP_PROB_THRESHOLD_MM as a silent fallback here:
+                # that constant is a real, meaningful default for the raw
+                # continuous-threshold Zarr query paths elsewhere in this
+                # file, but TILE_PRECIP_BITMASK_MAT only ever has rows at
+                # DATAPIPELINE's own fixed PRECIP_TP_THRESHOLDS_MM set
+                # (25/35/45/50/70/75/90/100/103/133/150), which never
+                # includes 10.0 -- silently querying WHERE THRESHOLD_MM =
+                # 10.0 would return a real, legitimate-looking EMPTY
+                # result (not an error), so Rain would render as "no
+                # hazard" with no visible failure anywhere. Treat a
+                # missing threshold_mm as "Rain not resolvable" instead,
+                # same as a missing forecast_date, rather than querying a
+                # value that can never match a real row (caught in review).
+                if p.get('threshold_mm') is None:
+                    continue
+                threshold_mm = p['threshold_mm']
+                for code in codes:
+                    _apply_bits_df(get_rain_tile_bitmask(code, rain_date, threshold_mm, window_h), hz)
 
     all_extra_tile_ids = set()
     for extra in extra_tiles_by_hazard.values():
@@ -2668,39 +2763,14 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
                     [extra_tiles_by_hazard[hz].get(tid, np.uint64(0)) for tid in new_tile_ids], dtype=np.uint64)
                 hazard_bits[hz] = np.concatenate([hazard_bits[hz], extra_bits_arr])
 
-    # Rain is sampled after the `extra_tiles` merge above, against the
-    # now-possibly-longer `merged`/`hazard_bits`, so a gap tile discovered
-    # by wind/gust/river's sparse bitmasks (coverage the country's own MAT
-    # DataFrames had no row for) still gets rain sampled at its own
-    # centroid. Rain itself can never independently contribute an
-    # extra_tiles entry (it's a dense global grid, not a sparse TILE_ID
-    # table), only benefit from gaps other hazards surface.
-    rain_p = hazard_params.get('rain') if 'rain' in used_hazard_names else None
-    if rain_p is not None:
-        # Same MAT-format conversion as the river branch above.
-        rain_date = _mat_date_to_rain_date(rain_p.get('forecast_date'))
-        if rain_date:
-            window_h = rain_p.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
-            threshold_mm = rain_p.get('threshold_mm') if rain_p.get('threshold_mm') is not None else _PRECIP_PROB_THRESHOLD_MM
-            resolved = _precip_cache.ensure_member_rate_grid(rain_date, window_h)
-            if resolved is not None:
-                got = _precip_cache.get_member_rate_grid(resolved, window_h)
-                if got is not None:
-                    rate_grid, geo = got
-                    lats = (merged['BS'].to_numpy(dtype=np.float64) + merged['BN'].to_numpy(dtype=np.float64)) / 2.0
-                    lons = (merged['BW'].to_numpy(dtype=np.float64) + merged['BE'].to_numpy(dtype=np.float64)) / 2.0
-                    lon_wrapped = ((lons + 180.0) % 360.0) - 180.0
-                    lon_idx = (np.round((lon_wrapped - geo['lon_min']) / geo['lon_step']).astype(np.int64)) % geo['n_lon']
-                    lat_idx = np.clip(np.round((geo['lat_max'] - lats) / geo['lat_step']).astype(np.int64),
-                                        0, geo['n_lat'] - 1)
-                    sampled = rate_grid[:, lat_idx, lon_idx]  # (51, n_tiles_total)
-                    exceeds = sampled > threshold_mm  # (51, n_tiles_total) bool
-                    member_idx = np.arange(_BITMASK_ENSEMBLE_SIZE, dtype=np.uint64)
-                    member_bits = np.uint64(1) << member_idx  # (51,)
-                    rain_bits = (exceeds.T.astype(np.uint64) * member_bits).astype(np.uint64)
-                    rain_bits_per_tile = (np.bitwise_or.reduce(rain_bits, axis=1) if rain_bits.size
-                                          else np.zeros(len(hazard_bits['rain']), dtype=np.uint64))
-                    hazard_bits['rain'] |= rain_bits_per_tile
+    # Rain used to be sampled in a separate pass here, after the
+    # extra_tiles merge above (a dense-grid-centroid sample couldn't itself
+    # discover new tiles the way a sparse TILE_ID table could, so it had to
+    # run after other hazards' own gaps were already known). Now that Rain
+    # reads from a real sparse TILE_ID/BITS table (TILE_PRECIP_BITMASK_MAT,
+    # see the `elif hz == 'rain':` branch in the main loop above), it's
+    # merged in that SAME loop/pass as wind/gust/river, so this second pass
+    # is no longer needed.
 
     n_final = len(merged)
     union_bits = np.zeros(n_final, dtype=np.uint64)
@@ -3044,7 +3114,10 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
     compute), so only `p_by_admin`/`expected_by_admin`/`resolved_hazards`
     are returned.
     """
-    from components.data.snowflake_utils import get_wind_tile_bitmask, get_gust_tile_bitmask
+    from components.data.snowflake_utils import (
+        get_wind_tile_bitmask, get_gust_tile_bitmask,
+        get_river_tile_bitmask, get_rain_tile_bitmask,
+    )
 
     codes = [c.upper() for c in country.split('+') if c.strip()]
     # Defensive dedupe: pd.Index.get_indexer (used for every lookup below)
@@ -3094,49 +3167,16 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
             return
         np.bitwise_or.at(target, pos[keep], vals[keep])
 
-    # --- Resolve the two country-INDEPENDENT (global) flood sources once,
-    # outside the per-country loop: both caches are keyed by date/window
-    # only, so re-resolving them per country code would repeat work for an
-    # identical answer.
-    river_df: Optional[pd.DataFrame] = None
-    if 'river' in used_hazard_names:
-        rp = hazard_params.get('river') or {}
-        # Same MAT-format -> raw-date conversion every other bitmask
-        # consumer in this file does (see this module's own header comment
-        # for why river_forecast_date arrives in MAT format here).
-        river_date = _mat_date_to_river_date(rp.get('forecast_date'))
-        if river_date:
-            rp_tier = rp.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
-            step_h = rp.get('window_h') or _RIVER_WINDOW_DEFAULT
-            resolved_date = _river_extent_cache.ensure_river_extent(river_date, rp_tier, step_h)
-            if resolved_date is not None:
-                rentry = _river_extent_cache.get_grid(resolved_date, rp_tier, step_h)
-                if rentry is not None:
-                    resolved.add('river')
-                    if not rentry['df'].empty:
-                        # Deduped ONCE here, not once per country code:
-                        # this is the worldwide extent table, so the
-                        # dedupe is by far the most expensive part of the
-                        # per-country scatter below.
-                        river_df = rentry['df'].drop_duplicates(subset='TILE_ID', keep='first')
-
-    rain_grid = None
-    rain_threshold_mm = _PRECIP_PROB_THRESHOLD_MM
-    if 'rain' in used_hazard_names:
-        ap = hazard_params.get('rain') or {}
-        rain_date = _mat_date_to_rain_date(ap.get('forecast_date'))
-        if rain_date:
-            window_h = ap.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
-            if ap.get('threshold_mm') is not None:
-                rain_threshold_mm = ap['threshold_mm']
-            resolved_date = _precip_cache.ensure_member_rate_grid(rain_date, window_h)
-            if resolved_date is not None:
-                got = _precip_cache.get_member_rate_grid(resolved_date, window_h)
-                if got is not None:
-                    resolved.add('rain')
-                    rain_grid = got
-
-    member_bits = np.uint64(1) << np.arange(_BITMASK_ENSEMBLE_SIZE, dtype=np.uint64)
+    # River/Rain now resolve PER COUNTRY CODE, inside the loop below, the
+    # same way Wind/Gust already do (get_river_tile_bitmask/
+    # get_rain_tile_bitmask query TILE_RIVER_BITMASK_MAT/
+    # TILE_PRECIP_BITMASK_MAT, which are COUNTRY-keyed, unlike the OLD
+    # live _river_extent_cache/_precip_cache this replaced, which were
+    # genuinely global/country-independent caches worth resolving once
+    # outside the loop). `p.get('forecast_date')` is already mat-format
+    # (same hazard_params convention every hazard here shares), no
+    # _mat_date_to_river_date()/_mat_date_to_rain_date() conversion needed,
+    # same reasoning as _combine_bitmask_aware's own river/rain branches.
 
     for code in codes:
         entry = _tile_admin_map_cache.ensure(code, admin_level)
@@ -3174,34 +3214,33 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
                 resolved.add('gust')
                 _scatter_tile_bits(df, hz_bits, tile_index)
             elif hz == 'river':
-                _scatter_tile_bits(river_df, hz_bits, tile_index)
+                if not p.get('forecast_date'):
+                    continue
+                rp_tier = p.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
+                step_h = p.get('window_h') or _RIVER_WINDOW_DEFAULT
+                df = get_river_tile_bitmask(code, p['forecast_date'], rp_tier, step_h)
+                if df is None:
+                    log.warning("admin-combined: river tile bitmask unavailable for %s", code)
+                    continue
+                resolved.add('river')
+                _scatter_tile_bits(df, hz_bits, tile_index)
             elif hz == 'rain':
-                if rain_grid is None:
+                # threshold_mm must be a real one, not a silent
+                # _PRECIP_PROB_THRESHOLD_MM fallback: TILE_PRECIP_
+                # BITMASK_MAT only ever has rows at DATAPIPELINE's own
+                # fixed threshold set, which never includes that
+                # constant's value, see get_rain_tile_bitmask's own call
+                # site in _combine_bitmask_aware for the full "why".
+                if not p.get('forecast_date') or p.get('threshold_mm') is None:
                     continue
-                rate_grid, geo = rain_grid
-                lon_wrapped = ((entry['clon'] + 180.0) % 360.0) - 180.0
-                lon_idx = (np.round((lon_wrapped - geo['lon_min']) / geo['lon_step']).astype(np.int64)) % geo['n_lon']
-                lat_idx = np.clip(np.round((geo['lat_max'] - entry['clat']) / geo['lat_step']).astype(np.int64),
-                                  0, geo['n_lat'] - 1)
-                # Real perf decision (not an approximation): the raw precip
-                # grid is ~0.25 deg (~27km) while a z14 tile is ~2.4km, so
-                # ~100+ neighbouring tiles sample the exact SAME grid cell.
-                # Sampling all of them would materialize a (51, ~400k) float
-                # array per country per request for a result that is
-                # identical by construction. Sample each DISTINCT cell once
-                # and fan the answer back out via the inverse index.
-                cells = lat_idx * np.int64(geo['n_lon']) + lon_idx
-                uniq, inverse = np.unique(cells, return_inverse=True)
-                if uniq.size == 0:
+                window_h = p.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
+                threshold_mm = p['threshold_mm']
+                df = get_rain_tile_bitmask(code, p['forecast_date'], threshold_mm, window_h)
+                if df is None:
+                    log.warning("admin-combined: rain tile bitmask unavailable for %s", code)
                     continue
-                u_lat = (uniq // np.int64(geo['n_lon'])).astype(np.int64)
-                u_lon = (uniq % np.int64(geo['n_lon'])).astype(np.int64)
-                exceeds = rate_grid[:, u_lat, u_lon] > rain_threshold_mm  # (51, n_uniq)
-                if exceeds.size == 0:
-                    continue
-                bits_per_cell = np.bitwise_or.reduce(
-                    (exceeds.T.astype(np.uint64) * member_bits).astype(np.uint64), axis=1)
-                hz_bits = bits_per_cell[inverse].astype(np.uint64)
+                resolved.add('rain')
+                _scatter_tile_bits(df, hz_bits, tile_index)
             else:
                 continue
             union_bits |= hz_bits
@@ -4449,7 +4488,13 @@ def _fetch_admin_combined_tile(
         [{"name": "admin", "features": features}],
         default_options={"quantize_bounds": (merc_b.left, merc_b.bottom, merc_b.right, merc_b.top)},
     )
-    return bytes(pbf) if not isinstance(pbf, bytes) else pbf
+    raw = bytes(pbf) if not isinstance(pbf, bytes) else pbf
+    # gzip: same fix, same reasoning as _fetch_admin_tile above. This tile
+    # carries EVEN MORE per-feature properties than the single-hazard admin
+    # tile (PROBABILITY_WIND/_GUST/_RIVER/_RAIN plus every combined E_*
+    # column, see this function's own docstring), so the relative payload
+    # savings from gzip are at least as large here.
+    return gzip.compress(raw, compresslevel=6)
 
 
 # ---------------------------------------------------------------------------
@@ -4675,7 +4720,15 @@ class _PrecipRawCache:
     def __init__(self) -> None:
         self._grid: dict[str, dict] = {}       # forecast_time -> grid entry
         self._loaded_at: dict[str, float] = {}  # forecast_time -> epoch seconds
-        self._load_lock = threading.Lock()
+        # Per-forecast_time lock instead of one instance-wide lock: a single
+        # process-wide lock would serialize loading EVERY distinct cycle,
+        # so an unrelated cold miss (the rolling "latest 3" prewarm loop, a
+        # fixed demo-scenario date, and a real user's own hover, each for a
+        # DIFFERENT forecast_time) would queue behind whichever download
+        # happened to be running, even though they share nothing. Same
+        # convention as _DataCache's own _key_locks (see that class).
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._key_locks_meta_lock = threading.Lock()
         # (forecast_time, stage_path, resolved_at): cheap SQL-only "latest" lookup,
         # cached separately from the (expensive) grid itself.
         self._latest_lock = threading.Lock()
@@ -4689,6 +4742,14 @@ class _PrecipRawCache:
         # see ensure_member_rate_grid's own docstring for the rationale.
         self._member_grid: dict = {}
         self._member_lock = threading.Lock()
+
+    def _lock_for(self, forecast_time: str) -> threading.Lock:
+        with self._key_locks_meta_lock:
+            lock = self._key_locks.get(forecast_time)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[forecast_time] = lock
+            return lock
 
     def _resolve_latest(self) -> Optional[tuple[str, str]]:
         now = time.time()
@@ -4750,7 +4811,7 @@ class _PrecipRawCache:
                 return None
             stage_path = rows[0]["STAGE_PATH"]
 
-        with self._load_lock:
+        with self._lock_for(forecast_time):
             if forecast_time in self._grid and (time.time() - self._loaded_at.get(forecast_time, 0.0)) < _PRECIP_RAW_TTL:
                 return forecast_time
             # forecast_time (and therefore stage_path) identifies an immutable,
@@ -5531,9 +5592,26 @@ class _RiverExtentCache:
         # hardcoded lead time doesn't work.
         self._grids: dict[tuple[str, str, int], dict] = {}       # (forecast_time, rp_tier, step_h) -> grid entry
         self._loaded_at: dict[tuple[str, str, int], float] = {}   # (forecast_time, rp_tier, step_h) -> epoch seconds
-        self._load_lock = threading.Lock()
+        # Per-(forecast_time, rp_tier) lock -- that pair is the real download/
+        # scan granularity (every step_h window is built from the same single
+        # pass, see ensure_river_extent's own docstring), not the finer
+        # (forecast_time, rp_tier, step_h) cache-entry key. Same reasoning as
+        # _PrecipRawCache's own per-key lock: a single instance-wide lock
+        # would serialize loading every distinct (date, tier) against every
+        # other one, even across the rolling prewarm loop, a fixed demo date,
+        # and a real user's own hover, none of which share anything.
+        self._key_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._key_locks_meta_lock = threading.Lock()
         self._latest_lock = threading.Lock()
         self._latest: dict[str, tuple[str, str, float]] = {}  # rp_tier -> (forecast_time, stage_path, resolved_at)
+
+    def _lock_for(self, key: tuple[str, str]) -> threading.Lock:
+        with self._key_locks_meta_lock:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
 
     def _resolve_latest(self, rp_tier: str) -> Optional[tuple[str, str]]:
         now = time.time()
@@ -5633,7 +5711,7 @@ class _RiverExtentCache:
                 return None
             stage_path = rows[0]["STAGE_PATH"]
 
-        with self._load_lock:
+        with self._lock_for((forecast_time, rp_tier)):
             if key in self._grids and (time.time() - self._loaded_at.get(key, 0.0)) < _RIVER_EXTENT_TTL:
                 return forecast_time
             if key in self._grids:
@@ -6199,11 +6277,27 @@ def _prewarm_raw_caches() -> None:
                     except Exception as e:
                         log.error("Prewarm: precip-raw warm-up failed for %s: %s", forecast_time, e)
                     time.sleep(_PREWARM_YIELD_SECONDS)
-                with _precip_cache._load_lock:
+                # Per-key locks (see _PrecipRawCache.__init__'s own comment)
+                # mean there's no single lock left to hold for the whole
+                # eviction pass; instead each stale key is popped under its
+                # OWN lock, so an eviction can never race an in-progress
+                # load for that exact key while still letting unrelated
+                # keys load concurrently during eviction. try/except: a
+                # concurrent insert could in principle make this dict-view
+                # snapshot racy (CPython dict iteration isn't safe against
+                # concurrent resize), this is a background daemon thread
+                # with no caller to propagate an error to, so failing this
+                # one pass (next prewarm cycle retries) beats silently
+                # killing the whole loop.
+                try:
                     stale = set(_precip_cache._grid.keys()) - latest_times
                     for forecast_time in stale:
-                        _precip_cache._grid.pop(forecast_time, None)
-                        _precip_cache._loaded_at.pop(forecast_time, None)
+                        with _precip_cache._lock_for(forecast_time):
+                            _precip_cache._grid.pop(forecast_time, None)
+                            _precip_cache._loaded_at.pop(forecast_time, None)
+                except Exception as e:
+                    log.error("Prewarm: precip-raw stale-eviction pass failed: %s", e)
+                    stale = set()
                 if stale:
                     log.info("Prewarm: evicted %d stale precip-raw grid(s) outside the latest-3 window: %s",
                               len(stale), sorted(stale))
@@ -6248,16 +6342,26 @@ def _prewarm_raw_caches() -> None:
                                   rp_tier, step_h, forecast_time, e)
                     time.sleep(_PREWARM_YIELD_SECONDS)
             # Evict anything that has aged out of the rolling window for
-            # THIS tier only, under the SAME lock loads use, so an eviction
-            # can never race an in-progress download for that exact key.
-            # Keyed on forecast_time alone (k[0]), regardless of window
-            # (k[2]): a stale date is stale at every window, not just one.
-            with _river_extent_cache._load_lock:
+            # THIS tier only. Per-key locks (see _RiverExtentCache.__init__'s
+            # own comment) mean each stale (forecast_time, rp_tier) pair is
+            # popped under its OWN lock instead of one lock for the whole
+            # pass, so an eviction can never race an in-progress download
+            # for that exact key while unrelated keys still load
+            # concurrently during eviction. Keyed on forecast_time alone
+            # (k[0]), regardless of window (k[2]): a stale date is stale at
+            # every window, not just one. try/except: same reasoning as the
+            # precip-raw eviction pass above -- a background daemon thread,
+            # failing this one pass beats silently killing the whole loop.
+            try:
                 this_tier_keys = {k for k in _river_extent_cache._grids.keys() if k[1] == rp_tier}
                 stale = {k for k in this_tier_keys if k[0] not in latest_times}
                 for key in stale:
-                    _river_extent_cache._grids.pop(key, None)
-                    _river_extent_cache._loaded_at.pop(key, None)
+                    with _river_extent_cache._lock_for((key[0], rp_tier)):
+                        _river_extent_cache._grids.pop(key, None)
+                        _river_extent_cache._loaded_at.pop(key, None)
+            except Exception as e:
+                log.error("Prewarm: river-raw/%s stale-eviction pass failed: %s", rp_tier, e)
+                stale = set()
             if stale:
                 log.info("Prewarm: evicted %d stale river-raw/%s grid(s) outside the latest-3 window: %s",
                           len(stale), rp_tier, sorted(k[0] for k in stale))
@@ -6352,7 +6456,7 @@ def admin_tile(
         # rather than a separate hardcoded number.
         return Response(status_code=204, headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
     return Response(content=pbf, media_type="application/x-protobuf",
-                    headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
+                    headers={"Content-Encoding": "gzip", "Cache-Control": f"public, max-age={_TILE_TTL}"})
 
 
 @app.get("/preload/{country}/{storm}/{forecast_date}")
@@ -7154,7 +7258,7 @@ def admin_combined_tile(
         # rather than a separate hardcoded max-age.
         return Response(status_code=204, headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
     return Response(content=pbf, media_type="application/x-protobuf",
-                    headers={"Cache-Control": f"public, max-age={_TILE_TTL}"})
+                    headers={"Content-Encoding": "gzip", "Cache-Control": f"public, max-age={_TILE_TTL}"})
 
 
 @app.get("/geojson/facilities/{layer_type}/{country}/{storm}/{forecast_date}",
@@ -7350,8 +7454,23 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
     input (should not happen: every entry in `by_zone` has a real
     lat/lon by construction) or with NaN lat/lon gets 0.0 (real, not
     fabricated: no known location means no known hazard exposure).
+
+    Rain is now snapped onto the SAME z14 tile grid as Wind/Gust/River
+    (get_rain_tile_bitmask reads TILE_PRECIP_BITMASK_MAT, tile-granularity,
+    like every other hazard's own bitmask table), no longer sampled at
+    each facility's own exact lat/lon against a dense grid: that used to
+    be MORE precise than the raster path's own tile-centroid sampling, a
+    real methodological difference between what colors the raster tile
+    and what colors the facility marker drawn on top of it. Snapping both
+    to the identical tile grid removes that inconsistency (a facility
+    always agrees with whichever raster tile it visually sits on top of,
+    for every hazard now, not just Wind/Gust/River), at the cost of the
+    same tile-vs-exact-point precision loss River/Wind/Gust already accept.
     """
-    from components.data.snowflake_utils import get_wind_tile_bitmask, get_gust_tile_bitmask
+    from components.data.snowflake_utils import (
+        get_wind_tile_bitmask, get_gust_tile_bitmask,
+        get_river_tile_bitmask, get_rain_tile_bitmask,
+    )
 
     n = len(zone_ids)
     valid_latlon = np.isfinite(lats) & np.isfinite(lons)
@@ -7390,40 +7509,24 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
             for code in codes:
                 _apply_bits_df(get_gust_tile_bitmask(code, storm, p['forecast_date'], p['gust_threshold']))
         elif hz == 'river' and p.get('forecast_date'):
-            # river_forecast_date arrives here in MAT format: same
-            # conversion as _combine_bitmask_aware's own river branch (see
-            # this module's header comment for why).
-            river_date = _mat_date_to_river_date(p.get('forecast_date'))
-            if river_date:
-                rp_tier = p.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
-                step_h = p.get('window_h') or _RIVER_WINDOW_DEFAULT
-                resolved = _river_extent_cache.ensure_river_extent(river_date, rp_tier, step_h)
-                if resolved is not None:
-                    entry = _river_extent_cache.get_grid(resolved, rp_tier, step_h)
-                    if entry is not None and not entry['df'].empty:
-                        _apply_bits_df(entry['df'][['TILE_ID', 'BITS']])
-        elif hz == 'rain' and p.get('forecast_date'):
-            # Same real MAT-format conversion as the river branch above.
-            rain_date = _mat_date_to_rain_date(p.get('forecast_date'))
-            if rain_date:
-                window_h = p.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
-                threshold_mm = p.get('threshold_mm') if p.get('threshold_mm') is not None else _PRECIP_PROB_THRESHOLD_MM
-                resolved = _precip_cache.ensure_member_rate_grid(rain_date, window_h)
-                if resolved is not None:
-                    got = _precip_cache.get_member_rate_grid(resolved, window_h)
-                    if got is not None:
-                        rate_grid, geo = got
-                        lon_wrapped = ((lons + 180.0) % 360.0) - 180.0
-                        lon_idx = (np.round((lon_wrapped - geo['lon_min']) / geo['lon_step']).astype(np.int64)) % geo['n_lon']
-                        lat_idx = np.clip(np.round((geo['lat_max'] - lats) / geo['lat_step']).astype(np.int64),
-                                            0, geo['n_lat'] - 1)
-                        sampled = rate_grid[:, lat_idx, lon_idx]  # (51, n)
-                        exceeds = sampled > threshold_mm  # (51, n) bool
-                        member_bits = np.uint64(1) << np.arange(_BITMASK_ENSEMBLE_SIZE, dtype=np.uint64)  # (51,)
-                        rain_bits_per_point = np.bitwise_or.reduce(
-                            (exceeds.T.astype(np.uint64) * member_bits).astype(np.uint64), axis=1
-                        ) if exceeds.size else np.zeros(n, dtype=np.uint64)
-                        union_bits |= np.where(valid_latlon, rain_bits_per_point, np.uint64(0))
+            # p['forecast_date'] is already mat-format (same hazard_params
+            # convention every hazard here shares), no
+            # _mat_date_to_river_date() conversion needed, same reasoning
+            # as _combine_bitmask_aware's own river branch.
+            rp_tier = p.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
+            step_h = p.get('window_h') or _RIVER_WINDOW_DEFAULT
+            for code in codes:
+                _apply_bits_df(get_river_tile_bitmask(code, p['forecast_date'], rp_tier, step_h))
+        elif hz == 'rain' and p.get('forecast_date') and p.get('threshold_mm') is not None:
+            # Same mat-format reasoning as the river branch above, no
+            # _mat_date_to_rain_date() conversion needed. threshold_mm
+            # must be a real one, not a silent _PRECIP_PROB_THRESHOLD_MM
+            # fallback, see get_rain_tile_bitmask's own call site in
+            # _combine_bitmask_aware for the full "why".
+            window_h = p.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
+            threshold_mm = p['threshold_mm']
+            for code in codes:
+                _apply_bits_df(get_rain_tile_bitmask(code, p['forecast_date'], threshold_mm, window_h))
 
     popcount = np.zeros(n, dtype=np.float64)
     for m in range(_BITMASK_ENSEMBLE_SIZE):
@@ -8045,11 +8148,10 @@ def combined_member_impacts(
     (same key shape TRACK_MAT/TRACK_GUST_MAT use), only the threshold
     param differs per hazard, and each is independently optional: passing
     only `wind_threshold` (not `gust_threshold`) activates Wind alone,
-    and vice versa. Gust is currently never passed by this app's own
-    dashboard code (excluded from the live combination for now, per
-    product decision, see pages/map_shell_concept.py's own
-    _fetch_family_member_frames comment) but the endpoint itself supports
-    it either way, so re-enabling Gust later needs no server-side change.
+    and vice versa. Gust is passed whenever the dashboard's own Gust
+    toggle is active alongside a flood hazard (see pages/map_shell_concept.py's
+    own _member_combined_impacts_impl), so this endpoint activates Wind,
+    Gust, both, or neither, independently of the flood-side params.
 
     River flooding traces river channels/floodplains, a narrow footprint;
     Rain exceedance can be broad and diffuse with no reason to overlap
@@ -8069,7 +8171,10 @@ def combined_member_impacts(
     if not wind_active and not gust_active and river_forecast_time is None and rain_forecast_time is None:
         return empty
     try:
-        from components.data.snowflake_utils import get_base_tiles, get_wind_tile_bitmask, get_gust_tile_bitmask
+        from components.data.snowflake_utils import (
+            get_base_tiles, get_wind_tile_bitmask, get_gust_tile_bitmask,
+            get_river_tile_bitmask, get_rain_tile_bitmask,
+        )
         base_raw = get_base_tiles(country, zoom_level=14)
         if base_raw.empty:
             return empty
@@ -8130,43 +8235,56 @@ def combined_member_impacts(
         if gust_active:
             gust_matrix = _decode_bitmask_matrix(get_gust_tile_bitmask(country, storm, forecast_date, gust_threshold), "gust")
 
+        # River/Rain now read TILE_RIVER_BITMASK_MAT/TILE_PRECIP_BITMASK_MAT
+        # via get_river_tile_bitmask/get_rain_tile_bitmask, the same fast
+        # MAT-backed getters Wind/Gust already use just above (via
+        # _decode_bitmask_matrix, reused here unchanged) -- REPLACES the
+        # live _river_extent_cache/_precip_cache decode of raw global
+        # GloFAS/precip source files (a real, measured multi-minute
+        # cold-cache cost, see get_river_tile_bitmask's own docstring).
+        #
+        # river_forecast_time/rain_forecast_time arrive here in each
+        # hazard's own RAW format (get_river_extent_forecast_time_for_date/
+        # get_precip_forecast_time_near's own real return shape, e.g.
+        # '2026-07-14' for river, '2026-07-14 06:00:00' for rain) -- a
+        # DIFFERENT convention from _combine_bitmask_aware's own hazard_
+        # params, which already arrive mat-format. _raw_date_to_mat()
+        # converts to the format TILE_RIVER_BITMASK_MAT/TILE_PRECIP_
+        # BITMASK_MAT are actually keyed on, a real, easy-to-miss
+        # difference between otherwise near-identical call sites, caught
+        # in review before this endpoint's own migration.
         river_matrix = np.zeros((n_tiles, n_members), dtype=bool)
         river_resolved = None
-        if river_forecast_time is not None:
-            river_resolved = _river_extent_cache.ensure_river_extent(river_forecast_time, rp_tier, step_h)
-            if river_resolved is not None:
-                entry = _river_extent_cache.get_grid(river_resolved, rp_tier, step_h)
-                if entry is not None and not entry["df"].empty:
-                    # LEFT merge: keeps EVERY base tile (not just the
-                    # sparse subset with real flood signal), so this
-                    # aligns 1:1, row-for-row, with rain's own full-grid
-                    # sampling below. A tile missing from the sparse flood
-                    # table gets BITS=0 (correctly "no member floods here"
-                    # , not a fabricated placeholder).
-                    #
-                    # drop_duplicates before merging: same duplicate-
-                    # TILE_ID safety net as _decode_bitmask_matrix's own
-                    # comment explains.
-                    river_df = entry["df"].drop_duplicates(subset="TILE_ID", keep="first")
-                    merged = base[["TILE_ID"]].merge(river_df[["TILE_ID", "BITS"]], on="TILE_ID", how="left")
-                    bits = pd.to_numeric(merged["BITS"], errors="coerce").fillna(0).to_numpy(dtype=np.uint64)
-                    river_matrix = ((bits[:, None] >> np.arange(n_members, dtype=np.uint64)) & np.uint64(1)).astype(bool)
+        river_mat_date = _raw_date_to_mat(river_forecast_time)
+        if river_mat_date is not None:
+            for code in [c.upper() for c in country.split('+') if c.strip()]:
+                river_matrix |= _decode_bitmask_matrix(
+                    get_river_tile_bitmask(code, river_mat_date, rp_tier, step_h), "river")
+            river_resolved = river_forecast_time
 
         rain_matrix = np.zeros((n_tiles, n_members), dtype=bool)
         rain_resolved = None
-        if rain_forecast_time is not None:
-            rain_resolved = _precip_cache.ensure_member_rate_grid(rain_forecast_time, window_h)
-            if rain_resolved is not None:
-                got = _precip_cache.get_member_rate_grid(rain_resolved, window_h)
-                if got is not None:
-                    rate_grid, geo = got
-                    lats, lons = _get_base_tile_centroids(country, 14, base_raw)
-                    lon_wrapped = ((lons + 180.0) % 360.0) - 180.0
-                    lon_idx = (np.round((lon_wrapped - geo["lon_min"]) / geo["lon_step"]).astype(np.int64)) % geo["n_lon"]
-                    lat_idx = np.clip(np.round((geo["lat_max"] - lats) / geo["lat_step"]).astype(np.int64),
-                                        0, geo["n_lat"] - 1)
-                    sampled = rate_grid[:, lat_idx, lon_idx]  # (51, n_tiles), same convention as compute_member_metric_sums
-                    rain_matrix = (sampled > threshold_mm).T  # -> (n_tiles, 51), aligned with river_matrix's own shape
+        rain_mat_date = _raw_date_to_mat(rain_forecast_time)
+        # NOTE: `threshold_mm` here is this endpoint's own top-level param
+        # (default _PRECIP_PROB_THRESHOLD_MM=10.0, a real value for the raw
+        # continuous-threshold query paths, NOT a value TILE_PRECIP_
+        # BITMASK_MAT ever has rows for -- see get_rain_tile_bitmask's own
+        # call site in _combine_bitmask_aware for the full "why"). A caller
+        # passing rain_forecast_time but omitting threshold_mm would still
+        # hit that same silent-empty-result gap; not resolvable at this
+        # narrow syntax level since a plain `float` param has no
+        # "not provided" sentinel distinct from "explicitly 10.0" the way
+        # `Optional[...] = None` params elsewhere in this file do. Flagged
+        # in review as a real, currently-unreachable-via-the-live-UI risk
+        # (pages/map_shell_concept.py always resolves a real threshold_mm
+        # before calling this endpoint's own caller), not fixed here since
+        # doing so properly needs an endpoint signature change with wider
+        # blast radius than this bugfix pass.
+        if rain_mat_date is not None:
+            for code in [c.upper() for c in country.split('+') if c.strip()]:
+                rain_matrix |= _decode_bitmask_matrix(
+                    get_rain_tile_bitmask(code, rain_mat_date, threshold_mm, window_h), "rain")
+            rain_resolved = rain_forecast_time
 
         # OR every active hazard's own matrix BEFORE summing, rather than
         # combining independently-summed totals (via max() or an
@@ -8341,6 +8459,8 @@ def _combined_country_totals_cached(
             tc_only_frac, flood_only_frac, both_frac = p_combined, zeros, zeros
         else:
             tc_only_frac, flood_only_frac, both_frac = zeros, p_combined, zeros
+        river_only_frac = rain_only_frac = river_rain_both_frac = zeros
+        has_flood_split = False
     else:
         hazard_params = dict(active)
         p_combined, merged, hazard_bits = _combine_bitmask_aware(merged, used_hazard_names, country, storm, hazard_params,
@@ -8365,6 +8485,34 @@ def _combined_country_totals_cached(
         tc_only_frac = _popcount51(tc_only_bits) / float(_BITMASK_ENSEMBLE_SIZE)
         flood_only_frac = _popcount51(flood_only_bits) / float(_BITMASK_ENSEMBLE_SIZE)
 
+        # Within-Flood split (River Flooding vs Rainfall vs both at once),
+        # same real per-member bitmask methodology as the TC-vs-Flood split
+        # just above, one level deeper. river_bits/rain_bits already exist
+        # in hazard_bits (they're exactly what flood_bits itself was OR'd
+        # from a few lines up), so this needs no new data source or extra
+        # Snowflake round trip, just the same popcount-of-AND/AND-NOT
+        # pattern applied to the two flood members instead of the two
+        # families. Only meaningful when River Flooding AND Rainfall are
+        # BOTH simultaneously active ('river' in used_hazard_names implies
+        # a key in hazard_bits, see the .get(hz, zeros) fallback above); a
+        # single active flood member (or Flood not active at all) has
+        # nothing to overlap with, so `has_flood_split` stays False and the
+        # popup falls back to the old illustrative split for that case,
+        # same convention the family split above already uses.
+        has_flood_split = 'river' in hazard_bits and 'rain' in hazard_bits
+        if has_flood_split:
+            river_bits = hazard_bits['river']
+            rain_bits = hazard_bits['rain']
+            river_rain_both_bits = river_bits & rain_bits
+            river_only_bits = river_bits & ~rain_bits
+            rain_only_bits = rain_bits & ~river_bits
+            river_rain_both_frac = _popcount51(river_rain_both_bits) / float(_BITMASK_ENSEMBLE_SIZE)
+            river_only_frac = _popcount51(river_only_bits) / float(_BITMASK_ENSEMBLE_SIZE)
+            rain_only_frac = _popcount51(rain_only_bits) / float(_BITMASK_ENSEMBLE_SIZE)
+        else:
+            zeros_final = np.zeros(n_final, dtype=np.float64)
+            river_only_frac = rain_only_frac = river_rain_both_frac = zeros_final
+
     def _wsum(col: str, frac: np.ndarray = p_combined) -> Optional[float]:
         if col not in merged.columns or merged[col].isna().all():
             return None
@@ -8382,6 +8530,16 @@ def _combined_country_totals_cached(
         "flood_only": {_RAW_TO_KEY[c]: _wsum(c, flood_only_frac) for c in _RAW_COLS},
         "both": {_RAW_TO_KEY[c]: _wsum(c, both_frac) for c in _RAW_COLS},
     }
+    # Real within-Flood split (see has_flood_split's own comment above),
+    # None (not a zeroed-out dict) whenever River Flooding and Rainfall
+    # aren't BOTH simultaneously active, so callers can tell "genuinely
+    # nothing to split" apart from "real split, and it happens to be 0
+    # people in some bucket."
+    flood_split = {
+        "river_only": {_RAW_TO_KEY[c]: _wsum(c, river_only_frac) for c in _RAW_COLS},
+        "rain_only": {_RAW_TO_KEY[c]: _wsum(c, rain_only_frac) for c in _RAW_COLS},
+        "both": {_RAW_TO_KEY[c]: _wsum(c, river_rain_both_frac) for c in _RAW_COLS},
+    } if has_flood_split else None
 
     return {
         "population": _wsum('POPULATION'),
@@ -8394,6 +8552,7 @@ def _combined_country_totals_cached(
         "num_shelters": _wsum('NUM_SHELTERS'),
         "num_wash": _wsum('NUM_WASH'),
         "family_split": family_split,
+        "flood_split": flood_split,
     }
 
 
@@ -8429,6 +8588,84 @@ def combined_country_totals(
         river_on=river_on, river_forecast_date=river_forecast_date, rp_tier=rp_tier, river_window=river_window,
         rain_on=rain_on, rain_forecast_date=rain_forecast_date, threshold_mm=threshold_mm, window_h=window_h,
     )
+
+
+@app.get("/impact/river-curve-excl-rain/{country}/{storm}")
+def river_curve_excl_rain(
+    country: str, storm: str,
+    river_forecast_date: str = Query(...),
+    river_window: Optional[int] = Query(None),
+    rain_forecast_date: str = Query(...),
+    threshold_mm: float = Query(...),
+    window_h: int = Query(...),
+) -> dict:
+    """Batched sibling of combined_country_totals for the Hazard
+    Contribution popup's real River Flooding curve (see
+    _river_curve_totals_excl_rain's own docstring in map_shell_concept.py
+    for the full "why" this needs a real per-tier joint decomposition, not
+    the marginal one).
+
+    Sweeps all 6 River RP tiers in ONE request instead of the caller
+    making 6 separate HTTP round trips: each tier still goes through the
+    exact same `_combined_country_totals_cached` (`@_ttl_cache`d,
+    identical correctness to combined_country_totals above), this
+    endpoint only removes 5 of those 6 round trips' network overhead and
+    this single-process server's own request-serialization cost, letting
+    tiers 2-6 reuse whatever this request's own first tier call already
+    warmed (the rain side stays fixed across all 6 tiers, so its own
+    Zarr/bitmask decode only needs to happen once per request instead of
+    racing across 6 concurrent external requests, see the caller's own
+    comment about the duplicate-Zarr-download symptom this fixes).
+
+    Returns {"tiers": [...6 RP tier strings...], "flood_splits": [...6
+    flood_split dicts, one per tier, same shape combined_country_totals'
+    own "flood_split" key returns...]}.
+    """
+    results = []
+    for tier in _RIVER_EXTENT_RP_TIERS:
+        totals = _combined_country_totals_cached(
+            country=country, storm=storm,
+            river_on=True, river_forecast_date=river_forecast_date, rp_tier=tier, river_window=river_window,
+            rain_on=True, rain_forecast_date=rain_forecast_date, threshold_mm=threshold_mm, window_h=window_h,
+        )
+        results.append(totals.get("flood_split"))
+    return {"tiers": list(_RIVER_EXTENT_RP_TIERS), "flood_splits": results}
+
+
+@app.get("/impact/rain-grid-excl-river/{country}/{storm}")
+def rain_grid_excl_river(
+    country: str, storm: str,
+    river_forecast_date: str = Query(...),
+    rp_tier: str = Query(...),
+    river_window: Optional[int] = Query(None),
+    rain_forecast_date: str = Query(...),
+    cells: str = Query(..., description='JSON list of [window_h_str, threshold_mm] pairs to sweep'),
+) -> dict:
+    """Batched sibling of combined_country_totals for the Hazard
+    Contribution popup's real Rainfall window x depth-tier grid, same
+    real-per-cell-round-trip-elimination fix as river_curve_excl_rain
+    above, applied to the OTHER member (12 cells instead of 6 tiers).
+
+    `cells` carries the caller's own _RAIN_MM_BY_WINDOW-derived (window,
+    mm) pairs as a JSON string (this module stays import-independent of
+    pages/map_shell_concept.py, see _PRECIP_RATE_WINDOWS_H's own comment
+    for why that table isn't duplicated here), rather than this endpoint
+    hardcoding a second copy of that mapping that could silently drift
+    out of sync with the real one.
+
+    Returns {"cells": [...echoed input pairs...], "flood_splits": [...N
+    flood_split dicts, aligned 1:1 with `cells`...]}.
+    """
+    cell_list = json.loads(cells)
+    results = []
+    for window_h_s, mm in cell_list:
+        totals = _combined_country_totals_cached(
+            country=country, storm=storm,
+            river_on=True, river_forecast_date=river_forecast_date, rp_tier=rp_tier, river_window=river_window,
+            rain_on=True, rain_forecast_date=rain_forecast_date, threshold_mm=mm, window_h=int(window_h_s),
+        )
+        results.append(totals.get("flood_split"))
+    return {"cells": cell_list, "flood_splits": results}
 
 
 @app.get("/stats/precip-raw/{forecast_time}")

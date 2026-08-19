@@ -319,9 +319,11 @@ def get_snowflake_connection():
 
     try:
         conn = snowflake.connector.connect(**conn_params)
-        # SPCS OAuth mode sometimes ignores the warehouse param in the connection
-        # string. Explicitly set it so every new thread session has a warehouse.
-        if config.SPCS_RUN and config.SNOWFLAKE_WAREHOUSE:
+        # The Snowflake connector sometimes ignores the warehouse param in the
+        # connection string (confirmed under both SPCS OAuth and plain PAT/
+        # password auth — not SPCS-specific). Explicitly set it so every new
+        # thread session actually has an active warehouse.
+        if config.SNOWFLAKE_WAREHOUSE:
             cur = conn.cursor()
             try:
                 cur.execute(f"USE WAREHOUSE {config.SNOWFLAKE_WAREHOUSE}")
@@ -2044,14 +2046,112 @@ def get_gust_tile_bitmask(country: str, storm: str, forecast_date: str, gust_thr
         return None
 
 
-# NOTE: there is no per-ADMIN-REGION member bitmask table
-# (ADMIN_WIND_BITMASK_MAT / ADMIN_GUST_BITMASK_MAT do not exist): a
-# per-region "did member m touch this polygon anywhere" mask cannot
-# reproduce the admin layer's own PROBABILITY (which is the AREA-MEAN of
-# z14 tile probabilities), so a probability derived from it would read
-# higher than every one of its own marginals. The combined admin layer
-# instead unions the z14 bitmasks above and aggregates down to regions;
-# see services/tile_server.py::_combine_bitmask_aware_admin.
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_river_tile_bitmask(country: str, forecast_time: str, rp_tier: str, step_h: int) -> pd.DataFrame:
+    """
+    Per-z14-tile, per-ensemble-member coverage bitmask for River Flooding:
+    TILE_RIVER_BITMASK_MAT. Bit `m-1` set <=> ensemble member `m` has >=1
+    flooded pixel inside that tile, same bit convention get_wind_tile_
+    bitmask's own TILE_WIND_BITMASK_MAT uses (see that function's own
+    docstring for the full shape/contract this mirrors).
+
+    Replaces services/tile_server.py's own live _RiverExtentCache decode
+    of the raw global GloFAS extent_rp{N}_bymember Parquet (a real,
+    measured multi-minute cold-cache cost per (forecast_time, rp_tier),
+    see 17_river_rain_bitmask_mat_tables.sql in the ORCHESTRATION repo for
+    the full "why" this table exists) with a plain, fast indexed SELECT
+    against an already-materialized MAT table -- this is a
+    performance-only change, the underlying per-member methodology
+    _RiverExtentCache already used is unchanged, just moved upstream into
+    the pipeline instead of decoded live on every cold request.
+
+    UNLIKE Wind, River is DATE/cycle-keyed, not storm-keyed (River-flood
+    forecasts are genuinely storm-independent, see MERCATOR_TILE_RIVER_MAT's
+    own key shape in components/data/snowflake_utils.py's sibling river
+    query functions): no `storm`/`wind_threshold`-equivalent params here.
+    `forecast_time` IS the mat_forecast_date convention (YYYYMMDDHHMMSS),
+    same as get_wind_tile_bitmask's own `forecast_date` -- DATAPIPELINE
+    writes TILE_RIVER_BITMASK_MAT's own FORECAST_TIME column from its own
+    `forecast_time_str` (`forecast_time.strftime('%Y%m%d%H%M%S')`, see
+    run_river_flood_analysis in that repo's main_pipeline.py), the SAME
+    mat-format string services/tile_server.py's own hazard_params already
+    carries as `p['forecast_date']` (NOT the raw plain-date
+    RIVER_FORECASTS.FORECAST_TIME/get_latest_river_forecast_time format
+    _river_extent_cache.ensure_river_extent() needs -- this table needs no
+    _mat_date_to_river_date() conversion at all, simpler than the live
+    decode path it replaces). `rp_tier` is one of
+    'rp2'/'rp5'/'rp10'/'rp20'/'rp50'/'rp100', `step_h` is one of the real
+    cumulative lead-time windows (24/72/120/168).
+
+    Returns:
+        DataFrame with columns TILE_ID (str, z14 quadkey), BITS (real
+        Python int). Sparse: a tile with zero coverage from every member
+        simply has no row. None (not an empty DataFrame) specifically when
+        the query itself raises, same fail-open contract get_wind_tile_
+        bitmask's own docstring documents.
+    """
+    try:
+        query = """
+        SELECT
+            TILE_ID AS tile_id,
+            BITS    AS bits
+        FROM AOTS.TC_ECMWF.TILE_RIVER_BITMASK_MAT
+        WHERE COUNTRY = %s
+          AND FORECAST_TIME = %s
+          AND RP_TIER = %s
+          AND STEP_H = %s
+        """
+        df = _run_query(query, params=[country, forecast_time, rp_tier, step_h])
+        logger.info("Loaded %d river tile-bitmask rows (%s/%s/%s/%dh)", len(df), country, forecast_time, rp_tier, step_h)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying TILE_RIVER_BITMASK_MAT: %s", e)
+        return None
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_rain_tile_bitmask(country: str, forecast_time: str, threshold_mm: float, window_h: int) -> pd.DataFrame:
+    """Rain mirror of get_river_tile_bitmask above: TILE_PRECIP_BITMASK_MAT
+    (table name uses this repo's own established 'PRECIP' term, matching
+    MERCATOR_TILE_PRECIP_MAT and every other precip MAT table; this
+    function is named 'rain' to match this repo's own hazard-bits key
+    convention, 'rain', the same cross-repo naming every other precip
+    query function in this repo already has). THRESHOLD_MM/WINDOW_H
+    instead of RP_TIER/STEP_H, `forecast_time` is mat-format
+    (YYYYMMDDHHMMSS), same convention/reasoning as get_river_tile_
+    bitmask's own `forecast_time` (NOT MET_FORECASTS' own raw format,
+    no _mat_date_to_rain_date() conversion needed here either). Same bit
+    convention, same sparse "no row = no coverage" contract, same
+    exception-vs-legitimately-empty None/DataFrame distinction as
+    get_river_tile_bitmask's own docstring."""
+    try:
+        query = """
+        SELECT
+            TILE_ID AS tile_id,
+            BITS    AS bits
+        FROM AOTS.TC_ECMWF.TILE_PRECIP_BITMASK_MAT
+        WHERE COUNTRY = %s
+          AND FORECAST_TIME = %s
+          AND THRESHOLD_MM = %s
+          AND WINDOW_H = %s
+        """
+        df = _run_query(query, params=[country, forecast_time, threshold_mm, window_h])
+        logger.info("Loaded %d rain tile-bitmask rows (%s/%s/%smm/%dh)", len(df), country, forecast_time, threshold_mm, window_h)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying TILE_PRECIP_BITMASK_MAT: %s", e)
+        return None
+
+
+# NOTE: there is no per-ADMIN-REGION member bitmask table for ANY hazard
+# (ADMIN_WIND_BITMASK_MAT / ADMIN_GUST_BITMASK_MAT / ADMIN_RIVER_BITMASK_MAT
+# / ADMIN_PRECIP_BITMASK_MAT do not exist): a per-region "did member m touch
+# this polygon anywhere" mask cannot reproduce the admin layer's own
+# PROBABILITY (which is the AREA-MEAN of z14 tile probabilities), so a
+# probability derived from it would read higher than every one of its own
+# marginals. The combined admin layer instead unions the z14 bitmasks above
+# and aggregates down to regions; see
+# services/tile_server.py::_combine_bitmask_aware_admin.
 
 
 # =============================================================================
