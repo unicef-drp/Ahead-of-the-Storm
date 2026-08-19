@@ -22,6 +22,34 @@
 window._leaflet_maps = window._leaflet_maps || {};
 
 // ---------------------------------------------------------------------------
+// 1b. Tile-URL-aware source update helper
+// ---------------------------------------------------------------------------
+// MapLibre's own Source.setTiles() never diffs the new value against the
+// old one (verified against the vendored maplibre-gl bundle: it
+// unconditionally calls load(), which clears that source's tile cache and
+// re-requests every currently-tracked tile from the network) — so calling
+// it with a byte-identical URL still forces a full visible flush+refetch of
+// every hazard's raster+admin sources. Several of this file's own URL
+// builders go out of their way to keep the URL string stable across
+// unrelated config changes (see applyCombinedHazardLayer's own comment on
+// this), specifically so MapLibre keeps serving tiles it already has — but
+// that work was silently wasted because setTiles() was still called
+// unconditionally on every render, regardless of whether the URL actually
+// changed. This wrapper tracks the last URL actually applied per source id
+// and skips the no-op call/flush when it's unchanged.
+window._aotsLastTileUrl = window._aotsLastTileUrl || {};
+function _aotsApplySourceTiles(map, sourceId, url, addOptions) {
+    var src = map.getSource(sourceId);
+    if (src) {
+        if (window._aotsLastTileUrl[sourceId] === url) return;
+        src.setTiles([url]);
+    } else {
+        map.addSource(sourceId, Object.assign({ tiles: [url] }, addOptions));
+    }
+    window._aotsLastTileUrl[sourceId] = url;
+}
+
+// ---------------------------------------------------------------------------
 // 2. MapLibre initialisation
 // ---------------------------------------------------------------------------
 
@@ -304,41 +332,34 @@ function _buildTileTooltip(feature, perHazardProbs) {
             // sub-row (same visual convention the age-band rows below
             // already use for "detail under a bold parent").
             //
-            // The methodology disclosure is a small (ⓘ) info glyph carrying
-            // the explanation as a native `title` attribute; shows on
-            // hover/click without permanently occupying space, same
-            // "detail on demand, not always shown" spirit as this file's
-            // own _layer_label_with_info pattern in map_shell_concept.py
-            // (Python-side dmc components there, plain HTML title attribute
-            // here since this whole tooltip is hand-built HTML, not a Dash
-            // component tree).
+            // The methodology disclosure used to be a small (ⓘ) info glyph
+            // carrying the explanation as a native `title` attribute —
+            // removed (real user decision, 2026-08-19): a native `title`
+            // tooltip nested INSIDE this hover tooltip (itself a
+            // mousemove-driven overlay) was in practice unreachable —
+            // moving the mouse toward that tiny icon moves/closes the
+            // outer tooltip before the native one can appear. The two REAL
+            // per-member-union cases below (isCombinedAdmin and the tile
+            // path) are now explained, with a concrete worked example, by
+            // a reliably-hoverable dmc.Tooltip on the EXPOSURE tab's own
+            // "Hazard Probability" radio option (pages/map_shell_concept.py,
+            // the dmc.Radio with value="probability"), a STATIC control
+            // with no such problem.
             //
-            // The wording differs by what this specific feature actually
-            // computes. When the COMBINED admin layer is what's rendered,
-            // PROBABILITY is a real per-member union computed server-side
-            // (_combine_bitmask_aware_admin), taken per grid cell and then
-            // area-averaged over the region, exactly as every single-hazard
-            // region probability is defined upstream, which is what makes
-            // the combined figure comparable with the per-hazard rows
-            // printed directly under it. The TILE path's PROBABILITY is the
-            // same real per-tile union computed at the single point under
-            // the cursor. The remaining MAX-based case (N stacked
-            // per-hazard admin layers, which applyTileConfig still uses for
-            // non-combinable Exposure props like In Need / RWI / poverty)
-            // gets its own wording, since that path genuinely computes a
-            // MAX rather than a union: the disclosure has to describe what
-            // THIS feature actually is.
+            // The MAX-based case (N stacked per-hazard admin layers, which
+            // applyTileConfig still uses for non-combinable Exposure props
+            // like In Need/RWI/poverty) is methodologically DIFFERENT — a
+            // genuine max(), not a real joint measurement — and that
+            // control's own tooltip only describes the union case, so this
+            // one caveat stays here, but as ALWAYS-VISIBLE text instead of
+            // a hidden-behind-a-broken-hover icon, since it's arguably the
+            // more important of the two to actually see.
             var isCombinedAdmin = !!(feature.layer && feature.layer.id === 'aots-admin-layer-combined');
-            var combinedInfo;
-            if (isAdmin && !isCombinedAdmin) {
-                combinedInfo = _mapT('Combined = highest individual hazard probability, not a joint measurement.');
-            } else if (isCombinedAdmin) {
-                combinedInfo = _mapT('Real fraction of the 51-member ensemble where at least one active hazard hits, computed per grid cell and averaged over the region, the same way each single-hazard region figure is computed.');
-            } else {
-                combinedInfo = _mapT('Real fraction of the 51-member ensemble where at least one active hazard hits this exact tile.');
+            var isMaxBased = isAdmin && !isCombinedAdmin;
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+            if (isMaxBased) {
+                html += '<div style="font-size:9.5px;color:' + _AOTS_TT_SUB + ';font-style:italic;">' + _mapT('Combined = highest individual hazard probability, not a joint measurement.') + '</div>';
             }
-            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob)
-                  + ' <span title="' + _esc(combinedInfo) + '" style="cursor:help;color:' + _AOTS_TT_SUB + ';font-size:10px;">ⓘ</span></div>';
             perHazardProbs.forEach(function(hp) {
                 var lbl = _mapT(_HAZARD_TT_LABELS[hp.hazard] || hp.hazard);
                 html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + lbl + ': ' + _fmtPct(hp.prob) + '</div>';
@@ -1053,8 +1074,25 @@ function buildColorExpression(prop, stats) {
 
     if (scale === 'log') {
         if (maxV <= 0) return 'transparent';
-        // Floor at 1 when stats report min=0 (zero-value tiles are filtered transparent by the case guard)
-        var effectiveMin = (minV > 0) ? minV : 1;
+        // Floor RAISED, not anchored at the true minimum directly (real
+        // user decision, 2026-08-19, mirrors services/tile_server.py's
+        // own _get_minmax log branch — this Admin/Regions vector-fill
+        // path reads its own min/max from a separate SQL aggregation, not
+        // _get_minmax's cache, so it needs the same floor-raise applied
+        // independently here). The true minimum can be an extreme
+        // near-zero outlier tile; anchoring log's low end there stretches
+        // almost the entire color ramp across just the smallest values.
+        //
+        // 'probability' gets an ABSOLUTE floor (1/51, a 51-member
+        // ensemble's smallest possible nonzero fraction), not a fraction
+        // of maxV: it's a pure 0-1 ensemble fraction, same reasoning
+        // _get_minmax's own PROBABILITY branch uses (a relative-to-max
+        // floor would make the identical real percentage look different
+        // country to country / cycle to cycle). E_* props (raw counts
+        // weighted by probability, no equivalent absolute unit) keep the
+        // relative 2%-of-max floor.
+        var floor = (prop === 'probability') ? (1 / 51) : (maxV * 0.02);
+        var effectiveMin = Math.max(minV > 0 ? minV : 1, floor);
         var logMin = Math.log10(effectiveMin);
         var logMax = Math.log10(maxV);
         if (logMin >= logMax) {
@@ -1252,25 +1290,16 @@ function applyHazardLayer(map, config, hazardKey, group) {
         + '?wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
         + parts.qs;
 
-    if (map.getSource(ids.mercatorSource)) {
-        map.getSource(ids.mercatorSource).setTiles([rasterUrl]);
-    } else {
-        map.addSource(ids.mercatorSource, {
-            type: 'raster',
-            tiles: [rasterUrl],
-            tileSize: 256,
-            minzoom: 3,
-            maxzoom: 14,
-        });
-    }
+    _aotsApplySourceTiles(map, ids.mercatorSource, rasterUrl, {
+        type: 'raster',
+        tileSize: 256,
+        minzoom: 3,
+        maxzoom: 14,
+    });
 
-    if (map.getSource(ids.adminSource)) {
-        map.getSource(ids.adminSource).setTiles([adminUrl]);
-    } else {
-        map.addSource(ids.adminSource, {
-            type: 'vector', tiles: [adminUrl], minzoom: 4, maxzoom: 10,
-        });
-    }
+    _aotsApplySourceTiles(map, ids.adminSource, adminUrl, {
+        type: 'vector', minzoom: 4, maxzoom: 10,
+    });
 
     if (!map.getLayer(ids.tilesLayer)) {
         map.addLayer({
@@ -1589,24 +1618,16 @@ function applyCombinedHazardLayer(map, config) {
         + sharedQs
         + '&admin_level=1';
 
-    if (map.getSource(ids.mercatorSource)) {
-        map.getSource(ids.mercatorSource).setTiles([rasterUrl]);
-    } else {
-        map.addSource(ids.mercatorSource, {
-            type: 'raster', tiles: [rasterUrl], tileSize: 256, minzoom: 3, maxzoom: 14,
-        });
-    }
+    _aotsApplySourceTiles(map, ids.mercatorSource, rasterUrl, {
+        type: 'raster', tileSize: 256, minzoom: 3, maxzoom: 14,
+    });
 
-    if (map.getSource(ids.adminSource)) {
-        map.getSource(ids.adminSource).setTiles([adminUrl]);
-    } else {
-        map.addSource(ids.adminSource, {
-            // Same minzoom/maxzoom as applyHazardLayer's own per-hazard
-            // admin source: admin polygons are served over the same real
-            // zoom band regardless of how many hazards feed them.
-            type: 'vector', tiles: [adminUrl], minzoom: 4, maxzoom: 10,
-        });
-    }
+    // Same minzoom/maxzoom as applyHazardLayer's own per-hazard admin
+    // source: admin polygons are served over the same real zoom band
+    // regardless of how many hazards feed them.
+    _aotsApplySourceTiles(map, ids.adminSource, adminUrl, {
+        type: 'vector', minzoom: 4, maxzoom: 10,
+    });
 
     if (!map.getLayer(ids.tilesLayer)) {
         map.addLayer({
@@ -1885,8 +1906,7 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
             + '?wind_threshold=' + (config.wind_threshold != null ? config.wind_threshold : 50)
             + parts.qs;
 
-        var src = map.getSource(mercatorSource);
-        if (src) src.setTiles([newUrl]);
+        if (map.getSource(mercatorSource)) _aotsApplySourceTiles(map, mercatorSource, newUrl);
 
         // Same hazard_render_mode gate as applyHazardLayer's own `visible`:
         // see that function's own comment on this.
@@ -2015,14 +2035,9 @@ function applyGlobalRawConfig(config) {
             + '/{z}/{x}/{y}.webp?mode=' + rainMode
             + '&window_h=' + precipWindowH + '&threshold_mm=' + precipThresholdMm
             + (config.precip_member != null ? '&member=' + config.precip_member : '');
-        var precipSrc = map.getSource(ids.precipSource);
-        if (precipSrc) {
-            precipSrc.setTiles([precipUrl]);
-        } else {
-            map.addSource(ids.precipSource, {
-                type: 'raster', tiles: [precipUrl], tileSize: 256, minzoom: 0, maxzoom: 14,
-            });
-        }
+        _aotsApplySourceTiles(map, ids.precipSource, precipUrl, {
+            type: 'raster', tileSize: 256, minzoom: 0, maxzoom: 14,
+        });
         if (!map.getLayer(ids.precipLayer)) {
             map.addLayer({
                 id: ids.precipLayer,
@@ -2064,14 +2079,9 @@ function applyGlobalRawConfig(config) {
         var riverUrl = absBase + '/tiles/raster/river-raw/' + encodeURIComponent(riverTime)
             + '/{z}/{x}/{y}.webp?rp_tier=' + riverRpTier + '&step_h=' + riverStepH
             + (config.river_member != null ? '&member=' + config.river_member : '');
-        var riverSrc = map.getSource(ids.riverSource);
-        if (riverSrc) {
-            riverSrc.setTiles([riverUrl]);
-        } else {
-            map.addSource(ids.riverSource, {
-                type: 'raster', tiles: [riverUrl], tileSize: 256, minzoom: 0, maxzoom: 14,
-            });
-        }
+        _aotsApplySourceTiles(map, ids.riverSource, riverUrl, {
+            type: 'raster', tileSize: 256, minzoom: 0, maxzoom: 14,
+        });
         if (!map.getLayer(ids.riverLayer)) {
             map.addLayer({
                 id: ids.riverLayer,

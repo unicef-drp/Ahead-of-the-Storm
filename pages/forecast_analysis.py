@@ -36,7 +36,9 @@ from components.config import config
 from components.ui.header import make_header
 from components.ui.footer import footer
 from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds, get_active_countries, get_snowflake_data
-from gigaspatial.core.io.readers import read_dataset
+# read_dataset deliberately NOT imported here at module scope — see
+# pages/dashboard.py's own top-of-file comment for the full rationale
+# (imported inside update_box_plots instead, its only real call site).
 from components.data.data_store_utils import get_data_store, get_impact_data
 
 logger = logging.getLogger(__name__)
@@ -1650,7 +1652,10 @@ def update_impact_metrics(storm, wind_threshold_store, pop_thresh, children_thre
 )
 def update_box_plots(storm, wind_threshold, country, forecast_date, forecast_time):
     """Generate horizontal box plot showing population impact distribution across ensemble members"""
-    
+    # Lazy import: see this module's own top-of-file comment for why this
+    # isn't imported at module scope.
+    from gigaspatial.core.io.readers import read_dataset
+
     # Create empty figure as default
     empty_fig = go.Figure()
     empty_fig.add_annotation(

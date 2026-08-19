@@ -1773,6 +1773,79 @@ def get_admin_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         return pd.DataFrame()
 
 
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_admin_river_impacts(country: str, forecast_time: str, rp_tier: str, step_h: int, admin_level: int = 1) -> pd.DataFrame:
+    """River sibling of get_admin_impacts above: ADMIN_ALL_RIVER_MAT, the
+    real per-admin-region river-flood impact table (already aggregated to
+    admin-region granularity server-side, TILE_ID here is the admin
+    region's own code, e.g. 'BGD_0003_V1', same convention as
+    ADMIN_ALL_IMPACT_MAT's own TILE_ID, not a real z14 map tile). Storm-
+    independent (river resolves by real calendar date + RP tier +
+    accumulation window alone, no TC_TRACKS storm join, matching every
+    other real river query in this codebase, see get_river_tile_bitmask's
+    own docstring for the same convention).
+
+    No ADMIN_ALL_VULNERABILITY_MAT join here (unlike get_admin_impacts):
+    that table is wind-only (matches this app's existing "In Need
+    currently only reflects Sustained Wind exposure" convention, already
+    surfaced elsewhere in the UI), no real per-admin-region river in-need
+    breakdown exists yet, so this only returns At-Risk columns.
+
+    Returns pandas.DataFrame with columns: TILE_ID, NAME, ADMIN_LEVEL,
+    PROBABILITY, E_POPULATION, and the other E_* impact columns
+    ADMIN_ALL_IMPACT_MAT also carries. Empty DataFrame (not an exception)
+    when this country/date/tier/window combination has no real rows."""
+    try:
+        query = """
+        SELECT
+            TILE_ID, NAME, ADMIN_LEVEL, PROBABILITY,
+            E_POPULATION, E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
+            E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH,
+            E_SMOD_CLASS, E_RWI
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_RIVER_MAT
+        WHERE COUNTRY = %s
+          AND FORECAST_TIME = %s
+          AND RP_TIER = %s
+          AND STEP_H = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, forecast_time, rp_tier, step_h, admin_level])
+        logger.info("Loaded %d admin river impact rows (%s/%s/%s/%dh L%d)", len(df), country, forecast_time, rp_tier, step_h, admin_level)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying ADMIN_ALL_RIVER_MAT: %s", e)
+        return pd.DataFrame()
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_admin_precip_impacts(country: str, forecast_time: str, threshold_mm: float, window_h: int, admin_level: int = 1) -> pd.DataFrame:
+    """Precip sibling of get_admin_river_impacts above: ADMIN_ALL_PRECIP_MAT,
+    same real per-admin-region pre-aggregation, keyed on THRESHOLD_MM/
+    WINDOW_H instead of RP_TIER/STEP_H (same "rain" naming/param
+    convention as get_rain_tile_bitmask). Same no-vulnerability-join
+    reasoning as get_admin_river_impacts (wind-only real in-need data),
+    same empty-DataFrame-not-exception contract."""
+    try:
+        query = """
+        SELECT
+            TILE_ID, NAME, ADMIN_LEVEL, PROBABILITY,
+            E_POPULATION, E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
+            E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH,
+            E_SMOD_CLASS, E_RWI
+        FROM AOTS.TC_ECMWF.ADMIN_ALL_PRECIP_MAT
+        WHERE COUNTRY = %s
+          AND FORECAST_TIME = %s
+          AND THRESHOLD_MM = %s
+          AND WINDOW_H = %s
+          AND ADMIN_LEVEL = %s
+        """
+        df = _run_query(query, params=[country, forecast_time, threshold_mm, window_h, admin_level])
+        logger.info("Loaded %d admin precip impact rows (%s/%s/%smm/%dh L%d)", len(df), country, forecast_time, threshold_mm, window_h, admin_level)
+        return df.copy()
+    except Exception as e:
+        logger.error("Error querying ADMIN_ALL_PRECIP_MAT: %s", e)
+        return pd.DataFrame()
+
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:

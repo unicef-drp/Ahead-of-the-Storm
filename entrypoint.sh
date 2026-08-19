@@ -57,6 +57,12 @@ done
 
 # ── 3. Dash app (foreground — container exits when this exits) ────────────────
 echo "[entrypoint] Starting Dash app on 127.0.0.1:${DASH_PORT}..."
+# nginx is always in front of us here (step 1, both under SPCS and Azure Web
+# App for Containers — same image, same entrypoint.sh) — tell the app so it
+# serves browser-facing tile URLs relative/same-origin instead of an absolute
+# http://localhost:8001 that would resolve against the viewer's own machine.
+# See components/config.py's BEHIND_REVERSE_PROXY for the full rationale.
+export BEHIND_REVERSE_PROXY=true
 exec gunicorn \
     --bind "127.0.0.1:${DASH_PORT}" \
     --workers 1 \

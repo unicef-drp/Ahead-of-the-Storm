@@ -35,6 +35,18 @@ WORKDIR /app
 COPY requirements.spcs.txt .
 RUN pip install --upgrade pip && pip install -r requirements.spcs.txt
 
+# Pre-build matplotlib's fontManager cache into the image at build time
+# instead of paying it on every fresh container's first PDF/impact-report
+# request (pages/report.py's own _generate_map_image, the only real
+# matplotlib call site — measured live at ~8-8.6s of one-time cost per
+# process, real user-facing latency, not just a startup-log line). MPLCONFIGDIR
+# fixed to a real path (rather than relying on $HOME, which this root-only
+# image never sets explicitly) so the cache built here is guaranteed to be
+# the SAME directory matplotlib looks in at runtime.
+ENV MPLCONFIGDIR=/app/.matplotlib
+RUN mkdir -p /app/.matplotlib && \
+    python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot"
+
 # Copy application code
 COPY . .
 

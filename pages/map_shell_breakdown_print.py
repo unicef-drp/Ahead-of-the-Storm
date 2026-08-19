@@ -62,7 +62,21 @@ def layout(lang="en", zoom_countries=None, date=None, run=None,
     wind_on = (wind != "0") if wind is not None else True
     river_on = (river != "0") if river is not None else True
     rain_on = (rain != "0") if rain is not None else True
-    surge_on = (surge != "0") if surge is not None else True
+    # Storm Surge has no real backend anywhere in this app, ever (see
+    # ms-surge-on's own comment in map_shell_concept.py: permanently
+    # checked=False, disabled=True in the live sidebar, not just sometimes-
+    # unavailable like River/Rain's own per-country checks). The live UI
+    # already makes it impossible to ever toggle on; this print page must
+    # match that exactly rather than accept a `surge` URL param at all
+    # (unlike wind/river/rain above, which DO have real data and so
+    # legitimately follow whatever the live modal's own checkbox state
+    # was when the "Open in new tab" link was built). Ignoring the query
+    # param entirely (not just its "no param at all" default) closes the
+    # one remaining way a 3-member Flood selection (River+Rain+Storm
+    # Surge) could ever be reached — a hand-crafted `?surge=1` URL — since
+    # that combination only ever had a real per-hazard split for River+
+    # Rain, never a real one to fall back to.
+    surge_on = False
     # Slider indices (for the "Threshold sensitivity" preview curves).
     # Query params arrive as strings; None (no param, e.g. a hand-typed URL)
     # means that hazard's curve is simply skipped (see

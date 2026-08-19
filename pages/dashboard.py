@@ -208,8 +208,17 @@ else:
 # =============================================================================
 
 # Metadata
-from gigaspatial.core.io.readers import read_dataset
-from gigaspatial.processing.geo import convert_to_geodataframe
+# read_dataset/convert_to_geodataframe are deliberately NOT imported here at
+# module scope (imported instead inside load_all_layers, their only real
+# call site) — importing any gigaspatial submodule runs gigaspatial's own
+# __init__.py, which eagerly pulls in GEE/BigQuery/Delta-Sharing/SQLAlchemy
+# handlers regardless of which extras are actually used (measured ~4.3-4.5s
+# on this repo's own dependency tree). components/data/data_store_utils.py's
+# _LazyDataStore exists specifically to avoid this cost for IMPACT_DATA_
+# SOURCE=SQL callers; a module-level import here silently defeated that
+# same safeguard, paid on every gunicorn worker boot regardless of mode
+# (use_pages=True imports every page module at startup, per this repo's
+# own CLAUDE.md).
 from components.data.data_store_utils import get_data_store, get_impact_data
 
 # Layout module: constants are defined there and re-imported here for use in callbacks
@@ -836,6 +845,11 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
     returns (missing selections or exception) fill all outputs with empty/disabled defaults.
     `using_base_layers` is True when no impact files are found. It disables impact-derived layers.
     """
+    # Lazy import: see this module's own top-of-file comment for why these
+    # aren't imported at module scope.
+    from gigaspatial.core.io.readers import read_dataset
+    from gigaspatial.processing.geo import convert_to_geodataframe
+
     logger.info(f"=== LOAD ALL LAYERS CALLBACK STARTED ===")
     logger.info(f"Loading all layers for {country}_{storm}_{forecast_date}_{forecast_time}_{wind_threshold}")
     logger.info(f"Callback context: {callback_context.triggered}")
