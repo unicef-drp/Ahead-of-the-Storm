@@ -27,12 +27,12 @@ window._leaflet_maps = window._leaflet_maps || {};
 // MapLibre's own Source.setTiles() never diffs the new value against the
 // old one (verified against the vendored maplibre-gl bundle: it
 // unconditionally calls load(), which clears that source's tile cache and
-// re-requests every currently-tracked tile from the network) — so calling
+// re-requests every currently-tracked tile from the network), so calling
 // it with a byte-identical URL still forces a full visible flush+refetch of
 // every hazard's raster+admin sources. Several of this file's own URL
 // builders go out of their way to keep the URL string stable across
 // unrelated config changes (see applyCombinedHazardLayer's own comment on
-// this), specifically so MapLibre keeps serving tiles it already has — but
+// this), specifically so MapLibre keeps serving tiles it already has, but
 // that work was silently wasted because setTiles() was still called
 // unconditionally on every render, regardless of whether the URL actually
 // changed. This wrapper tracks the last URL actually applied per source id
@@ -333,10 +333,10 @@ function _buildTileTooltip(feature, perHazardProbs) {
             // already use for "detail under a bold parent").
             //
             // The methodology disclosure used to be a small (ⓘ) info glyph
-            // carrying the explanation as a native `title` attribute —
+            // carrying the explanation as a native `title` attribute,
             // removed (real user decision, 2026-08-19): a native `title`
             // tooltip nested INSIDE this hover tooltip (itself a
-            // mousemove-driven overlay) was in practice unreachable —
+            // mousemove-driven overlay) was in practice unreachable:
             // moving the mouse toward that tiny icon moves/closes the
             // outer tooltip before the native one can appear. The two REAL
             // per-member-union cases below (isCombinedAdmin and the tile
@@ -348,8 +348,8 @@ function _buildTileTooltip(feature, perHazardProbs) {
             //
             // The MAX-based case (N stacked per-hazard admin layers, which
             // applyTileConfig still uses for non-combinable Exposure props
-            // like In Need/RWI/poverty) is methodologically DIFFERENT — a
-            // genuine max(), not a real joint measurement — and that
+            // like In Need/RWI/poverty) is methodologically DIFFERENT: a
+            // genuine max(), not a real joint measurement, and that
             // control's own tooltip only describes the union case, so this
             // one caveat stays here, but as ALWAYS-VISIBLE text instead of
             // a hidden-behind-a-broken-hover icon, since it's arguably the
@@ -778,7 +778,7 @@ function _setupHoverTooltips(lMap) {
         var base = ((hoverHazards.length > 0 ? config : rawConfig) && (hoverHazards.length > 0 ? config : rawConfig).tile_server_url != null)
             ? (hoverHazards.length > 0 ? config : rawConfig).tile_server_url : 'http://localhost:8001';
         // Same '' -> window.location.origin fallback as applyGlobalRawConfig
-        // and its raster-source siblings — see that function's own comment
+        // and its raster-source siblings: see that function's own comment
         // for the full "why" (local dev has no nginx to make '' resolve to
         // the tile server's own port).
         base = base !== '' ? base : window.location.origin;
@@ -1035,6 +1035,22 @@ function _onMaplibreReady() {
 // Property names in the PBF tiles come from Snowflake's ST_ASMVT output which
 // returns UPPERCASE column names. Both casings are tried via coalesce.
 
+// Same real fixed (min, max) constants as services/tile_server.py's own
+// _FIXED_SCALE_COLS (see that dict's own comment for the full real-world
+// grounding), kept in sync so the Admin/Regions vector-fill path and the
+// raster/Tiles path never disagree on what color the SAME real number
+// gets. Only 'probability' remains fixed here as of 2026-08-20: the raw
+// population-family props were fixed for one day (2026-08-19, real user
+// request) then reverted back to a real, data-driven per-country/per-
+// cycle range the following day ("revert that to the original
+// behavior"), and their E_* impact/exposure siblings were reverted
+// separately, same day, even earlier (see tile_palettes.json's own
+// E_population/etc. entries, moved off this mechanism entirely onto
+// 'linear' scale).
+var _AOTS_FIXED_SCALE_COLS = {
+    'probability': [1 / 51, 1.0],
+};
+
 function buildColorExpression(prop, stats) {
     var palettes = window._AOTS_PALETTES || {};
     var palette = palettes[prop];
@@ -1074,25 +1090,31 @@ function buildColorExpression(prop, stats) {
 
     if (scale === 'log') {
         if (maxV <= 0) return 'transparent';
-        // Floor RAISED, not anchored at the true minimum directly (real
-        // user decision, 2026-08-19, mirrors services/tile_server.py's
-        // own _get_minmax log branch — this Admin/Regions vector-fill
-        // path reads its own min/max from a separate SQL aggregation, not
-        // _get_minmax's cache, so it needs the same floor-raise applied
-        // independently here). The true minimum can be an extreme
-        // near-zero outlier tile; anchoring log's low end there stretches
-        // almost the entire color ramp across just the smallest values.
+        // 'probability' and the population-family props get a FULLY
+        // FIXED scale (real user decision, 2026-08-19: "no dynamic
+        // scaling for that" / "maybe we should establish something
+        // similar for the populations"), both endpoints hardcoded
+        // absolute constants, not derived from this country/cycle's own
+        // real min/max at all -- same real constants and reasoning as
+        // _get_minmax's own _FIXED_SCALE_COLS branch (see that dict's
+        // own comment for the full real-world grounding).
         //
-        // 'probability' gets an ABSOLUTE floor (1/51, a 51-member
-        // ensemble's smallest possible nonzero fraction), not a fraction
-        // of maxV: it's a pure 0-1 ensemble fraction, same reasoning
-        // _get_minmax's own PROBABILITY branch uses (a relative-to-max
-        // floor would make the identical real percentage look different
-        // country to country / cycle to cycle). E_* props (raw counts
-        // weighted by probability, no equivalent absolute unit) keep the
-        // relative 2%-of-max floor.
-        var floor = (prop === 'probability') ? (1 / 51) : (maxV * 0.02);
-        var effectiveMin = Math.max(minV > 0 ? minV : 1, floor);
+        // Every other log prop (E_NUM_SCHOOLS, BUILT_SURFACE_M2,
+        // E_POPULATION, etc.) anchors the floor at the TRUE minimum
+        // (minV, or 1 as a safe fallback when the stats payload has no
+        // real min), mirroring services/tile_server.py's own
+        // _get_minmax log branch exactly. A floor-raise (real min * a
+        // small fraction) was tried here 2026-08-19 to stop a near-zero
+        // outlier tile from stretching the whole ramp, but re-verified
+        // against 5 real datasets 2026-08-20 (see that Python comment
+        // for the full numbers) showed it was actively HURTING every
+        // one of these count-like columns, collapsing the vast majority
+        // of real cells into one identical flattest color -- the wide
+        // dynamic range it was suppressing is exactly the real signal a
+        // log scale exists to show here, not noise.
+        var fixedScale = _AOTS_FIXED_SCALE_COLS[prop];
+        var effectiveMin = fixedScale ? fixedScale[0] : (minV > 0 ? minV : 1);
+        if (fixedScale) maxV = fixedScale[1];
         var logMin = Math.log10(effectiveMin);
         var logMax = Math.log10(maxV);
         if (logMin >= logMax) {
@@ -1249,7 +1271,17 @@ function applyHazardLayer(map, config, hazardKey, group) {
     // applyTileConfig's own useCombined branch, which skips this function's
     // per-hazard loop entirely).
     var hazardRenderMode = config.hazard_render_mode || 'probability';
-    var visible       = !!config[hazardKey + '_visible'] && hazardRenderMode !== 'raw';
+    // Wind is the single fallback carrier for the plain Population/Children/
+    // etc base layer whenever nothing real is actively weighting the display
+    // (config.wind_base_fallback, see its own docstring in
+    // pages/map_shell_concept.py): with every hazard checkbox off, or the
+    // HAZARDS eye icon hidden, config.wind_visible alone would be false and
+    // this whole layer (population included) would never render. Only
+    // applies to the primary (non-group) wind call, never gust/river/rain,
+    // matching the same "falls back to wind" convention facility_hazard
+    // already uses server-side.
+    var windFallback = hazardKey === 'wind' && !group && !!config.wind_base_fallback;
+    var visible       = (!!config[hazardKey + '_visible'] || windFallback) && hazardRenderMode !== 'raw';
     var base          = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
     // Vector tiles are fetched inside a MapLibre Web Worker which cannot resolve relative
     // URLs. Use window.location.origin as fallback when base is '' (SPCS proxy mode).
@@ -1736,7 +1768,35 @@ function applyTileConfig(config) {
     // setHazardsHiddenOverride's own direct-hide call still provides
     // instant (pre-round-trip) visual feedback.
     if (config.hazards_hidden) {
-        _hideAllHazardLayers(map, config);
+        // Must NOT be a blanket _hideAllHazardLayers here (the original
+        // behavior, 2026-08-20 user-reported regression): the eye icon
+        // means "hide the HAZARD weighting/overlays", not "blank the whole
+        // map" -- the plain Population/Children/etc base layer piggybacks
+        // on wind's own MapLibre layer (see config.wind_base_fallback's own
+        // docstring in pages/map_shell_concept.py) and should stay visible.
+        // Gust/river/rain (and any multi-storm extra wind/gust groups) have
+        // no "base layer" role, they only ever paint hazard-specific data,
+        // so they hide unconditionally same as before. The combined
+        // (2+-hazard) layer also always hides here: any_hazard_on is
+        // already forced False server-side while hazards_hidden is set, so
+        // there is nothing for it to combine.
+        _hideCombinedHazardLayer(map);
+        ['gust', 'river', 'rain'].forEach(function (hazardKey) {
+            var ids = _hazardLayerIds(hazardKey);
+            [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
+                if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+            });
+        });
+        ['wind', 'gust'].forEach(function (hazardKey) {
+            var groups = (config['extra_' + hazardKey + '_groups']) || [];
+            for (var i = 0; i < groups.length; i++) {
+                var ids = _hazardLayerIds(hazardKey, 'x' + i);
+                [ids.tilesLayer, ids.adminLayer].forEach(function (id) {
+                    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+                });
+            }
+        });
+        applyHazardLayer(map, config, 'wind');
         return;
     }
 
@@ -1851,7 +1911,7 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
         var config = window._aots_tile_config || {};
         var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
         // Same '' -> window.location.origin fallback as applyGlobalRawConfig
-        // and its other raster-source siblings — see that function's own
+        // and its other raster-source siblings: see that function's own
         // comment for the full "why" (local dev has no nginx to make ''
         // resolve to the tile server's own port).
         base = base !== '' ? base : window.location.origin;
@@ -1908,9 +1968,14 @@ function setTileLayerProp(layerId, sourceLayer, prop, stats, hazardKey, group) {
 
         if (map.getSource(mercatorSource)) _aotsApplySourceTiles(map, mercatorSource, newUrl);
 
-        // Same hazard_render_mode gate as applyHazardLayer's own `visible`:
-        // see that function's own comment on this.
-        var hazardVisible = !!config[hazardKey + '_visible'] && (config.hazard_render_mode || 'probability') !== 'raw';
+        // Same hazard_render_mode gate AND wind-fallback OR as applyHazardLayer's
+        // own `visible`/`windFallback`: see that function's own comment on
+        // this. Must stay in sync, this is the SAME layer's visibility,
+        // just recomputed here since setTileLayerProp is also called
+        // directly by _register_ms_facility_layer-adjacent code paths that
+        // don't go through applyHazardLayer's own `visible` local.
+        var windFallback = hazardKey === 'wind' && !group && !!config.wind_base_fallback;
+        var hazardVisible = (!!config[hazardKey + '_visible'] || windFallback) && (config.hazard_render_mode || 'probability') !== 'raw';
         if (map.getLayer(layerId)) {
             map.setLayoutProperty(layerId, 'visibility', (prop && hazardVisible) ? 'visible' : 'none');
         }
@@ -2003,10 +2068,9 @@ function applyGlobalRawConfig(config) {
     var ids  = _AOTS_GLOBAL_RAW_IDS;
     var base = config.tile_server_url != null ? config.tile_server_url : 'http://localhost:8001';
     // Use window.location.origin as fallback when base is '' (SPCS/nginx
-    // proxy mode, and equally the local-dev "python app.py on :8050 + a
-    // separately-run uvicorn tile server on :8001, no nginx" setup this
-    // project's own CLAUDE.md documents) — same fallback its sibling
-    // functions above (initMaplibre, applyTileConfig, setTileLayerProp)
+    // proxy mode, and equally the local-dev setup: "python app.py on :8050
+    // + a separately-run uvicorn tile server on :8001, no nginx"), same
+    // fallback its sibling functions above (initMaplibre, applyTileConfig, setTileLayerProp)
     // already apply. Without it, "" resolves as a same-origin relative
     // path, which under local dev silently hits the Dash app's own port
     // (8050) instead of the tile server (8001); Dash's use_pages catch-all

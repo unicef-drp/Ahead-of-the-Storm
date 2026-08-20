@@ -1,5 +1,5 @@
 # Requirements for SPCS (Snowflake Container Services) deployment.
-# Omits Azure Blob dependencies — SPCS uses IMPACT_DATA_SOURCE=SQL or
+# Omits Azure Blob dependencies: SPCS uses IMPACT_DATA_SOURCE=SQL or
 # IMPACT_DATA_STORE=SNOWFLAKE, so azure-storage-blob is never needed.
 
 # Data processing

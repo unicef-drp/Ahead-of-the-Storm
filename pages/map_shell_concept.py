@@ -48,7 +48,7 @@ from components.map.javascript import (
 )
 from components.data.snowflake_utils import (
     get_active_countries, get_snowflake_data, get_active_storm_countries,
-    get_latest_forecast_time_overall, get_available_wind_thresholds,
+    get_latest_forecast_time_overall, get_default_forecast_cycle, get_available_wind_thresholds,
     get_country_totals, get_snowflake_connection,
     get_envelope_data_snowflake, get_gust_envelope_data_snowflake, get_storms_for_country_date,
     get_storms_and_countries_for_date, get_track_impacts, get_gust_track_impacts,
@@ -56,6 +56,7 @@ from components.data.snowflake_utils import (
     get_precip_forecast_time_near, get_river_extent_forecast_time_for_date,
     get_multi_storm_tracks, get_track_ids_for_date, get_gust_track_ids_for_date, get_tracks_for_storm,
     get_tile_impacts, get_gust_tile_impacts, get_river_tile_impacts, get_rain_tile_impacts,
+    get_countries_with_river_impact_at, get_countries_with_precip_impact_at,
     get_storms_with_alert_emails_at, get_alert_emails_for_storm, get_alert_email_body,
     get_recent_forecast_dates, get_admin_impacts, get_facility_source,
     get_query_executor, get_member_fetch_executor, get_tile_impact_totals_by_threshold, get_data_availability,
@@ -491,6 +492,7 @@ _TRANSLATIONS = {
         "Total: {value}": "Total: {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "División ilustrativa — una implementación real calcularía esto a partir del solapamiento real por peligro.",
+        "By Country": "Por país",
         "Tropical Cyclone only": "Solo Ciclón Tropical", "Flood only": "Solo Inundación", "Both": "Ambos",
         "Double overlap (any 2)": "Doble Superposición (2 cualquiera)",
         "Triple overlap (all 3)": "Triple Superposición (los 3)",
@@ -792,6 +794,7 @@ _TRANSLATIONS = {
         "Total: {value}": "Total : {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "Répartition illustrative — une implémentation réelle calculerait ceci à partir du chevauchement réel par risque.",
+        "By Country": "Par pays",
         "Tropical Cyclone only": "Cyclone tropical seulement", "Flood only": "Inondation seulement", "Both": "Les deux",
         "Double overlap (any 2)": "Double Chevauchement (2 quelconques)",
         "Triple overlap (all 3)": "Triple Chevauchement (les 3)",
@@ -1083,6 +1086,7 @@ _TRANSLATIONS = {
         "Total: {value}": "মোট: {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "দৃষ্টান্তমূলক বিভাজন — প্রকৃত বাস্তবায়নে এটি প্রতিটি ঝুঁকির প্রকৃত ওভারল্যাপ থেকে গণনা করা হবে।",
+        "By Country": "দেশ অনুযায়ী",
         "Tropical Cyclone only": "শুধু গ্রীষ্মমন্ডলীয় ঘূর্ণিঝড়", "Flood only": "শুধু বন্যা", "Both": "উভয়ই",
         "Double overlap (any 2)": "দ্বিগুণ ওভারল্যাপ (যেকোনো ২টি)",
         "Triple overlap (all 3)": "ত্রিগুণ ওভারল্যাপ (৩টিই)",
@@ -1513,8 +1517,42 @@ except Exception as e:
     logger.warning("Could not load latest forecast time: %s", e)
     _LATEST_FORECAST_TIME = None
 
-if _LATEST_FORECAST_TIME is not None:
-    _latest_ts = pd.Timestamp(_LATEST_FORECAST_TIME)
+# _DEFAULT_FORECAST_DATE/_DEFAULT_FORECAST_RUN (the topbar's own initial
+# landing date/run) deliberately do NOT just reuse _LATEST_FORECAST_TIME
+# above: that's the latest raw TRACK ingestion (TC_TRACKS), which
+# TC-ECMWF-Forecast-Pipeline can publish hours before DATAPIPELINE's own
+# wind/precip impact computation for that exact cycle actually finishes
+# (real, live-confirmed gap: 19 Aug 2026, a 06Z cycle was raw-ingested at
+# 08:26 but MERCATOR_TILE_PRECIP_MAT still hadn't caught up over 6.5 hours
+# later, and a Databricks run was separately still processing a genuinely
+# new storm cycle for over an hour). get_default_forecast_cycle() instead
+# walks backwards from the latest track until it finds a cycle where wind
+# (+gust) AND precip are BOTH genuinely done (TC_PIPELINE_RUN_LOG/
+# AMBIENT_HAZARD_RUN_LOG, real completion bookkeeping, not raw ingestion),
+# so a user isn't dropped by default onto a half-computed cycle with a
+# confusing/wrong-looking Impact Summary and no explanation. River is
+# deliberately NOT gated here (see that function's own docstring: its real
+# staleness right now is a separate, already-known, accepted gap, the
+# GloFAS ingestion task has been suspended for over a month; gating on it
+# would make this fix a permanent no-op in today's real data state).
+#
+# _LATEST_FORECAST_TIME itself is intentionally left untouched above: the
+# date/time picker's own "don't let a user pick a future/nonexistent date"
+# cutoff (_max_allowed_run_for_date/_time_options_for_date) and the
+# Active Storms list (_STORMS = _build_real_storms(_LATEST_FORECAST_TIME)
+# below) are both legitimately about real TRACK existence, not impact-
+# computation completeness, changing those would be a different, wider
+# fix than what was actually asked for here.
+try:
+    _default_cycle_ts = get_default_forecast_cycle()
+except Exception as e:
+    logger.warning("Could not resolve default forecast cycle: %s", e)
+    _default_cycle_ts = None
+if _default_cycle_ts is None and _LATEST_FORECAST_TIME is not None:
+    _default_cycle_ts = pd.Timestamp(_LATEST_FORECAST_TIME)
+
+if _default_cycle_ts is not None:
+    _latest_ts = pd.Timestamp(_default_cycle_ts)
     _DEFAULT_FORECAST_DATE = _latest_ts.strftime("%Y-%m-%d")
     # Snap to the nearest synoptic run (00/06/12/18Z, the only values
     # ms-topbar-time's SegmentedControl offers), real forecast times are
@@ -1545,7 +1583,7 @@ def _max_allowed_run_for_date(date_str, latest_forecast_time=_LATEST_FORECAST_TI
     (correct for the very first layout render, and for every other existing
     call site that doesn't pass anything), but callers that need this to
     reflect data that landed AFTER the process started should pass live
-    values from _live_forecast_ceiling() instead — see
+    values from _live_forecast_ceiling() instead. See
     _refresh_forecast_ceiling below for why the frozen globals alone are
     not enough."""
     if latest_forecast_time is None or not date_str:
@@ -1659,6 +1697,15 @@ _DEMO_SCENARIOS = [
     # Global mode.
     {"label": "BAVI period — Global flood hazards preview (2 Jul 2026, 06Z)", "date": "2026-07-02", "time": "06",
      "countries": [], "mode": "global"},
+    # Same real forecast cycle as the Global entry above, zoomed into
+    # Bangladesh specifically (Country Analysis mode): a real flood-only
+    # scenario (River Flooding + Rainfall both real and active, no active
+    # tropical cyclone), the exact case this session's own Admin Level 1
+    # Breakdown / combined-hazard work was built and verified against:
+    # all 8 real Bangladesh divisions, real per-region TC-only/Both/
+    # Flood-only splits (100% Flood-only here, since no storm is active).
+    {"label": "BAVI period — Bangladesh (2 Jul 2026, 06Z)", "date": "2026-07-02", "time": "06",
+     "countries": ["Bangladesh"], "mode": "zoom"},
 ]
 
 
@@ -2077,8 +2124,12 @@ def _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx=None, gust_idx=None,
     # risking a str/int type mismatch silently splitting cache entries or
     # reaching a SQL bind param inconsistently typed.
     river_window = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
-    rain_window = rain_window or "6"
-    rain_idx = rain_idx if rain_idx is not None else 1
+    # "72"/2 ("3 days"/"Extreme rain"), matching ms-rain-window/
+    # ms-rain-slider's own live UI defaults -- per explicit user request,
+    # every fallback used when a caller has no live slider state (Global
+    # scope defaults, the print page, etc.) mirrors the same default.
+    rain_window = rain_window or "72"
+    rain_idx = rain_idx if rain_idx is not None else 2
     return {
         "wind_on": bool(wind_on), "gust_on": bool(gust_on),
         "river_on": bool(river_on), "rain_on": bool(rain_on),
@@ -2130,39 +2181,80 @@ def _river_only_hz(rp_tier=None, river_window=None):
             "river_source": _DEFAULT_HAZARD_SOURCES["river"], "rain_source": _DEFAULT_HAZARD_SOURCES["rain"]}
 
 
-def _global_flood_availability(date, run):
-    """Real per-date River/Rain availability for Global scope, every
-    country with ANY real impact data at the resolved topbar date/run
-    (_resolve_storms_for_date). River/Rain availability itself is checked
-    against get_river_extent_forecast_time_for_date/get_precip_forecast_
-    time_near, the SAME real, date-EXACT resolvers _fetch_real_combined_
-    tile_totals_uncached now uses to decide whether to activate river_on/
-    rain_on in the first place (not just "does this country have river/
-    rain data from ANY date", which risked silently combining in a
-    completely different date's data for a country that happens to have
-    some, via the real per-tile bitmask union _fetch_real_combined_tile_
-    totals delegates to, services/tile_server.py's combined_country_
-    totals; this availability-gating concern is independent of the
-    combine METHOD, it's only about which forecast_date gets passed in).
+def _global_flood_availability(date, run, river_idx=None, rain_idx=None, rain_window=None, river_window=None):
+    """Real per-date River/Rain availability for Global scope.
 
-    Previously compared each country's OWN get_latest_river_forecast_time/
-    get_latest_rain_forecast_time (a per-country MAT-table MAX, ignoring
-    `date`/`run` entirely) against this date, which only happened to be
-    correct when the selected date WAS each country's own latest cycle --
-    a real bug, same root cause as _fetch_real_combined_tile_totals_
-    uncached's own fix, see that function's own comment. River/Rain raw
-    data has no country dimension at all (see this raw layer's own
-    "GLOBAL raw" section in services/tile_server.py), so a single global
-    existence check is both simpler and more correct than the old
-    per-country loop.
+    Fixes two real bugs found live (PHL/BGD showing zero impact in the
+    Global Impact Summary despite genuinely having real, large Rainfall
+    exposure that same forecast cycle):
+
+    BUG A (country roster was wind/TC-track-only): `all_country_names` used
+    to come ONLY from _resolve_storms_for_date, itself built from
+    MERCATOR_TILE_IMPACT_MAT (wind) + TC_TRACKS -- there was no path for a
+    country whose only real exposure is River/Rain to ever be counted, even
+    though this function's own river_avail/rain_avail correctly identified
+    River/Rain as globally available that date. Now unions in every real
+    country get_countries_with_river_impact_at/get_countries_with_precip_
+    impact_at themselves return, so a flood-only country (no active/tracked
+    storm at all) is no longer silently dropped from the Global total.
+
+    BUG B (availability checked the wrong table): river_avail/rain_avail
+    used to come from get_river_extent_forecast_time_for_date/
+    get_precip_forecast_time_near, which check RIVER_FORECASTS/MET_FORECASTS
+    -- the RAW ingestion-log tables -- not MERCATOR_TILE_RIVER_MAT/
+    MERCATOR_TILE_PRECIP_MAT, the real per-country IMPACT tables
+    combined_country_totals (services/tile_server.py) actually reads from.
+    Those two layers can genuinely disagree (the raw layer shows a cycle
+    ingested while the downstream impact MAT hasn't caught up to that exact
+    cycle yet), so "the raw layer has this date" was never sufficient proof
+    the real per-country numbers this function's own callers go on to fetch
+    would come back non-empty. Now river_avail/rain_avail are derived from
+    whether get_countries_with_river_impact_at/get_countries_with_precip_
+    impact_at themselves returned at least one real country at the EXACT
+    (forecast_time, rp_tier/threshold_mm, window) combination that will
+    actually be queried -- the raw-layer resolvers are still used (correctly)
+    to resolve WHICH forecast_time to check, just no longer trusted alone to
+    answer "is there real impact data" for it.
+
+    `river_idx`/`rain_idx`/`rain_window`/`river_window` (all optional, same
+    meaning as _build_hz's own params) let this resolve the EXACT threshold
+    the caller's own subsequent _build_hz call will use, rather than a
+    threshold-independent existence check that could drift from what's
+    actually queried. Duplicates _build_hz's own tiny default-resolution
+    snippet rather than delegating to it: _build_hz's signature bundles
+    that resolution together with wind_on/river_on/rain_on flags this
+    function doesn't have yet -- it's what DECIDES river_on/rain_on for the
+    caller's own _build_hz call right after this returns, so computing them
+    from a river_on/rain_on-dependent call would be circular.
 
     Returns (all_country_names, river_avail, rain_avail), shared by both
     Global's own Impact Summary total and the Hazard Contribution popup so
     they never disagree on what's real for a given date."""
     all_storms = _resolve_storms_for_date(date, run)
-    all_country_names = sorted({c for s in all_storms for c in s["countries"]})
-    river_avail = bool(date and get_river_extent_forecast_time_for_date(date) is not None)
-    rain_avail = bool(date and run is not None and get_precip_forecast_time_near(date, run) is not None)
+    wind_country_names = {c for s in all_storms for c in s["countries"]}
+
+    rp_tier = _RIVER_RP_TIERS[river_idx if river_idx is not None else 2]
+    river_window_resolved = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
+    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # defaults (see _build_hz's own comment on this same fallback).
+    rain_window_resolved = rain_window or "72"
+    rain_mm = _RAIN_MM_BY_WINDOW[rain_window_resolved][rain_idx if rain_idx is not None else 2]
+
+    river_forecast_time = get_river_extent_forecast_time_for_date(date, rp_tier) if date else None
+    river_countries = (
+        get_countries_with_river_impact_at(_mat_forecast_date(date, "00"), rp_tier, river_window_resolved)
+        if river_forecast_time else []
+    )
+    rain_forecast_time = get_precip_forecast_time_near(date, run) if (date and run is not None) else None
+    rain_countries = (
+        get_countries_with_precip_impact_at(_mat_forecast_date(date, run), rain_mm, int(rain_window_resolved))
+        if rain_forecast_time else []
+    )
+
+    river_avail = bool(river_countries)
+    rain_avail = bool(rain_countries)
+    flood_country_names = {_CODE_TO_NAME.get(c, c) for c in river_countries + rain_countries}
+    all_country_names = sorted(wind_country_names | flood_country_names)
     return all_country_names, river_avail, rain_avail
 
 
@@ -2706,7 +2798,7 @@ def _breakdown_from_split(tc_only_n, flood_only_n, both_n, fallback_breakdown):
 
     Returns None (NOT the flat illustrative fallback_breakdown) whenever
     the real total is non-positive, a genuine "no real split to show" case
-    (e.g. this exact metric has no real data for either family) — per
+    (e.g. this exact metric has no real data for either family). Per
     explicit user decision, this NEVER substitutes a fabricated illustrative
     percentage split, callers must render an honest "no real split" state
     instead (see _hazard_split_line's own None-handling)."""
@@ -3026,7 +3118,7 @@ def _active_hazards_indicator(breakdown):
     ], style={"marginTop": "10px", "marginBottom": "18px"})
 
 
-def _hazard_split_line(n, breakdown, font_size="9.5px"):
+def _hazard_split_line(n, breakdown, font_size="9.5px", real_split=None):
     # Shared by _simple_breakdown_table and _admin1_table so both value
     # tables show the same Tropical Cyclone-only/Both/Flood-only illustrative
     # split under every number, using the same percentages (and the same
@@ -3055,7 +3147,7 @@ def _hazard_split_line(n, breakdown, font_size="9.5px"):
     # None means "both families active, but no real per-metric/per-cell
     # split resolved" (see _value_td's own cell_breakdown resolution,
     # three-way: real split / no-real-split / single-family), a genuinely
-    # different case from "nothing to explain" above — must NOT render the
+    # different case from "nothing to explain" above: must NOT render the
     # illustrative flat percentages here either, that was the exact
     # "nothing should ever fall back to illustrative" bug this whole
     # function's caller-side fix addresses, see _breakdown_from_split's
@@ -3066,12 +3158,35 @@ def _hazard_split_line(n, breakdown, font_size="9.5px"):
     tc_active, flood_active = breakdown["tc_active"], breakdown["flood_active"]
     if (tc_active and not flood_active) or (flood_active and not tc_active) or (not tc_active and not flood_active):
         return html.Div()
+    # real_split: optional {"tc_only": v, "both": v, "flood_only": v} of
+    # REAL un-rounded per-metric values, when the caller already has them
+    # (e.g. the tile-click popup's By Country block, which has real
+    # c_split values sitting right next to `n` -- see that call site's own
+    # comment). Bypasses the `n * pct / 100` reconstruction below when
+    # given: `n` there is itself a re-parse of an already-K/M-abbreviated
+    # display string (_get_country_stats -> _format_stat_number, then
+    # _parse_stat_number back), the exact "round-trip a rounded display
+    # string, then reconstruct" precision loss _hazard_row's own
+    # abs_value param exists to avoid one level up (see its own comment
+    # for the full "why": a real 0.6/0.4 split can flip to a displayed
+    # "1/1", or two real numbers can look mutually contradictory). Callers
+    # whose own `n` is already a real unrounded value (_simple_breakdown_
+    # table/_admin1_table, both pass a real un-formatted number) don't
+    # need this and can omit it, the reconstruction is exact for them.
+    if real_split is not None:
+        tc_n = real_split.get("tc_only") or 0.0
+        both_n = real_split.get("both") or 0.0
+        flood_n = real_split.get("flood_only") or 0.0
+    else:
+        tc_n = n * breakdown["tc_only_pct"] / 100
+        both_n = n * breakdown["both_pct"] / 100
+        flood_n = n * breakdown["flood_only_pct"] / 100
     return html.Div([
-        html.Span(_format_stat_number(n * breakdown["tc_only_pct"] / 100), style={"color": _HAZARD_TC_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(tc_n), style={"color": _HAZARD_TC_COLOR, "fontWeight": 600}),
         html.Span("/", style={"color": "#c3ccd2", "margin": "0 1px"}),
-        html.Span(_format_stat_number(n * breakdown["both_pct"] / 100), style={"color": HAZARD_BOTH_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(both_n), style={"color": HAZARD_BOTH_COLOR, "fontWeight": 600}),
         html.Span("/", style={"color": "#c3ccd2", "margin": "0 1px"}),
-        html.Span(_format_stat_number(n * breakdown["flood_only_pct"] / 100), style={"color": _HAZARD_FLOOD_COLOR, "fontWeight": 600}),
+        html.Span(_format_stat_number(flood_n), style={"color": _HAZARD_FLOOD_COLOR, "fontWeight": 600}),
     ], style={"fontSize": font_size, "marginTop": "1px"})
 
 
@@ -3087,7 +3202,7 @@ def _hazard_split_legend(breakdown):
     # _HAZARD_CONTRIBUTION/_HAZARD_OVERLAP_FRAC illustrative estimate. Per
     # explicit user decision, a cell with no real split data NO LONGER
     # falls back to that flat illustrative split (see _breakdown_from_
-    # split's own comment and _value_td's own cell_breakdown resolution) —
+    # split's own comment and _value_td's own cell_breakdown resolution);
     # it shows an honest "no real split data" state instead
     # (_hazard_split_line's own None-handling branch), so this caption can
     # now state plainly that every visible split is real, with no
@@ -3253,7 +3368,7 @@ def _member_combined_impacts_impl(country, date, run, hz_key):
     wind_on = bool(hz.get("wind_on") and hz.get("wind_kt") is not None)
     # Gust is deliberately EXCLUDED from this endpoint, same as it's
     # deliberately excluded from _HAZARD_TC_MEMBERS/the Hazard Contribution
-    # popup's Tropical Cyclone family (see _HAZARD_GROUPS's own comment) —
+    # popup's Tropical Cyclone family (see _HAZARD_GROUPS's own comment).
     # "Compare Worst Case By" and the wider multi-hazard combination stay
     # scoped to Wind (not Wind+Gust) for the same reason: Gust has its own
     # independent toggle/layer elsewhere on this page, and folding it into
@@ -3500,7 +3615,7 @@ def _fetch_family_member_frames(countries, date, run, hz):
     real DATAPIPELINE pipeline run), so the already-working wind-only
     worst-case feature can never regress because of backfill state.
 
-    Gust is excluded from BOTH paths — deliberately, a policy choice (same
+    Gust is excluded from BOTH paths, deliberately, as a policy choice (same
     as _HAZARD_TC_MEMBERS/the Hazard Contribution popup's Tropical Cyclone
     family), not a data-shape limitation of either one. `_member_combined_
     impacts`/`_member_combined_impacts_impl` never pass a `gust_threshold`
@@ -5426,18 +5541,20 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
         _availability_note(rain_available, rain_country_available, precip_raw_available),
         html.Div([
             dmc.SegmentedControl(
-                # Default "120" (5 days), not "6", the richest/longest
-                # accumulation window as the default first look.
-                # ms-rain-slider's own default (value=1 == "Heavy rain",
-                # see _RAIN_TIERS) and flood-view-as's own default
+                # Default "72" (3 days), per explicit user request (revised
+                # from an initial "120"/5-days choice, same session): 72h
+                # is the default first look, not "6". ms-rain-slider's own
+                # default (value=2 == "Extreme rain", see _RAIN_TIERS --
+                # both the window AND the severity tier default to their
+                # richest setting) and flood-view-as's own default
                 # ("probability") already match this.
-                id="ms-rain-window", value="120", fullWidth=True, size="xs", color=RAIN, mb=10,
+                id="ms-rain-window", value="72", fullWidth=True, size="xs", color=RAIN, mb=10,
                 disabled=not rain_available,
                 data=[{"value": "6", "label": _t("6h")}, {"value": "24", "label": _t("24h")},
                       {"value": "72", "label": _t("72h")}, {"value": "120", "label": _t("5 days")}],
             ),
             # label=None, see _slider_block's own comment above.
-            dmc.Slider(id="ms-rain-slider", min=0, max=2, step=1, value=1,
+            dmc.Slider(id="ms-rain-slider", min=0, max=2, step=1, value=2,
                        marks=[{"value": i} for i in range(3)], size="sm", color=RAIN, mb=4, label=None,
                        disabled=not rain_available),
             html.Div(id="ms-rain-readout", style={"fontSize": "11px", "color": "#57707e"}),
@@ -5810,7 +5927,7 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
     SAME structure as the main country-level table: one real black total
     per cell, with the real TC-only/Both/Flood-only split rendered below
     it (_admin1_table's own _cells, mirroring _simple_breakdown_table's
-    _value_td/_hazard_split_line) — not one separate table per hazard with
+    _value_td/_hazard_split_line), not one separate table per hazard with
     no real cross-hazard combination at all, which is what the earlier
     "was wind-only, ADMIN_ALL_RIVER_MAT/ADMIN_ALL_PRECIP_MAT already real"
     fix above still left standing.
@@ -5855,20 +5972,20 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
         # while that function resolves once for a single real country.
         storm_info = _resolve_storm_for_country(member_name, date, run) if (hz.get("wind_on") or hz.get("gust_on")) else None
 
-        def _resolve_threshold(target_kt):
+        def _resolve_threshold(name, target_kt):
             try:
                 thresholds = get_available_wind_thresholds(storm_info["name"], str(storm_info["forecast_time"]))
                 numeric = sorted(int(t) for t in thresholds if t.isdigit())
             except Exception as e:
-                logger.warning("Could not load wind thresholds for %s: %s", code, e)
+                logger.warning("Could not load %s thresholds for %s: %s", name, code, e)
                 return None
             if not numeric:
                 return None
             target_kt = target_kt if target_kt is not None else 50
             return target_kt if target_kt in numeric else None
 
-        wind_threshold = _resolve_threshold(hz.get("wind_kt")) if (hz.get("wind_on") and storm_info) else None
-        gust_threshold = _resolve_threshold(hz.get("gust_kt")) if (hz.get("gust_on") and storm_info) else None
+        wind_threshold = _resolve_threshold("wind", hz.get("wind_kt")) if (hz.get("wind_on") and storm_info) else None
+        gust_threshold = _resolve_threshold("gust", hz.get("gust_kt")) if (hz.get("gust_on") and storm_info) else None
         river_resolved = (
             get_river_extent_forecast_time_for_date(date, hz.get("rp_tier"))
             if (hz.get("river_on") and hz.get("rp_tier") and date) else None
@@ -5936,13 +6053,19 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
                  for region in regions]
 
     # A bundled region (e.g. "ECA", "Pacific Islands") fetches each real
-    # ISO3 member concurrently, same shared-executor reasoning as this
-    # function's own earlier per-hazard version (this function is itself
-    # already called inside an outer ThreadPoolExecutor,
-    # _impact_breakdown_content, per selected country/region, so this
-    # nested fan-out needs its own parallelization too, not a serial loop
-    # inside one worker thread).
-    rows = [row for code_rows in get_query_executor().map(_fetch_one, codes) for row in code_rows]
+    # ISO3 member concurrently. Must NOT submit through the shared, bounded
+    # 24-worker get_query_executor() pool here: this function is itself
+    # already called from INSIDE that same pool's own worker threads
+    # (_admin1_section is fanned out via get_query_executor().map in
+    # _impact_breakdown_content), so a nested blocking .map() call onto the
+    # IDENTICAL bounded pool from within one of its own workers is a real
+    # deadlock risk under realistic concurrency (a genuine multi-country
+    # event with several Dash callbacks in flight can reach the 24-outer-
+    # task ceiling; the pool has no way to grow to serve its own nested
+    # work). get_member_fetch_executor() (see _parallel_member_fetch's own
+    # identical reasoning, its only other caller) is a SECOND, dedicated,
+    # isolated pool that exists exactly for this nested-fan-out case.
+    rows = [row for code_rows in get_member_fetch_executor().map(_fetch_one, codes) for row in code_rows]
     # Alphabetical, not Snowflake's own return order, same reasoning as
     # this function's own earlier version (a bundled region's members
     # concatenated above would otherwise group by country before name).
@@ -6001,23 +6124,24 @@ def _admin1_table(country, regions_real, breakdown):
 
     def _region_metric_breakdown(region, key):
         # Same real 3-way resolution as _simple_breakdown_table's own
-        # _value_td (see that function's own comment for the full "why"):
-        # (1) this region's own real per-metric family split resolved ->
-        # use it; (2) both families active but this metric's own split is
-        # genuinely absent (e.g. a real all-None facility column for this
-        # one region) -> None, _hazard_split_line renders an honest "no
-        # real split" state, never a fabricated illustrative one; (3) only
-        # one family active at all -> the flat `breakdown` itself (inert:
-        # _hazard_split_line already renders nothing for a single active
-        # family, see its own comment).
+        # _value_td (see that function's own comment for the full "why"),
+        # gate-FIRST, same order as _value_td's own branch (which only ever
+        # reaches a real metric_split because _compute_breakdown_by_metric
+        # itself refuses to compute one unless both families are active,
+        # see that function's own guard): (1) only one family active at all
+        # -> the flat `breakdown` itself, immediately, never even attempting
+        # a real split (inert: _hazard_split_line already renders nothing
+        # for a single active family, see its own comment); (2) both
+        # active, this region's own real per-metric split resolved -> use
+        # it; (3) both active, but this metric's own split is genuinely
+        # absent for this region (e.g. a real all-None facility column) ->
+        # None, _hazard_split_line renders an honest "no real split" state,
+        # never a fabricated illustrative one.
+        if not (breakdown["tc_active"] and breakdown["flood_active"]):
+            return breakdown
         family_split = region.get("family_split")
         split = _sum_family_split_metric(family_split, key) if family_split else None
-        result = _breakdown_from_split(split.get("tc_only"), split.get("flood_only"), split.get("both"), breakdown) if split else None
-        if result is not None:
-            return result
-        if breakdown["tc_active"] and breakdown["flood_active"]:
-            return None
-        return breakdown
+        return _breakdown_from_split(split.get("tc_only"), split.get("flood_only"), split.get("both"), breakdown) if split else None
     # People/Children need two 75px sub-columns (150 total) for their At
     # Risk/In Need pair; Schools/Health Centers/Shelters/WASH are single
     # plain numbers and need far less, equal table-layout:fixed
@@ -6149,6 +6273,41 @@ def _admin1_table(country, regions_real, breakdown):
                                     "width": "fit-content", "maxWidth": "950px"})
 
 
+def _admin1_body_content(country, date, run, hz, breakdown):
+    """The real, potentially-slow part of an Admin Level 1 section: fetches
+    _fetch_real_combined_admin_totals (an HTTP round trip to services/
+    tile_server.py plus a get_admin_impacts Snowflake in-need merge) and
+    renders either the real unified table (_admin1_table) or an honest
+    "no real data" message. Factored out of _admin1_section so the
+    INTERACTIVE modal (see that function's own docstring) can defer calling
+    this until the user actually clicks to expand a section, instead of
+    running it unconditionally for every selected country on every modal
+    render/slider tweak regardless of whether that section is ever opened."""
+    regions_real = _fetch_real_combined_admin_totals(country, date, run, hz)
+    # No real per-admin-1 data for this country/storm/threshold at all
+    # (e.g. no hazard is active, no storm resolves for the selected
+    # date/run, or this country genuinely has no rows yet), say so plainly
+    # rather than rendering an empty table or falling back to a fake one.
+    if not regions_real:
+        return [dmc.Text(_t("No real admin-level breakdown available for this storm/threshold selection."),
+                           size="11px", c="dimmed", fs="italic")]
+    # ONE real, combined table (per explicit user request: "the admin level
+    # breakdown should follow the same structure as the main table, with
+    # the total number in black and then the breakdown between tc, both
+    # and flood only below"), replaces the earlier "one table per active
+    # hazard, no cross-hazard combination" version (see
+    # _fetch_real_combined_admin_totals' own docstring for the full "why"
+    # this changed). No per-hazard label needed anymore, every active
+    # hazard's real contribution is already combined into this one table's
+    # own totals + split, same as the main table above.
+    body_content = [_admin1_table(country, regions_real, breakdown)]
+    # Same shared In Need clarification as the main table/Impact Summary
+    # panel; still wind-only regardless of which other hazards are active
+    # (see _fetch_real_combined_admin_totals' own docstring).
+    body_content.append(_in_need_note(mt=10))
+    return body_content
+
+
 def _admin1_section(country, expanded=False, date=None, run=None, wind_kt=None, hz=None, breakdown=None):
     # Collapsed by default in the interactive modal, the country-level
     # table above already covers the everyday view, this is finer detail on
@@ -6172,31 +6331,29 @@ def _admin1_section(country, expanded=False, date=None, run=None, wind_kt=None, 
     # since tc_active/flood_active would only gate whether a split renders
     # at all, never fabricate the split's own real percentages).
     breakdown = breakdown if breakdown is not None else _hazard_breakdown()
-    regions_real = _fetch_real_combined_admin_totals(country, date, run, hz)
     head_id = {} if expanded else {"id": {"type": "admin1-head", "country": country}}
     body_id = {} if expanded else {"id": {"type": "admin1-body", "country": country}}
-    # No real per-admin-1 data for this country/storm/threshold at all
-    # (e.g. no hazard is active, no storm resolves for the selected
-    # date/run, or this country genuinely has no rows yet), say so plainly
-    # rather than rendering an empty table or falling back to a fake one.
-    if not regions_real:
-        body_content = [dmc.Text(_t("No real admin-level breakdown available for this storm/threshold selection."),
-                                    size="11px", c="dimmed", fs="italic")]
+    # The print page (expanded=True) has no click interaction at all, so it
+    # must render the real content eagerly, same as before. The interactive
+    # modal instead starts EMPTY and defers the real fetch to _load_admin1
+    # (see that callback's own docstring for the full "why": this section
+    # is collapsed by default, and the country-level table above it already
+    # covers the everyday view, so unconditionally paying a real HTTP+
+    # Snowflake round trip here on every modal render/slider tweak for a
+    # section most opens never actually expand was pure avoidable latency).
+    # _load_admin1 needs country/date/run/hz/breakdown to build the SAME
+    # real content this function would have built eagerly; stashed in a
+    # per-section dcc.Store (all JSON-serializable plain dicts/scalars)
+    # rather than re-derived from raw UI state inside that callback, so
+    # there's exactly ONE place (_impact_breakdown_content) that resolves
+    # these values, not two independent copies that could drift apart.
+    if expanded:
+        body_content = _admin1_body_content(country, date, run, hz, breakdown)
+        params_store = []
     else:
-        # ONE real, combined table (per explicit user request: "the admin
-        # level breakdown should follow the same structure as the main
-        # table, with the total number in black and then the breakdown
-        # between tc, both and flood only below") — replaces the earlier
-        # "one table per active hazard, no cross-hazard combination"
-        # version (see _fetch_real_combined_admin_totals' own docstring for
-        # the full "why" this changed). No per-hazard label needed anymore,
-        # every active hazard's real contribution is already combined into
-        # this one table's own totals + split, same as the main table above.
-        body_content = [_admin1_table(country, regions_real, breakdown)]
-        # Same shared In Need clarification as the main table/Impact
-        # Summary panel; still wind-only regardless of which other hazards
-        # are active (see _fetch_real_combined_admin_totals' own docstring).
-        body_content.append(_in_need_note(mt=10))
+        body_content = []
+        params_store = [dcc.Store(id={"type": "admin1-params", "country": country},
+                                     data={"country": country, "date": date, "run": run, "hz": hz, "breakdown": breakdown})]
     return html.Div([
         html.Div([
             dmc.Text(_t("Admin Level 1 Breakdown — {country}", country=_t(country)), fw=700, size="11px", c="dimmed", style={"flex": 1}),
@@ -6217,11 +6374,12 @@ def _admin1_section(country, expanded=False, date=None, run=None, wind_kt=None, 
            # the modal's own single outer scroll.
            style={"marginTop": "10px", "display": "block" if expanded else "none", "width": "100%", "maxWidth": "100%",
                    "overflowX": "auto", "overflowY": "visible"}),
+    ] + params_store,
     # marginTop/paddingTop (was 14/14), more breathing room between the
     # main breakdown table and the first Admin Level 1 section (and between
     # each subsequent one), so this reads as its own distinct section
     # rather than just another row butted up against the table above.
-    ], style={"marginTop": "32px", "paddingTop": "22px", "borderTop": "1px solid #eef2f5"})
+    style={"marginTop": "32px", "paddingTop": "22px", "borderTop": "1px solid #eef2f5"})
 
 
 def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None, compare_source=None,
@@ -6782,7 +6940,8 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         # real pattern as _update_impact_summary's own Global branch:
         # _global_flood_availability + _build_hz + _combined_stats across
         # every real country with real impact data for the selected date.
-        all_country_names, river_avail, rain_avail = _global_flood_availability(date, run)
+        all_country_names, river_avail, rain_avail = _global_flood_availability(
+            date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
         global_hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
         global_stats = _combined_stats(all_country_names, date=date, run=run,
                                          wind_kt=global_hz["wind_kt"], hz=global_hz)
@@ -6794,9 +6953,39 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         # instead of the flat illustrative `breakdown` below.
         global_family_split = _combined_family_split(all_country_names, date=date, run=run, hz=global_hz)
         global_breakdown_by_metric = _compute_breakdown_by_metric(global_family_split, breakdown)
-        table = _simple_breakdown_table([("Global", global_stats)], breakdown,
-                                          age_split_source={"Global": global_age_split},
-                                          breakdown_by_metric_by_col={"Global": global_breakdown_by_metric})
+        # One real column PER country with real impact data (not just one
+        # aggregated "Global" blob), same per-country + real TC-only/Both/
+        # Flood-only split treatment Country Analysis's own table already
+        # has below, per explicit user request. Deliberately still skips
+        # In Need columns and worst-case-member comparison (no `pin_source`/
+        # `compare_source` passed to _simple_breakdown_table below): those
+        # were never part of Global's own scope (see this function's own
+        # top comment), and this fix is specifically about the per-country
+        # breakdown + hazard split, not about expanding Global into every
+        # Country-Analysis-only feature. Every real country shown, no cap,
+        # per explicit user decision. This can get wide for a big
+        # multi-country event, same as an equally large Country Analysis
+        # selection already can, the table's own overflowX:auto handles it.
+        #
+        # Concurrent fan-out (get_query_executor().map), same reasoning as
+        # Country Analysis's own _country_bundle just below: N real
+        # Snowflake-backed fetches, one per country, must run in parallel,
+        # not serially, for this to stay responsive on an active multi-
+        # country day.
+        def _global_country_bundle(c):
+            return (c, _get_country_stats(c, date, run, global_hz["wind_kt"], hz=global_hz),
+                       _get_country_age_split(c, date, run, global_hz["wind_kt"], hz=global_hz),
+                       _get_country_family_split(c, date, run, hz=global_hz))
+        _global_bundles = list(get_query_executor().map(_global_country_bundle, all_country_names))
+        combined_label = _t("Combined — {n} countries", n=len(all_country_names))
+        global_cols = [(c, stats) for c, stats, _age, _fs in _global_bundles] + [(combined_label, global_stats)]
+        global_age_split_source = {c: age for c, _stats, age, _fs in _global_bundles}
+        global_age_split_source[combined_label] = global_age_split
+        global_breakdown_by_metric_by_col = {c: _compute_breakdown_by_metric(fs, breakdown) for c, _stats, _age, fs in _global_bundles}
+        global_breakdown_by_metric_by_col[combined_label] = global_breakdown_by_metric
+        table = _simple_breakdown_table(global_cols, breakdown,
+                                          age_split_source=global_age_split_source,
+                                          breakdown_by_metric_by_col=global_breakdown_by_metric_by_col)
         threshold_preview = _hazard_threshold_preview(breakdown, hazard_idx, _parse_stat_number(global_stats["People at Risk"]),
                                                          rain_window=rain_window, river_window=river_window, expanded=expand_admin1,
                                                          scope="combined", countries=all_country_names, date=date, run=run)
@@ -6965,7 +7154,8 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
     return html.Div([hazards_indicator, threshold_preview, main_row, admin1_sections])
 
 
-def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind_kt=None, hz=None):
+def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind_kt=None, hz=None,
+                          river_idx=None, rain_idx=None, rain_window=None, river_window=None):
     # Recomputes the exact Probabilistic number shown on the clicked
     # card (server-side, from scope+metric) rather than smuggling the
     # display value into the id itself. Always the base (unscaled-by-
@@ -7010,10 +7200,19 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
         # Global branch uses, showing made-up numbers instead of either
         # the real total OR the "no initialized country impacted"
         # explanation, even when the real total genuinely is 0. Same
-        # _resolve_storms_for_date + _combined_stats call, so the popup can
-        # never disagree with the number that was actually clicked.
-        all_storms = _resolve_storms_for_date(date, run)
-        all_country_names = sorted({c for s in all_storms for c in s["countries"]})
+        # _global_flood_availability roster _update_impact_summary's own
+        # Global branch now uses (storms UNION real river/rain-impact
+        # countries, see that function's own docstring for the two real
+        # bugs this fixes), so the popup can never disagree with the number
+        # that was actually clicked. Was _resolve_storms_for_date alone
+        # (storm/TC-track-only) until this fix: a River/Rain-only day (no
+        # active tracked storm anywhere) correctly showed a real nonzero
+        # total on the tile via _global_flood_availability's own roster,
+        # but clicking it recomputed an EMPTY roster here, producing a
+        # `None` total and an empty popup for a real, nonzero, just-clicked
+        # number. This is what that looked like live for PHL/BGD Rainfall.
+        all_country_names, _, _ = _global_flood_availability(
+            date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
         stats = _combined_stats(all_country_names, date=date, run=run, wind_kt=wind_kt, hz=hz)
         _people_pct = _combined_in_need_pct(all_country_names, "People at Risk", "people",
                                               _parse_stat_number(stats["People at Risk"]),
@@ -7054,17 +7253,20 @@ def _resolve_stat_value(metric, scope, countries=None, date=None, run=None, wind
     return stats.get(metric, "—")
 
 
-def _resolve_curve_countries(scope, countries, date, run):
+def _resolve_curve_countries(scope, countries, date, run, river_idx=None, rain_idx=None, rain_window=None, river_window=None):
     """Same real country-list resolution _resolve_stat_value itself applies
     per scope, factored out so _hazard_curve_totals below can resolve the
     identical country set without going through _resolve_stat_value's own
     metric/stats machinery. "global" recomputes the real affected-country
-    list via _resolve_storms_for_date (ignores `countries`, same as
-    _resolve_stat_value's own "global" branch); "combined" uses `countries`
-    as-is; anything else is a single country name."""
+    list via _global_flood_availability (storms UNION real river/rain-
+    impact countries, ignores `countries`, same as _resolve_stat_value's
+    own "global" branch, see that function's own comment for the real
+    empty-popup bug this fixes); "combined" uses `countries` as-is;
+    anything else is a single country name."""
     if scope == "global":
-        all_storms = _resolve_storms_for_date(date, run)
-        return sorted({c for s in all_storms for c in s["countries"]})
+        all_country_names, _, _ = _global_flood_availability(
+            date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
+        return all_country_names
     if scope == "combined":
         return countries or []
     return [scope] if scope else []
@@ -7108,7 +7310,8 @@ def _curve_metric_value(metric, totals_row):
     return totals_row.get(col) if col else None
 
 
-def _hazard_curve_totals(metric, hazard, scope, countries, date, run, river_window=None):
+def _hazard_curve_totals(metric, hazard, scope, countries, date, run, river_window=None,
+                           river_idx=None, rain_idx=None, rain_window=None):
     """Avoids the per-threshold _resolve_stat_value -> get_tile_impacts
     fan-out (8 full per-tile row fetches for wind alone, 472,848 rows
     transferred where one GROUP BY aggregate returns 8), ONE
@@ -7137,7 +7340,7 @@ def _hazard_curve_totals(metric, hazard, scope, countries, date, run, river_wind
     """
     if metric != "Children at Risk" and metric not in _CURVE_METRIC_COL:
         return None
-    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     if not resolved_countries:
         return None
 
@@ -7151,16 +7354,20 @@ def _hazard_curve_totals(metric, hazard, scope, countries, date, run, river_wind
         # `if hz["wind_on"] and storm_info` gate). River's own section
         # inside get_tile_impact_totals_by_threshold ignores storm/
         # forecast_date entirely (see its own docstring), resolves its
-        # own forecast time independently, so a missing storm_info still
-        # lets river's own section return real data; "" placeholders here
-        # only affect the (harmless, river-irrelevant) ttl_cache key.
+        # own forecast time independently (now via the real `date`/`run`
+        # passed below, not "whatever's latest" -- see that function's own
+        # docstring for the real headline-vs-grid mismatch bug this fixes),
+        # so a missing storm_info still lets river's own section return
+        # real data; "" placeholders here only affect the (harmless,
+        # river-irrelevant) ttl_cache key.
         storm_info = _resolve_storm_for_country(country, date, run)
         if hazard == "wind" and storm_info is None:
             return None
         storm_name = storm_info["name"] if storm_info else ""
         mat_date = storm_info["mat_forecast_date"] if storm_info else ""
         return get_tile_impact_totals_by_threshold(code, storm_name, mat_date,
-                                                     river_window=int(river_window) if river_window else _RIVER_WINDOW_DEFAULT)
+                                                     river_window=int(river_window) if river_window else _RIVER_WINDOW_DEFAULT,
+                                                     date=date, run=run)
 
     per_country = list(get_query_executor().map(_fetch, resolved_countries))
     tiers = [wc[2] for wc in _WIND_CATS] if hazard == "wind" else _RIVER_RP_TIERS
@@ -7177,7 +7384,7 @@ def _hazard_curve_totals(metric, hazard, scope, countries, date, run, river_wind
     return values
 
 
-def _precip_curve_totals(metric, scope, countries, date, run):
+def _precip_curve_totals(metric, scope, countries, date, run, river_idx=None, rain_idx=None, rain_window=None, river_window=None):
     """Precip sibling of _hazard_curve_totals. Genuinely 2D (unlike
     wind/river's single threshold dimension), so
     it returns the FULL grid rather than one tier list, matching how
@@ -7187,26 +7394,29 @@ def _precip_curve_totals(metric, scope, countries, date, run):
 
     Returns {"6": [v25, v50, v75], "24": [...], "72": [...], "120": [...]}
     (values aligned to _RAIN_MM_BY_WINDOW[window]'s own order), or None when
-    `metric` isn't "People at Risk" or `scope` resolves to no real countries
-    at all, caller falls back to the illustrative grid.
+    `scope` resolves to no real countries at all, caller falls back to the
+    illustrative grid.
 
-    Unlike wind/gust/river/rain's own
-    E_POPULATION, MERCATOR_TILE_PRECIP_MAT has NO real age-band or facility-
-    count columns at all (see _TOTALS_PRECIP_IMPACT_COLS's
-    own comment in snowflake_utils.py). Every metric other than "People at
-    Risk" is therefore guaranteed 100% unsupported for precip, not a rare
-    per-country data gap the way it is for wind/river, restricting this
-    function to "People at Risk" only means the OTHER metrics correctly
-    fall back to the illustrative grid instead of confidently showing a
-    fabricated all-zero grid: `_curve_metric_value`'s "Children at
-    Risk" branch would otherwise silently produce one here, since
-    summing 3 permanently-absent age-band columns collapses to a real 0,
-    not None, the exact "don't fabricate a confirmed zero" contract this
-    file otherwise enforces everywhere else.
+    Was previously restricted to "People at Risk" only, on the belief that
+    "MERCATOR_TILE_PRECIP_MAT has NO real age-band or facility-count
+    columns at all" -- confirmed live this was WRONG, a stale claim that
+    had drifted out of sync with the actual code: _TOTALS_PRECIP_IMPACT_
+    COLS (snowflake_utils.py) is `_TOTALS_IMPACT_COLS` again (the SAME full
+    8-column set wind/river use), and get_tile_impact_totals_by_threshold's
+    own precip section SELECTs and returns all 8 real columns already, not
+    just E_POPULATION. Verified directly against Snowflake before lifting
+    this restriction: Nicaragua's real MERCATOR_TILE_PRECIP_MAT has
+    genuine non-null, nonzero E_NUM_SHELTERS/E_NUM_SCHOOLS/E_NUM_HCS/
+    E_NUM_WASH AND E_INFANT_POPULATION/E_SCHOOL_AGE_POPULATION/
+    E_ADOLESCENT_POPULATION across every real window/threshold combination
+    (e.g. 72h/45mm: 47.2 real shelters, 966 real schools, 36,605 real
+    infants -- 18,167 of 23,360 real tiles have real non-null age-band
+    data). Every metric `_curve_metric_value` supports (including
+    "Children at Risk", its own real "sum only real components" 3-age-
+    band handling) is therefore genuinely real for precip too, same as
+    wind/gust/river, not a metric-specific gap.
     """
-    if metric != "People at Risk":
-        return None
-    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     if not resolved_countries:
         return None
 
@@ -7215,9 +7425,20 @@ def _precip_curve_totals(metric, scope, countries, date, run):
         if not code:
             return None
         # Precip is NOT storm-scoped (see get_tile_impact_totals_by_
-        # threshold's own docstring), storm/forecast_date are irrelevant
-        # to its own section, only affecting the (harmless) ttl_cache key.
-        return get_tile_impact_totals_by_threshold(code, "", "")
+        # threshold's own docstring), storm/forecast_date are irrelevant to
+        # its own section, only affecting the (harmless) ttl_cache key.
+        # `date`/`run` ARE real and required though (a separate axis from
+        # storm/forecast_date): without them this silently fell back to
+        # the country's absolute LATEST rain cycle regardless of what the
+        # user actually selected -- a real, confirmed-live bug (headline
+        # "Total" built from the SELECTED cycle disagreeing with this
+        # grid, built from a DIFFERENT, possibly still-mid-processing
+        # cycle; e.g. Nicaragua's absolute-latest cycle had zero real rows
+        # for the 120h window while the selected cycle's 120h window was
+        # complete, making the grid's whole 120h column look like an
+        # impossible "longer window has less accumulation" violation when
+        # it was really just two different real snapshots being compared).
+        return get_tile_impact_totals_by_threshold(code, "", "", date=date, run=run)
 
     per_country = list(get_query_executor().map(_fetch, resolved_countries))
     grid = {}
@@ -7288,7 +7509,7 @@ def _sum_flood_splits(flood_splits, metric):
     return out
 
 
-def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx, rain_window, river_window):
+def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx, rain_window, river_window, river_idx=None):
     """River-only-excluding-Rain-overlap counterpart to _hazard_curve_totals'
     own river branch, for the case where River Flooding AND Rainfall are
     BOTH active (is_real_river_rain in _hazard_contribution_content).
@@ -7322,7 +7543,7 @@ def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx,
     Returns a list of 6 real values aligned to _RIVER_RP_TIERS' own
     order, or None when `metric` has no real flood_split coverage at all
     or no country resolves to real data."""
-    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     if not resolved_countries:
         return None
     rain_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx] if rain_idx is not None else _RAIN_MM_BY_WINDOW[rain_window][1]
@@ -7363,7 +7584,7 @@ def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx,
     return values if any_real else None
 
 
-def _rain_grid_totals_excl_river(metric, scope, countries, date, run, river_idx, river_window):
+def _rain_grid_totals_excl_river(metric, scope, countries, date, run, river_idx, river_window, rain_idx=None, rain_window=None):
     """Rain-only-excluding-River-overlap counterpart to _precip_curve_totals,
     same real joint-decomposition fix as _river_curve_totals_excl_rain
     above, applied to the OTHER member: every cell of the window x
@@ -7385,21 +7606,26 @@ def _rain_grid_totals_excl_river(metric, scope, countries, date, run, river_idx,
     (values aligned to _RAIN_MM_BY_WINDOW[window]'s own order), or None
     when no country resolves to real data.
 
-    UNLIKE _precip_curve_totals, this is NOT restricted to "People at
-    Risk": that restriction exists there because MERCATOR_TILE_PRECIP_MAT
-    itself has no real age-band/facility columns (see its own docstring).
-    This function never touches that table, it goes through
-    combined_country_totals' own _COUNTRY_TOTALS_RAW_COLS (population, 3
-    age bands, built-up area, 4 facility counts, the SAME raw columns the
-    headline row already correctly sums for any metric via
-    _sum_flood_split_metric), so the same real per-tile weighting works
-    for Children/Schools/Health Centers/Shelters/WASH at Risk exactly as
-    it does for People at Risk. Copying _precip_curve_totals' restriction
-    here was a real bug: it silently fell back to the OLD illustrative
-    grid for every metric except "People at Risk", reproducing the exact
-    headline-vs-grid mismatch this whole fix exists to eliminate, just
-    for a different subset of metrics."""
-    resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+    Like _precip_curve_totals (see its own docstring), this is NOT
+    restricted to "People at Risk" -- both functions cover every metric in
+    _DEFAULT_STATS. This function never touches MERCATOR_TILE_PRECIP_MAT
+    directly, it goes through combined_country_totals' own
+    _COUNTRY_TOTALS_RAW_COLS (population, 3 age bands, built-up area, 4
+    facility counts, the SAME raw columns the headline row already
+    correctly sums for any metric via _sum_flood_split_metric), so the
+    same real per-tile weighting works for Children/Schools/Health
+    Centers/Shelters/WASH at Risk exactly as it does for People at Risk.
+    An earlier version of THIS function copied _precip_curve_totals' own
+    then-restriction (based on a since-corrected stale claim that
+    MERCATOR_TILE_PRECIP_MAT has no real age-band/facility columns at
+    all): that was a real bug, silently falling back to the OLD
+    illustrative grid for every metric except "People at Risk" and
+    reproducing the exact headline-vs-grid mismatch this whole fix exists
+    to eliminate, just for a different subset of metrics. Fixed here
+    first; _precip_curve_totals' own restriction was later found to rest
+    on the same wrong premise and removed too, so the two functions'
+    metric coverage is consistent again."""
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     if not resolved_countries:
         return None
     cells = [(window, mm) for window, mm_tiers in _RAIN_MM_BY_WINDOW.items() for mm in mm_tiers]
@@ -7508,7 +7734,7 @@ _HAZARD_TRIPLE_FRAC = 0.3
 
 
 def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=None, river_window=None, is_global=False,
-                                    metric=None, scope=None, countries=None, date=None, run=None):
+                                    metric=None, scope=None, countries=None, date=None, run=None, hz=None):
     # Grouped under Tropical Cyclone/Flood (icon + bold, own subtotal) with
     # each family's actual hazards indented underneath (icon + lighter),
     # a flat list of 4 colored dots didn't make clear that Sustained Wind
@@ -7605,18 +7831,47 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # `total` (used by every _hazard_row/_hazard_curve_row/_hazard_overlap_
     # bar call below via Python's own late-binding closures, and passed
     # explicitly to _hazard_overlap_bar) is reassigned here to this real
-    # split's own total, deliberately NOT the same number as the "Total:
-    # {value}" headline text above (which reads `value`/`total` as they
-    # were BEFORE this reassignment, captured already in that dmc.Text
-    # call). The two can still differ slightly on the margin (this
-    # breakdown's own family-split query and the headline's own union
-    # query are two separate real Snowflake round trips, not guaranteed
-    # byte-identical), but both now use the SAME real bitmask methodology,
-    # no more a real-union headline paired with an independence-formula
-    # breakdown underneath it.
+    # split's own total, for Country Analysis scope ONLY (single country):
+    # the per-family blocks (_hazard_row's own `total * pct / 100`
+    # reconstruction) and the pct values themselves both come from THIS
+    # SAME family-split query, so reassigning keeps them internally
+    # consistent with each other, deliberately NOT the same number as the
+    # "Total: {value}" headline text above (which reads `value`/`total` as
+    # they were BEFORE this reassignment, captured already in that
+    # dmc.Text call). The two can still differ slightly on the margin
+    # (this breakdown's own family-split query and the headline's own
+    # union query are two separate real Snowflake round trips, not
+    # guaranteed byte-identical), but both now use the SAME real bitmask
+    # methodology, no more a real-union headline paired with an
+    # independence-formula breakdown underneath it.
+    #
+    # Global scope deliberately does NOT reassign `total`: a real bug (74
+    # vs 76 Shelters-at-Risk, found by precise per-country verification)
+    # traced to exactly this reassignment when `value` is itself a SUM
+    # ACROSS MULTIPLE COUNTRIES, each individually ceil'd first
+    # (_get_country_stats -> _format_stat_number per country, matching the
+    # By Country rows below and the tile's own displayed total, all three
+    # "ceil each country, then sum" by construction) -- while `real_total`
+    # here sums the SAME countries' raw un-ceiled floats FIRST and ceils
+    # ONCE at the end ("sum, then ceil"). Summing N independently-ceiled
+    # fractional values is mathematically guaranteed >= ceiling the raw
+    # sum whenever any country carries a nonzero fractional remainder, so
+    # the headline (if reassigned) and the By Country sum/tile total
+    # (never reassigned) provably diverge on real multi-country data, not
+    # just "slightly on the margin" -- this is deterministic, not
+    # ensemble noise. Global scope's `blocks` (which DO consume the
+    # reassigned total via `total * pct / 100`) are computed either way
+    # but never rendered (see this function's own final return), so
+    # skipping the reassignment for Global has no other effect beyond
+    # fixing the headline/overlap-bar-legend numbers to agree with By
+    # Country and the tile, which is the correct convention per this
+    # project's own "apply ceil once, at the true final-display step"
+    # rule -- the true final-display step for a per-country aggregate IS
+    # each country's own ceil, not a second ceil of the raw cross-country
+    # sum.
     real_estimate = False
     if tc_active and flood_active and metric is not None and scope is not None:
-        resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+        resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=(hazard_idx or {}).get("River Flooding"), rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window, river_window=river_window)
         combined_hz = _build_hz(
             True, False,
             "River Flooding" in breakdown["active_flood_members"],
@@ -7636,7 +7891,8 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             real_total = tc_only_n + both_n + flood_only_n
             if real_total > 0:
                 real_estimate = True
-                total = real_total
+                if not is_global:
+                    total = real_total
                 breakdown = {**breakdown,
                     "tc_pct": (tc_only_n + both_n) / real_total * 100,
                     "flood_pct": (flood_only_n + both_n) / real_total * 100,
@@ -7647,7 +7903,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # Both families are genuinely active and `total` (checked at the top of
     # this function) is a real, nonzero number, but the real per-member
     # joint bitmask split above couldn't resolve one (missing metric/scope
-    # context, or the real query itself returned no data) — per explicit
+    # context, or the real query itself returned no data), per explicit
     # user decision, this must NOT fall back to the flat illustrative
     # 45/20/10/10-derived percentages to manufacture a plausible-looking
     # TC/Flood breakdown of a real total, same "no illustrative numbers
@@ -7680,7 +7936,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     flood_split_real = False
     river_only_n = rain_only_n = flood_both_n = 0.0
     if river_rain_only and metric is not None and scope is not None:
-        flood_resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+        flood_resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=(hazard_idx or {}).get("River Flooding"), rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window, river_window=river_window)
         flood_hz = _build_hz(
             False, False, True, True,
             river_idx=(hazard_idx or {}).get("River Flooding"),
@@ -7767,12 +8023,28 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # not just the currently selected one (see that loop's own comment for
     # the full "why"). A name never gets a True/False entry at all when its
     # curve is purely illustrative (Storm Surge, or Rainfall with no live
-    # rain_window/metric/scope context, e.g. the print page) — those cases
+    # rain_window/metric/scope context, e.g. the print page). Those cases
     # have no independent real signal to check, so the family loop must
     # treat a MISSING entry as "unknown, don't hide", never as zero.
     _curve_all_zero_by_member = {}
 
     def _hazard_curve_row(name, color, pct):
+        # None for Global scope, unconditionally, per explicit user
+        # request ("the bar breakdown at the top is enough, we do not need
+        # the hazard breakdown share in the global view tile pop-ups"):
+        # Wind/River/Rainfall per-threshold curves are all genuinely real
+        # for every metric (Rainfall's own _precip_curve_totals no longer
+        # restricts itself to "People at Risk" either, see that function's
+        # own docstring), but showing 3+ full curve/grid cards per country
+        # aggregate added visual noise the popup's own new By Country
+        # section (below) already covers more usefully -- one real,
+        # ranked, per-country breakdown for whatever metric is selected,
+        # instead of several per-hazard-per-tier charts. Country Analysis
+        # scope is untouched (is_global is False there), that popup has no
+        # By Country section to substitute, so its own curves stay real
+        # and visible for every metric.
+        if is_global:
+            return None
         # None if this hazard has no curve data or no live slider index was
         # passed in (e.g. the print page, which doesn't read slider state at
         # all).
@@ -7808,11 +8080,16 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # fallback, via the shared long-lived executor (see
         # get_query_executor's own docstring in snowflake_utils.py).
         if name == "Sustained Wind" and can_query_real:
-            real_values = _hazard_curve_totals(metric, "wind", scope, countries, date, run)
+            real_values = _hazard_curve_totals(metric, "wind", scope, countries, date, run,
+                                                  river_idx=(hazard_idx or {}).get("River Flooding"),
+                                                  rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window)
             if real_values is None:
                 raw_values = list(get_query_executor().map(
                     lambda wc: _resolve_stat_value(metric, scope, countries, date=date, run=run,
-                                                      wind_kt=wc[2], hz=_wind_only_hz(wc[2])),
+                                                      wind_kt=wc[2], hz=_wind_only_hz(wc[2]),
+                                                      river_idx=(hazard_idx or {}).get("River Flooding"),
+                                                      rain_idx=(hazard_idx or {}).get("Rainfall"),
+                                                      rain_window=rain_window, river_window=river_window),
                     _WIND_CATS))
                 # None only if this facility metric has no real data at ALL
                 # for this country (a dataset-wide, not threshold-dependent,
@@ -7835,13 +8112,19 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             if river_rain_only and flood_split_real:
                 real_values = _river_curve_totals_excl_rain(
                     metric, scope, countries, date, run,
-                    rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window, river_window=river_window)
+                    rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window, river_window=river_window,
+                    river_idx=(hazard_idx or {}).get("River Flooding"))
             else:
-                real_values = _hazard_curve_totals(metric, "river", scope, countries, date, run, river_window=river_window)
+                real_values = _hazard_curve_totals(metric, "river", scope, countries, date, run, river_window=river_window,
+                                                      river_idx=(hazard_idx or {}).get("River Flooding"),
+                                                      rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window)
             if real_values is None:
                 raw_values = list(get_query_executor().map(
                     lambda rp_tier: _resolve_stat_value(metric, scope, countries, date=date, run=run,
-                                                           hz=_river_only_hz(rp_tier, river_window)),
+                                                           hz=_river_only_hz(rp_tier, river_window),
+                                                           river_idx=(hazard_idx or {}).get("River Flooding"),
+                                                           rain_idx=(hazard_idx or {}).get("Rainfall"),
+                                                           rain_window=rain_window, river_window=river_window),
                     _RIVER_RP_TIERS))
                 real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
             _curve_all_zero_by_member[name] = all((v or 0) == 0 for v in real_values)
@@ -7868,12 +8151,16 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
                 if river_rain_only and flood_split_real:
                     real_matrix = _rain_grid_totals_excl_river(
                         metric, scope, countries, date, run,
-                        river_idx=(hazard_idx or {}).get("River Flooding"), river_window=river_window)
+                        river_idx=(hazard_idx or {}).get("River Flooding"), river_window=river_window,
+                        rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window)
                 else:
-                    real_matrix = _precip_curve_totals(metric, scope, countries, date, run) if can_query_real else None
+                    real_matrix = _precip_curve_totals(
+                        metric, scope, countries, date, run,
+                        river_idx=(hazard_idx or {}).get("River Flooding"), rain_idx=(hazard_idx or {}).get("Rainfall"),
+                        rain_window=rain_window, river_window=river_window) if can_query_real else None
                 # real_matrix is None for the same "no real data path for
                 # this metric/scope" reasons as the wind/river branches
-                # above (see _precip_curve_totals' own docstring) — leave
+                # above (see _precip_curve_totals' own docstring), leave
                 # _curve_all_zero_by_member unset in that case (unknown, not
                 # zero), same contract as everywhere else in this dict.
                 if real_matrix is not None:
@@ -8005,7 +8292,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         return [bar] + only_cards + multi_cards
 
     # Recomputed after the loop below, once the all-zero hide decision is
-    # known — see that loop's own comment. Starts as the plain toggle-state
+    # known (see that loop's own comment). Starts as the plain toggle-state
     # value (both families checked) and narrows to "both actually rendered"
     # once a hidden all-zero family is found, so the overlap bar/caption
     # below doesn't explain an overlap against a family that isn't visible.
@@ -8030,7 +8317,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         # Hide a toggled-on family entirely (same as if it were never
         # toggled) only when EVERY one of its active members reports a
         # real, definitive all-zero across every one of ITS OWN severity
-        # tiers, not just the one currently selected — this is the "the
+        # tiers, not just the one currently selected: this is the "the
         # storm genuinely doesn't reach this country at ANY severity"
         # case, meaningfully different from "0 at this threshold, real
         # impact at others" (which _curve_all_zero_by_member reports as
@@ -8051,7 +8338,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # is True: the both_active-but-not-real_estimate case now bails out
     # with its own early return well above (see that return's own
     # comment), so there is no longer an illustrative-estimate variant of
-    # this caption to choose between — `real_estimate` is backed by the
+    # this caption to choose between: `real_estimate` is backed by the
     # real per-member joint bitmask check, not an independence formula, so
     # this caption must NOT warn readers that the "Both" figure likely
     # understates reality (that warning would only be honest for an
@@ -8080,7 +8367,7 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
 
     # The caption only makes sense when a real illustrative SPLIT is being
     # shown somewhere above. The TC-vs-Flood split itself is
-    # real when `real_estimate` (own caption above, via overlap_note) —
+    # real when `real_estimate` (own caption above, via overlap_note);
     # the both_active-but-not-real_estimate case no longer reaches this far
     # at all, it bails out with an honest "split unavailable" message
     # earlier in this function instead (see that early return's own
@@ -8106,12 +8393,105 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     caption = [dmc.Text(_t("Illustrative split — a real implementation would compute this from actual per-hazard overlap."),
                           size="10px", c="dimmed", mt=18, fs="italic")] if has_illustrative_split else []
 
+    # Real per-country breakdown for THIS metric, Global scope only, per
+    # explicit user request: the tile-click popup itself (not only the
+    # separate Full Impact Breakdown modal, which shows every metric at
+    # once but requires navigating to a different button/section) should
+    # show one row per real country, each with the same black-total +
+    # TC-only/Both/Flood-only split pattern the rows above already use.
+    # `metric in _DEFAULT_STATS` excludes People/Children in Need (no
+    # `stats` dict key exists for those, they're handled separately via
+    # pin_pct elsewhere, and no real stat-card ever fires with those
+    # metrics today anyway, see _CURVE_METRIC_COL's own comment). Sorted
+    # by real value, largest first, a ranked "who's most affected" list is
+    # more useful here than alphabetical (unlike _admin1_table's own
+    # always-multi-metric table, where alphabetical is the only sensible
+    # single order across 6 different metrics at once).
+    country_rows = []
+    if is_global and metric in _DEFAULT_STATS and scope == "global":
+        by_country_countries = _resolve_curve_countries(
+            scope, countries, date, run,
+            river_idx=(hazard_idx or {}).get("River Flooding"), rain_idx=(hazard_idx or {}).get("Rainfall"),
+            rain_window=rain_window, river_window=river_window)
+
+        def _fetch_country_metric(c):
+            return c, _get_country_stats(c, date, run, (hz or {}).get("wind_kt"), hz=hz), _get_country_family_split(c, date, run, hz=hz)
+
+        for c, c_stats, c_fs in get_query_executor().map(_fetch_country_metric, by_country_countries):
+            c_val = _parse_stat_number(c_stats.get(metric, "0"))
+            if not c_val:
+                continue
+            # Same real 3-way resolution as _admin1_table's own
+            # _region_metric_breakdown / _simple_breakdown_table's own
+            # _value_td: single-family active -> the flat breakdown itself
+            # (inert, _hazard_split_line renders nothing for one family);
+            # both active -> a real per-country split if one resolves, else
+            # an honest None (never a fabricated illustrative one). c_split
+            # (the real un-rounded tc_only/flood_only/both numbers, not
+            # just their derived percentages) is carried through to
+            # _hazard_split_line's own real_split param below, so THIS
+            # row's own sub-numbers don't get reconstructed from c_val (a
+            # re-parse of an already-K/M-abbreviated display string) --
+            # same real precision-loss class of bug _hazard_row's own
+            # abs_value param exists to avoid, see _hazard_split_line's
+            # own comment for the full "why".
+            c_split = None
+            if breakdown["tc_active"] and breakdown["flood_active"]:
+                c_split = _sum_family_split_metric(c_fs, metric) if c_fs else None
+                c_breakdown = (_breakdown_from_split(c_split.get("tc_only"), c_split.get("flood_only"), c_split.get("both"), breakdown)
+                                if c_split else None)
+            else:
+                c_breakdown = breakdown
+            country_rows.append((c, c_val, c_breakdown, c_split))
+        country_rows.sort(key=lambda r: r[1], reverse=True)
+
+    by_country_block = []
+    if country_rows:
+        by_country_block = [
+            dmc.Text(_t("By Country"), size="10px", fw=700, c="dimmed", mt=20, mb=8, tt="uppercase"),
+            html.Div([
+                html.Div([
+                    html.Span(_t(c_name), style={"flex": 1, "fontSize": "12px", "color": "#16232c", "fontWeight": 600}),
+                    html.Div([
+                        html.Div(_format_stat_number(c_val), style={"fontFamily": "monospace", "fontWeight": 700, "fontSize": "12px"}),
+                        _hazard_split_line(c_val, c_breakdown, font_size="9px", real_split=c_split),
+                    ], style={"minWidth": "90px", "textAlign": "right"}),
+                ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                           "padding": "5px 0", "borderBottom": "1px solid #f1f4f6"})
+                for c_name, c_val, c_breakdown, c_split in country_rows
+            ]),
+        ]
+
     return html.Div([
-        dmc.Text(_t("Total: {value}", value=value), size="sm", fw=700, mt=6, mb=20),
+        # `total` (not the original `value` string) by the time this
+        # renders: single-family case, total is still exactly
+        # _parse_stat_number(value) (never reassigned), so this is a no-op
+        # there. Dual-family real_estimate case is scope-dependent (see the
+        # `total = real_total` reassignment's own comment above for the
+        # full "why", including the real 74-vs-76 bug this split avoids):
+        # Country Analysis reassigns total to the real per-member
+        # family-split query's own sum, which is what every row/bar below
+        # this headline is actually built from there, keeping the headline
+        # and every row internally consistent, one real number instead of
+        # two disagreeing real ones (a headline "Total: 5.0M" next to a
+        # "Flood 100% / 5.1M" row would otherwise be visibly
+        # self-contradictory). Global scope does NOT reassign, so `total`
+        # here is still the original per-country-ceiled-then-summed
+        # number, matching the By Country rows and the tile itself.
+        dmc.Text(_t("Total: {value}", value=_format_stat_number(total)), size="sm", fw=700, mt=6, mb=20),
         *overlap_children,
-        column_header,
-        html.Div(blocks[:-1]),  # drop the trailing spacer
-        *caption,
+        # Global scope drops the per-hazard Share/People-at-Risk table
+        # (column_header + blocks) entirely, per explicit user request:
+        # the overlap bar above (Tropical Cyclone only/Both/Flood only,
+        # still real, still shown) already covers the TC-vs-Flood split at
+        # a glance, and the new By Country section below is a more useful
+        # detail view than the per-hazard rows/curves were once the popup
+        # already lost its own per-threshold curves (is_global gate in
+        # _hazard_curve_row above). Country Analysis scope is untouched,
+        # its own popup has no By Country section to substitute and the
+        # per-hazard rows/curves there are still real and useful.
+        *([] if is_global else [column_header, html.Div(blocks[:-1]), *caption]),  # blocks[:-1] drops the trailing spacer
+        *by_country_block,
     ])
 
 
@@ -8468,6 +8848,41 @@ _LEGEND_PROP_LABELS = {
 
 _LEGEND_HAZARD_LABELS = {"wind": "Sustained Wind", "gust": "Gust", "river": "River Flooding", "rain": "Rainfall"}
 
+# Same real fixed (min, max) constants as services/tile_server.py's own
+# _FIXED_SCALE_COLS / maplibre_tiles.js's own _AOTS_FIXED_SCALE_COLS (see
+# either one's own comment for the full real-world grounding), duplicated
+# here for the same import-boundary reason every other palette/prop-map
+# constant in this file is duplicated rather than imported (pages/ is
+# downstream of services/ in this app's own import graph).
+#
+# Only "probability" remains fixed here as of 2026-08-20. The raw
+# population-family props (population/children_total/infant_population/
+# school_age_population/adolescent_population) were fixed for one day
+# (2026-08-19, real user request: "maybe we should establish something
+# similar for the populations... 50k is already enough") then reverted
+# back to a real, data-driven per-country/per-cycle range the following
+# day (real user decision: "okay, then please revert that to the
+# original behavior") -- their own _FIXED_SCALE_COLS/_AOTS_FIXED_SCALE_
+# COLS entries were removed too, so the legend correctly falls through to
+# its own dynamic-min/max default for them, matching what the map itself
+# now renders. Their E_* impact/exposure siblings were reverted
+# separately, same day, even earlier ("still not happy with the E_
+# coloring, can we remove the max thresholds again?", after 2 prior
+# rounds of "still not happy" on log-fixed then linear-fixed).
+#
+# Real, confirmed-live bug this dict's mere existence originally fixed
+# (still true for "probability"): _legend_raster_info/_legend_combined_
+# raster_info's own real min/max came from tile_config's stats_<hazard>
+# dict (get_tile_stats/_fetch_tile_stats in tile_server.py), which
+# computes its OWN independent real per-country/per-cycle MIN/MAX SQL
+# aggregate -- entirely separate from _get_minmax, so it was NEVER
+# touched by the fixed-scale rendering fix on its own, meaning the legend
+# could show a different range than what the map actually painted
+# against for any prop this dict doesn't cover.
+_LEGEND_FIXED_SCALE_PROPS = {
+    "probability": (1.0 / 51, 1.0),
+}
+
 
 def _legend_format_value(val, prop_key, palette):
     if val is None:
@@ -8527,6 +8942,20 @@ def _legend_raster_info(hazard, tile_config):
     palette = _AOTS_PALETTES.get(prop) or _AOTS_PALETTES.get("population", {"colors": ["#ffffcc", "#800026"]})
     colors = palette.get("colors", ["#ffffcc", "#800026"])
     min_v, max_v = prop_stats.get("min"), prop_stats.get("max")
+    # `min_v`/`max_v` display the SAME fixed constants the map itself now
+    # renders against (_LEGEND_FIXED_SCALE_PROPS), not tile_config's own
+    # real per-country/per-cycle SQL min/max, whenever this prop has one --
+    # real, confirmed-live bug otherwise: the map paints against a fixed
+    # scale but the legend kept showing the old dynamic range, e.g. a
+    # "1 -- 25" label under a bar that was actually now scaled 1 -- 50,000.
+    # Only overrides when real data genuinely exists here (min_v is not
+    # None): a None min_v is this function's own "no real data at all"
+    # signal a few lines below, must NOT be masked into looking like real
+    # data by unconditionally substituting the fixed range.
+    if min_v is not None:
+        fixed_range = _LEGEND_FIXED_SCALE_PROPS.get(prop)
+        if fixed_range is not None:
+            min_v, max_v = fixed_range
     prop_label = _t(_LEGEND_PROP_LABELS.get(prop, prop.replace("_", " ").title()))
     # Must NOT always prefix the title with the hazard name whenever the
     # checkbox is checked/visible, that would be wrong when that hazard
@@ -8548,10 +8977,30 @@ def _legend_raster_info(hazard, tile_config):
     # transparent (see _fetch_raster_tile's own `vals != 0` filter), it
     # paints literally nothing on the map, so a legend card describing it
     # would be pure clutter.
-    # Population/Children/etc are NOT affected by this, those genuinely
-    # DO still render (the real raw base count, unweighted) even with no
-    # hazard data, so min_v is real there and this branch never triggers.
-    if prop == "probability" and min_v is None:
+    #
+    # E_* exposure props (Impact mode, e.g. "E_population") get the SAME
+    # unconditional suppression, not just "probability" (real, confirmed-
+    # live bug found 2026-08-19: a no-storm Wind selection under "E_
+    # population" still showed its own generic "Expected Population
+    # Impact / No real data" card stacked right next to Rainfall's real
+    # one). Confirmed directly against _fetch_raster_tile's own colorize
+    # logic: "For all others (probability, poverty, E_* impact props), 0 =
+    # no data -> transparent" applies to E_* exactly like probability, an
+    # E_* column is raw_count x that hazard's OWN probability by
+    # definition, so with no real probability, E_* is null/0 everywhere
+    # and the raster paints literally nothing here too -- same "nothing on
+    # screen to describe" reasoning, not a different case needing
+    # cross-hazard lookahead logic.
+    #
+    # Plain (non-E_*, non-probability) props ("population"/"children_
+    # total"/etc, the "At Risk" mode) are genuinely NOT affected by
+    # either branch: those render the real raw base count, unweighted,
+    # identically for EVERY hazard regardless of its own data state (not
+    # hazard-conditional at all), so min_v is real there and this check
+    # never triggers -- and since every checked hazard would show that
+    # SAME real number, the "one card has data, one doesn't" confusion
+    # this fixes can't arise for plain props in the first place.
+    if (prop == "probability" or prop.startswith("E_")) and min_v is None:
         return None
     hazard_name = _t(_LEGEND_HAZARD_LABELS[hazard])
     return {
@@ -8666,33 +9115,18 @@ def _legend_combined_raster_info(tile_config):
     if prop == "probability":
         palette = _AOTS_PALETTES.get("probability", {"colors": ["#ffffcc", "#800026"]})
         colors = palette.get("colors", ["#ffffcc", "#800026"])
-        # Must NOT hardcode
-        # a 0%-100% label range: real, data-driven range, matching that
-        # raster's real log-scale floor instead of a misleading fixed 0%.
-        #
-        # Must NOT pick ONE
-        # active hazard's own "probability" min/max (whichever comes first
-        # in active_hazards) and label the WHOLE combined raster's legend
-        # with it, that would be silently wrong the moment 2+ hazards are
-        # active, since tile_server.py's own _fetch_combined_raster_tile
-        # paints using a real union-bound range instead (min of every
-        # active hazard's own min, sum of every active hazard's own max,
-        # capped at 1.0, see that function's own docstring for the full
-        # union-bound rationale: P(A∪B) <= P(A)+P(B) always
-        # holds). Mirrored here exactly, from the SAME per-hazard
-        # stats_{hz} dicts already available client-side, so the printed
-        # min/max labels always match what the raster actually paints.
-        prob_ranges = [
-            (mm.get("min"), mm.get("max"))
-            for hz in active_hazards
-            for mm in [(tile_config.get(f"{stats_prefix}{hz}") or {}).get("probability") or {}]
-            if mm.get("min") is not None and mm.get("max") is not None
-        ]
-        if prob_ranges:
-            min_v = min(r[0] for r in prob_ranges)
-            max_v = min(1.0, sum(r[1] for r in prob_ranges))
-        else:
-            min_v, max_v = 0.0, 1.0
+        # FULLY FIXED 0-100% label range (real user decision, 2026-08-19:
+        # "no dynamic scaling for that"), matching what
+        # services/tile_server.py's own combined-hazard raster path ALSO
+        # now paints against (see that function's own _FIXED_SCALE_COLS
+        # comment) -- an earlier version of this branch computed a real
+        # union-bound range instead (min of every active hazard's own
+        # min, sum of every active hazard's own max, capped at 1.0), which
+        # was correct for the OLD dynamic renderer but is now stale: the
+        # renderer no longer uses that union-bound range at all, so
+        # keeping it here would show a legend range the map itself
+        # doesn't paint against anymore.
+        min_v, max_v = _LEGEND_FIXED_SCALE_PROPS["probability"]
         return {
             "title": _t("Combined Hazard Probability"),
             "compact_title": _t("Combined Probability"),
@@ -8708,6 +9142,15 @@ def _legend_combined_raster_info(tile_config):
     palette = _AOTS_PALETTES.get(prop) or _AOTS_PALETTES.get("population", {"colors": ["#ffffcc", "#800026"]})
     colors = palette.get("colors", ["#ffffcc", "#800026"])
     min_v, max_v = prop_stats.get("min"), prop_stats.get("max")
+    # Same fixed-scale override as _legend_raster_info's own (see that
+    # function's own comment for the full "why"), keyed on `prop` (the
+    # E_* combined-raster prop, e.g. "E_population"), not `raw_prop`: the
+    # combined raster's own color scale is fixed on the E_* range (raw
+    # count x fixed-1.0-max probability), not the raw column's range.
+    if min_v is not None:
+        fixed_range = _LEGEND_FIXED_SCALE_PROPS.get(prop)
+        if fixed_range is not None:
+            min_v, max_v = fixed_range
     prop_label = _t(_LEGEND_PROP_LABELS.get(prop, prop.replace("_", " ").title()))
     return {
         "title": prop_label,
@@ -8881,7 +9324,7 @@ def _legend_raw_flood_info(layer, raw_config):
         # Relative labels, not fixed percentages: both hazards' raw
         # probability rasters now use a DYNAMIC per-request scale (real
         # min/max of this cycle's own nonzero values, 2026-08-19 user
-        # decision — see services/tile_server.py's _fetch_river_extent_
+        # decision, see services/tile_server.py's _fetch_river_extent_
         # raster_tile/_colorize_precip_probability own comments), so a
         # literal "10%"/"≥80%" would misdescribe the ramp's real endpoints,
         # which now vary per forecast cycle.
@@ -9874,6 +10317,39 @@ def _toggle_admin1(_n, current_style):
     return base if is_hidden else {**base, "display": "none"}
 
 
+# Same n_clicks Input as _toggle_admin1 above (a SEPARATE callback, not
+# folded into that one: they write to different Output properties, style
+# vs children, so Dash runs them independently with no conflict), but this
+# one does the real work: the interactive Admin Level 1 section starts
+# EMPTY (see _admin1_section's own docstring) and this callback lazily
+# fills it in on the user's FIRST click only, using the country/date/run/
+# hz/breakdown params _admin1_section stashed in the sibling admin1-params
+# Store at render time. `current_children` (State, not Input, so reading it
+# doesn't itself retrigger this callback) is the "already loaded" check: a
+# non-empty list means a previous click already fetched and rendered the
+# real content, in which case this returns dash.no_update rather than
+# paying a second real HTTP+Snowflake round trip for a section that's just
+# being collapsed/re-expanded, not freshly opened. Because
+# _impact_breakdown_content rebuilds the WHOLE admin1_sections tree (fresh,
+# empty children) on every hazard/threshold/date change while the modal is
+# open, "already loaded" naturally resets alongside every other piece of
+# this modal's own state on a genuine data-affecting change, so a click
+# after such a change correctly re-fetches instead of showing stale content.
+@callback(
+    Output({"type": "admin1-body", "country": dash.MATCH}, "children"),
+    Input({"type": "admin1-head", "country": dash.MATCH}, "n_clicks"),
+    State({"type": "admin1-params", "country": dash.MATCH}, "data"),
+    State({"type": "admin1-body", "country": dash.MATCH}, "children"),
+    prevent_initial_call=True,
+)
+def _load_admin1(_n, params, current_children):
+    if current_children:
+        return dash.no_update
+    if not params:
+        return dash.no_update
+    return _admin1_body_content(params["country"], params["date"], params["run"], params["hz"], params["breakdown"])
+
+
 # Fixed ids (not dash.MATCH), unlike Admin Level 1, there's only ever ONE
 # Threshold sensitivity preview section per breakdown, so no pattern-matching
 # is needed. Doesn't exist at all when expanded=True (the print page), see
@@ -10020,7 +10496,7 @@ _HAZARD_CURVE_HEIGHT = "128px"
 # though a real backend simply not existing yet (Storm Surge) is a
 # different underlying reason than a real backend existing but not being
 # reached (the Rainfall bugs this same policy was written to fix, see
-# _rain_threshold_grid's own comment) — from a reader's point of view, both
+# _rain_threshold_grid's own comment). From a reader's point of view, both
 # cases must look identical: a number here always means real data, never a
 # guess.
 def _no_real_data_chart():
@@ -10036,6 +10512,21 @@ def _threshold_curve_chart(labels, values, active_idx, color):
     # its own value called out), a real Plotly figure (like the arc
     # charts elsewhere on this page), not raw SVG, Dash's html module has
     # no SVG tag components to inject one directly.
+    #
+    # Ceil ONCE here, same project-wide convention _format_stat_number's
+    # own docstring establishes (real counts always round up, never down),
+    # applied to the value that DRIVES THE PLOT ITSELF, not just its text
+    # label. Before this fix, `values` stayed raw/un-ceiled floats (real
+    # weighted per-tile sums, e.g. Warning=0.9, Danger=0.05) while every
+    # annotation's own text used _format_stat_number(v), which ceils
+    # internally -- two genuinely different real values (0.9 and 0.05)
+    # can both ceil to the same displayed "1", so the line/marker
+    # POSITIONS (still 0.9 vs 0.05) visually read as "Danger is basically
+    # zero" right under a label that says "1", looking broken even though
+    # both numbers were individually real. Ceiling here makes the plotted
+    # height and the displayed label always agree, same single real
+    # number driving both.
+    values = [math.ceil(v) if v is not None else 0 for v in values]
     n = len(values)
     marker_sizes = [13 if i == active_idx else 6 for i in range(n)]
     marker_colors = [color if i == active_idx else "#ffffff" for i in range(n)]
@@ -10107,17 +10598,18 @@ def _rain_threshold_grid(labels, active_window, active_idx, color, real_matrix):
     # X%/Y people" row computed from actual per-member data, and an
     # illustrative fallback here can show a DIFFERENT, contradicting
     # number in the same view (confirmed live: a "Children at Risk" grid
-    # showed 7.4M in its ringed cell while the real headline read 3.2M,
-    # because _precip_curve_totals only covers the "People at Risk"
-    # metric, see its own docstring, so every other metric silently fell
-    # through to this illustrative branch). A real per-disaster-response
-    # tool showing a fabricated number that merely LOOKS like real data is
-    # worse than showing nothing, see this file's own project-wide "no
-    # illustrative fallback" requirement. real_matrix is None whenever
-    # there's genuinely no real per-cell data for this metric/scope (not
-    # just "an older caller didn't pass one" any more, every real caller
-    # now does), so that's exactly when this must show an honest "no real
-    # data" state instead of a chart.
+    # showed 7.4M in its ringed cell while the real headline read 3.2M --
+    # at the time, _precip_curve_totals only covered the "People at Risk"
+    # metric, a restriction since found to rest on a stale/wrong claim and
+    # removed, see its own docstring, but back then every other metric
+    # silently fell through to this illustrative branch). A real
+    # per-disaster-response tool showing a fabricated number that merely
+    # LOOKS like real data is worse than showing nothing, see this file's
+    # own project-wide "no illustrative fallback" requirement. real_matrix
+    # is None whenever there's genuinely no real per-cell data for this
+    # metric/scope (e.g. scope resolves to zero countries), not a
+    # metric-specific gap any more, so that's exactly when this must show
+    # an honest "no real data" state instead of a chart.
     if real_matrix is None:
         return html.Div(
             dmc.Text(_t("No real per-threshold rainfall data for this metric."),
@@ -10307,11 +10799,11 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
     # Real WITHIN-Flood split (River Flooding vs Rainfall vs both), same
     # methodology _hazard_contribution_content's own river_rain_only/
     # flood_split_real block uses (see that block's own comment for the
-    # full "why" — River+Rain-only is the one case with a real per-tile
+    # full "why": River+Rain-only is the one case with a real per-tile
     # bitmask answer to "hit by River but NOT also Rain"). This function
     # was originally built (see its own top comment) to use the plain
     # marginal query for River/Rain instead, reasoned as "correct enough,
-    # this view has no inline headline row to reconcile against" — that
+    # this view has no inline headline row to reconcile against", but that
     # reasoning was wrong in practice: even with no literal headline row
     # directly above it, the SAME real "River Flooding" curve showing a
     # materially different number here vs the Hazard Contribution popup
@@ -10325,7 +10817,7 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
     river_rain_only = breakdown["active_flood_members"] == ["River Flooding", "Rainfall"]
     flood_split_real = False
     if river_rain_only and can_query_real:
-        flood_resolved_countries = _resolve_curve_countries(scope, countries, date, run)
+        flood_resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=hazard_idx.get("River Flooding"), rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window, river_window=river_window)
         flood_hz = _build_hz(
             False, False, True, True,
             river_idx=hazard_idx.get("River Flooding"),
@@ -10357,11 +10849,16 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
             # comment for the full "why". "People at Risk" is always one of
             # the metrics _hazard_curve_totals covers, so this never falls
             # through to the old per-tier fan-out.
-            real_values = _hazard_curve_totals("People at Risk", "wind", scope, countries, date, run)
+            real_values = _hazard_curve_totals("People at Risk", "wind", scope, countries, date, run,
+                                                  river_idx=hazard_idx.get("River Flooding"),
+                                                  rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window)
             if real_values is None:
                 raw_values = list(get_query_executor().map(
                     lambda wc: _resolve_stat_value("People at Risk", scope, countries, date=date, run=run,
-                                                      wind_kt=wc[2], hz=_wind_only_hz(wc[2])),
+                                                      wind_kt=wc[2], hz=_wind_only_hz(wc[2]),
+                                                      river_idx=hazard_idx.get("River Flooding"),
+                                                      rain_idx=hazard_idx.get("Rainfall"),
+                                                      rain_window=rain_window, river_window=river_window),
                     _WIND_CATS))
                 real_values = [_parse_stat_number(v) for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
@@ -10375,20 +10872,26 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
             if river_rain_only and flood_split_real:
                 real_values = _river_curve_totals_excl_rain(
                     "People at Risk", scope, countries, date, run,
-                    rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window, river_window=river_window)
+                    rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window, river_window=river_window,
+                    river_idx=hazard_idx.get("River Flooding"))
             else:
-                real_values = _hazard_curve_totals("People at Risk", "river", scope, countries, date, run, river_window=river_window)
+                real_values = _hazard_curve_totals("People at Risk", "river", scope, countries, date, run, river_window=river_window,
+                                                      river_idx=hazard_idx.get("River Flooding"),
+                                                      rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window)
             if real_values is None:
                 raw_values = list(get_query_executor().map(
                     lambda rp_tier: _resolve_stat_value("People at Risk", scope, countries, date=date, run=run,
-                                                           hz=_river_only_hz(rp_tier, river_window)),
+                                                           hz=_river_only_hz(rp_tier, river_window),
+                                                           river_idx=hazard_idx.get("River Flooding"),
+                                                           rain_idx=hazard_idx.get("Rainfall"),
+                                                           rain_window=rain_window, river_window=river_window),
                     _RIVER_RP_TIERS))
                 real_values = [_parse_stat_number(v) for v in raw_values]
             chart = _threshold_curve_chart(labels, real_values, idx, color)
         elif name == "Rainfall" and rain_window is not None:
             # Real per-cell fetch, same _precip_curve_totals aggregator
             # _hazard_curve_row's own Rainfall branch uses (see that
-            # function's comment) — this branch was the one hazard left
+            # function's comment): this branch was the one hazard left
             # calling _rain_threshold_grid with no real_matrix at all,
             # silently falling through to its entirely-illustrative
             # base_n-ratio grid even though Wind/River right above it in
@@ -10406,9 +10909,13 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
             if river_rain_only and flood_split_real:
                 real_matrix = _rain_grid_totals_excl_river(
                     "People at Risk", scope, countries, date, run,
-                    river_idx=hazard_idx.get("River Flooding"), river_window=river_window)
+                    river_idx=hazard_idx.get("River Flooding"), river_window=river_window,
+                    rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window)
             else:
-                real_matrix = _precip_curve_totals("People at Risk", scope, countries, date, run) if can_query_real else None
+                real_matrix = _precip_curve_totals(
+                    "People at Risk", scope, countries, date, run,
+                    river_idx=hazard_idx.get("River Flooding"), rain_idx=hazard_idx.get("Rainfall"),
+                    rain_window=rain_window, river_window=river_window) if can_query_real else None
             chart = _rain_threshold_grid(labels, rain_window, idx, color, real_matrix)
         else:
             # Storm Surge (no real backend at all), Rainfall with no real
@@ -10815,7 +11322,8 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
         # Analysis's single-country/combined blocks in spirit (a real
         # multi-hazard total) without depending on which checkboxes happen
         # to be on.
-        all_country_names, river_avail, rain_avail = _global_flood_availability(date, run)
+        all_country_names, river_avail, rain_avail = _global_flood_availability(
+            date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
         global_hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
         global_stats = _combined_stats(all_country_names, date=date, run=run,
                                          wind_kt=global_hz["wind_kt"], hz=global_hz)
@@ -11045,8 +11553,8 @@ clientside_callback(
     Input("ms-rain-window", "value"),
     # river_window was missing here entirely (rain_window's own direct
     # sibling right above it, present since this callback was first
-    # written), so this whole modal — main table, per-cell TC/Flood split,
-    # AND the threshold-sensitivity curves — silently ran every real river
+    # written), so this whole modal (main table, per-cell TC/Flood split,
+    # AND the threshold-sensitivity curves) silently ran every real river
     # query against _build_hz's own None-default (_RIVER_WINDOW_DEFAULT,
     # the full 168h horizon) regardless of the user's actual live
     # ms-river-window selection (e.g. "72h"), confirmed live: River
@@ -11179,7 +11687,8 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
         # use, just against the countries this Global total actually
         # resolved (not the (always empty in Global mode) topbar
         # selection).
-        _, river_avail, rain_avail = _global_flood_availability(date, run)
+        _, river_avail, rain_avail = _global_flood_availability(
+            date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
         breakdown = _hazard_breakdown(True, river_avail, rain_avail, surge_on)
     else:
         breakdown = _hazard_breakdown(wind_on, river_on, rain_on, surge_on)
@@ -11194,7 +11703,8 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
     # CHECKBOXES are on (every hazard always contributes to Global's total).
     hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window) if is_global else \
         _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
-    value = _resolve_stat_value(metric, scope, countries, date=date, run=run, wind_kt=wind_kt, hz=hz)
+    value = _resolve_stat_value(metric, scope, countries, date=date, run=run, wind_kt=wind_kt, hz=hz,
+                                   river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     title = f"{_t(metric)} — {_t('Combined')}" if scope == "combined" else (
         f"{_t(metric)} — {_t(scope)}" if scope != "global" else _t(metric))
     hazard_idx = {"Sustained Wind": wind_idx, "River Flooding": river_idx,
@@ -11206,7 +11716,7 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
     # _resolve_stat_value calls below stay correct for Global too.
     return True, title, _hazard_contribution_content(
         value, breakdown, hazard_idx=hazard_idx, rain_window=rain_window, river_window=river_window, is_global=is_global,
-        metric=metric, scope=scope, countries=countries, date=date, run=run)
+        metric=metric, scope=scope, countries=countries, date=date, run=run, hz=hz)
 
 
 @callback(
@@ -11724,8 +12234,10 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     river_idx = river_idx if river_idx is not None else 2
     rp_tier = _RIVER_RP_TIERS[river_idx]
 
-    rain_window = rain_window or "6"
-    rain_idx = rain_idx if rain_idx is not None else 1
+    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # defaults (see _build_hz's own comment on this same fallback).
+    rain_window = rain_window or "72"
+    rain_idx = rain_idx if rain_idx is not None else 2
     threshold_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx]
 
     # River/rain are NOT storm-scoped, each has its own independent
@@ -11827,6 +12339,14 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     if view_as == "inneed" and exposure_prop in _EXPOSURE_IN_NEED_PROP_MAP:
         resolved_prop = _EXPOSURE_IN_NEED_PROP_MAP[exposure_prop]
 
+    # Computed HERE (not inline in the return dict below) so the stats
+    # fetch just below can gate on the same real value, see its own
+    # comment. See the returned "wind_base_fallback" field's own docstring
+    # for the full "why": Wind is the single fallback carrier for the
+    # plain Population/Children/etc base layer whenever nothing real is
+    # actively weighting the display.
+    wind_base_fallback = bool(not any_hazard_on and resolved_prop != "probability")
+
     # Path-segment placeholder for hazards with no real "storm" concept,
     # any non-empty string works (ignored server-side), reuses the real
     # storm name when one is resolved rather than adding a second required
@@ -11859,7 +12379,15 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # layers, and the MapLibre tile fan-out. Fetching concurrently via the
     # shared executor turns that into ~1 hazard's worth of wall-clock time.
     _hazard_fetches = {}
-    if wind_on:
+    # `or wind_base_fallback`: the map itself now renders wind's raster
+    # (real Population/Children/etc base layer) whenever wind_base_fallback
+    # is true, even with wind_on False (see that flag's own docstring on
+    # the return dict below) -- without this OR, stats_wind/admin_stats_wind
+    # stay the {} default a few lines below, and _legend_raster_info has no
+    # real min/max to show, a real regression this exact fix closes (found
+    # 2026-08-20: map painted a real base layer with zero legend to explain
+    # it).
+    if wind_on or wind_base_fallback:
         _hazard_fetches["wind"] = lambda: _hazard_stats(tile_country, "wind", tile_storm, tile_forecast_date, wind_kt, {})
     if gust_on:
         _hazard_fetches["gust"] = lambda: _hazard_stats(
@@ -11890,7 +12418,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # Fanned out via get_query_executor().map (same shared pool/pattern the
     # primary group's own _hazard_values fetch above already uses, safe to
     # nest the same way _hazard_stats itself already nests its own
-    # stats/admin_stats pair onto this pool — see _SHARED_QUERY_EXECUTOR's
+    # stats/admin_stats pair onto this pool (see _SHARED_QUERY_EXECUTOR's
     # own module comment in snowflake_utils.py for the bounded-nesting
     # reasoning), not a plain serial for loop. A genuinely multi-storm
     # Global-mode selection (e.g. two real simultaneously active storms,
@@ -11936,7 +12464,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # against, same as river/rain's own primary_code usage just above.
         "primary_country_code": primary_code,
         # Relative/same-origin whenever nginx fronts this container
-        # (config.BEHIND_REVERSE_PROXY, set by entrypoint.sh — true on BOTH
+        # (config.BEHIND_REVERSE_PROXY, set by entrypoint.sh: true on BOTH
         # SPCS and Azure Web App for Containers, since both run the exact
         # same Docker image/entrypoint.sh with nginx proxying Dash + tile
         # server on one public port). Deliberately NOT keyed on
@@ -11946,8 +12474,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # http://localhost:8001 URL that resolves against the *viewer's*
         # own machine, not the server. Outside a proxied container (local
         # dev: `python app.py` on :8050 + a separately-run uvicorn tile
-        # server on :8001, no nginx in front, see CLAUDE.md's own
-        # Development Commands), config.TILE_SERVER_URL is used instead —
+        # server on :8001, no nginx in front), config.TILE_SERVER_URL is used instead:
         # "" there is NOT same-origin, it resolves against the Dash app's
         # own port, not the tile server's, so real WebP tile requests
         # silently 200 as the Dash HTML shell instead of image bytes.
@@ -11989,6 +12516,35 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # icon), so this one flag correctly covers "no hazard checked" AND
         # "hazards temporarily hidden" without duplicating that logic here.
         "any_hazard_on": any_hazard_on,
+        # Real fix for "no hazard checked (or eye-icon hidden) => completely
+        # blank map, not even plain Population" (2026-08-20, user-reported,
+        # user-confirmed repro: literally all 4 hazard checkboxes off, AND
+        # the HAZARDS eye icon). Population/Children/etc has no raster
+        # source of its own, it only ever renders by piggybacking on one of
+        # the 4 per-hazard MapLibre layers (see tile_storm's own comment
+        # above), each independently gated client-side on
+        # config[hazardKey + '_visible'] (applyHazardLayer in
+        # maplibre_tiles.js) -- with every hazard off/hidden, every one of
+        # those gates is false and nothing paints, even though resolved_prop
+        # is already correctly the plain base column here (any_hazard_on is
+        # False). True whenever there's a real plain base layer to show
+        # (resolved_prop isn't the hazard-only "probability" column, which
+        # is meaningless with no hazard active) and nothing is already
+        # painting it via a real checked+active hazard. maplibre_tiles.js's
+        # applyHazardLayer/setTileLayerProp OR this into wind's own
+        # visibility check specifically (not gust/river/rain): Wind is the
+        # existing single fallback carrier for "nothing real is active"
+        # elsewhere in this function too (see facility_hazard's own
+        # "Falls back to wind" comment above), one consistent convention
+        # rather than a new one. Uses wind's placeholder-safe tile_storm/
+        # tile_forecast_date (always set, never None) so the fallback
+        # request is always valid even with zero real storm data. Computed
+        # once, above (before the _hazard_fetches block), not re-derived
+        # here: that same value also gates whether stats_wind/admin_stats_
+        # wind get fetched at all, _legend_raster_info needs a real min/max
+        # from there, a second independently-computed copy here risks
+        # drifting out of sync with what was actually fetched.
+        "wind_base_fallback": wind_base_fallback,
         # ms-hazards-hidden-store is a real Input to THIS callback (see the
         # signature above), so every eye-icon click round-trips through the
         # server and re-triggers applyTileConfig via ms-tile-config-store's
@@ -12299,8 +12855,10 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     member_int = _resolve_ensemble_member(member_select)
     date = date or _DEFAULT_FORECAST_DATE
     run = run if run is not None else _DEFAULT_FORECAST_RUN
-    rain_window = rain_window or "6"
-    rain_idx = rain_idx if rain_idx is not None else 1
+    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # defaults (see _build_hz's own comment on this same fallback).
+    rain_window = rain_window or "72"
+    rain_idx = rain_idx if rain_idx is not None else 2
     threshold_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx]
     window_h = int(rain_window)
     # Must NOT always resolve/request rp10
@@ -12340,11 +12898,11 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     # in tile_server.py), so no client-side stats call is needed here for
     # either layer's coloring.
     return {
-        # See the sibling "tile_server_url" field earlier in this file —
+        # See the sibling "tile_server_url" field earlier in this file:
         # this keys off config.BEHIND_REVERSE_PROXY, not config.SPCS_RUN.
         # (A prior version of this comment argued for keying off SPCS_RUN,
         # reasoning that local dev has no nginx so a bare "" resolves
-        # against the Dash app's own port instead of the tile server's —
+        # against the Dash app's own port instead of the tile server's:
         # that part was correct, but SPCS_RUN was the wrong proxy for "is
         # nginx in front of me": Azure Web App for Containers also runs
         # this same entrypoint.sh behind nginx with SPCS_RUN=false, so an

@@ -9,9 +9,9 @@
 }
 
 /* The native Leaflet LayersControl (dl.LayersControl in _map_stack) stays in
-   the DOM — its radio inputs are still programmatically clicked by the
+   the DOM: its radio inputs are still programmatically clicked by the
    basemap-select clientside_callback so Leaflet's own 'baselayerchange'
-   event fires — but it's visually redundant with the pill basemap switcher
+   event fires, but it's visually redundant with the pill basemap switcher
    (_basemap_switcher), so it's hidden rather than removed. */
 .leaflet-control-layers {
   display: none !important;
@@ -19,7 +19,7 @@
 
 /* Leaflet's own default top-left controls (zoom +/-, fullscreen, locate)
    render underneath the Tropical Cyclone/Flood Hazards floating panel and
-   are never actually visible/usable anyway — real zoom already works via
+   are never actually visible/usable anyway; real zoom already works via
    scroll-wheel/drag, so these are just redundant. Hidden (not removed) the
    same way as .leaflet-control-layers above, in case anything ever needs
    them back. */

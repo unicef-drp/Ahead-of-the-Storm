@@ -73,7 +73,7 @@ def layout(lang="en", zoom_countries=None, date=None, run=None,
     # was when the "Open in new tab" link was built). Ignoring the query
     # param entirely (not just its "no param at all" default) closes the
     # one remaining way a 3-member Flood selection (River+Rain+Storm
-    # Surge) could ever be reached — a hand-crafted `?surge=1` URL — since
+    # Surge) could ever be reached (a hand-crafted `?surge=1` URL) since
     # that combination only ever had a real per-hazard split for River+
     # Rain, never a real one to fall back to.
     surge_on = False

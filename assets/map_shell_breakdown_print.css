@@ -1,5 +1,5 @@
-/* /map-shell/breakdown-print only — plain white printable report page.
-   Gives the browser's print engine (Cmd/Ctrl+P — there's no in-page Print
+/* /map-shell/breakdown-print only: plain white printable report page.
+   Gives the browser's print engine (Cmd/Ctrl+P; there's no in-page Print
    button) sane page margins instead of whatever default the OS print
    dialog would otherwise apply. */
 @media print {

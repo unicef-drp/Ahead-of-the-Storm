@@ -36,7 +36,7 @@ from components.config import config
 from components.ui.header import make_header
 from components.ui.footer import footer
 from components.data.snowflake_utils import get_snowflake_connection, get_available_wind_thresholds, get_active_countries, get_snowflake_data
-# read_dataset deliberately NOT imported here at module scope — see
+# read_dataset deliberately NOT imported here at module scope: see
 # pages/dashboard.py's own top-of-file comment for the full rationale
 # (imported inside update_box_plots instead, its only real call site).
 from components.data.data_store_utils import get_data_store, get_impact_data

@@ -1,7 +1,7 @@
 #!/bin/bash
-# entrypoint.sh — orchestrates three processes inside the SPCS container:
+# entrypoint.sh orchestrates three processes inside the SPCS container:
 #
-#   nginx        0.0.0.0:8000  (public — proxy + tile cache)
+#   nginx        0.0.0.0:8000  (public: proxy + tile cache)
 #     └─► Dash   127.0.0.1:8050  (gunicorn, 1 worker, 8 threads)
 #     └─► Tiles  127.0.0.1:8001  (uvicorn, 1 async worker)
 #
@@ -42,23 +42,23 @@ uvicorn services.tile_server:app \
 TILE_PID=$!
 echo "[entrypoint] Tile server PID: ${TILE_PID}"
 
-# Wait for tile server — exit hard if it never becomes healthy
+# Wait for tile server: exit hard if it never becomes healthy
 for i in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:${TILE_PORT}/health" > /dev/null 2>&1; then
         echo "[entrypoint] Tile server ready."
         break
     fi
     if [ "$i" -eq 30 ]; then
-        echo "[entrypoint] ERROR: Tile server did not become healthy after 30s — aborting." >&2
+        echo "[entrypoint] ERROR: Tile server did not become healthy after 30s, aborting." >&2
         exit 1
     fi
     sleep 1
 done
 
-# ── 3. Dash app (foreground — container exits when this exits) ────────────────
+# ── 3. Dash app (foreground, container exits when this exits) ────────────────
 echo "[entrypoint] Starting Dash app on 127.0.0.1:${DASH_PORT}..."
 # nginx is always in front of us here (step 1, both under SPCS and Azure Web
-# App for Containers — same image, same entrypoint.sh) — tell the app so it
+# App for Containers: same image, same entrypoint.sh). Tell the app so it
 # serves browser-facing tile URLs relative/same-origin instead of an absolute
 # http://localhost:8001 that would resolve against the viewer's own machine.
 # See components/config.py's BEHIND_REVERSE_PROXY for the full rationale.

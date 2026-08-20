@@ -23,7 +23,7 @@ jobs:
         run: chmod +x startup.sh
 
       # Azure Oryx handles pip install during deployment (SCM_DO_BUILD_DURING_DEPLOYMENT=true).
-      # No local pip install needed — it would be discarded before deploy anyway.
+      # No local pip install needed: it would be discarded before deploy anyway.
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:

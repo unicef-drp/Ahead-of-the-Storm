@@ -210,15 +210,14 @@ else:
 # Metadata
 # read_dataset/convert_to_geodataframe are deliberately NOT imported here at
 # module scope (imported instead inside load_all_layers, their only real
-# call site) — importing any gigaspatial submodule runs gigaspatial's own
+# call site); importing any gigaspatial submodule runs gigaspatial's own
 # __init__.py, which eagerly pulls in GEE/BigQuery/Delta-Sharing/SQLAlchemy
 # handlers regardless of which extras are actually used (measured ~4.3-4.5s
 # on this repo's own dependency tree). components/data/data_store_utils.py's
 # _LazyDataStore exists specifically to avoid this cost for IMPACT_DATA_
 # SOURCE=SQL callers; a module-level import here silently defeated that
 # same safeguard, paid on every gunicorn worker boot regardless of mode
-# (use_pages=True imports every page module at startup, per this repo's
-# own CLAUDE.md).
+# (use_pages=True imports every page module at startup).
 from components.data.data_store_utils import get_data_store, get_impact_data
 
 # Layout module: constants are defined there and re-imported here for use in callbacks

@@ -61,6 +61,17 @@ point_to_layer_schools_health = assign("""
 function(feature, latlng, context) {
     const props = feature.properties || {};
     const color = props._color || '#808080';
+    // Real user decision, 2026-08-20: the OUTLINE stays this facility's
+    // own FIXED per-type color (services/tile_server.py's own
+    // _FACILITY_BASE_COLORS, e.g. schools vs health centers vs shelters
+    // vs WASH each get a distinct real color), NOT the same probability-
+    // driven value as the fill -- two co-located facilities of different
+    // types could otherwise land on the identical color (fill AND
+    // stroke both `color`) whenever they happened to share a probability
+    // tier, making them visually indistinguishable. `|| color` is a
+    // defensive fallback only, for any older cached GeoJSON response
+    // from before `_strokeColor` existed.
+    const strokeColor = props._strokeColor || color;
     const radius = props._radius || 12;
     const opacity = props._opacity || 0.8;
     const weight = props._weight || 2;
@@ -69,7 +80,7 @@ function(feature, latlng, context) {
     return L.circleMarker(latlng, {
         radius: radius,
         fillColor: color,
-        color: color,
+        color: strokeColor,
         weight: weight,
         opacity: opacity,
         fillOpacity: fillOpacity

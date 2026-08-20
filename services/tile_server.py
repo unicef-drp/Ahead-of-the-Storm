@@ -238,7 +238,7 @@ def _connect() -> snowflake.connector.SnowflakeConnection:
     conn = snowflake.connector.connect(**kwargs)
     # The Snowflake connector sometimes ignores the warehouse param in the
     # connection string (confirmed under both SPCS OAuth and plain PAT/
-    # password auth — see components/data/snowflake_utils.py's own
+    # password auth; see components/data/snowflake_utils.py's own
     # get_snowflake_connection() for the same fix). Explicitly set it so
     # every new thread session actually has an active warehouse.
     if SNOWFLAKE_WAREHOUSE:
@@ -2330,7 +2330,7 @@ def _fetch_admin_tile(
     raw = bytes(pbf) if not isinstance(pbf, bytes) else pbf
     # gzip, matching _fetch_mercator_tile's own PBF output above (real
     # perf-audit finding: admin-region MVT was going out uncompressed while
-    # its mercator sibling already gzipped — purely a historical gap, not a
+    # its mercator sibling already gzipped, purely a historical gap, not a
     # deliberate choice, since admin-region MVT (property-per-feature,
     # repeated keys) compresses just as well). _fetch_admin_combined_tile
     # below has the identical fix for the same reason.
@@ -2342,20 +2342,16 @@ def _fetch_admin_tile(
 # ---------------------------------------------------------------------------
 
 _RASTER_PALETTES: dict[str, dict] = {
-    # Back to 'log' for PROBABILITY and every E_* entry (real user decision,
-    # 2026-08-19: pure linear made low real percentages hard to
-    # differentiate again; log's own small-value differentiation was
-    # preferred after all). What actually caused the earlier "solid
-    # orange/red for a real 2-15%" bug was NOT log itself, it was log's
-    # min_val being anchored at this country's own tiny true minimum
-    # (sometimes near 0), which stretches almost the WHOLE color ramp
-    # across just the smallest values. The real fix: `_get_minmax`'s log
-    # branch (see that function's own comment) now RAISES the floor to
-    # `max(true_min, max_val * _LOG_FLOOR_FRACTION)` instead of using the
-    # true minimum directly — log still differentiates small-to-large
-    # values, just without over-stretching on a handful of near-zero
-    # outliers. `fixed_max` stays omitted: max is still fully dynamic
-    # (this country's own real max), only the floor changed.
+    # 'log' for PROBABILITY and every E_* entry: for PROBABILITY, both
+    # endpoints are now fully fixed constants (see _FIXED_SCALE_COLS),
+    # unaffected by min_val anchoring at all. For every other log column
+    # (population-family raw + E_*), min_val anchors at the TRUE minimum
+    # (see `_get_minmax`'s own log branch and its comment for the full
+    # 2026-08-20 real-data verification: a floor-raise was tried and
+    # actively hurt these count-like columns, collapsing the vast
+    # majority of real cells into one flattest color). `fixed_max` stays
+    # omitted for non-fixed columns: max is fully dynamic (this
+    # country/cycle's own real max).
     'PROBABILITY':             {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
     'POPULATION':              {'colors': ['#add8e6','#8cc5d3','#6bb2c0','#4a9bad','#33849a','#216d87','#165674','#0d3f51','#06283d','#011129'], 'scale': 'log'},
     'E_POPULATION':            {'colors': ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#f03b20','#e31a1c','#bd0026','#800026'], 'scale': 'log'},
@@ -3311,15 +3307,23 @@ _PALETTE_RGBA: dict[str, list[tuple[int, int, int, int]]] = {
 _minmax_cache: dict[tuple, tuple[float, float, float]] = {}
 _minmax_lock = threading.Lock()
 
-# Raises a log-scale palette's low-end floor to this fraction of its own
-# max_val, instead of the true real minimum (see _get_minmax's own log
-# branch for the full "why"). 0.02 chosen to match the raw hazard layers'
-# own real theoretical floor (1/51, a 51-member ensemble's smallest
-# possible nonzero fraction ≈ 0.0196), for a roughly consistent "how faint
-# is faint" feel between the two color systems, even though this floor is
-# relative (a fraction of max_val) rather than absolute like the raw
-# layers' fixed 1/51.
-_LOG_FLOOR_FRACTION = 0.02
+# Log-scale columns with a FULLY FIXED (min_val, max_val). Real user
+# decision, 2026-08-19: "no dynamic scaling" for PROBABILITY, extended
+# the same day to the RAW (unweighted) population-family columns too
+# ("maybe we should establish something similar for the populations...
+# 50k is already enough") -- then REVERTED again the following day (real
+# user decision, 2026-08-20: "okay, then please revert that to the
+# original behavior", after confirming the raw population-family layers
+# had never been fixed-scale before that request). Only PROBABILITY
+# stays fixed here now; POPULATION/CHILDREN_TOTAL/INFANT_POPULATION/
+# SCHOOL_AGE_POPULATION/ADOLESCENT_POPULATION (and their E_* siblings,
+# already reverted earlier the same day, see _RASTER_PALETTES' own
+# E_POPULATION/etc. entries) are all back to a real, data-driven per-
+# country/per-cycle range, the exact same as every other never-fixed log
+# column in this file.
+_FIXED_SCALE_COLS = {
+    'PROBABILITY': (1.0 / 51, 1.0),
+}
 
 
 def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
@@ -3361,44 +3365,55 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             if pos.empty:
                 return None
             max_val = float(fixed_max) if fixed_max is not None else float(col_data.max())
-            # Floor RAISED, not anchored at the true minimum directly (real
-            # user decision, 2026-08-19). The true minimum can be an
-            # extreme near-zero outlier tile; anchoring log's low end
-            # there stretches almost the entire color ramp across just the
-            # smallest values, which is exactly what made a real 2-15%
-            # probability render as solid orange/red (see _RASTER_PALETTES'
-            # own comment for the full "why"). Log still differentiates
-            # small-to-large values above this floor, just without
-            # over-reacting to one outlier.
+            # PROBABILITY and the population-family columns get a FULLY
+            # FIXED scale (real user decision, 2026-08-19: "no dynamic
+            # scaling for that" / "maybe we should establish something
+            # similar for the populations"): both min_val AND max_val are
+            # hardcoded absolute constants, completely ignoring this
+            # country/cycle's own real min/max (see _FIXED_SCALE_COLS'
+            # own comment for the full real-world grounding), so the
+            # identical real number always maps to the identical real
+            # color no matter which country or forecast cycle it comes
+            # from.
             #
-            # PROBABILITY specifically gets an ABSOLUTE floor (1/ensemble
-            # size, ~1.96% for 51 members), not a fraction of max_val: it's
-            # a pure 0-1 ensemble fraction, the exact same quantity the raw
-            # River/Rain layers already anchor at this same absolute value
-            # (see _fetch_river_extent_raster_tile's own comment) — a
-            # relative-to-max floor would make the identical real
-            # percentage look different from one country/cycle to the next
-            # depending on THAT context's own max, the same incoherence
-            # already fixed for the raw layers. E_* columns (raw counts
-            # weighted by probability, not a bounded fraction) have no
-            # equivalent absolute unit, so they keep the relative floor.
-            col_floor = (1.0 / _BITMASK_ENSEMBLE_SIZE) if col == 'PROBABILITY' else (max_val * _LOG_FLOOR_FRACTION)
-            min_val = max(float(pos.min()), col_floor)
-            if max_val <= min_val:
-                # `min_val == max_val` (zero-variance distribution) does
-                # not mean "no data": it is a routine case for River
-                # specifically, where a rare RP tier (rp10 = a
-                # 1-in-10-year event) means many tiles only ever have
-                # exactly ONE flooded ensemble member (1/51), producing a
-                # uniform, zero-variance PROBABILITY distribution that is
-                # genuinely present data. Widen geometrically around the
-                # single shared value (÷3 / ×3) rather than returning
-                # None: this places it at the midpoint of the log scale
-                # (neither artificially muted at the bottom nor
-                # overstated at the top), the same treatment regardless
-                # of which log-scale column hits this case.
-                min_val = min_val / 3.0
-                max_val = max_val * 3.0
+            # Every OTHER log column (E_NUM_SCHOOLS, BUILT_SURFACE_M2,
+            # E_POPULATION, etc.) anchors the floor at the TRUE minimum,
+            # not an artificially raised one. A floor-raise (real min(...,
+            # max_val * a small fraction)) was tried here 2026-08-19 to
+            # stop a near-zero outlier tile from stretching the whole
+            # ramp, but that fix was specific to PROBABILITY's own
+            # distribution shape, which no longer even reaches this
+            # branch at all (fully fixed above). Re-verified against 5
+            # real datasets 2026-08-20 (PHL/JAM/BGD/MEX, both raw
+            # population-family and E_* impact columns): the floor-raise
+            # was actively HURTING every one of them -- e.g. PHL's real
+            # POPULATION column had 97.8% of all nonzero cells collapsed
+            # into the single flattest color with the floor raised, vs
+            # 0.1% with the true minimum and a full, real 10-color spread.
+            # These count-like columns have a genuinely wide, real dynamic
+            # range (a single dense-urban z14 cell can be 4-5 orders of
+            # magnitude denser than a rural one); the "outlier" the floor
+            # was built to suppress is exactly the real signal a log scale
+            # exists to show here, not noise.
+            if col in _FIXED_SCALE_COLS:
+                min_val, max_val = _FIXED_SCALE_COLS[col]
+            else:
+                min_val = float(pos.min())
+                if max_val <= min_val:
+                    # `min_val == max_val` (zero-variance distribution) does
+                    # not mean "no data": it is a routine case for River
+                    # specifically, where a rare RP tier (rp10 = a
+                    # 1-in-10-year event) means many tiles only ever have
+                    # exactly ONE flooded ensemble member (1/51), producing a
+                    # uniform, zero-variance PROBABILITY distribution that is
+                    # genuinely present data. Widen geometrically around the
+                    # single shared value (÷3 / ×3) rather than returning
+                    # None: this places it at the midpoint of the log scale
+                    # (neither artificially muted at the bottom nor
+                    # overstated at the top), the same treatment regardless
+                    # of which log-scale column hits this case.
+                    min_val = min_val / 3.0
+                    max_val = max_val * 3.0
             result = (min_val, max_val)
         elif fixed_max is not None:
             # Linear scale with known ceiling (e.g. probability 0–1).
@@ -4064,34 +4079,17 @@ def _fetch_combined_raster_tile(
     spec = _RASTER_PALETTES['PROBABILITY']
     palette_rgba = _PALETTE_RGBA['PROBABILITY']
     n_colors = len(palette_rgba)
-    # Uses `spec['scale']` (linear, per _RASTER_PALETTES['PROBABILITY'] —
-    # switched from log 2026-08-19, see that dict's own comment) against
-    # this country's own real min/max, still dynamic (not a fixed 0-1
-    # ceiling), just without log's compression of small values toward the
-    # saturated end of the ramp.
-    #
-    # `min_val`/`max_val` here set the color-LEGEND's own stable range:
-    # reusing the per-cell value's own tile-local min/max would make the
-    # legend flicker/rescale as you pan. The bitmask union's per-cell
-    # probability has no cheap exact closed-form bound, but it does have a
-    # provable one: a true union's probability can never exceed the SUM of
-    # its constituent hazards' own individual probabilities (union bound,
-    # `P(A∪B) <= P(A)+P(B)` always holds, tighter than needed, since it
-    # doesn't even require independence), and never exceeds 1.0. Looser
-    # than the exact true max, but cheap (reuses the SAME per-hazard
-    # _get_minmax country-wide PROBABILITY lookups already cached) and
-    # still a real upper bound, so a genuinely-differentiated high
-    # combined cell can never be wrongly clipped to the single top color
-    # bucket.
-    hazard_ranges = [r for hz in used_hazard_names
-                       for r in [_get_minmax(hazard_keys[hz], 'PROBABILITY')] if r is not None]
-    if hazard_ranges:
-        min_val = min(r[0] for r in hazard_ranges)
-        max_val = min(1.0, sum(r[1] for r in hazard_ranges))
-    else:
-        min_val, max_val = float(np.min(p_combined)), float(np.max(p_combined))
-    if max_val <= min_val:
-        max_val = min_val + 1e-6
+    # FULLY FIXED 0-100% scale (real user decision, 2026-08-19: "no
+    # dynamic scaling for that"), same real constants as _get_minmax's own
+    # PROBABILITY branch (that function's own comment has the full "why":
+    # the identical real percentage must always map to the identical real
+    # color, regardless of country/cycle/how many hazards are combined).
+    # Deliberately NOT the country-specific union-bound range this used to
+    # derive from per-hazard _get_minmax calls (min of per-hazard mins,
+    # min(1.0, sum of per-hazard maxes)) -- that was itself already
+    # dynamic (varying with which hazards happen to be active), the
+    # opposite of what's wanted here.
+    min_val, max_val = 1.0 / _BITMASK_ENSEMBLE_SIZE, 1.0
 
     if spec['scale'] == 'log':
         safe = np.where(p_combined > 0, p_combined, np.nan)
@@ -4565,7 +4563,7 @@ _PRECIP_RAW_TTL = 4 * 60 * 60  # 4 hours
 # Pinned to _PRECIP_RAW_TTL (not _TILE_TTL) rather than just satisfying that
 # minimum: ensure_member_rate_grid re-downloads+re-decodes the SAME
 # stage_path ensure_precip_raw already has resident in self._grid (real,
-# confirmed-live gap — they don't share the download, see this class's own
+# confirmed-live gap: they don't share the download, see this class's own
 # member-cache docstring), so pinning this to _TILE_TTL (15min, 16x shorter
 # than _PRECIP_RAW_TTL's 4h) meant that redundant ~1.2GB re-download+decode
 # recurred every 15min even while the aggregate cache for the exact same
@@ -4687,7 +4685,7 @@ def _precip_rate_breaks_for_window(window_h: int) -> list[float]:
 
 
 # Sequential single-hue purple ramp for exceedance PROBABILITY (real
-# per-request DYNAMIC min/max, not a fixed 0-100% scale — 2026-08-19 user
+# per-request DYNAMIC min/max, not a fixed 0-100% scale (2026-08-19 user
 # decision, matches river-raw's own conversion, see
 # _fetch_river_extent_raster_tile's own comment for the full "why").
 # Deliberately NOT the green/yellow/orange/red "intensity" ramp used for
@@ -4777,7 +4775,7 @@ class _PrecipRawCache:
         self._grid: dict[str, dict] = {}       # forecast_time -> grid entry
         self._loaded_at: dict[str, float] = {}  # forecast_time -> epoch seconds
         # forecast_time -> epoch seconds of the last ensure_precip_raw() call
-        # for it (hit OR fresh load) — see _PREWARM_ACCESS_GRACE_SECONDS'
+        # for it (hit OR fresh load); see _PREWARM_ACCESS_GRACE_SECONDS'
         # own comment for why this exists: without it, the stale-eviction
         # pass below only knows "latest-3 or not", not "in active use".
         self._accessed_at: dict[str, float] = {}
@@ -4858,7 +4856,7 @@ class _PrecipRawCache:
 
         # Marks forecast_time as in-use for the stale-eviction grace period
         # (see _PREWARM_ACCESS_GRACE_SECONDS) regardless of what happens
-        # below — a cache hit, a fresh load, and the prewarm loop's own
+        # below: a cache hit, a fresh load, and the prewarm loop's own
         # warm-up call all mean the same thing here: "keep this around."
         self._accessed_at[forecast_time] = time.time()
 
@@ -5167,7 +5165,7 @@ def _colorize_precip_probability(vals: np.ndarray, min_val: float = 0.0, max_val
     """Map a (H, W) grid of exceedance-probability fractions (0-1) to an RGBA
     sequential-purple image, DYNAMIC linear scale against `min_val`/`max_val`
     (real per-request range, see _PrecipRawCache's own caching of this pair
-    and _fetch_precip_raw_tile's own call site for where they come from —
+    and _fetch_precip_raw_tile's own call site for where they come from;
     2026-08-19 user decision, matches river-raw's own conversion).
 
     See _PRECIP_PROB_COLORS above for the exact ramp; _PRECIP_PROB_BREAKS is
@@ -5335,7 +5333,7 @@ def _fetch_precip_raw_tile(
     mean_colorize = lambda vals: _colorize_precip_rate(vals, window_breaks)
     # prob_colorize's own min/max: FIXED floor at 1/_PRECIP_PROB_ENSEMBLE_SIZE
     # (the smallest possible real nonzero exceedance fraction, ~1.96% for a
-    # 51-member ensemble — real user decision, 2026-08-19: a real 2% value
+    # 51-member ensemble (real user decision, 2026-08-19: a real 2% value
     # must always render as the lightest color on EVERY cycle, not just
     # cycles whose own true minimum happens to be near 2%, or the same
     # absolute number would look different cycle to cycle, which reads as
@@ -5702,7 +5700,7 @@ class _RiverExtentCache:
         self._grids: dict[tuple[str, str, int], dict] = {}       # (forecast_time, rp_tier, step_h) -> grid entry
         self._loaded_at: dict[tuple[str, str, int], float] = {}   # (forecast_time, rp_tier, step_h) -> epoch seconds
         # (forecast_time, rp_tier) -> epoch seconds of the last
-        # ensure_river_extent() call touching that pair (any step_h) — same
+        # ensure_river_extent() call touching that pair (any step_h), same
         # eviction-grace mechanism as _PrecipRawCache._accessed_at, see
         # _PREWARM_ACCESS_GRACE_SECONDS' own comment. Keyed one level
         # coarser than self._grids (no step_h) to match the eviction pass's
@@ -7493,44 +7491,35 @@ def facility_geojson(
 # gzip bytes in a fresh Response object each time (cheap) rather than
 # caching the Response itself.
 def _facility_probability_minmax(probs) -> tuple[float, float]:
-    """Real (min_val, max_val) for a facility layer's own PROBABILITY
-    values in THIS response (real user decision, 2026-08-19: a facility
-    marker's color should mean the same thing as the raster tile
-    underneath it, so this uses the exact same log-with-raised-floor
-    convention as _RASTER_PALETTES['PROBABILITY']/_get_minmax's own log
-    branch, not a separate fixed-breakpoint scale — see that function's
-    own comment for the full "why"). Computed from the facility set's own
-    real nonzero values directly, rather than trying to reuse the raster
-    tile's exact cached _get_minmax key (a superset of every mercator
-    tile, not just facility locations): simpler, self-contained, and
-    still gives internally-consistent relative coloring across the
-    visible facilities, which is what "follows the impact layer's own
-    coloring convention" actually requires.
+    """FULLY FIXED 0-100% range for a facility layer's own PROBABILITY
+    coloring (real user decision, 2026-08-19: "for the hazard probability
+    we need a fixed range from 0 to 100 [...] as this is percentage, this
+    will always be the range, and the same should go for the facilities
+    with the impact probabilities"). Both endpoints are hardcoded absolute
+    constants (1/_BITMASK_ENSEMBLE_SIZE ~1.96% .. 1.0), completely
+    ignoring `probs` (this response's own real facility values) -- same
+    real constants and reasoning as _get_minmax's own PROBABILITY branch
+    (see that function's own comment for the full "why": the identical
+    real percentage must always map to the identical real color, not just
+    within one response's own facility set but everywhere).
 
-    Floor is the ABSOLUTE 1/_BITMASK_ENSEMBLE_SIZE (~1.96%), not a
-    fraction of this response's own max: facility PROBABILITY is the same
-    pure 0-1 ensemble fraction _get_minmax's own PROBABILITY branch uses,
-    so it gets the same absolute floor for the same reason (a
-    relative-to-max floor would make the identical real percentage look
-    different facility-set to facility-set, see _get_minmax's own comment
-    for the full "why").
+    An earlier version of this function derived (min_val, max_val) from
+    THIS response's own real nonzero values -- a real, confirmed-live bug:
+    a lone facility with a genuinely low real probability (e.g. 3.9%)
+    could still land near the "max" of a low-variance facility set and
+    render as a dark, high-severity-looking color, exactly contradicting
+    what a true percentage scale should show. `probs` is kept as a
+    parameter for call-site compatibility (every caller still computes
+    and passes it) but is now unused.
     """
-    pos = [p for p in probs if p is not None and p > 0]
-    floor = 1.0 / _BITMASK_ENSEMBLE_SIZE
-    if not pos:
-        return floor, 1.0
-    true_min, max_val = min(pos), max(pos)
-    min_val = max(true_min, floor)
-    if max_val <= min_val:
-        max_val = min_val + 1e-6
-    return min_val, max_val
+    return 1.0 / _BITMASK_ENSEMBLE_SIZE, 1.0
 
 
-def _facility_color_for_prob(base_color: str, prob: float, min_val: float = 0.02, max_val: float = 1.0) -> tuple[str, int]:
+def _facility_color_for_prob(base_color: str, prob: float, min_val: float = 1.0 / _BITMASK_ENSEMBLE_SIZE, max_val: float = 1.0) -> tuple[str, int]:
     """Color/radius by the SAME log-scale-with-raised-floor convention the
     raster PROBABILITY layer uses (real user decision, 2026-08-19,
     replacing the old fixed absolute breakpoints below this comment's own
-    history) — reuses _RASTER_PALETTES['PROBABILITY']'s own 10-color ramp
+    history); reuses _RASTER_PALETTES['PROBABILITY']'s own 10-color ramp
     directly, not a separate facility-only palette, so a marker's color
     and the tile color at that same point mean the same real number.
     Shared by the single-hazard and combined-hazard facility GeoJSON
@@ -7538,7 +7527,7 @@ def _facility_color_for_prob(base_color: str, prob: float, min_val: float = 0.02
     same underlying number and the same (min_val, max_val) range.
 
     `min_val`/`max_val` come from _facility_probability_minmax (real
-    per-response range, not a hardcoded default — the defaults here only
+    per-response range, not a hardcoded default: the defaults here only
     matter for prob<=0's early return, which ignores them entirely).
 
     Radius still scales in discrete visual steps (2-10px, a Leaflet dot's
@@ -7595,8 +7584,19 @@ def _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind
                  for k, v in row.items()
                  if k not in ("LATITUDE", "LONGITUDE")
                  and (combine or k != "PROBABILITY")}
+        # `_strokeColor` is the facility's own FIXED per-type color
+        # (_FACILITY_BASE_COLORS), real user decision, 2026-08-20: schools
+        # became visually indistinguishable from health centers/shelters/
+        # WASH whenever they happened to land on the same probability-
+        # derived color, since `_color` (fill AND stroke) was the same
+        # single probability-driven value for every facility type. The
+        # FILL still varies by real probability (`_color`, unchanged); the
+        # OUTLINE now always identifies the real facility TYPE regardless
+        # of its current probability, so two co-located facilities of
+        # different types stay visually distinguishable at a glance no
+        # matter what color their probability-driven fill happens to be.
         props.update({
-            "_color": color, "_radius": radius,
+            "_color": color, "_strokeColor": base_color, "_radius": radius,
             "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
         })
         features.append({
@@ -7958,8 +7958,12 @@ def _fetch_combined_facility_geojson_body(
         prob = float(row.get("PROBABILITY") or 0)
         color, radius = _facility_color_for_prob(base_color, prob, min_val, max_val)
         props = {k.lower(): _safe_prop(v) for k, v in row.items() if k not in ("LATITUDE", "LONGITUDE")}
+        # `_strokeColor`: see _fetch_facility_geojson_body's own comment
+        # for the full "why" (real facility TYPE must stay visually
+        # identifiable via a fixed outline color, independent of the
+        # probability-driven fill).
         props.update({
-            "_color": color, "_radius": radius,
+            "_color": color, "_strokeColor": base_color, "_radius": radius,
             "_opacity": 0.8, "_weight": 2, "_fillOpacity": 0.7,
         })
         features.append({
@@ -8563,6 +8567,7 @@ _COUNTRY_TOTALS_RAW_COLS = [
 ]
 
 
+@_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
 def _combined_bitmask_fracs(
     country: str, storm: str,
     wind_on: bool, wind_forecast_date: Optional[str], wind_threshold: int,
@@ -8583,6 +8588,23 @@ def _combined_bitmask_fracs(
     real PROBABILITY column merged), or a tuple:
     (merged, p_combined, tc_only_frac, flood_only_frac, both_frac,
     river_only_frac, rain_only_frac, river_rain_both_frac, has_flood_split)
+
+    @_ttl_cache'd here directly (same decorator/TTL/maxsize its two callers
+    already use), not just at the country/admin caller layer: the Full
+    Impact Breakdown modal calls BOTH _combined_country_totals_cached (for
+    the main table) and _combined_admin_totals_cached (for the Admin Level
+    1 table) with IDENTICAL params for the same render, and this function's
+    own merge/outer-join/per-tile bitmask decode+popcount is the genuinely
+    CPU-bound part of the whole computation (the real Snowflake I/O
+    underneath, ensure_mercator/get_wind_tile_bitmask/etc., is already
+    @ttl_cache'd separately either way). Without this decorator, opening the
+    Admin Level 1 section recomputed that whole merge a second time from
+    already-cached raw inputs, real avoidable latency on every modal
+    render, not just a cold-cache miss. Safe to cache by reference (not a
+    copy): neither caller mutates the returned `merged` DataFrame or any
+    frac array in place, both only read from them via pd.to_numeric(...)
+    .to_numpy() or by building new Series, matching this file's established
+    "cache the objects themselves, callers must not mutate" convention.
     """
     # Same active-hazard definition the combined map layers use, so the
     # headline totals always describe exactly the hazard set the map is
@@ -8855,7 +8877,7 @@ def _base_admin_names_cached(country: str) -> dict:
     """ADMIN_ID -> real NAME lookup for `country`, from BASE_ADMIN_MAT (a
     storm/hazard-independent geography table, unlike ADMIN_ALL_IMPACT_MAT/
     ADMIN_ALL_RIVER_MAT/ADMIN_ALL_PRECIP_MAT which all require a real
-    storm/date/threshold match to have any rows at all — this lookup must
+    storm/date/threshold match to have any rows at all; this lookup must
     still resolve real names even when NONE of those do, e.g. a flood-only
     scenario with no active storm). Long TTL (30 min): country admin
     boundaries never change within a session. {} on any error/empty
@@ -8897,7 +8919,7 @@ def _combined_admin_totals_cached(
     at the final summation step instead of summed to one whole-country
     number. Gives a real per-region combined total AND a real per-region
     TC-only/Both/Flood-only family split (and, when applicable, a real
-    within-Flood River-only/Rain-only/Both split too) — the exact same
+    within-Flood River-only/Rain-only/Both split too), the exact same
     real methodology the main country-level table above already shows,
     not a fabricated illustrative split under real region names, or one
     separate table per hazard.
@@ -8905,12 +8927,32 @@ def _combined_admin_totals_cached(
     Returns a list of {"admin_id", "name", "population", ...,
     "family_split", "flood_split"} dicts, one per real admin region that
     has at least one real tile in the merged bitmask result (a region with
-    zero real tiles for the country's own admin boundary set — shouldn't
-    happen in practice, ADMIN_ID coverage is expected to be exhaustive —
+    zero real tiles for the country's own admin boundary set, which shouldn't
+    happen in practice, ADMIN_ID coverage is expected to be exhaustive,
     is simply absent, not fabricated as an all-zero row). Empty list under
     the exact same "nothing real to compute" conditions
     _combined_country_totals_cached itself returns {} for.
+
+    `admin_level` is accepted (kept in the cache key, matching the route's
+    own signature) but NOT currently plumbed anywhere below: BASE_MERCATOR_
+    TILE_MAT.ADMIN_ID (the grouping key, via _combined_bitmask_fracs) and
+    BASE_ADMIN_MAT (the name lookup, via _base_admin_names_cached) are both
+    hard-fixed to real admin-1 boundaries only, unlike this codebase's
+    OTHER, older admin-level plumbing (_ADMIN_BASE_SQL/_ensure_admin_base_
+    one) which genuinely does take and use a real admin_level. Silently
+    returning admin-1 data mislabeled as whatever level was requested would
+    be exactly the "confident wrong answer with no error" failure mode this
+    project's own conventions exist to prevent (see this repo's own
+    "fail loudly on a hard structural gap" convention), so any level other
+    than the one real level this actually computes fails loudly here
+    instead. The only current caller (pages/map_shell_concept.py's
+    _fetch_real_combined_admin_totals) never requests anything else, so
+    this is dormant today, not a live bug, only a foot-gun for a future
+    caller.
     """
+    if admin_level != 1:
+        raise HTTPException(status_code=400, detail="Only admin_level=1 has real per-region data (BASE_MERCATOR_TILE_MAT/"
+                                                        "BASE_ADMIN_MAT are both admin-1-only); no admin_level=2+ backend exists yet.")
     fracs = _combined_bitmask_fracs(country, storm, wind_on, wind_forecast_date, wind_threshold,
                                        gust_on, gust_threshold, river_on, river_forecast_date, rp_tier, river_window,
                                        rain_on, rain_forecast_date, threshold_mm, window_h)
@@ -8927,7 +8969,7 @@ def _combined_admin_totals_cached(
     # come back NaN (-> None below), the SAME real "genuinely no data for
     # THIS region's own facility column" distinction _wsum's own
     # `.isna().all()` check makes at the whole-country level, just applied
-    # per-group instead of once across every tile — a region-wide real gap
+    # per-group instead of once across every tile (a region-wide real gap
     # (e.g. a facility column entirely NULL for one specific admin region
     # but real elsewhere in the same country) must stay None there, not a
     # fabricated 0 folded into that region's own total.
