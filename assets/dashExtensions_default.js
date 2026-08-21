@@ -50,8 +50,8 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
         function3: function(feature, latlng, context) {
                 const props = feature.properties || {};
                 const color = props._color || '#808080';
-                // Real user decision, 2026-08-20: the OUTLINE stays this facility's
-                // own FIXED per-type color (services/tile_server.py's own
+                // The OUTLINE stays this facility's own FIXED per-type color
+                // (services/tile_server.py's own
                 // _FACILITY_BASE_COLORS, e.g. schools vs health centers vs shelters
                 // vs WASH each get a distinct real color), NOT the same probability-
                 // driven value as the fill -- two co-located facilities of different

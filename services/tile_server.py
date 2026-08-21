@@ -2347,7 +2347,7 @@ _RASTER_PALETTES: dict[str, dict] = {
     # unaffected by min_val anchoring at all. For every other log column
     # (population-family raw + E_*), min_val anchors at the TRUE minimum
     # (see `_get_minmax`'s own log branch and its comment for the full
-    # 2026-08-20 real-data verification: a floor-raise was tried and
+    # real-data verification: a floor-raise was tried and
     # actively hurt these count-like columns, collapsing the vast
     # majority of real cells into one flattest color). `fixed_max` stays
     # omitted for non-fixed columns: max is fully dynamic (this
@@ -3307,20 +3307,14 @@ _PALETTE_RGBA: dict[str, list[tuple[int, int, int, int]]] = {
 _minmax_cache: dict[tuple, tuple[float, float, float]] = {}
 _minmax_lock = threading.Lock()
 
-# Log-scale columns with a FULLY FIXED (min_val, max_val). Real user
-# decision, 2026-08-19: "no dynamic scaling" for PROBABILITY, extended
-# the same day to the RAW (unweighted) population-family columns too
-# ("maybe we should establish something similar for the populations...
-# 50k is already enough") -- then REVERTED again the following day (real
-# user decision, 2026-08-20: "okay, then please revert that to the
-# original behavior", after confirming the raw population-family layers
-# had never been fixed-scale before that request). Only PROBABILITY
+# Log-scale columns with a constant (min_val, max_val): PROBABILITY uses
+# "no dynamic scaling" while the RAW (unweighted) population-family
+# columns were tried as a fixed scale then reverted. Only PROBABILITY
 # stays fixed here now; POPULATION/CHILDREN_TOTAL/INFANT_POPULATION/
-# SCHOOL_AGE_POPULATION/ADOLESCENT_POPULATION (and their E_* siblings,
-# already reverted earlier the same day, see _RASTER_PALETTES' own
-# E_POPULATION/etc. entries) are all back to a real, data-driven per-
-# country/per-cycle range, the exact same as every other never-fixed log
-# column in this file.
+# SCHOOL_AGE_POPULATION/ADOLESCENT_POPULATION (and their E_* siblings, see
+# _RASTER_PALETTES' own E_POPULATION/etc. entries) are all back to a real,
+# data-driven per-country/per-cycle range, the exact same as every other
+# never-fixed log column in this file.
 _FIXED_SCALE_COLS = {
     'PROBABILITY': (1.0 / 51, 1.0),
 }
@@ -3365,10 +3359,8 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             if pos.empty:
                 return None
             max_val = float(fixed_max) if fixed_max is not None else float(col_data.max())
-            # PROBABILITY and the population-family columns get a FULLY
-            # FIXED scale (real user decision, 2026-08-19: "no dynamic
-            # scaling for that" / "maybe we should establish something
-            # similar for the populations"): both min_val AND max_val are
+            # PROBABILITY and the population-family columns get a
+            # constant scale: both min_val AND max_val are
             # hardcoded absolute constants, completely ignoring this
             # country/cycle's own real min/max (see _FIXED_SCALE_COLS'
             # own comment for the full real-world grounding), so the
@@ -3379,12 +3371,12 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
             # Every OTHER log column (E_NUM_SCHOOLS, BUILT_SURFACE_M2,
             # E_POPULATION, etc.) anchors the floor at the TRUE minimum,
             # not an artificially raised one. A floor-raise (real min(...,
-            # max_val * a small fraction)) was tried here 2026-08-19 to
+            # max_val * a small fraction)) was tried here to
             # stop a near-zero outlier tile from stretching the whole
-            # ramp, but that fix was specific to PROBABILITY's own
+            # ramp, but that was specific to PROBABILITY's own
             # distribution shape, which no longer even reaches this
-            # branch at all (fully fixed above). Re-verified against 5
-            # real datasets 2026-08-20 (PHL/JAM/BGD/MEX, both raw
+            # branch at all (fully fixed above). Verified against 5
+            # real datasets (PHL/JAM/BGD/MEX, both raw
             # population-family and E_* impact columns): the floor-raise
             # was actively HURTING every one of them -- e.g. PHL's real
             # POPULATION column had 97.8% of all nonzero cells collapsed
@@ -4079,8 +4071,7 @@ def _fetch_combined_raster_tile(
     spec = _RASTER_PALETTES['PROBABILITY']
     palette_rgba = _PALETTE_RGBA['PROBABILITY']
     n_colors = len(palette_rgba)
-    # FULLY FIXED 0-100% scale (real user decision, 2026-08-19: "no
-    # dynamic scaling for that"), same real constants as _get_minmax's own
+    # A constant 0-100% scale, same real constants as _get_minmax's own
     # PROBABILITY branch (that function's own comment has the full "why":
     # the identical real percentage must always map to the identical real
     # color, regardless of country/cycle/how many hazards are combined).
@@ -4562,8 +4553,8 @@ _PRECIP_RAW_TTL = 4 * 60 * 60  # 4 hours
 #
 # Pinned to _PRECIP_RAW_TTL (not _TILE_TTL) rather than just satisfying that
 # minimum: ensure_member_rate_grid re-downloads+re-decodes the SAME
-# stage_path ensure_precip_raw already has resident in self._grid (real,
-# confirmed-live gap: they don't share the download, see this class's own
+# stage_path ensure_precip_raw already has resident in self._grid (a real
+# gap: they don't share the download, see this class's own
 # member-cache docstring), so pinning this to _TILE_TTL (15min, 16x shorter
 # than _PRECIP_RAW_TTL's 4h) meant that redundant ~1.2GB re-download+decode
 # recurred every 15min even while the aggregate cache for the exact same
@@ -4685,8 +4676,8 @@ def _precip_rate_breaks_for_window(window_h: int) -> list[float]:
 
 
 # Sequential single-hue purple ramp for exceedance PROBABILITY (real
-# per-request DYNAMIC min/max, not a fixed 0-100% scale (2026-08-19 user
-# decision, matches river-raw's own conversion, see
+# per-request DYNAMIC min/max, not a fixed 0-100% scale, matching
+# river-raw's own conversion, see
 # _fetch_river_extent_raster_tile's own comment for the full "why").
 # Deliberately NOT the green/yellow/orange/red "intensity" ramp used for
 # the mean variant above, so a screenshot alone makes it unambiguous which
@@ -5166,7 +5157,7 @@ def _colorize_precip_probability(vals: np.ndarray, min_val: float = 0.0, max_val
     sequential-purple image, DYNAMIC linear scale against `min_val`/`max_val`
     (real per-request range, see _PrecipRawCache's own caching of this pair
     and _fetch_precip_raw_tile's own call site for where they come from;
-    2026-08-19 user decision, matches river-raw's own conversion).
+    matching river-raw's own conversion).
 
     See _PRECIP_PROB_COLORS above for the exact ramp; _PRECIP_PROB_BREAKS is
     no longer used here.
@@ -5333,7 +5324,7 @@ def _fetch_precip_raw_tile(
     mean_colorize = lambda vals: _colorize_precip_rate(vals, window_breaks)
     # prob_colorize's own min/max: FIXED floor at 1/_PRECIP_PROB_ENSEMBLE_SIZE
     # (the smallest possible real nonzero exceedance fraction, ~1.96% for a
-    # 51-member ensemble (real user decision, 2026-08-19: a real 2% value
+    # 51-member ensemble: a real 2% value
     # must always render as the lightest color on EVERY cycle, not just
     # cycles whose own true minimum happens to be near 2%, or the same
     # absolute number would look different cycle to cycle, which reads as
@@ -6243,7 +6234,7 @@ def _fetch_river_extent_raster_tile(forecast_time: str, z: int, x: int, y: int,
         # function's own docstring): continuous cyan->navy gradient.
         # FIXED floor at 1/_RIVER_PROB_ENSEMBLE_SIZE (the smallest possible
         # real nonzero member-agreement fraction, ~1.96% for 51 members),
-        # DYNAMIC ceiling (real user decision, 2026-08-19: a real 2% value
+        # DYNAMIC ceiling: a real 2% value
         # must always render as the lightest color on EVERY cycle, not
         # only cycles whose own true minimum happens to be near 2%, or the
         # same absolute number looks different cycle to cycle, which reads
@@ -7491,20 +7482,19 @@ def facility_geojson(
 # gzip bytes in a fresh Response object each time (cheap) rather than
 # caching the Response itself.
 def _facility_probability_minmax(probs) -> tuple[float, float]:
-    """FULLY FIXED 0-100% range for a facility layer's own PROBABILITY
-    coloring (real user decision, 2026-08-19: "for the hazard probability
-    we need a fixed range from 0 to 100 [...] as this is percentage, this
-    will always be the range, and the same should go for the facilities
-    with the impact probabilities"). Both endpoints are hardcoded absolute
-    constants (1/_BITMASK_ENSEMBLE_SIZE ~1.96% .. 1.0), completely
-    ignoring `probs` (this response's own real facility values) -- same
-    real constants and reasoning as _get_minmax's own PROBABILITY branch
-    (see that function's own comment for the full "why": the identical
-    real percentage must always map to the identical real color, not just
-    within one response's own facility set but everywhere).
+    """A constant 0-100% range for a facility layer's own PROBABILITY
+    coloring: this is a percentage, so the range is always 0-100%, and the
+    same applies to the facilities' own impact probabilities. Both
+    endpoints are hardcoded absolute constants (1/_BITMASK_ENSEMBLE_SIZE
+    ~1.96% .. 1.0), completely ignoring `probs` (this response's own real
+    facility values) -- same real constants and reasoning as
+    _get_minmax's own PROBABILITY branch (see that function's own comment
+    for the full "why": the identical real percentage must always map to
+    the identical real color, not just within one response's own facility
+    set but everywhere).
 
     An earlier version of this function derived (min_val, max_val) from
-    THIS response's own real nonzero values -- a real, confirmed-live bug:
+    THIS response's own real nonzero values, which was a bug:
     a lone facility with a genuinely low real probability (e.g. 3.9%)
     could still land near the "max" of a low-variance facility set and
     render as a dark, high-severity-looking color, exactly contradicting
@@ -7517,9 +7507,8 @@ def _facility_probability_minmax(probs) -> tuple[float, float]:
 
 def _facility_color_for_prob(base_color: str, prob: float, min_val: float = 1.0 / _BITMASK_ENSEMBLE_SIZE, max_val: float = 1.0) -> tuple[str, int]:
     """Color/radius by the SAME log-scale-with-raised-floor convention the
-    raster PROBABILITY layer uses (real user decision, 2026-08-19,
-    replacing the old fixed absolute breakpoints below this comment's own
-    history); reuses _RASTER_PALETTES['PROBABILITY']'s own 10-color ramp
+    raster PROBABILITY layer uses, replacing the old fixed absolute
+    breakpoints; reuses _RASTER_PALETTES['PROBABILITY']'s own 10-color ramp
     directly, not a separate facility-only palette, so a marker's color
     and the tile color at that same point mean the same real number.
     Shared by the single-hazard and combined-hazard facility GeoJSON
@@ -7585,10 +7574,10 @@ def _fetch_facility_geojson_body(layer_type, country, storm, forecast_date, wind
                  if k not in ("LATITUDE", "LONGITUDE")
                  and (combine or k != "PROBABILITY")}
         # `_strokeColor` is the facility's own FIXED per-type color
-        # (_FACILITY_BASE_COLORS), real user decision, 2026-08-20: schools
-        # became visually indistinguishable from health centers/shelters/
-        # WASH whenever they happened to land on the same probability-
-        # derived color, since `_color` (fill AND stroke) was the same
+        # (_FACILITY_BASE_COLORS): without this, schools were visually
+        # indistinguishable from health centers/shelters/WASH whenever
+        # they happened to land on the same probability-derived color,
+        # since `_color` (fill AND stroke) was the same
         # single probability-driven value for every facility type. The
         # FILL still varies by real probability (`_color`, unchanged); the
         # OUTLINE now always identifies the real facility TYPE regardless

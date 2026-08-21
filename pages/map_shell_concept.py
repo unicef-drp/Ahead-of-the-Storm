@@ -546,6 +546,9 @@ _TRANSLATIONS = {
          "do not imply official endorsement or acceptance by the United Nations."):
             "Los límites y nombres mostrados y las designaciones utilizadas en este mapa "
             "no implican reconocimiento o aceptación oficial por parte de las Naciones Unidas.",
+        # Experimental-tool disclaimer
+        "Experimental tool. Outputs should not be used without expert review.":
+            "Herramienta experimental. Los resultados no deben utilizarse sin revisión de un experto.",
         # Language switcher
         "Language": "Idioma",
         "No country impact yet": "Aún sin impacto en el país",
@@ -838,6 +841,8 @@ _TRANSLATIONS = {
          "do not imply official endorsement or acceptance by the United Nations."):
             "Les frontières et noms indiqués ainsi que les désignations utilisées sur cette carte "
             "n'impliquent pas de reconnaissance ou d'acceptation officielle par les Nations Unies.",
+        "Experimental tool. Outputs should not be used without expert review.":
+            "Outil expérimental. Les résultats ne doivent pas être utilisés sans l'examen d'un expert.",
         "Language": "Langue",
         "No country impact yet": "Aucun impact national pour l'instant",
         "No real gust forecast data for this storm/date.":
@@ -1129,6 +1134,8 @@ _TRANSLATIONS = {
         ("The boundaries and names shown and the designations used on this map "
          "do not imply official endorsement or acceptance by the United Nations."):
             "এই মানচিত্রে দেখানো সীমানা ও নাম এবং ব্যবহৃত পদবি জাতিসংঘের সরকারি অনুমোদন বা গ্রহণযোগ্যতা বোঝায় না।",
+        "Experimental tool. Outputs should not be used without expert review.":
+            "পরীক্ষামূলক টুল। বিশেষজ্ঞ পর্যালোচনা ছাড়া ফলাফল ব্যবহার করা উচিত নয়।",
         "Language": "ভাষা",
         "No country impact yet": "এখনও কোনো দেশে প্রভাব নেই",
         "No real gust forecast data for this storm/date.":
@@ -1468,6 +1475,14 @@ _MODAL_PANEL_STYLES = {
 _UN_DISCLAIMER = (
     "The boundaries and names shown and the designations used on this map "
     "do not imply official endorsement or acceptance by the United Nations."
+)
+
+# Shown in the footer (see _compact_footer below) so it's visible on every
+# load regardless of mode/date/country selection, same always-present
+# placement as "Supported by" right next to it, not a one-time dismissible
+# banner that a returning user could miss having already closed.
+_EXPERIMENTAL_DISCLAIMER = (
+    "Experimental tool. Outputs should not be used without expert review."
 )
 
 # 1x1 transparent GIF, inlined as a data: URI, used as the `url` for every
@@ -2144,11 +2159,11 @@ def _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx=None, gust_idx=None,
     # risking a str/int type mismatch silently splitting cache entries or
     # reaching a SQL bind param inconsistently typed.
     river_window = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
-    # "72"/2 ("3 days"/"Extreme rain"), matching ms-rain-window/
-    # ms-rain-slider's own live UI defaults -- per explicit user request,
-    # every fallback used when a caller has no live slider state (Global
-    # scope defaults, the print page, etc.) mirrors the same default.
-    rain_window = rain_window or "72"
+    # "6"/2 ("6h"/"Extreme rain", 75mm), matching ms-rain-window/
+    # ms-rain-slider's own live UI defaults, so every fallback used when a
+    # caller has no live slider state (Global scope defaults, the print
+    # page, etc.) mirrors the same default.
+    rain_window = rain_window or "6"
     rain_idx = rain_idx if rain_idx is not None else 2
     return {
         "wind_on": bool(wind_on), "gust_on": bool(gust_on),
@@ -2255,9 +2270,9 @@ def _global_flood_availability(date, run, river_idx=None, rain_idx=None, rain_wi
 
     rp_tier = _RIVER_RP_TIERS[river_idx if river_idx is not None else 2]
     river_window_resolved = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
-    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # "6"/2, matching ms-rain-window/ms-rain-slider's own live UI
     # defaults (see _build_hz's own comment on this same fallback).
-    rain_window_resolved = rain_window or "72"
+    rain_window_resolved = rain_window or "6"
     rain_mm = _RAIN_MM_BY_WINDOW[rain_window_resolved][rain_idx if rain_idx is not None else 2]
 
     river_forecast_time = get_river_extent_forecast_time_for_date(date, rp_tier) if date else None
@@ -2818,9 +2833,9 @@ def _breakdown_from_split(tc_only_n, flood_only_n, both_n, fallback_breakdown):
 
     Returns None (NOT the flat illustrative fallback_breakdown) whenever
     the real total is non-positive, a genuine "no real split to show" case
-    (e.g. this exact metric has no real data for either family). Per
-    explicit user decision, this NEVER substitutes a fabricated illustrative
-    percentage split, callers must render an honest "no real split" state
+    (e.g. this exact metric has no real data for either family). This
+    function NEVER substitutes a fabricated illustrative percentage split,
+    callers must render an honest "no real split" state
     instead (see _hazard_split_line's own None-handling)."""
     real_total = (tc_only_n or 0.0) + (both_n or 0.0) + (flood_only_n or 0.0)
     if real_total <= 0:
@@ -3219,9 +3234,9 @@ def _hazard_split_legend(breakdown):
     # The TC-only/Both/Flood-only split under each value is real
     # (per-metric, per-column, from the real per-tile bitmask family
     # split, see _compute_breakdown_by_metric), not the flat
-    # _HAZARD_CONTRIBUTION/_HAZARD_OVERLAP_FRAC illustrative estimate. Per
-    # explicit user decision, a cell with no real split data NO LONGER
-    # falls back to that flat illustrative split (see _breakdown_from_
+    # _HAZARD_CONTRIBUTION/_HAZARD_OVERLAP_FRAC illustrative estimate. A
+    # cell with no real split data NO LONGER falls back to that flat
+    # illustrative split (see _breakdown_from_
     # split's own comment and _value_td's own cell_breakdown resolution);
     # it shows an honest "no real split data" state instead
     # (_hazard_split_line's own None-handling branch), so this caption can
@@ -5101,7 +5116,17 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
                 data=[{"value": "envelopes", "label": _t("Envelopes")},
                       {"value": "raster", "label": _t("Probability")}],
             ),
-        ], style=None if is_global else {"display": "none"}),
+        # Always hidden now, in both modes: Country Analysis already hid this
+        # (display: none, driven programmatically instead by the Hazard
+        # tab's own switch, see this Div's own comment above), and Global
+        # mode's own copy is permanently disabled AND value-locked to
+        # "envelopes" (line just above), never actually clickable there
+        # either, so showing it in Global mode was just visual clutter with
+        # no real control behind it, not a genuine option. The component
+        # itself stays mounted either way (unchanged), only its wrapping
+        # Div's visibility changes, this page's other 3 real consumers of
+        # Input("tc-view-as", "value") are untouched.
+        ], style={"display": "none"}),
     ], id="ms-hurricane-body", style={"marginTop": "16px"} if (has_storms and expanded) else {"marginTop": "16px", "display": "none"})
 
     return html.Div([header, body], style={"padding": "20px 18px", "borderTop": "1px solid #eef2f5"})
@@ -5566,14 +5591,17 @@ def _flood_hazards_family(expanded=True, countries=None, date=None, run=None):
         _availability_note(rain_available, rain_country_available, precip_raw_available),
         html.Div([
             dmc.SegmentedControl(
-                # Default "72" (3 days), per explicit user request (revised
-                # from an initial "120"/5-days choice, same session): 72h
-                # is the default first look, not "6". ms-rain-slider's own
-                # default (value=2 == "Extreme rain", see _RAIN_TIERS --
-                # both the window AND the severity tier default to their
-                # richest setting) and flood-view-as's own default
-                # ("probability") already match this.
-                id="ms-rain-window", value="72", fullWidth=True, size="xs", color=RAIN, mb=10,
+                # Default "6" (6h): shortest window is the default first
+                # look. ms-rain-slider's own default (value=2 ==
+                # "Extreme rain", see _RAIN_TIERS) pairs with this so both
+                # window AND severity tier default to "6h - Extreme"
+                # (75mm, the real dangerous-rainfall threshold this
+                # pairing targets) rather than the previous richest-
+                # setting default. This component is shared between
+                # Global and Country Analysis (same id,
+                # same function, see this function's own header comment),
+                # so one change here covers both modes.
+                id="ms-rain-window", value="6", fullWidth=True, size="xs", color=RAIN, mb=10,
                 disabled=not rain_available,
                 data=[{"value": "6", "label": _t("6h")}, {"value": "24", "label": _t("24h")},
                       {"value": "72", "label": _t("72h")}, {"value": "120", "label": _t("5 days")}],
@@ -5947,9 +5975,9 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
     (services/tile_server.py's own _combined_bitmask_fracs, shared by
     combined_country_totals AND this endpoint's own
     _combined_admin_totals_cached, just grouped by ADMIN_ID at the final
-    summation step instead of summed to one whole-country number). Per
-    explicit user request, the Admin Level 1 Breakdown must follow the
-    SAME structure as the main country-level table: one real black total
+    summation step instead of summed to one whole-country number). The
+    Admin Level 1 Breakdown follows the SAME structure as the main
+    country-level table: one real black total
     per cell, with the real TC-only/Both/Flood-only split rendered below
     it (_admin1_table's own _cells, mirroring _simple_breakdown_table's
     _value_td/_hazard_split_line), not one separate table per hazard with
@@ -6100,8 +6128,8 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
 
 def _admin1_table(country, regions_real, breakdown):
     # Same tinted-header/rounded-card/zebra-stripe treatment as
-    # _simple_breakdown_table, and, per explicit user request, now the SAME
-    # cell structure too: a real black total, with the real TC-only/Both/
+    # _simple_breakdown_table, and the SAME cell structure too: a real
+    # black total, with the real TC-only/Both/
     # Flood-only split rendered below it via _hazard_split_line, exactly
     # mirroring that table's own _value_td (see this function's own
     # docstring reasoning duplicated in _fetch_real_combined_admin_totals'
@@ -6207,8 +6235,8 @@ def _admin1_table(country, regions_real, breakdown):
         # Real per-metric TC-only/Both/Flood-only split for this region
         # (see _region_metric_breakdown's own docstring), fed into
         # _hazard_split_line exactly like _simple_breakdown_table's own
-        # _value_td does for the main country-level table, per explicit
-        # user request that this admin table follow the SAME structure.
+        # _value_td does for the main country-level table, so this admin
+        # table follows the SAME structure.
         cell_breakdown = _region_metric_breakdown(region, key) if base_val is not None else None
         pin_field = _PIN_FIELD.get(key)
         if pin_field is None:
@@ -6316,10 +6344,9 @@ def _admin1_body_content(country, date, run, hz, breakdown):
     if not regions_real:
         return [dmc.Text(_t("No real admin-level breakdown available for this storm/threshold selection."),
                            size="11px", c="dimmed", fs="italic")]
-    # ONE real, combined table (per explicit user request: "the admin level
-    # breakdown should follow the same structure as the main table, with
-    # the total number in black and then the breakdown between tc, both
-    # and flood only below"), replaces the earlier "one table per active
+    # ONE real, combined table (total in black with the TC-only/Both/
+    # Flood-only breakdown rendered below it), replaces the earlier "one
+    # table per active
     # hazard, no cross-hazard combination" version (see
     # _fetch_real_combined_admin_totals' own docstring for the full "why"
     # this changed). No per-hazard label needed anymore, every active
@@ -6981,16 +7008,16 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         # One real column PER country with real impact data (not just one
         # aggregated "Global" blob), same per-country + real TC-only/Both/
         # Flood-only split treatment Country Analysis's own table already
-        # has below, per explicit user request. Deliberately still skips
-        # In Need columns and worst-case-member comparison (no `pin_source`/
-        # `compare_source` passed to _simple_breakdown_table below): those
-        # were never part of Global's own scope (see this function's own
-        # top comment), and this fix is specifically about the per-country
-        # breakdown + hazard split, not about expanding Global into every
-        # Country-Analysis-only feature. Every real country shown, no cap,
-        # per explicit user decision. This can get wide for a big
-        # multi-country event, same as an equally large Country Analysis
-        # selection already can, the table's own overflowX:auto handles it.
+        # has below. Deliberately still skips In Need columns and
+        # worst-case-member comparison (no `pin_source`/`compare_source`
+        # passed to _simple_breakdown_table below): those were never part
+        # of Global's own scope (see this function's own top comment), and
+        # this is specifically about the per-country breakdown + hazard
+        # split, not about expanding Global into every Country-Analysis-
+        # only feature. Every real country shown, no cap. This can get wide
+        # for a big multi-country event, same as an equally large Country
+        # Analysis selection already can, the table's own overflowX:auto
+        # handles it.
         #
         # Concurrent fan-out (get_query_executor().map), same reasoning as
         # Country Analysis's own _country_bundle just below: N real
@@ -7455,7 +7482,7 @@ def _precip_curve_totals(metric, scope, countries, date, run, river_idx=None, ra
         # `date`/`run` ARE real and required though (a separate axis from
         # storm/forecast_date): without them this silently fell back to
         # the country's absolute LATEST rain cycle regardless of what the
-        # user actually selected -- a real, confirmed-live bug (headline
+        # user actually selected -- a real bug (headline
         # "Total" built from the SELECTED cycle disagreeing with this
         # grid, built from a DIFFERENT, possibly still-mid-processing
         # cycle; e.g. Nicaragua's absolute-latest cycle had zero real rows
@@ -7928,11 +7955,11 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # Both families are genuinely active and `total` (checked at the top of
     # this function) is a real, nonzero number, but the real per-member
     # joint bitmask split above couldn't resolve one (missing metric/scope
-    # context, or the real query itself returned no data), per explicit
-    # user decision, this must NOT fall back to the flat illustrative
-    # 45/20/10/10-derived percentages to manufacture a plausible-looking
-    # TC/Flood breakdown of a real total, same "no illustrative numbers
-    # ever" fix as _rain_threshold_grid's own real_matrix requirement
+    # context, or the real query itself returned no data). This must NOT
+    # fall back to the flat illustrative 45/20/10/10-derived percentages to
+    # manufacture a plausible-looking TC/Flood breakdown of a real total,
+    # same "no illustrative numbers ever" rule as _rain_threshold_grid's
+    # own real_matrix requirement
     # above. Bails out with the real total and an honest explanation
     # instead of the per-family breakdown, rather than trying to keep the
     # rest of this function's rendering (family blocks/overlap bar/curves,
@@ -8054,9 +8081,9 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     _curve_all_zero_by_member = {}
 
     def _hazard_curve_row(name, color, pct):
-        # None for Global scope, unconditionally, per explicit user
-        # request ("the bar breakdown at the top is enough, we do not need
-        # the hazard breakdown share in the global view tile pop-ups"):
+        # None for Global scope, unconditionally: the overlap bar above
+        # already covers the TC-vs-Flood split, so the per-hazard
+        # breakdown share is redundant in the global view tile pop-up.
         # Wind/River/Rainfall per-threshold curves are all genuinely real
         # for every metric (Rainfall's own _precip_curve_totals no longer
         # restricts itself to "People at Risk" either, see that function's
@@ -8196,10 +8223,10 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             # Storm Surge (no real backend at all, see ms-surge-on's own
             # comment) or a real hazard missing metric/scope context
             # (defensive only, every real caller of
-            # _hazard_contribution_content now passes both). Per explicit
-            # user decision, Storm Surge gets the SAME honest empty state
-            # as every other no-real-data case, not its own illustrative
-            # exception, see _no_real_data_chart's own comment.
+            # _hazard_contribution_content now passes both). Storm Surge
+            # gets the SAME honest empty state as every other
+            # no-real-data case, not its own illustrative exception, see
+            # _no_real_data_chart's own comment.
             chart = _no_real_data_chart()
         return html.Div(chart, style={"marginTop": "4px"})
 
@@ -8418,8 +8445,8 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     caption = [dmc.Text(_t("Illustrative split — a real implementation would compute this from actual per-hazard overlap."),
                           size="10px", c="dimmed", mt=18, fs="italic")] if has_illustrative_split else []
 
-    # Real per-country breakdown for THIS metric, Global scope only, per
-    # explicit user request: the tile-click popup itself (not only the
+    # Real per-country breakdown for THIS metric, Global scope only: the
+    # tile-click popup itself (not only the
     # separate Full Impact Breakdown modal, which shows every metric at
     # once but requires navigating to a different button/section) should
     # show one row per real country, each with the same black-total +
@@ -8506,8 +8533,8 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
         dmc.Text(_t("Total: {value}", value=_format_stat_number(total)), size="sm", fw=700, mt=6, mb=20),
         *overlap_children,
         # Global scope drops the per-hazard Share/People-at-Risk table
-        # (column_header + blocks) entirely, per explicit user request:
-        # the overlap bar above (Tropical Cyclone only/Both/Flood only,
+        # (column_header + blocks) entirely: the overlap bar above
+        # (Tropical Cyclone only/Both/Flood only,
         # still real, still shown) already covers the TC-vs-Flood split at
         # a glance, and the new By Country section below is a more useful
         # detail view than the per-hazard rows/curves were once the popup
@@ -8798,12 +8825,22 @@ def _compact_footer():
                 align="center", gap="sm",
             ),
             dmc.Group(
-                dmc.Anchor(
-                    dmc.ActionIcon(DashIconify(icon="carbon:logo-github", width=24), variant="transparent",
-                                    style={"color": "#ffffff"}),
-                    href="https://github.com/unicef-drp/Ahead-of-the-Storm", target="_blank",
-                ),
-                align="center",
+                [
+                    # Always-visible experimental-tool disclaimer (see
+                    # _EXPERIMENTAL_DISCLAIMER's own comment for why the
+                    # footer, not a dismissible banner). Red pill, not the
+                    # muted white/opacity text "Supported by" uses, this one
+                    # is meant to read as an actual warning, not ambient
+                    # footer text.
+                    dmc.Badge(_t(_EXPERIMENTAL_DISCLAIMER), color="red", variant="filled",
+                                size="md", radius="sm", style={"textTransform": "none", "fontWeight": 500}),
+                    dmc.Anchor(
+                        dmc.ActionIcon(DashIconify(icon="carbon:logo-github", width=24), variant="transparent",
+                                        style={"color": "#ffffff"}),
+                        href="https://github.com/unicef-drp/Ahead-of-the-Storm", target="_blank",
+                    ),
+                ],
+                align="center", gap="md",
             ),
         ],
         justify="space-between",
@@ -8892,22 +8929,17 @@ _LEGEND_HAZARD_LABELS = {"wind": "Sustained Wind", "gust": "Gust", "river": "Riv
 # constant in this file is duplicated rather than imported (pages/ is
 # downstream of services/ in this app's own import graph).
 #
-# Only "probability" remains fixed here as of 2026-08-20. The raw
-# population-family props (population/children_total/infant_population/
-# school_age_population/adolescent_population) were fixed for one day
-# (2026-08-19, real user request: "maybe we should establish something
-# similar for the populations... 50k is already enough") then reverted
-# back to a real, data-driven per-country/per-cycle range the following
-# day (real user decision: "okay, then please revert that to the
-# original behavior") -- their own _FIXED_SCALE_COLS/_AOTS_FIXED_SCALE_
-# COLS entries were removed too, so the legend correctly falls through to
-# its own dynamic-min/max default for them, matching what the map itself
-# now renders. Their E_* impact/exposure siblings were reverted
-# separately, same day, even earlier ("still not happy with the E_
-# coloring, can we remove the max thresholds again?", after 2 prior
-# rounds of "still not happy" on log-fixed then linear-fixed).
+# Only "probability" remains fixed here. The raw population-family props
+# (population/children_total/infant_population/school_age_population/
+# adolescent_population) were tried as a fixed scale, then reverted back
+# to a real, data-driven per-country/per-cycle range -- their own
+# _FIXED_SCALE_COLS/_AOTS_FIXED_SCALE_COLS entries were removed too, so
+# the legend correctly falls through to its own dynamic-min/max default
+# for them, matching what the map itself now renders. Their E_* impact/
+# exposure siblings were also reverted, moved off this mechanism entirely
+# onto "linear" scale.
 #
-# Real, confirmed-live bug this dict's mere existence originally fixed
+# A real bug this dict's mere existence originally fixed
 # (still true for "probability"): _legend_raster_info/_legend_combined_
 # raster_info's own real min/max came from tile_config's stats_<hazard>
 # dict (get_tile_stats/_fetch_tile_stats in tile_server.py), which
@@ -8982,7 +9014,7 @@ def _legend_raster_info(hazard, tile_config):
     # `min_v`/`max_v` display the SAME fixed constants the map itself now
     # renders against (_LEGEND_FIXED_SCALE_PROPS), not tile_config's own
     # real per-country/per-cycle SQL min/max, whenever this prop has one --
-    # real, confirmed-live bug otherwise: the map paints against a fixed
+    # real bug otherwise: the map paints against a fixed
     # scale but the legend kept showing the old dynamic range, e.g. a
     # "1 -- 25" label under a bar that was actually now scaled 1 -- 50,000.
     # Only overrides when real data genuinely exists here (min_v is not
@@ -9016,8 +9048,8 @@ def _legend_raster_info(hazard, tile_config):
     # would be pure clutter.
     #
     # E_* exposure props (Impact mode, e.g. "E_population") get the SAME
-    # unconditional suppression, not just "probability" (real, confirmed-
-    # live bug found 2026-08-19: a no-storm Wind selection under "E_
+    # unconditional suppression, not just "probability" (a real, confirmed-
+    # live bug: a no-storm Wind selection under "E_
     # population" still showed its own generic "Expected Population
     # Impact / No real data" card stacked right next to Rainfall's real
     # one). Confirmed directly against _fetch_raster_tile's own colorize
@@ -9152,8 +9184,7 @@ def _legend_combined_raster_info(tile_config):
     if prop == "probability":
         palette = _AOTS_PALETTES.get("probability", {"colors": ["#ffffcc", "#800026"]})
         colors = palette.get("colors", ["#ffffcc", "#800026"])
-        # FULLY FIXED 0-100% label range (real user decision, 2026-08-19:
-        # "no dynamic scaling for that"), matching what
+        # A constant 0-100% label range, matching what
         # services/tile_server.py's own combined-hazard raster path ALSO
         # now paints against (see that function's own _FIXED_SCALE_COLS
         # comment) -- an earlier version of this branch computed a real
@@ -9360,8 +9391,8 @@ def _legend_raw_flood_info(layer, raw_config):
         # River always lands here (mode forced to "probability" above).
         # Relative labels, not fixed percentages: both hazards' raw
         # probability rasters now use a DYNAMIC per-request scale (real
-        # min/max of this cycle's own nonzero values, 2026-08-19 user
-        # decision, see services/tile_server.py's _fetch_river_extent_
+        # min/max of this cycle's own nonzero values, see
+        # services/tile_server.py's _fetch_river_extent_
         # raster_tile/_colorize_precip_probability own comments), so a
         # literal "10%"/"≥80%" would misdescribe the ramp's real endpoints,
         # which now vary per forecast cycle.
@@ -10099,6 +10130,17 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
     _live_default_date, _live_default_run = _resolve_default_forecast_date_run()
     return html.Div([
         dcc.Store(id="selected-country-store", data=initial_countries),
+        # Written by _select_storm below when the clicked storm has no real
+        # country impact yet (still at sea, empty "countries"): a Leaflet
+        # viewport dict flying the map to that storm's own real track
+        # extent instead, since there's no country center to fly to and a
+        # click on one of these storms would otherwise be a dead no-op.
+        # Kept separate from selected-country-store/ms-main-map's other
+        # viewport writer (_fly_map_to_selection) rather than merged into
+        # either, so a storm WITH countries is untouched by this at all
+        # (no risk of two callbacks racing to set the same viewport from
+        # one click), see _select_storm's own comment for the full "why".
+        dcc.Store(id="ms-storm-flyto-store", data=None),
         # Real hazard tile-config bridge (see the "Hazard tile-config bridge"
         # section near the bottom of this file's callbacks): assembled by a
         # reactive Python callback (country/storm selection + all 5 hazard
@@ -10539,8 +10581,8 @@ _HAZARD_CURVE_HEIGHT = "128px"
 # Shared "honest empty state" for every hazard curve/grid with no real
 # per-threshold data source at all (Storm Surge, permanently, see
 # ms-surge-on's own comment) or missing the context needed to query one
-# (e.g. the print page, which doesn't read live slider state). Per explicit
-# user decision: NEVER show a fabricated illustrative number here, even
+# (e.g. the print page, which doesn't read live slider state). This
+# function NEVER shows a fabricated illustrative number here, even
 # though a real backend simply not existing yet (Storm Surge) is a
 # different underlying reason than a real backend existing but not being
 # reached (the Rainfall bugs this same policy was written to fix, see
@@ -10968,8 +11010,8 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
         else:
             # Storm Surge (no real backend at all), Rainfall with no real
             # rain_window context, or a real hazard missing metric/scope
-            # context. Per explicit user decision, none of these show a
-            # fabricated illustrative number, same honest empty state as
+            # context. None of these show a fabricated illustrative
+            # number, same honest empty state as
             # _hazard_curve_row's own identical else branch, see
             # _no_real_data_chart's own comment.
             chart = _no_real_data_chart()
@@ -11059,6 +11101,78 @@ def _rain_readout(window, idx):
     return _t("{tier} · ≥ {mm}mm over {hours}h", tier=tier, mm=mm, hours=window or "6")
 
 
+# Real lat/lon bounding box across every ensemble member's full track for
+# one storm, read from the already-loaded ms-tracks-json GeoJSON rather
+# than a new Snowflake query: Global mode already loads every active
+# storm's real track unconditionally, regardless of country impact (see
+# _load_ms_tracks_and_envelopes's own docstring, "ALL real storms active at
+# the selected topbar date/run... render as ONE combined tracks
+# FeatureCollection"), each feature tagged properties.track_id matching a
+# storm's exact display name (_build_ms_track_features). Used by
+# _select_storm below to fly the map to a storm that has no country impact
+# yet, no new query needed to do it. Returns None (caller no_updates the
+# viewport) when the storm's track isn't in the already-loaded data at all,
+# e.g. the Storm Tracks checkbox is off (ms-tracks-json is emptied, not
+# just hidden, see _load_ms_tracks_and_envelopes's own tracks_on gate), a
+# race with the track layer not having loaded yet, or (expected_forecast_
+# time given and mismatched) real staleness: ms-tracks-json is refetched by
+# a separately-scheduled callback off the same topbar-date/topbar-time
+# Inputs, unordered relative to the storm row click, so a click on a still-
+# visible row right after a date/run change could otherwise read the
+# PREVIOUS cycle's track for a same-named multi-day storm with nothing to
+# detect it -- rather than flying somewhere wrong (or to the wrong cycle),
+# this returns None and the caller no-ops.
+def _storm_track_bounds(tracks_geojson, storm_name, expected_forecast_time=None):
+    if not tracks_geojson:
+        return None
+    lats, lons_raw = [], []
+    for feature in tracks_geojson.get("features", []):
+        props = feature.get("properties", {})
+        if props.get("track_id") != storm_name:
+            continue
+        if expected_forecast_time and props.get("forecast_time") != expected_forecast_time:
+            continue
+        for lon, lat in feature.get("geometry", {}).get("coordinates", []):
+            lats.append(lat)
+            lons_raw.append(lon)
+    if not lats:
+        return None
+    # Antimeridian check, same real technique _fly_map_to_selection already
+    # uses a few lines below for the multi-country bounds case (see that
+    # function's own comment for the full "why"): a naive min/max span can
+    # be wildly wrong when an ensemble ACROSS MEMBERS straddles the date
+    # line from opposite sides, even though each individual member's own
+    # sequence (already unwrapped internally by _build_ms_track_features/
+    # _unwrap_track_lons) never itself crosses 180 deg. Shift any negative
+    # longitude by +360 and compare spans; use whichever is smaller.
+    #
+    # A single member crossing the date line exactly once combines fine
+    # here: _unwrap_track_lons applies one +-360 correction regardless of
+    # which member produced it, and that correction collapses to the same
+    # canonical value as this function's own +360-if-negative step below,
+    # independent of member or crossing direction. The real residual gap is
+    # narrower: a member crossing the date line MORE than once within its
+    # own sequence (offset accumulating past +-360), plus the same generic
+    # "cut only at longitude 0" imprecision _fly_map_to_selection already
+    # has and this file already accepts elsewhere (worst case, a wider than
+    # strictly necessary but still locally-correct box). Neither is solved
+    # here; both are pre-existing, shared limitations, not specific to this
+    # function.
+    naive_span = max(lons_raw) - min(lons_raw)
+    if naive_span > 180:
+        shifted = [lon + 360 if lon < 0 else lon for lon in lons_raw]
+        shifted_span = max(shifted) - min(shifted)
+        lons = shifted if shifted_span < naive_span else lons_raw
+    else:
+        lons = lons_raw
+    # Same margin convention as _fly_map_to_selection's own multi-country
+    # bounds case just below, kept in sync deliberately.
+    margin_lat = max(0.5, (max(lats) - min(lats)) * 0.15)
+    margin_lon = max(0.5, (max(lons) - min(lons)) * 0.15)
+    return [[min(lats) - margin_lat, min(lons) - margin_lon],
+            [max(lats) + margin_lat, max(lons) + margin_lon]]
+
+
 # Handles the Global-mode Active Storms list rows, uses the
 # {"type": "select-storm", "name": ...} pattern-matching id, since clicking
 # a row does the same thing regardless of where it's clicked from: set the
@@ -11069,14 +11183,16 @@ def _rain_readout(window, idx):
 # "selected countries", not a separate chip + a separate picker disagreeing).
 @callback(
     Output("topbar-country-select", "value"),
+    Output("ms-storm-flyto-store", "data"),
     Input({"type": "select-storm", "name": dash.ALL}, "n_clicks"),
     State("topbar-date", "value"),
     State("topbar-time", "value"),
+    State("ms-tracks-json", "data"),
     prevent_initial_call=True,
 )
-def _select_storm(clicks, date, run):
+def _select_storm(clicks, date, run, tracks_geojson):
     if not clicks or not any(clicks):
-        return dash.no_update
+        return dash.no_update, dash.no_update
     triggered = dash.callback_context.triggered_id
     name = triggered["name"]
     # Storm rows are rendered by _active_storms_section from the date/run-
@@ -11087,9 +11203,49 @@ def _select_storm(clicks, date, run):
     # the wrong storm/countries, same class of correctness concern as
     # _hurricane_family/_flood_hazards_family's has_storms/availability.
     storms = _resolve_storms_for_date(date, run)
-    fallback = storms[0] if storms else {"countries": []}
-    storm = next((s for s in storms if s["name"] == name), fallback)
-    return list(storm["countries"])
+    storm = next((s for s in storms if s["name"] == name), None)
+    if storm is None:
+        # Genuine lookup miss (a real race, e.g. date/run changed between
+        # the row rendering and this click resolving). Previously fell back
+        # to storms[0], silently selecting/flying to a completely unrelated
+        # storm with no error and no visual indication. No-op instead,
+        # matching the safe "return None rather than something wrong"
+        # convention _storm_track_bounds itself already follows.
+        return dash.no_update, dash.no_update
+    countries = list(storm["countries"])
+    if countries:
+        # Real country impact: the existing selected-country-store ->
+        # _fly_map_to_selection chain already flies to the real country
+        # center(s), ms-storm-flyto-store must stay untouched here, not
+        # emptied, two callbacks racing to set ms-main-map's viewport from
+        # the same click would be a real bug, not just redundant.
+        return countries, dash.no_update
+    # No country impact yet (still at sea): fly to the storm's own real
+    # track extent instead (see _storm_track_bounds above), so a click on
+    # one of these storms isn't a dead no-op. topbar-mode still correctly
+    # stays "global" either way, the clientside mode-switch callback below
+    # only flips to "zoom" when countries is non-empty, this only ever
+    # affects the map viewport. expected_forecast_time, same "date run:00:00"
+    # shape _load_ms_tracks_and_envelopes itself builds forecast_time_str
+    # with, guards against ms-tracks-json holding a previous cycle's data
+    # for this same storm name (see _storm_track_bounds's own docstring).
+    expected_forecast_time = f"{date} {run}:00:00" if date and run is not None else None
+    bounds = _storm_track_bounds(tracks_geojson, name, expected_forecast_time)
+    flyto = {"bounds": bounds, "transition": "flyToBounds"} if bounds else dash.no_update
+    return countries, flyto
+
+
+# Companion to _fly_map_to_selection just below: same Output, different
+# trigger, each only ever produces a real value for the case the other
+# leaves alone (see _select_storm's own comment), so the two can never
+# actually race over the same click.
+@callback(
+    Output("ms-main-map", "viewport", allow_duplicate=True),
+    Input("ms-storm-flyto-store", "data"),
+    prevent_initial_call=True,
+)
+def _fly_map_to_storm_track(viewport):
+    return viewport if viewport else dash.no_update
 
 
 # The ONLY place "selected countries" actually gets set, whether picked
@@ -11276,16 +11432,15 @@ def _guard_future_forecast_run(date, run):
     # ceiling already uses), not the frozen _LATEST_FORECAST_TIME/
     # _DEFAULT_FORECAST_DATE/_DEFAULT_FORECAST_RUN globals this callback
     # used to fall back on by calling _time_options_for_date/_max_allowed_
-    # run_for_date with only date_str. Real bug that fix left behind
-    # (council-caught, 2026-08-21): once layout() started resolving a live
-    # per-request default, a page load could correctly land on a newer run
-    # (e.g. 18Z) than the frozen globals still remembered (e.g. "00"), and
-    # any ordinary date/time interaction that re-fired this callback for
-    # that same date would snap topbar-time's value straight back down to
-    # the stale frozen ceiling, silently reverting the fix for the rest of
-    # that session. Falls back to the frozen globals (via
-    # _time_options_for_date/_max_allowed_run_for_date's own defaults)
-    # only if the live re-fetch itself fails.
+    # run_for_date with only date_str. Real gap otherwise: once layout()
+    # resolves a live per-request default, a page load can correctly land
+    # on a newer run (e.g. 18Z) than the frozen globals still remember
+    # (e.g. "00"), and any ordinary date/time interaction that re-fires
+    # this callback for that same date would snap topbar-time's value
+    # straight back down to the stale frozen ceiling, silently reverting
+    # the live default for the rest of that session. Falls back to the
+    # frozen globals (via _time_options_for_date/_max_allowed_run_for_
+    # date's own defaults) only if the live re-fetch itself fails.
     latest_time, live_date, live_run = _live_forecast_ceiling()
     if live_date is None:
         data = _time_options_for_date(date)
@@ -12301,9 +12456,9 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     river_idx = river_idx if river_idx is not None else 2
     rp_tier = _RIVER_RP_TIERS[river_idx]
 
-    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # "6"/2, matching ms-rain-window/ms-rain-slider's own live UI
     # defaults (see _build_hz's own comment on this same fallback).
-    rain_window = rain_window or "72"
+    rain_window = rain_window or "6"
     rain_idx = rain_idx if rain_idx is not None else 2
     threshold_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx]
 
@@ -12451,9 +12606,8 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # is true, even with wind_on False (see that flag's own docstring on
     # the return dict below) -- without this OR, stats_wind/admin_stats_wind
     # stay the {} default a few lines below, and _legend_raster_info has no
-    # real min/max to show, a real regression this exact fix closes (found
-    # 2026-08-20: map painted a real base layer with zero legend to explain
-    # it).
+    # real min/max to show, a real regression this exact fix closes: the
+    # map painted a real base layer with zero legend to explain it.
     if wind_on or wind_base_fallback:
         _hazard_fetches["wind"] = lambda: _hazard_stats(tile_country, "wind", tile_storm, tile_forecast_date, wind_kt, {})
     if gust_on:
@@ -12584,9 +12738,9 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # "hazards temporarily hidden" without duplicating that logic here.
         "any_hazard_on": any_hazard_on,
         # Real fix for "no hazard checked (or eye-icon hidden) => completely
-        # blank map, not even plain Population" (2026-08-20, user-reported,
-        # user-confirmed repro: literally all 4 hazard checkboxes off, AND
-        # the HAZARDS eye icon). Population/Children/etc has no raster
+        # blank map, not even plain Population": repro is literally all 4
+        # hazard checkboxes off, AND the HAZARDS eye icon. Population/
+        # Children/etc has no raster
         # source of its own, it only ever renders by piggybacking on one of
         # the 4 per-hazard MapLibre layers (see tile_storm's own comment
         # above), each independently gated client-side on
@@ -12922,9 +13076,9 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     member_int = _resolve_ensemble_member(member_select)
     date = date or _DEFAULT_FORECAST_DATE
     run = run if run is not None else _DEFAULT_FORECAST_RUN
-    # "72"/2, matching ms-rain-window/ms-rain-slider's own live UI
+    # "6"/2, matching ms-rain-window/ms-rain-slider's own live UI
     # defaults (see _build_hz's own comment on this same fallback).
-    rain_window = rain_window or "72"
+    rain_window = rain_window or "6"
     rain_idx = rain_idx if rain_idx is not None else 2
     threshold_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx]
     window_h = int(rain_window)
@@ -13206,7 +13360,7 @@ def _unwrap_geom_mapping_lons(mapping, state):
     return mapping
 
 
-def _build_ms_track_features(df_tracks, storm_name=None):
+def _build_ms_track_features(df_tracks, storm_name=None, forecast_time=None):
     """Build one LineString Feature per ensemble member from a TC_TRACKS
     query result. Mirrors pages/dashboard.py's load_all_layers track-building
     loop (same properties: ensemble_member, member_type), EXCEPT for the
@@ -13221,7 +13375,19 @@ def _build_ms_track_features(df_tracks, storm_name=None):
     one storm is ever on the map at once so there's no ambiguity, REQUIRED
     for the Global-mode multi-storm path (_load_ms_tracks_and_envelopes
     below), where several different storms' tracks can render
-    simultaneously and would otherwise be indistinguishable on hover."""
+    simultaneously and would otherwise be indistinguishable on hover.
+
+    forecast_time (optional): tags every feature's properties with the
+    exact forecast_time string this fetch was for. Real gap otherwise:
+    _select_storm reads ms-tracks-json as a State, but that store is
+    refetched by a separately-scheduled callback off the same topbar-date/
+    topbar-time Inputs, unordered relative to the storm row click target
+    existing in the DOM; a click on a still-visible row right after a
+    date/run change could otherwise read the PREVIOUS cycle's track for a
+    same-named multi-day storm with no way to tell.
+    _storm_track_bounds checks this against the currently-selected date/
+    run before trusting a feature's coordinates, rather than trusting a
+    separate side-channel timestamp that could itself race independently."""
     features = []
     for member in df_tracks['ENSEMBLE_MEMBER'].unique():
         member_data = df_tracks[df_tracks['ENSEMBLE_MEMBER'] == member].sort_values('LEAD_TIME')
@@ -13235,6 +13401,8 @@ def _build_ms_track_features(df_tracks, storm_name=None):
         }
         if storm_name:
             properties["track_id"] = storm_name
+        if forecast_time:
+            properties["forecast_time"] = str(forecast_time)
         features.append({
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coordinates},
@@ -13585,7 +13753,7 @@ def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust
             df_all = pd.DataFrame()
         if not df_all.empty:
             for track_id, df_storm in df_all.groupby('TRACK_ID'):
-                all_features.extend(_build_ms_track_features(df_storm, storm_name=track_id))
+                all_features.extend(_build_ms_track_features(df_storm, storm_name=track_id, forecast_time=forecast_time_str))
         tracks_data = {"type": "FeatureCollection", "features": all_features}
         if not tracks_on:
             tracks_data = dict(_MS_EMPTY_FC)

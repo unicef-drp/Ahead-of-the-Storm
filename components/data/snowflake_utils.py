@@ -1604,7 +1604,7 @@ def _zero_precip_impact_totals() -> dict:
 
 def _row_to_precip_impact_totals(row) -> dict:
     # math.ceil, NOT int() -- int() truncates toward zero (308.41 -> 308),
-    # a real, confirmed-live violation of this project's own hard "always
+    # a real violation of this project's own hard "always
     # round UP, never round()/truncate" convention for displayed counts
     # (see callbacks/metrics.py's own format_value() / map_shell_concept.py's
     # own _format_stat_number() for the reference implementation): a real
@@ -1639,8 +1639,8 @@ def _row_to_impact_totals(row) -> dict:
     # math.ceil, NOT int() -- same real truncation bug fixed in
     # _row_to_precip_impact_totals above, applies equally to wind/gust/
     # river's own totals (this function is their shared row-to-dict step),
-    # see that function's own comment for the full "why" (a real,
-    # confirmed-live headline-vs-grid single-unit mismatch, e.g. 309 vs
+    # see that function's own comment for the full "why" (a real
+    # headline-vs-grid single-unit mismatch, e.g. 309 vs
     # 308 real schools, traced to int() truncating a real 308.41 down
     # instead of ceiling it up like every other displayed count in this
     # project).
@@ -1724,8 +1724,7 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     behavior: get_latest_river_forecast_time(country)/
     get_latest_rain_forecast_time(country), i.e. the country's absolute
     latest ingested cycle regardless of what's actually selected. This was
-    a real, confirmed-live bug when it was the ONLY behavior (see the
-    fix's own commit/session notes): a caller resolving `value` for the
+    a bug when it was the only behavior: a caller resolving `value` for the
     user's SELECTED date/run while this function's own precip/river
     section silently used a DIFFERENT (and possibly still mid-processing,
     e.g. a newest cycle whose 120h window hadn't been computed yet) cycle
@@ -2973,8 +2972,8 @@ def _wind_gust_ready_at(forecast_time) -> bool:
     materializing wind AND gust for this cycle, not just that TC-ECMWF-
     Forecast-Pipeline has published the raw track.
 
-    Checks the real FINAL OUTPUT tables directly (2026-08-20 real fix,
-    see below), not a completion-bookkeeping log: a log can go silently
+    Checks the real FINAL OUTPUT tables directly, not a completion-
+    bookkeeping log: a log can go silently
     stale/orphaned the moment the pipeline's own trigger path changes,
     while the actual output tables the dashboard queries are, by
     construction, always the ground truth for "is there real data to
@@ -3000,14 +2999,13 @@ def _wind_gust_ready_at(forecast_time) -> bool:
     1500km of an active country), the EXACT SAME real-work definition the
     Databricks scheduler's own wind_work discovery query uses (see
     databricks/04_production_scheduler.py in the DATAPIPELINE repo) --
-    NOT every row in TC_TRACKS. This is a real, caught-before-shipping
-    fix: a first draft joined TC_TRACKS directly, which counts EVERY
-    tracked storm, including weak/dissipating ones that never get a real
-    envelope and thus never receive real MAT output at all (a real,
-    confirmed-live, normal pattern). That first draft would count such a
-    storm as perpetually "not done", meaning almost every real cycle
-    failed this check forever and get_default_forecast_cycle always fell
-    through to its own newest-cycle fallback -- silently defeating the
+    NOT every row in TC_TRACKS: joining TC_TRACKS directly would count
+    every tracked storm, including weak/dissipating ones that never get a
+    real envelope and thus never receive real MAT output at all (a normal
+    pattern). Such a storm would count as perpetually "not done", meaning
+    almost every real cycle failed this check forever and
+    get_default_forecast_cycle always fell through to its own
+    newest-cycle fallback -- silently defeating the
     entire point of this function.
 
     `total == 0` (no real envelope needing processing at all for this
@@ -3113,9 +3111,9 @@ def get_default_forecast_cycle():
       - the real ambient precip cycle nearest that date/run
         (get_precip_forecast_time_near) has a real AMBIENT_HAZARD_RUN_LOG
         (source='precip', param='tp') row.
-    River is deliberately NOT gated here (explicit user decision, live
-    19 Aug 2026): unlike wind/precip's own per-cycle processing lag this
-    function exists to route around, river's real staleness right now is
+    River is deliberately NOT gated here: unlike wind/precip's own
+    per-cycle processing lag this function exists to route around,
+    river's real staleness right now is
     a SEPARATE, already-known, accepted gap (the GloFAS ingestion task has
     been suspended, confirmed live: the most recent real
     AMBIENT_HAZARD_RUN_LOG(source='river') row is for the 2026-07-14
@@ -3128,12 +3126,11 @@ def get_default_forecast_cycle():
     get_countries_with_river_impact_at), independent of this function.
 
     Two-tier fallback if NONE of the recent candidates have wind+precip
-    BOTH ready (real gap found by council review, 2026-08-19 -- the
-    original single-tier version fell straight to candidates[0], the raw
-    newest cycle, EVEN IF that cycle's own wind/gust was itself still
-    mid-processing; live-reproduced the same day: the newest real cycle
-    had total=1, done=0 in the wind/gust readiness join, a storm actively
-    being computed):
+    BOTH ready: the original single-tier version fell straight to
+    candidates[0], the raw newest cycle, EVEN IF that cycle's own
+    wind/gust was itself still mid-processing; live-reproduced: the
+    newest real cycle had total=1, done=0 in the wind/gust readiness
+    join, a storm actively being computed):
       1. The newest candidate that's at least wind/gust-ready (even if
          precip is lagging behind it) -- wind/gust incomplete is the more
          visibly broken failure mode (silently undercounted population/

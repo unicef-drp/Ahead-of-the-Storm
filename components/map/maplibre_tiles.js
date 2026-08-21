@@ -334,7 +334,7 @@ function _buildTileTooltip(feature, perHazardProbs) {
             //
             // The methodology disclosure used to be a small (ⓘ) info glyph
             // carrying the explanation as a native `title` attribute,
-            // removed (real user decision, 2026-08-19): a native `title`
+            // removed: a native `title`
             // tooltip nested INSIDE this hover tooltip (itself a
             // mousemove-driven overlay) was in practice unreachable:
             // moving the mouse toward that tiny icon moves/closes the
@@ -1039,12 +1039,10 @@ function _onMaplibreReady() {
 // _FIXED_SCALE_COLS (see that dict's own comment for the full real-world
 // grounding), kept in sync so the Admin/Regions vector-fill path and the
 // raster/Tiles path never disagree on what color the SAME real number
-// gets. Only 'probability' remains fixed here as of 2026-08-20: the raw
-// population-family props were fixed for one day (2026-08-19, real user
-// request) then reverted back to a real, data-driven per-country/per-
-// cycle range the following day ("revert that to the original
-// behavior"), and their E_* impact/exposure siblings were reverted
-// separately, same day, even earlier (see tile_palettes.json's own
+// gets. Only 'probability' remains fixed here: the population-family
+// props were tried as a fixed scale, then reverted back to a real,
+// data-driven per-country/per-cycle range, and their E_* impact/exposure
+// siblings were also reverted (see tile_palettes.json's own
 // E_population/etc. entries, moved off this mechanism entirely onto
 // 'linear' scale).
 var _AOTS_FIXED_SCALE_COLS = {
@@ -1091,22 +1089,20 @@ function buildColorExpression(prop, stats) {
     if (scale === 'log') {
         if (maxV <= 0) return 'transparent';
         // 'probability' and the population-family props get a FULLY
-        // FIXED scale (real user decision, 2026-08-19: "no dynamic
-        // scaling for that" / "maybe we should establish something
-        // similar for the populations"), both endpoints hardcoded
-        // absolute constants, not derived from this country/cycle's own
-        // real min/max at all -- same real constants and reasoning as
-        // _get_minmax's own _FIXED_SCALE_COLS branch (see that dict's
-        // own comment for the full real-world grounding).
+        // FIXED scale, both endpoints hardcoded absolute constants, not
+        // derived from this country/cycle's own real min/max at all --
+        // same real constants and reasoning as _get_minmax's own
+        // _FIXED_SCALE_COLS branch (see that dict's own comment for the
+        // full real-world grounding).
         //
         // Every other log prop (E_NUM_SCHOOLS, BUILT_SURFACE_M2,
         // E_POPULATION, etc.) anchors the floor at the TRUE minimum
         // (minV, or 1 as a safe fallback when the stats payload has no
         // real min), mirroring services/tile_server.py's own
         // _get_minmax log branch exactly. A floor-raise (real min * a
-        // small fraction) was tried here 2026-08-19 to stop a near-zero
-        // outlier tile from stretching the whole ramp, but re-verified
-        // against 5 real datasets 2026-08-20 (see that Python comment
+        // small fraction) was tried here to stop a near-zero
+        // outlier tile from stretching the whole ramp, but verified
+        // against 5 real datasets (see that Python comment
         // for the full numbers) showed it was actively HURTING every
         // one of these count-like columns, collapsing the vast majority
         // of real cells into one identical flattest color -- the wide
@@ -1768,8 +1764,7 @@ function applyTileConfig(config) {
     // setHazardsHiddenOverride's own direct-hide call still provides
     // instant (pre-round-trip) visual feedback.
     if (config.hazards_hidden) {
-        // Must NOT be a blanket _hideAllHazardLayers here (the original
-        // behavior, 2026-08-20 user-reported regression): the eye icon
+        // Must NOT be a blanket _hideAllHazardLayers here: the eye icon
         // means "hide the HAZARD weighting/overlays", not "blank the whole
         // map" -- the plain Population/Children/etc base layer piggybacks
         // on wind's own MapLibre layer (see config.wind_base_fallback's own
