@@ -8744,6 +8744,32 @@ def _command_bar():
     # in Country Analysis mode. Hidden by default since Global is the
     # starting mode.
     return html.Div(
+        # width:"max-content" + minWidth:"100%": takes the LARGER of its
+        # own content size and the full command-bar width, so on a wide
+        # viewport (content smaller than the bar) it still fills the bar;
+        # on a narrow viewport (content bigger than the bar) it grows past
+        # the bar's own width instead of being capped to it (a plain
+        # width:auto block box never exceeds its containing block), so
+        # _COMMAND_BAR_STYLE's overflowX:auto has real overflow to scroll
+        # rather than silently shrinking flex children to fit (same
+        # fit-content/min-width fix _admin1_table's own wrapper uses for
+        # the same reason, see that function's comment). The ensemble
+        # select's own marginLeft:"auto" (not justify="space-between" on
+        # this outer Group) is what actually pins it to the right edge --
+        # an auto margin always consumes exactly the row's remaining free
+        # space, so it holds the hard-right position on any width this
+        # row resolves to, wide or narrow/overflowed.
+        # gap=10 on the outer Group (same value the hazards-pills sub-Group
+        # already uses) is a real MINIMUM gap between the two top-level
+        # children, kept even when marginLeft:"auto" on the ensemble Select
+        # below has zero free space left to consume (the narrow/overflowed
+        # case, where the pills+divider+segmented-control already fill the
+        # whole row) -- without an explicit gap here the select sits flush
+        # against "Regions" with no breathing room at all once overflow
+        # kicks in. On a wide viewport this gap is a small fraction of the
+        # row's real free space, so marginLeft:"auto" still absorbs the
+        # rest and the select still lands flush against the bar's own
+        # right edge.
         dmc.Group([
             dmc.Group(
                 [html.Div(
@@ -8768,12 +8794,19 @@ def _command_bar():
             # than taking a whole left-panel section of its own. No hover
             # tooltip anymore, it fired on every hover over the select
             # (not just when open), which read as an intrusive popup rather
-            # than a helpful hint.
+            # than a helpful hint. flexShrink:0 keeps this at its full
+            # w=190 even under width pressure -- the hazard pills to its
+            # left already have a natural shrink floor from their own
+            # whiteSpace:nowrap labels, but this Select has no such floor
+            # and would otherwise absorb most of any remaining compression.
+            # marginLeft:"auto" (not this outer Group's justify prop) is
+            # what actually pins it to the right edge, see this function's
+            # own header comment for why.
             dmc.Select(
                 id="ensemble-member-select", value="combined", data=_ensemble_members(),
-                size="xs", w=190, searchable=True,
+                size="xs", w=190, searchable=True, style={"flexShrink": 0, "marginLeft": "auto"},
             ),
-        ], justify="space-between", wrap="nowrap", align="center"),
+        ], gap=10, wrap="nowrap", align="center", style={"width": "max-content", "minWidth": "100%"}),
         id="command-bar",
         style={**_COMMAND_BAR_STYLE, "display": "none"},
     )
@@ -13603,12 +13636,18 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     if 'zone_id' not in df.columns or 'severity_population' not in df.columns:
         return _ensemble_members()
     impact_by_member = {int(z): (p or 0.0) for z, p in zip(df['zone_id'], df['severity_population']) if pd.notna(z)}
-    regular_members = sorted(range(1, _CONTROL_MEMBER), key=lambda m: -impact_by_member.get(m, 0.0))
+    # Control (ZONE_ID _CONTROL_MEMBER, 51) is a real ensemble member with
+    # its own real severity_population like any other, so it's included in
+    # the same sort rather than being unconditionally pinned first -- a
+    # storm where the deterministic run itself isn't the most severe member
+    # should show it wherever its own real impact ranks it.
+    all_members = sorted(range(1, _CONTROL_MEMBER + 1), key=lambda m: -impact_by_member.get(m, 0.0))
     return [
         {"value": "combined", "label": _t("Probabilistic")},
         {"group": _t("Ensemble Members"), "items":
-            [{"value": "control", "label": _t("Control (deterministic)")}]
-            + [{"value": f"member-{m}", "label": _t("Member {n}", n=m)} for m in regular_members]},
+            [({"value": "control", "label": _t("Control (deterministic)")} if m == _CONTROL_MEMBER
+              else {"value": f"member-{m}", "label": _t("Member {n}", n=m)})
+             for m in all_members]},
     ]
 
 
