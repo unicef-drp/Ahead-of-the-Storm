@@ -1527,8 +1527,10 @@ except Exception as e:
 # later, and a Databricks run was separately still processing a genuinely
 # new storm cycle for over an hour). get_default_forecast_cycle() instead
 # walks backwards from the latest track until it finds a cycle where wind
-# (+gust) AND precip are BOTH genuinely done (TC_PIPELINE_RUN_LOG/
-# AMBIENT_HAZARD_RUN_LOG, real completion bookkeeping, not raw ingestion),
+# (+gust) AND precip are BOTH genuinely done (real materialized MAT output
+# for wind/gust, AMBIENT_HAZARD_RUN_LOG completion bookkeeping for precip,
+# not raw ingestion; see _wind_gust_ready_at's own docstring for why wind/
+# gust readiness checks real output tables directly, not a completion log),
 # so a user isn't dropped by default onto a half-computed cycle with a
 # confusing/wrong-looking Impact Summary and no explanation. River is
 # deliberately NOT gated here (see that function's own docstring: its real
@@ -1543,24 +1545,42 @@ except Exception as e:
 # below) are both legitimately about real TRACK existence, not impact-
 # computation completeness, changing those would be a different, wider
 # fix than what was actually asked for here.
-try:
-    _default_cycle_ts = get_default_forecast_cycle()
-except Exception as e:
-    logger.warning("Could not resolve default forecast cycle: %s", e)
-    _default_cycle_ts = None
-if _default_cycle_ts is None and _LATEST_FORECAST_TIME is not None:
-    _default_cycle_ts = pd.Timestamp(_LATEST_FORECAST_TIME)
+def _resolve_default_forecast_date_run():
+    """Live (date_str, run_str) default for the topbar, see
+    get_default_forecast_cycle's own docstring for the full "why" behind
+    the wind/gust+precip readiness walk this wraps.
 
-if _default_cycle_ts is not None:
-    _latest_ts = pd.Timestamp(_default_cycle_ts)
-    _DEFAULT_FORECAST_DATE = _latest_ts.strftime("%Y-%m-%d")
-    # Snap to the nearest synoptic run (00/06/12/18Z, the only values
-    # ms-topbar-time's SegmentedControl offers), real forecast times are
-    # always exactly on one of these already, this is just a defensive floor.
-    _DEFAULT_FORECAST_RUN = f"{(_latest_ts.hour // 6) * 6:02d}"
-else:
-    _DEFAULT_FORECAST_DATE = pd.Timestamp.utcnow().strftime("%Y-%m-%d")
-    _DEFAULT_FORECAST_RUN = "00"
+    get_default_forecast_cycle() is itself @ttl_cache'd (15 min, same
+    _META_TTL as every other single-value "storm list, forecast times"
+    getter in snowflake_utils.py). That means this function is safe to
+    call fresh on every page load (see layout() below), not just once at
+    process start: the first visitor in each 15-minute window pays one
+    real multi-query Snowflake round-trip, every other visitor in that
+    same window gets the cached result instantly, not a fresh query each
+    -- N concurrent visitors don't turn into N queries.
+
+    Falls back to the raw latest TRACK ingestion (_LATEST_FORECAST_TIME)
+    if the real resolution fails or returns nothing (a genuinely fresh/
+    empty environment), and further to wall-clock UTC "today" at 00Z if
+    even that is unavailable."""
+    try:
+        cycle_ts = get_default_forecast_cycle()
+    except Exception as e:
+        logger.warning("Could not resolve default forecast cycle: %s", e)
+        cycle_ts = None
+    if cycle_ts is None and _LATEST_FORECAST_TIME is not None:
+        cycle_ts = _LATEST_FORECAST_TIME
+    if cycle_ts is not None:
+        ts = pd.Timestamp(cycle_ts)
+        # Snap to the nearest synoptic run (00/06/12/18Z, the only values
+        # ms-topbar-time's SegmentedControl offers), real forecast times
+        # are always exactly on one of these already, this is just a
+        # defensive floor.
+        return ts.strftime("%Y-%m-%d"), f"{(ts.hour // 6) * 6:02d}"
+    return pd.Timestamp.utcnow().strftime("%Y-%m-%d"), "00"
+
+
+_DEFAULT_FORECAST_DATE, _DEFAULT_FORECAST_RUN = _resolve_default_forecast_date_run()
 
 # "Future" here means later than the latest REAL forecast_time in the
 # database (_LATEST_FORECAST_TIME/_DEFAULT_FORECAST_DATE+RUN above), not
@@ -4521,7 +4541,12 @@ def _ms_loading_badge():
     )
 
 
-def _topbar(initial_countries=None):
+def _topbar(initial_countries=None, default_date=_DEFAULT_FORECAST_DATE, default_run=_DEFAULT_FORECAST_RUN):
+    # default_date/default_run default to the module-import-time globals
+    # (correct for any call site that doesn't pass anything), but layout()
+    # below passes a live-resolved value instead, see
+    # _resolve_default_forecast_date_run's own docstring for why the
+    # frozen globals alone aren't enough for a long-running server process.
     return html.Div([
         dmc.Group([
             # Plain html.A (real navigation, full reload), not dcc.Link,
@@ -4559,7 +4584,7 @@ def _topbar(initial_countries=None):
 
             dmc.Group([
                 dmc.DatePickerInput(
-                    id="topbar-date", value=_DEFAULT_FORECAST_DATE, valueFormat="D MMM YYYY", size="xs", w=130,
+                    id="topbar-date", value=default_date, valueFormat="D MMM YYYY", size="xs", w=130,
                     leftSection=DashIconify(icon="carbon:calendar", width=13),
                     # Greys out/disables any calendar day later than the
                     # latest REAL forecast_time in the database (not
@@ -4567,7 +4592,7 @@ def _topbar(initial_countries=None):
                     # own docstring) so a date with no real data can't be
                     # picked at all, rather than silently resolving to an
                     # empty page.
-                    maxDate=_DEFAULT_FORECAST_DATE,
+                    maxDate=default_date,
                     # The top bar itself sits at zIndex 1000 (_topbar's
                     # style) so it layers over the map/panels below it, but
                     # that also meant it was cutting into this popover's own
@@ -4576,8 +4601,8 @@ def _topbar(initial_countries=None):
                     popoverProps={"zIndex": 2000},
                 ),
                 dmc.SegmentedControl(
-                    id="topbar-time", value=_DEFAULT_FORECAST_RUN,
-                    data=_time_options_for_date(_DEFAULT_FORECAST_DATE),
+                    id="topbar-time", value=default_run,
+                    data=_time_options_for_date(default_date, _LATEST_FORECAST_TIME, default_date, default_run),
                     size="xs",
                 ),
             ], gap=8, wrap="nowrap"),
@@ -8556,7 +8581,7 @@ def _breakdown_new_tab_href(countries, lang=None, date=None, run=None,
     return f"/breakdown-print{query}"
 
 
-def _impact_panel(initial_countries=None, open_breakdown=False):
+def _impact_panel(initial_countries=None, open_breakdown=False, default_date=None, default_run=None):
     # Always visible (no dismiss button), the app's real value-add over a
     # pure met-visualization tool like WeatherLab: population/school/health
     # impact, not just where the hazard is. Defaults to a worldwide framing
@@ -8567,6 +8592,18 @@ def _impact_panel(initial_countries=None, open_breakdown=False):
     # everywhere, unlike In Need numbers/arc charts/member comparison). The
     # Full Breakdown button itself is Country-Analysis-only, Global's
     # summary is already the whole (simple) picture, no fuller view needed.
+    #
+    # default_date/default_run: layout() passes its own live-resolved
+    # values (_resolve_default_forecast_date_run, see that function's own
+    # docstring), same fix as _topbar()'s own default_date/default_run.
+    # Only matters for the modal's initial server-rendered content below
+    # (open_breakdown=True, the "open in new tab" deep-link path); the
+    # modal's own live-Input-driven callbacks (_update_impact_breakdown/
+    # _update_breakdown_new_tab_link) already read topbar-date/topbar-time
+    # directly and would self-correct within one round trip either way,
+    # this just avoids a real, if brief, wrong-date flash on that one path.
+    _pdate = default_date or _DEFAULT_FORECAST_DATE
+    _prun = default_run or _DEFAULT_FORECAST_RUN
     return html.Div([
         dmc.Group([
             dmc.Text(_t("Impact Summary"), fw=700, size="sm"),
@@ -8588,7 +8625,7 @@ def _impact_panel(initial_countries=None, open_breakdown=False):
                 dmc.Text(_t("Full Impact Breakdown"), fw=700, size="15px", c="#16232c"),
                 dmc.Anchor(
                     DashIconify(icon="carbon:launch", width=15), id="breakdown-new-tab-link",
-                    href=_breakdown_new_tab_href(initial_countries), target="_blank",
+                    href=_breakdown_new_tab_href(initial_countries, date=_pdate, run=_prun), target="_blank",
                     style={"display": "flex", "alignItems": "center", "color": "#8ea0ab"},
                 ),
             ], gap=8, wrap="nowrap"),
@@ -8596,7 +8633,7 @@ def _impact_panel(initial_countries=None, open_breakdown=False):
             styles=_MODAL_PANEL_STYLES,
             overlayProps={"backgroundOpacity": 0.35, "blur": 3},
             children=html.Div(_impact_breakdown_content(initial_countries, None,
-                                                            date=_DEFAULT_FORECAST_DATE, run=_DEFAULT_FORECAST_RUN),
+                                                            date=_pdate, run=_prun),
                                 id="impact-breakdown-body",
                                 style={"width": "100%", "maxWidth": "100%", "overflowX": "auto", "overflowY": "visible"}),
         ),
@@ -10050,6 +10087,16 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
     # Global view.
     initial_countries = [unquote(c) for c in zoom_countries.split(",") if c] if zoom_countries else None
     should_open_breakdown = bool(open_breakdown) and bool(initial_countries)
+    # Live per-request default (see _resolve_default_forecast_date_run's own
+    # docstring): layout() is called fresh by Dash's page router on every
+    # page load, so this is what actually closes the staleness gap
+    # _refresh_forecast_ceiling below only partially covers -- that
+    # callback live-widens what's SELECTABLE in the topbar every 15 min,
+    # but deliberately never touches the already-rendered SELECTED value
+    # for a tab that's already open. This is what makes a *new* page load
+    # itself reflect real data within 15 minutes too, without ever needing
+    # a process restart.
+    _live_default_date, _live_default_run = _resolve_default_forecast_date_run()
     return html.Div([
         dcc.Store(id="selected-country-store", data=initial_countries),
         # Real hazard tile-config bridge (see the "Hazard tile-config bridge"
@@ -10158,10 +10205,11 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         # "metadata-refresh-interval" in this same running app.
         dcc.Interval(id="ms-metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
         _map_stack(),
-        _topbar(initial_countries=initial_countries),
+        _topbar(initial_countries=initial_countries, default_date=_live_default_date, default_run=_live_default_run),
         _controls_panel(),
         _command_bar(),
-        _impact_panel(initial_countries=initial_countries, open_breakdown=should_open_breakdown),
+        _impact_panel(initial_countries=initial_countries, open_breakdown=should_open_breakdown,
+                        default_date=_live_default_date, default_run=_live_default_run),
         _bottom_left_controls(),
         _map_legend(),
         _map_disclaimer(),
@@ -11224,8 +11272,27 @@ def _reset_facility_visibility_on_global(mode):
     prevent_initial_call=True,
 )
 def _guard_future_forecast_run(date, run):
-    data = _time_options_for_date(date)
-    max_run = _max_allowed_run_for_date(date)
+    # Live ceiling (_live_forecast_ceiling, same helper _refresh_forecast_
+    # ceiling already uses), not the frozen _LATEST_FORECAST_TIME/
+    # _DEFAULT_FORECAST_DATE/_DEFAULT_FORECAST_RUN globals this callback
+    # used to fall back on by calling _time_options_for_date/_max_allowed_
+    # run_for_date with only date_str. Real bug that fix left behind
+    # (council-caught, 2026-08-21): once layout() started resolving a live
+    # per-request default, a page load could correctly land on a newer run
+    # (e.g. 18Z) than the frozen globals still remembered (e.g. "00"), and
+    # any ordinary date/time interaction that re-fired this callback for
+    # that same date would snap topbar-time's value straight back down to
+    # the stale frozen ceiling, silently reverting the fix for the rest of
+    # that session. Falls back to the frozen globals (via
+    # _time_options_for_date/_max_allowed_run_for_date's own defaults)
+    # only if the live re-fetch itself fails.
+    latest_time, live_date, live_run = _live_forecast_ceiling()
+    if live_date is None:
+        data = _time_options_for_date(date)
+        max_run = _max_allowed_run_for_date(date)
+    else:
+        data = _time_options_for_date(date, latest_time, live_date, live_run)
+        max_run = _max_allowed_run_for_date(date, latest_time, live_date, live_run)
     if max_run is not None and run is not None and int(run) > int(max_run):
         return data, max_run
     return data, dash.no_update

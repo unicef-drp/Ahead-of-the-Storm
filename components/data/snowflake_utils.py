@@ -2967,13 +2967,34 @@ def get_recent_track_forecast_times(n: int = 8):
 
 def _wind_gust_ready_at(forecast_time) -> bool:
     """True when every real storm that ACTUALLY NEEDS wind/gust impact
-    processing at this exact forecast_time has a real TC_PIPELINE_RUN_LOG
-    SUCCESS row for it -- i.e. DATAPIPELINE has genuinely finished
-    computing wind (and gust, computed together with wind in one
-    run_complete_impact_analysis() call, see that function's own
-    skip_gust param, so one SUCCESS row already covers both) for this
-    cycle, not just that TC-ECMWF-Forecast-Pipeline has published the raw
-    track.
+    processing at this exact forecast_time has real, queryable output in
+    BOTH MERCATOR_TILE_IMPACT_MAT (wind) and MERCATOR_TILE_GUST_MAT (gust)
+    for it -- i.e. DATAPIPELINE has genuinely finished computing and
+    materializing wind AND gust for this cycle, not just that TC-ECMWF-
+    Forecast-Pipeline has published the raw track.
+
+    Checks the real FINAL OUTPUT tables directly (2026-08-20 real fix,
+    see below), not a completion-bookkeeping log: a log can go silently
+    stale/orphaned the moment the pipeline's own trigger path changes,
+    while the actual output tables the dashboard queries are, by
+    construction, always the ground truth for "is there real data to
+    show right now". Confirmed live: TC_PIPELINE_RUN_LOG (this function's
+    OWN prior implementation) stopped receiving any writes at all once
+    the live pipeline moved from an SPCS-triggered path (which called
+    update_storms(), the only writer of that table) to the current
+    Databricks-scheduled path (databricks/04_production_scheduler.py in
+    the DATAPIPELINE repo, which calls the compute functions directly and
+    never calls update_storms()) -- the dashboard's own default-cycle
+    selector was stuck showing a real storm's 19 Aug 00Z cycle as "latest"
+    for over a day, well after real, alert-triggering data for the 18Z
+    19 Aug and 00Z 20 Aug cycles was already fully computed and
+    materialized (confirmed live: MERCATOR_TILE_IMPACT_MAT already had
+    472,848 real PHL rows for the 00Z 20 Aug SAUDEL cycle, and a real
+    WATCH_SENT_LOG warning had already gone out for it, while this
+    function's own TC_PIPELINE_RUN_LOG-based check still reported it as
+    NOT ready). This real-output check is immune to that whole class of
+    bug: whichever path (SPCS or Databricks, or any future replacement)
+    actually writes the materialized tables, this function sees it.
 
     Deliberately scoped to TC_ENVELOPES_COMBINED (a real envelope within
     1500km of an active country), the EXACT SAME real-work definition the
@@ -2982,24 +3003,18 @@ def _wind_gust_ready_at(forecast_time) -> bool:
     NOT every row in TC_TRACKS. This is a real, caught-before-shipping
     fix: a first draft joined TC_TRACKS directly, which counts EVERY
     tracked storm, including weak/dissipating ones that never get a real
-    envelope and thus never receive a TC_PIPELINE_RUN_LOG row at all (a
-    real, confirmed-live, normal pattern -- see TC_PIPELINE_RUN_LOG's own
-    real SUCCESS rows for NANGKA/HERNAN on 2026-08-16 with
-    COUNTRIES_PROCESSED='[]'). That first draft would count such a storm
-    as perpetually "not done", meaning almost every real cycle failed
-    this check forever and get_default_forecast_cycle always fell through
-    to its own newest-cycle fallback -- silently defeating the entire
-    point of this function, confirmed live: even a cycle from 3 days
-    earlier failed the old check purely because of one perpetually-
-    untracked-for-real weak storm.
+    envelope and thus never receive real MAT output at all (a real,
+    confirmed-live, normal pattern). That first draft would count such a
+    storm as perpetually "not done", meaning almost every real cycle
+    failed this check forever and get_default_forecast_cycle always fell
+    through to its own newest-cycle fallback -- silently defeating the
+    entire point of this function.
 
     `total == 0` (no real envelope needing processing at all for this
     cycle) counts as ready, not "not ready": vacuously true, there was
-    genuinely nothing to wait for. The old `total > 0 and total == done`
-    condition got this backwards too, treating a cycle with zero real
-    work as unready.
+    genuinely nothing to wait for.
 
-    False (not True) on a query error: an unreadable log must never be
+    False (not True) on a query error: an unreadable table must never be
     silently treated as "ready", see get_default_forecast_cycle's own
     fail-closed reasoning."""
     try:
@@ -3010,15 +3025,18 @@ def _wind_gust_ready_at(forecast_time) -> bool:
         # fail-closed False -- get_default_forecast_cycle just always fell
         # through to its own fallback, a real bug caught before ever
         # shipping), same real fix DATAPIPELINE's own main_pipeline.py
-        # already applies before its TC_PIPELINE_RUN_LOG binds
+        # already applies before its own timestamp binds
         # (is_ambient_forecast_processed's own .to_pydatetime() comment).
         forecast_time = pd.Timestamp(forecast_time).to_pydatetime()
         df = _run_query(
             "SELECT COUNT(DISTINCT te.TRACK_ID) AS total, "
-            "COUNT(DISTINCT CASE WHEN rl.STATUS = 'SUCCESS' THEN te.TRACK_ID END) AS done "
+            "COUNT(DISTINCT CASE WHEN wd.STORM IS NOT NULL AND gd.STORM IS NOT NULL THEN te.TRACK_ID END) AS done "
             "FROM TC_ENVELOPES_COMBINED te "
             "JOIN PIPELINE_COUNTRIES pc ON pc.ACTIVE = TRUE AND ST_DWITHIN(pc.COUNTRY_BOUNDARY, te.ENVELOPE_REGION, 1500000) "
-            "LEFT JOIN TC_PIPELINE_RUN_LOG rl ON rl.STORM_ID = te.TRACK_ID AND rl.FORECAST_TIME = te.FORECAST_TIME "
+            "LEFT JOIN (SELECT DISTINCT STORM, FORECAST_DATE FROM MERCATOR_TILE_IMPACT_MAT) wd "
+            "ON wd.STORM = te.TRACK_ID AND wd.FORECAST_DATE = TO_CHAR(te.FORECAST_TIME, 'YYYYMMDDHH24MISS') "
+            "LEFT JOIN (SELECT DISTINCT STORM, FORECAST_DATE FROM MERCATOR_TILE_GUST_MAT) gd "
+            "ON gd.STORM = te.TRACK_ID AND gd.FORECAST_DATE = TO_CHAR(te.FORECAST_TIME, 'YYYYMMDDHH24MISS') "
             "WHERE te.FORECAST_TIME = %s",
             params=[forecast_time],
         )
@@ -3058,12 +3076,24 @@ def _ambient_ready_at(source: str, param: str, forecast_time) -> bool:
         return False
 
 
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_default_forecast_cycle():
     """Real 'is this cycle actually fully computed' resolution for the
     app's own topbar default landing date/run (_DEFAULT_FORECAST_DATE/
     _DEFAULT_FORECAST_RUN in pages/map_shell_concept.py), replacing the
     old MAX(FORECAST_TIME) FROM TC_TRACKS resolution (get_latest_
     forecast_time_overall), which only reflects raw TRACK ingestion --
+
+    @ttl_cache, same _META_TTL (15 min) as every other single-value
+    "storm list, forecast times" getter in this file: this function is now
+    called fresh on every page load (see layout() in map_shell_concept.py),
+    not just once at process start, so without a shared cache here N
+    concurrent visitors within the same few minutes would each trigger
+    their own full candidate walk (get_recent_track_forecast_times +
+    _wind_gust_ready_at + get_precip_forecast_time_near + _ambient_ready_at,
+    several real Snowflake round-trips apiece). With this decorator, the
+    first page load in each 15-minute window pays that cost once; every
+    other visitor in that window gets the cached result instantly.
     real, live-confirmed gap: TC-ECMWF-Forecast-Pipeline can publish a new
     track/raw MET_FORECASTS row hours before DATAPIPELINE's own impact
     computation for that exact cycle finishes (confirmed live 19 Aug 2026:
@@ -3076,9 +3106,10 @@ def get_default_forecast_cycle():
 
     Walks the most recent real TC_TRACKS cycles (get_recent_track_
     forecast_times), newest first, and returns the first one where:
-      - every real storm tracked at that exact forecast_time has a real
-        TC_PIPELINE_RUN_LOG SUCCESS row (wind AND gust, computed together
-        in one pipeline stage, see _wind_gust_ready_at's own docstring);
+      - every real storm tracked at that exact forecast_time has real,
+        materialized wind AND gust output (see _wind_gust_ready_at's own
+        docstring for the full "why" behind checking real output tables
+        instead of a completion-bookkeeping log);
       - the real ambient precip cycle nearest that date/run
         (get_precip_forecast_time_near) has a real AMBIENT_HAZARD_RUN_LOG
         (source='precip', param='tp') row.
