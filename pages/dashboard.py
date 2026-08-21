@@ -325,6 +325,34 @@ def update_individual_country_select(country, _active_countries):
         return members, {"display": "block"}, None
     return [], {"display": "none"}, None
 
+
+def _unwrap_track_lons(lons):
+    """A storm track crossing the antimeridian (±180°) must NOT render as a
+    near-horizontal line stretching across the entire map. Leaflet draws a
+    straight cartesian segment between consecutive LineString points, so a
+    real e.g. +179.4 -> -178.7 step between two adjacent track points (a
+    genuine ~2° move across the date line) would otherwise be misread as a
+    ~358° jump "the long way" around the globe instead.
+
+    Cumulatively shifts every point after a >180° jump by ∓360° so the
+    sequence stays numerically continuous (e.g. 179, 179.4, 181.3 instead
+    of 179, 179.4, -178.7); Leaflet then draws the real short segment
+    across the date line instead of the long way around the whole globe.
+    Leaflet accepts lng values outside -180..180 fine, it just draws the
+    real geometry either way."""
+    if not lons:
+        return lons
+    out = [lons[0]]
+    offset = 0.0
+    for i in range(1, len(lons)):
+        diff = lons[i] - lons[i - 1]
+        if diff > 180:
+            offset -= 360.0
+        elif diff < -180:
+            offset += 360.0
+        out.append(lons[i] + offset)
+    return out
+
 # -----------------------------------------------------------------------------
 # Startup tracks: load ALL active hurricane tracks on page load
 # -----------------------------------------------------------------------------
@@ -390,7 +418,12 @@ def load_startup_tracks(_):
 
         features = []
         for (track_id, member), grp in df.groupby(['TRACK_ID', 'ENSEMBLE_MEMBER']):
-            coords = [[r['LONGITUDE'], r['LATITUDE']] for _, r in grp.iterrows()]
+            # See _unwrap_track_lons' own docstring: a raw LONGITUDE
+            # sequence crossing the antimeridian must be unwrapped before
+            # Leaflet draws it, or the track renders as a near-horizontal
+            # line stretching across the whole map.
+            unwrapped_lons = _unwrap_track_lons(grp['LONGITUDE'].tolist())
+            coords = [[lon, lat] for lon, lat in zip(unwrapped_lons, grp['LATITUDE'].tolist())]
             features.append({
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": coords},
@@ -907,8 +940,14 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
                 features = []
                 for member in df_tracks['ENSEMBLE_MEMBER'].unique():
                     member_data = df_tracks[df_tracks['ENSEMBLE_MEMBER'] == member].sort_values('LEAD_TIME')
-                    coordinates = [[row['LONGITUDE'], row['LATITUDE']] for _, row in member_data.iterrows()]
-                    
+                    # See _unwrap_track_lons' own docstring: a raw
+                    # LONGITUDE sequence crossing the antimeridian must be
+                    # unwrapped before Leaflet draws it, or the track
+                    # renders as a near-horizontal line stretching across
+                    # the whole map.
+                    unwrapped_lons = _unwrap_track_lons(member_data['LONGITUDE'].tolist())
+                    coordinates = [[lon, lat] for lon, lat in zip(unwrapped_lons, member_data['LATITUDE'].tolist())]
+
                     feature = {
                         "type": "Feature",
                         "geometry": {

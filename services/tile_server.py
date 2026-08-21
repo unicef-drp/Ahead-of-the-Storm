@@ -7646,7 +7646,7 @@ def _fetch_one_hazard_facility_rows(layer_type: str, code: str, hazard: str, sto
 
 def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: np.ndarray,
                                      used_hazard_names: list[str], codes: list[str], storm: str,
-                                     hazard_params: dict[str, dict]) -> dict[str, float]:
+                                     hazard_params: dict[str, dict]) -> dict[str, Optional[float]]:
     """Per-FACILITY true-union combination: same per-tile ensemble-
     popcount methodology _combine_bitmask_aware uses for the raster (see
     that function's own module-level comment), adapted to point locations
@@ -7665,10 +7665,17 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
     unioned into one flat TILE_ID lookup with no risk of collision, rather
     than needing to track which country each facility itself belongs to.
 
-    Returns {zone_id: combined_probability}; a zone_id absent from the
-    input (should not happen: every entry in `by_zone` has a real
-    lat/lon by construction) or with NaN lat/lon gets 0.0 (real, not
-    fabricated: no known location means no known hazard exposure).
+    Returns {zone_id: combined_probability}; a zone_id with NaN lat/lon
+    gets a real 0.0 (not fabricated: no known location means no known
+    hazard exposure). If NONE of the active hazards' bitmask tables have
+    ANY row at all for this country/storm/date/threshold combination
+    (a pre-bitmask-era demo/historical event, e.g. MELISSA/Jamaica 28 Oct
+    2025 predates TILE_WIND_BITMASK_MAT's 2026-07-02 earliest coverage),
+    EVERY zone_id gets None instead: a real 0.0 here would be fabricated,
+    not measured, and would silently overwrite a caller's own already-
+    correct pre-bitmask PROBABILITY with a fake "confirmed zero risk".
+    Callers must treat None as "not computed, keep whatever you already
+    have" rather than coercing it to 0.0.
 
     Rain is now snapped onto the SAME z14 tile grid as Wind/Gust/River
     (get_rain_tile_bitmask reads TILE_PRECIP_BITMASK_MAT, tile-granularity,
@@ -7700,10 +7707,29 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
             continue
 
     union_bits = np.zeros(n, dtype=np.uint64)
+    # Tracks whether ANY active hazard's bitmask table had ANY row at all
+    # for this country/storm/date/threshold combination, across the whole
+    # call (every zone_id here shares the same hazard_params/codes/storm,
+    # so this is a single event-level flag, not per-point). TILE_*_BITMASK_
+    # MAT has no historical backfill for storms/dates that predate it: a
+    # demo scenario like MELISSA/Jamaica (28 Oct 2025) has ZERO rows in
+    # TILE_WIND_BITMASK_MAT for ANY tile, not just a sparse coverage gap
+    # for this one point. Without this flag, popcount/
+    # _BITMASK_ENSEMBLE_SIZE below would return a real-looking 0.0 for
+    # every point in that event: a fabricated "confirmed zero risk"
+    # indistinguishable from a genuine one, silently overwriting the
+    # caller's own already-correct raw per-hazard PROBABILITY (see
+    # tile_value_combined's own union_prob-is-None guard, which this flag
+    # is what makes meaningful). A tile genuinely NOT covered by any
+    # member's envelope within a bitmask table that DOES have real rows
+    # elsewhere for this event is still a real 0, not this case.
+    any_bitmask_coverage = False
 
     def _apply_bits_df(bits_df: Optional[pd.DataFrame]):
+        nonlocal any_bitmask_coverage
         if bits_df is None or bits_df.empty or 'TILE_ID' not in bits_df.columns:
             return
+        any_bitmask_coverage = True
         bits_df = bits_df.drop_duplicates(subset='TILE_ID', keep='first')
         lookup = dict(zip(bits_df['TILE_ID'], pd.to_numeric(bits_df['BITS'], errors='coerce').fillna(0).astype('uint64')))
         for i in range(n):
@@ -7742,6 +7768,14 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
             threshold_mm = p['threshold_mm']
             for code in codes:
                 _apply_bits_df(get_rain_tile_bitmask(code, p['forecast_date'], threshold_mm, window_h))
+
+    if not any_bitmask_coverage:
+        # No bitmask table has any row for this event at all: every 0.0
+        # below would be fabricated, not measured. Return None per zone_id
+        # so callers can tell "not computed" apart from a real 0 and fall
+        # back to whatever pre-bitmask PROBABILITY they already have (see
+        # this function's own docstring/comment above).
+        return {zid: None for zid in zone_ids}
 
     popcount = np.zeros(n, dtype=np.float64)
     for m in range(_BITMASK_ENSEMBLE_SIZE):
@@ -7864,7 +7898,18 @@ def _fetch_combined_facility_rows(
     out = []
     for zid, entry in by_zone.items():
         entry["ZONE_ID"] = zid
-        entry["PROBABILITY"] = combined.get(zid, 0.0)
+        # combined.get(zid) can now be a real None (see
+        # _combine_bitmask_aware_points' own docstring: no bitmask coverage
+        # at all for this event, e.g. a pre-bitmask-era demo storm), not
+        # just a missing key, so .get(zid, 0.0) alone would return that
+        # None straight through. This function already discards each
+        # hazard's own raw PROBABILITY (see the comment above by_zone), so
+        # unlike tile_value_combined there is no earlier real value to fall
+        # back to here; coalescing to 0.0 keeps facility markers rendering
+        # (uncolored rather than a None reaching the client) instead of
+        # fixing the underlying gap for this path too.
+        prob = combined.get(zid)
+        entry["PROBABILITY"] = prob if prob is not None else 0.0
         out.append(entry)
     return out
 

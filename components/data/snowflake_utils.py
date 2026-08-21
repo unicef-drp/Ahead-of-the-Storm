@@ -1165,6 +1165,39 @@ def get_storms_and_countries_for_date(forecast_date: str, wind_threshold: int = 
         return []
 
 
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=256)
+def get_storms_and_countries_examined_for_date(forecast_date: str, wind_threshold: int = 34) -> list:
+    """Same (STORM, COUNTRY) pairs as get_storms_and_countries_for_date
+    above, but WITHOUT that function's own non-zero-impact HAVING gate:
+    every pair with ANY row at all in MERCATOR_TILE_IMPACT_MAT for this
+    forecast_date/threshold, i.e. every country this storm's own tile grid
+    was genuinely computed for (the storm's forecast cone reaches it),
+    regardless of whether the resulting population/facility exposure
+    happens to be exactly zero.
+
+    Powers _global_flood_availability's own Global-scope country roster: a
+    country a storm genuinely reaches but with zero real exposure this
+    cycle was still genuinely examined, so it belongs in a real "0 people
+    at risk worldwide" total, not silently missing from the roster the way
+    get_storms_and_countries_for_date's own impact gate would drop it (see
+    that function's own docstring for the full mechanism this fixes).
+
+    Returns [] only when there's genuinely no real tile data for this date/
+    threshold at all, a real "not computed yet" case, distinct from
+    "computed and zero" above.
+    """
+    try:
+        df = _run_query(
+            "SELECT DISTINCT STORM, COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT "
+            "WHERE FORECAST_DATE = %s AND WIND_THRESHOLD = %s",
+            params=[forecast_date, wind_threshold],
+        )
+        return df.to_dict('records') if not df.empty else []
+    except Exception as e:
+        logger.warning("get_storms_and_countries_examined_for_date failed for %s: %s", forecast_date, e)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Impact data queries: *_MAT tables
 # ---------------------------------------------------------------------------
@@ -1555,6 +1588,33 @@ def get_countries_with_river_impact_at(forecast_time: str, rp_tier: str, window_
 
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_countries_examined_for_river_at(forecast_time: str, rp_tier: str, window_h: int) -> list:
+    """Same country set as get_countries_with_river_impact_at above, but
+    WITHOUT that function's own non-zero-impact HAVING gate: every country
+    with ANY real row in MERCATOR_TILE_RIVER_MAT at this exact
+    (forecast_time, rp_tier, window_h), regardless of whether that
+    country's own real exposure happens to be exactly zero. See
+    get_storms_and_countries_examined_for_date's own docstring (the wind
+    sibling of this function) for the full "why": a country genuinely
+    examined and found to have zero real exposure this cycle still belongs
+    in a real "0 people at risk" total, not silently missing from
+    _global_flood_availability's own roster.
+
+    Returns [] only when there's genuinely no real river tile data at all
+    for this combination."""
+    try:
+        df = _run_query(
+            "SELECT DISTINCT COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT "
+            "WHERE FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s",
+            params=[forecast_time, rp_tier, window_h],
+        )
+        return df["COUNTRY"].tolist() if not df.empty else []
+    except Exception as e:
+        logger.warning("get_countries_examined_for_river_at failed for %s/%s/%sh: %s", forecast_time, rp_tier, window_h, e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_countries_with_precip_impact_at(forecast_time: str, threshold_mm, window_h) -> list:
     """Rain sibling of get_countries_with_river_impact_at above:
     MERCATOR_TILE_PRECIP_MAT, same real-impact-table-not-raw-ingestion-log
@@ -1571,6 +1631,27 @@ def get_countries_with_precip_impact_at(forecast_time: str, threshold_mm, window
         return df["COUNTRY"].tolist() if not df.empty else []
     except Exception as e:
         logger.warning("get_countries_with_precip_impact_at failed for %s/%smm/%sh: %s", forecast_time, threshold_mm, window_h, e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
+def get_countries_examined_for_precip_at(forecast_time: str, threshold_mm, window_h) -> list:
+    """Rain sibling of get_countries_examined_for_river_at above: every
+    country with ANY real row in MERCATOR_TILE_PRECIP_MAT at this exact
+    (forecast_time, threshold_mm, window_h), regardless of that country's
+    own real exposure being exactly zero (unlike get_countries_with_precip_
+    impact_at's own non-zero-impact HAVING gate). Returns [] only when
+    there's genuinely no real precip tile data at all for this
+    combination."""
+    try:
+        df = _run_query(
+            "SELECT DISTINCT COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT "
+            "WHERE FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s",
+            params=[forecast_time, threshold_mm, window_h],
+        )
+        return df["COUNTRY"].tolist() if not df.empty else []
+    except Exception as e:
+        logger.warning("get_countries_examined_for_precip_at failed for %s/%smm/%sh: %s", forecast_time, threshold_mm, window_h, e)
         return []
 
 

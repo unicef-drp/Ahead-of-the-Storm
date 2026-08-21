@@ -51,12 +51,14 @@ from components.data.snowflake_utils import (
     get_latest_forecast_time_overall, get_default_forecast_cycle, get_available_wind_thresholds,
     get_country_totals, get_snowflake_connection,
     get_envelope_data_snowflake, get_gust_envelope_data_snowflake, get_storms_for_country_date,
-    get_storms_and_countries_for_date, get_track_impacts, get_gust_track_impacts,
+    get_storms_and_countries_for_date, get_storms_and_countries_examined_for_date,
+    get_track_impacts, get_gust_track_impacts,
     get_latest_river_forecast_time, get_latest_rain_forecast_time, ttl_cache,
     get_precip_forecast_time_near, get_river_extent_forecast_time_for_date,
     get_multi_storm_tracks, get_track_ids_for_date, get_gust_track_ids_for_date, get_tracks_for_storm,
     get_tile_impacts, get_gust_tile_impacts, get_river_tile_impacts, get_rain_tile_impacts,
     get_countries_with_river_impact_at, get_countries_with_precip_impact_at,
+    get_countries_examined_for_river_at, get_countries_examined_for_precip_at,
     get_storms_with_alert_emails_at, get_alert_emails_for_storm, get_alert_email_body,
     get_storms_with_warning_emails_at, get_warning_emails_for_storm, get_warning_email_body,
     get_recent_forecast_dates, get_admin_impacts, get_facility_source,
@@ -2265,9 +2267,39 @@ def _global_flood_availability(date, run, river_idx=None, rain_idx=None, rain_wi
 
     Returns (all_country_names, river_avail, rain_avail), shared by both
     Global's own Impact Summary total and the Hazard Contribution popup so
-    they never disagree on what's real for a given date."""
-    all_storms = _resolve_storms_for_date(date, run)
-    wind_country_names = {c for s in all_storms for c in s["countries"]}
+    they never disagree on what's real for a given date.
+
+    BUG C (fixed, real quiet-cycle case): `all_country_names` used to come
+    ONLY from countries that already clear a non-zero-impact HAVING gate
+    (wind_country_names from _resolve_storms_for_date's own impact-gated
+    `countries`, river/rain from get_countries_with_river_impact_at/get_
+    countries_with_precip_impact_at). On a real cycle where every active
+    hazard genuinely produces zero exposure everywhere (a real, not
+    fabricated, "quiet" answer, confirmed live for Aug 21 2026 00Z: SAUDEL/
+    LALA both have real tile rows for PHL/BGD with population exposure of
+    exactly 0.0 at every wind threshold, and real precip data with zero
+    countries clearing the default 75mm/6h bar), that made ALL THREE
+    sources empty simultaneously, so `all_country_names` came back [], and
+    _combined_stats' own `if not countries: return {k: None...}` early-
+    return (correct for its OWN contract: "no countries to even consider")
+    fired -- producing N/A across every Impact Summary tile even though
+    real countries genuinely WERE examined and genuinely DO have a real
+    zero. Now uses get_storms_and_countries_examined_for_date/get_
+    countries_examined_for_river_at/get_countries_examined_for_precip_at
+    (this file's own "examined" siblings of the impact-gated functions
+    above): every country with ANY real tile row for this exact hazard/
+    date/threshold, regardless of whether the resulting exposure happens
+    to be exactly zero, so a real worldwide-quiet cycle now correctly
+    shows "0" through _combined_stats' own has_real tracking instead of
+    N/A. river_avail/rain_avail switch to the same "examined" source for
+    the identical reason: whether real river/rain DATA was genuinely
+    computed for this cycle, not whether someone currently shows nonzero
+    risk, so Global's own combined hz still marks a genuinely-quiet hazard
+    "on" (and reports its real 0) rather than treating it as unavailable
+    and omitting it entirely."""
+    mat_date = _mat_forecast_date(date, run) if (date and run is not None) else None
+    wind_pairs = get_storms_and_countries_examined_for_date(mat_date) if mat_date else []
+    wind_country_names = {_CODE_TO_NAME.get(row["COUNTRY"], row["COUNTRY"]) for row in wind_pairs}
 
     rp_tier = _RIVER_RP_TIERS[river_idx if river_idx is not None else 2]
     river_window_resolved = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
@@ -2278,12 +2310,12 @@ def _global_flood_availability(date, run, river_idx=None, rain_idx=None, rain_wi
 
     river_forecast_time = get_river_extent_forecast_time_for_date(date, rp_tier) if date else None
     river_countries = (
-        get_countries_with_river_impact_at(_mat_forecast_date(date, "00"), rp_tier, river_window_resolved)
+        get_countries_examined_for_river_at(_mat_forecast_date(date, "00"), rp_tier, river_window_resolved)
         if river_forecast_time else []
     )
     rain_forecast_time = get_precip_forecast_time_near(date, run) if (date and run is not None) else None
     rain_countries = (
-        get_countries_with_precip_impact_at(_mat_forecast_date(date, run), rain_mm, int(rain_window_resolved))
+        get_countries_examined_for_precip_at(_mat_forecast_date(date, run), rain_mm, int(rain_window_resolved))
         if rain_forecast_time else []
     )
 
