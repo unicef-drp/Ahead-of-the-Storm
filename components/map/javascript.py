@@ -252,7 +252,7 @@ function(feature, layer) {
     // Always show same structure, use N/A when data not available
     let content = `
         <div style="font-size: 13px; font-weight: 600; color: #ff0000; margin-bottom: 5px;">
-            ${isGust ? _mapT('Gust Envelope') : _mapT('Hurricane Envelope')}
+            ${isGust ? _mapT('Gust Extent') : _mapT('Sustained Wind Extent')}
         </div>
         <div style="font-size: 11px; color: ${_AOTS_TT_VALUE};">
             <strong>${isGust ? _mapT('Gust Threshold') : _mapT('Wind Threshold')}:</strong> ${wind_threshold}

@@ -423,7 +423,7 @@ _TRANSLATIONS = {
         "At Risk by Hazard Type": "En Riesgo por Tipo de Peligro",
         "Storm Tracks": "Trayectorias de la Tormenta",
         "Sustained Wind": "Viento Sostenido", "Gust": "Ráfaga", "Flood Hazards": "Peligros de Inundación",
-        "Envelopes": "Envolventes", "Probability Raster": "Ráster de Probabilidad",
+        "Extent": "Extensión", "Probability Raster": "Ráster de Probabilidad",
         "Mean": "Media", "Probability": "Probabilidad",
         "River Flooding": "Inundación Fluvial", "Rainfall": "Precipitación", "Proxies": "Aproximaciones",
         "Real forecasted indicators (river return-period tiers, rainfall accumulation) that contribute to flood potential — not a direct forecast of flood extent or depth.":
@@ -541,6 +541,7 @@ _TRANSLATIONS = {
         "No storms match.": "Ninguna tormenta coincide.",
         # Footer
         "Supported by": "Con el apoyo de",
+        "Powered by": "Con tecnología de",
         # UN disclaimer
         ("The boundaries and names shown and the designations used on this map "
          "do not imply official endorsement or acceptance by the United Nations."):
@@ -558,8 +559,7 @@ _TRANSLATIONS = {
         "{tier} · ≥ {mm}mm over {hours}h": "{tier} · ≥ {mm}mm en {hours}h",
         "Cat {n}": "Cat {n}",
         "Unknown": "Desconocido",
-        "{name} Envelope": "Envolvente de {name}",
-        "{name} Envelope Severity": "Gravedad de la envolvente de {name}",
+        "{name} Severity": "Gravedad de {name}",
         "Color = that ensemble member's own population impact. Faint fill = no impact data for that member.":
             "Color = el impacto poblacional propio de ese miembro del conjunto. Relleno tenue = sin datos de impacto para ese miembro.",
         "ECMWF ensemble tropical cyclone forecast (51 members + control), ECMWF Open Data":
@@ -731,7 +731,7 @@ _TRANSLATIONS = {
         "At Risk by Hazard Type": "À risque par type de risque",
         "Storm Tracks": "Trajectoires de la tempête",
         "Sustained Wind": "Vent soutenu", "Gust": "Rafale", "Flood Hazards": "Risques d'inondation",
-        "Envelopes": "Enveloppes", "Probability Raster": "Raster de probabilité",
+        "Extent": "Étendue", "Probability Raster": "Raster de probabilité",
         "Mean": "Moyenne", "Probability": "Probabilité",
         "River Flooding": "Inondation fluviale", "Rainfall": "Précipitations", "Proxies": "Approximations",
         "Real forecasted indicators (river return-period tiers, rainfall accumulation) that contribute to flood potential — not a direct forecast of flood extent or depth.":
@@ -837,6 +837,7 @@ _TRANSLATIONS = {
             "La trajectoire, l'enveloppe de vent et la couche de précipitations basculent vers la prévision propre de {label} — pas la vue probabiliste.",
         "No storms match.": "Aucune tempête ne correspond.",
         "Supported by": "Avec le soutien de",
+        "Powered by": "Propulsé par",
         ("The boundaries and names shown and the designations used on this map "
          "do not imply official endorsement or acceptance by the United Nations."):
             "Les frontières et noms indiqués ainsi que les désignations utilisées sur cette carte "
@@ -851,8 +852,7 @@ _TRANSLATIONS = {
         "{tier} · ≥ {mm}mm over {hours}h": "{tier} · ≥ {mm}mm sur {hours}h",
         "Cat {n}": "Cat {n}",
         "Unknown": "Inconnu",
-        "{name} Envelope": "Enveloppe de {name}",
-        "{name} Envelope Severity": "Gravité de l'enveloppe de {name}",
+        "{name} Severity": "Gravité de {name}",
         "Color = that ensemble member's own population impact. Faint fill = no impact data for that member.":
             "Couleur = impact démographique propre à ce membre de l'ensemble. Remplissage pâle = "
             "aucune donnée d'impact pour ce membre.",
@@ -1025,7 +1025,7 @@ _TRANSLATIONS = {
         "At Risk by Hazard Type": "ঝুঁকির ধরন অনুযায়ী ঝুঁকিতে",
         "Storm Tracks": "ঝড়ের গতিপথ",
         "Sustained Wind": "স্থায়ী বাতাস", "Gust": "দমকা হাওয়া", "Flood Hazards": "বন্যা ঝুঁকি",
-        "Envelopes": "খাম", "Probability Raster": "সম্ভাব্যতা র‍্যাস্টার",
+        "Extent": "ব্যাপ্তি", "Probability Raster": "সম্ভাব্যতা র‍্যাস্টার",
         "Mean": "গড়", "Probability": "সম্ভাব্যতা",
         "River Flooding": "নদীর বন্যা", "Rainfall": "বৃষ্টিপাত", "Proxies": "প্রক্সি",
         "Real forecasted indicators (river return-period tiers, rainfall accumulation) that contribute to flood potential — not a direct forecast of flood extent or depth.":
@@ -1131,6 +1131,7 @@ _TRANSLATIONS = {
             "গতিপথ, বায়ু আবরণ এবং বৃষ্টিপাত স্তর {label}-এর নিজস্ব পূর্বাভাসে পরিবর্তিত হয় — সম্ভাব্যতাভিত্তিক দৃশ্য নয়।",
         "No storms match.": "কোনো ঝড় মেলেনি।",
         "Supported by": "সহায়তায়",
+        "Powered by": "চালিত",
         ("The boundaries and names shown and the designations used on this map "
          "do not imply official endorsement or acceptance by the United Nations."):
             "এই মানচিত্রে দেখানো সীমানা ও নাম এবং ব্যবহৃত পদবি জাতিসংঘের সরকারি অনুমোদন বা গ্রহণযোগ্যতা বোঝায় না।",
@@ -1144,8 +1145,7 @@ _TRANSLATIONS = {
         "{tier} · ≥ {mm}mm over {hours}h": "{tier} · ≥ {mm}mm, {hours} ঘণ্টায়",
         "Cat {n}": "ক্যাট {n}",
         "Unknown": "অজানা",
-        "{name} Envelope": "{name} খাম",
-        "{name} Envelope Severity": "{name} খামের তীব্রতা",
+        "{name} Severity": "{name} তীব্রতা",
         "Color = that ensemble member's own population impact. Faint fill = no impact data for that member.":
             "রঙ = সেই এনসেম্বল সদস্যের নিজস্ব জনসংখ্যা প্রভাব। ফিকে ভরাট = সেই সদস্যের জন্য কোনো প্রভাবের তথ্য নেই।",
         "ECMWF ensemble tropical cyclone forecast (51 members + control), ECMWF Open Data":
@@ -1290,8 +1290,8 @@ def _t(text, **kwargs):
 _MAP_TOOLTIP_TRANSLATIONS = {
     "es": {
         "Ensemble Member": "Miembro del Conjunto", "Control Track": "Trayectoria de Control",
-        "Ensemble Track": "Trayectoria del Conjunto", "Gust Envelope": "Envolvente de Ráfagas",
-        "Hurricane Envelope": "Envolvente del Huracán", "Gust Threshold": "Umbral de Ráfaga",
+        "Ensemble Track": "Trayectoria del Conjunto", "Gust Extent": "Extensión de Ráfagas",
+        "Sustained Wind Extent": "Extensión de Viento Sostenido", "Gust Threshold": "Umbral de Ráfaga",
         "Wind Threshold": "Umbral de Viento", "Impact": "Impacto",
         "Population": "Población", "Children (total)": "Niños (total)",
         "Age 0–4": "0–4 años", "Age 5–14": "5–14 años", "Age 15–19": "15–19 años",
@@ -1328,8 +1328,8 @@ _MAP_TOOLTIP_TRANSLATIONS = {
     },
     "fr": {
         "Ensemble Member": "Membre de l'ensemble", "Control Track": "Trajectoire de contrôle",
-        "Ensemble Track": "Trajectoire de l'ensemble", "Gust Envelope": "Enveloppe de rafales",
-        "Hurricane Envelope": "Enveloppe de l'ouragan", "Gust Threshold": "Seuil de rafale",
+        "Ensemble Track": "Trajectoire de l'ensemble", "Gust Extent": "Étendue des rafales",
+        "Sustained Wind Extent": "Étendue du vent soutenu", "Gust Threshold": "Seuil de rafale",
         "Wind Threshold": "Seuil de vent", "Impact": "Impact",
         "Population": "Population", "Children (total)": "Enfants (total)",
         "Age 0–4": "0–4 ans", "Age 5–14": "5–14 ans", "Age 15–19": "15–19 ans",
@@ -1366,8 +1366,8 @@ _MAP_TOOLTIP_TRANSLATIONS = {
     },
     "bn": {
         "Ensemble Member": "এনসেম্বল সদস্য", "Control Track": "নিয়ন্ত্রণ ট্র্যাক",
-        "Ensemble Track": "এনসেম্বল ট্র্যাক", "Gust Envelope": "দমকা হাওয়ার আওতা",
-        "Hurricane Envelope": "ঘূর্ণিঝড়ের আওতা", "Gust Threshold": "দমকা হাওয়ার সীমা",
+        "Ensemble Track": "এনসেম্বল ট্র্যাক", "Gust Extent": "দমকা হাওয়ার ব্যাপ্তি",
+        "Sustained Wind Extent": "স্থায়ী বাতাসের ব্যাপ্তি", "Gust Threshold": "দমকা হাওয়ার সীমা",
         "Wind Threshold": "বাতাসের সীমা", "Impact": "প্রভাব",
         "Population": "জনসংখ্যা", "Children (total)": "শিশু (মোট)",
         "Age 0–4": "বয়স ০–৪", "Age 5–14": "বয়স ৫–১৪", "Age 15–19": "বয়স ১৫–১৯",
@@ -5113,7 +5113,7 @@ def _hurricane_family(countries=None, expanded=True, date=None, run=None):
             dmc.SegmentedControl(
                 id="tc-view-as", value=("envelopes" if is_global else "raster"), fullWidth=True, size="xs",
                 disabled=(not has_storms) or is_global,
-                data=[{"value": "envelopes", "label": _t("Envelopes")},
+                data=[{"value": "envelopes", "label": _t("Extent")},
                       {"value": "raster", "label": _t("Probability")}],
             ),
         # Always hidden now, in both modes: Country Analysis already hid this
@@ -8829,26 +8829,26 @@ def _compact_footer():
         [
             dmc.Group(
                 [
-                    dmc.Text(_t("Supported by"), size="xs", c="white", opacity=0.8, style={"marginRight": "10px"}),
+                    dmc.Text(_t("Supported by"), size="xs", c="white", opacity=0.8, style={"marginRight": "8px"}),
                     dmc.Anchor(
                         dmc.Image(src="assets/img/DID-logo-white.png", w=70),
                         href="https://www.unicef.org/digitalimpact/what-we-do/artificial-intelligence-children",
-                        target="_blank", style={"marginRight": "16px"},
+                        target="_blank", style={"marginRight": "12px"},
                     ),
                     _vdivider(color="rgba(255,255,255,0.6)"),
                     dmc.Anchor(
                         dmc.Image(src="assets/img/FDN-UNICEF-logo_white.png", w=120),
-                        href="http://frontierdatanetwork.org/", target="_blank", style={"marginLeft": "16px", "marginRight": "16px"},
+                        href="http://frontierdatanetwork.org/", target="_blank", style={"marginLeft": "12px", "marginRight": "12px"},
                     ),
                     html.Div(style={"width": "18px", "height": "1px", "background": "rgba(255,255,255,0.6)",
-                                      "marginRight": "16px"}),
+                                      "marginRight": "12px"}),
                     dmc.Anchor(
-                        dmc.Image(src="assets/img/GIGA_lockup_white_horizontal.webp", w=120),
-                        href="https://giga.global", target="_blank", style={"marginRight": "20px"},
+                        dmc.Image(src="assets/img/unicef-digital-inclusion_white.png", w=100),
+                        href="https://www.unicef.org/digitalimpact/digital-inclusion", target="_blank", style={"marginRight": "14px"},
                     ),
                     dmc.Anchor(
                         dmc.Image(src="assets/img/OoI_logo.png", w=95),
-                        href="https://www.unicef.org/innovation/", target="_blank", style={"marginRight": "20px"},
+                        href="https://www.unicef.org/innovation/", target="_blank", style={"marginRight": "14px"},
                     ),
                     dmc.Anchor(
                         dmc.Image(src="assets/img/ose_logo_white.png", w=70),
@@ -8867,6 +8867,16 @@ def _compact_footer():
                     # footer text.
                     dmc.Badge(_t(_EXPERIMENTAL_DISCLAIMER), color="red", variant="filled",
                                 size="md", radius="sm", style={"textTransform": "none", "fontWeight": 500}),
+                    dmc.Stack(
+                        [
+                            dmc.Text(_t("Powered by"), size="9px", c="white", opacity=0.8, ta="center"),
+                            dmc.Anchor(
+                                dmc.Image(src="assets/img/gigaspatial_white_2x.png", w=75),
+                                href="https://github.com/unicef/giga-spatial", target="_blank",
+                            ),
+                        ],
+                        gap=2, align="center", style={"marginLeft": "16px"},
+                    ),
                     dmc.Anchor(
                         dmc.ActionIcon(DashIconify(icon="carbon:logo-github", width=24), variant="transparent",
                                         style={"color": "#ffffff"}),
@@ -9510,7 +9520,7 @@ def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc
         if is_global:
             color = WIND if layer == "wind" else GUST
             return {
-                "title": _t("{name} Envelope", name=name),
+                "title": name,
                 "compact_title": name,
                 "bar": _legend_swatch_row(color, name, shape="square"),
                 "compact_bar": _legend_color_swatch(color),
@@ -9519,7 +9529,7 @@ def _legend_layer_info(layer, wind_on, gust_on, river_on, rain_on, tracks_on, tc
             }
         gradient = ["#FFFF00", "#8B0000"] if layer == "wind" else ["#FFF3BF", "#D9480F"]
         return {
-            "title": _t("{name} Envelope Severity", name=name),
+            "title": _t("{name} Severity", name=name),
             "compact_title": name,
             "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
                                      "background": f"linear-gradient(to right, {', '.join(gradient)})"}),
