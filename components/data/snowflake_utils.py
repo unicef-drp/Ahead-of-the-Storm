@@ -2786,16 +2786,7 @@ def get_base_admin(country: str, admin_level: int = 1) -> gpd.GeoDataFrame:
 
 # ---------------------------------------------------------------------------
 # Real, already-sent Alert emails (AOTS.TC_ECMWF.ALERT_SENT_LOG): the "view
-# past alert emails" feature on the dashboard's Global view. Deliberately
-# ALERT-only (not Warning/watch): WATCH_SENT_LOG (the Warning dedup table,
-# never renamed from its original "watch" name despite the procedure itself
-# being called SEND_WARNING) has no EMAIL_BODY/HTML column at all: confirmed
-# by reading 07b_alert_agent/02b_send_warning_procedure.sql directly (its
-# CREATE TABLE and only INSERT both list just TRACK_ID/FORECAST_DATE/
-# RECIPIENT_COUNT/COUNTRIES). A Warning's generated HTML is used once to call
-# the email-send API and then discarded; there is nothing to fetch back for
-# a past Warning, so it's out of scope until that changes upstream (needs the
-# ORCHESTRATION repo's own explicit sign-off, not this app's to decide).
+# past alert emails" feature on the dashboard's Global view.
 # ---------------------------------------------------------------------------
 
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
@@ -2909,6 +2900,95 @@ def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
         return str(df['EMAIL_BODY'].iloc[0])
     except Exception as e:
         logger.error("Error querying alert email body for %s/%s/%s: %s", track_id, forecast_time, country_code, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Real, already-sent Warning emails (AOTS.TC_ECMWF.WATCH_SENT_LOG): the same
+# "view past emails" feature as the Alert functions above, one grain
+# narrower -- WATCH_SENT_LOG is (TRACK_ID, FORECAST_DATE), one shared email
+# per storm run covering every affected country in a single send (see
+# SEND_WARNING's own COUNTRIES column), not one row per country the way
+# ALERT_SENT_LOG is. So there is no country_code param anywhere below: a
+# Warning has exactly one real email per (track_id, forecast_date), not one
+# per country. FORECAST_DATE itself is a real VARCHAR in 'YYYYMMDDHH24MISS'
+# form (matching MERCATOR_TILE_IMPACT_MAT's own convention, see WATCH_
+# SENT_LOG's own CREATE TABLE comment in the ORCHESTRATION repo), not a
+# TIMESTAMP_NTZ like ALERT_SENT_LOG.FORECAST_TIME -- callers still pass the
+# same "YYYY-MM-DD HH:MM:SS" string the Alert functions take (the topbar's
+# own resolved forecast_time), converted to that format inside the query via
+# TO_CHAR(TO_TIMESTAMP_NTZ(%s), 'YYYYMMDDHH24MISS') so every call site stays
+# consistent with the Alert functions above.
+# ---------------------------------------------------------------------------
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_storms_with_warning_emails_at(forecast_time: str) -> set:
+    """Real set of TRACK_ID values with a warning email at this EXACT
+    forecast_time -- same role as get_storms_with_alert_emails_at, deciding
+    whether a storm row's "view warning emails" icon should show at all for
+    the currently selected topbar date/time."""
+    try:
+        df = _run_query(
+            "SELECT DISTINCT TRACK_ID FROM AOTS.TC_ECMWF.WATCH_SENT_LOG "
+            "WHERE FORECAST_DATE = TO_CHAR(TO_TIMESTAMP_NTZ(%s), 'YYYYMMDDHH24MISS') AND EMAIL_BODY IS NOT NULL",
+            params=[forecast_time],
+        )
+        return set(df['TRACK_ID'].tolist()) if not df.empty else set()
+    except Exception as e:
+        logger.error("Error querying storms with warning emails at %s: %s", forecast_time, e)
+        return set()
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_warning_emails_for_storm(track_id: str, forecast_time: str = None):
+    """Real list of available warning emails for a storm (WATCH_SENT_LOG),
+    one entry per (track_id, forecast_date) -- unlike get_alert_emails_for_
+    storm, never more than one entry per real forecast cycle, since a
+    Warning has exactly one shared email across every affected country, not
+    one per country. Returns dicts with TRACK_ID/FORECAST_DATE/
+    EMAIL_SUBJECT/COUNTRIES (the real comma-joined country list that email
+    covered, useful in the UI since there's no separate per-country
+    breakdown to show it another way)."""
+    try:
+        sql = (
+            "SELECT TRACK_ID, FORECAST_DATE, EMAIL_SUBJECT, COUNTRIES FROM AOTS.TC_ECMWF.WATCH_SENT_LOG "
+            "WHERE TRACK_ID = %s AND EMAIL_BODY IS NOT NULL"
+        )
+        params = [track_id]
+        if forecast_time:
+            sql += " AND FORECAST_DATE = TO_CHAR(TO_TIMESTAMP_NTZ(%s), 'YYYYMMDDHH24MISS')"
+            params.append(forecast_time)
+        sql += (
+            " QUALIFY ROW_NUMBER() OVER (PARTITION BY TRACK_ID, FORECAST_DATE ORDER BY SENT_AT DESC) = 1"
+            " ORDER BY FORECAST_DATE DESC"
+        )
+        df = _run_query(sql, params=params)
+        return df.to_dict('records') if not df.empty else []
+    except Exception as e:
+        logger.error("Error querying warning emails for storm %s: %s", track_id, e)
+        return []
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def get_warning_email_body(track_id: str, forecast_date: str):
+    """Real EMAIL_BODY HTML for one specific already-sent warning, keyed by
+    the real FORECAST_DATE string WATCH_SENT_LOG itself stores
+    ('YYYYMMDDHH24MISS', NOT the "YYYY-MM-DD HH:MM:SS" form the other
+    functions in this section take -- callers get this exact value back from
+    get_warning_emails_for_storm's own FORECAST_DATE field, so no
+    conversion is needed here, unlike the other two functions above)."""
+    try:
+        df = _run_query(
+            "SELECT EMAIL_BODY FROM AOTS.TC_ECMWF.WATCH_SENT_LOG "
+            "WHERE TRACK_ID = %s AND FORECAST_DATE = %s "
+            "ORDER BY SENT_AT DESC LIMIT 1",
+            params=[track_id, forecast_date],
+        )
+        if df.empty or pd.isna(df['EMAIL_BODY'].iloc[0]):
+            return None
+        return str(df['EMAIL_BODY'].iloc[0])
+    except Exception as e:
+        logger.error("Error querying warning email body for %s/%s: %s", track_id, forecast_date, e)
         return None
 
 

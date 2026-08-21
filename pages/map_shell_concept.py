@@ -58,6 +58,7 @@ from components.data.snowflake_utils import (
     get_tile_impacts, get_gust_tile_impacts, get_river_tile_impacts, get_rain_tile_impacts,
     get_countries_with_river_impact_at, get_countries_with_precip_impact_at,
     get_storms_with_alert_emails_at, get_alert_emails_for_storm, get_alert_email_body,
+    get_storms_with_warning_emails_at, get_warning_emails_for_storm, get_warning_email_body,
     get_recent_forecast_dates, get_admin_impacts, get_facility_source,
     get_query_executor, get_member_fetch_executor, get_tile_impact_totals_by_threshold, get_data_availability,
     HAZARD_SOURCE_ECMWF, HAZARD_SOURCE_GLOFAS,
@@ -488,7 +489,7 @@ _TRANSLATIONS = {
         "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
             "Sin impacto con la configuración de peligro actualmente seleccionada (umbral/nivel de gravedad) para esta selección. Esto no significa que no haya un impacto real en general: un umbral diferente podría mostrar impacto real.",
         "Full Impact Breakdown": "Desglose Completo de Impacto", "Hazard Contribution": "Contribución por Peligro",
-        "Alert Email": "Correo de Alerta", "Open in new tab ↗": "Abrir en nueva pestaña ↗",
+        "Alert Email": "Correo de Alerta", "Warning Email": "Correo de Advertencia", "Open in new tab ↗": "Abrir en nueva pestaña ↗",
         "Total: {value}": "Total: {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "División ilustrativa — una implementación real calcularía esto a partir del solapamiento real por peligro.",
@@ -793,7 +794,7 @@ _TRANSLATIONS = {
         "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
             "Aucun impact avec la configuration de danger actuellement sélectionnée (seuil/niveau de gravité) pour cette sélection. Cela ne signifie pas qu'il n'y a pas d'impact réel en général : un seuil différent pourrait montrer un impact réel.",
         "Full Impact Breakdown": "Répartition complète de l'impact", "Hazard Contribution": "Contribution par risque",
-        "Alert Email": "E-mail d'alerte", "Open in new tab ↗": "Ouvrir dans un nouvel onglet ↗",
+        "Alert Email": "E-mail d'alerte", "Warning Email": "E-mail d'avertissement", "Open in new tab ↗": "Ouvrir dans un nouvel onglet ↗",
         "Total: {value}": "Total : {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "Répartition illustrative — une implémentation réelle calculerait ceci à partir du chevauchement réel par risque.",
@@ -1087,7 +1088,7 @@ _TRANSLATIONS = {
         "No impact at the currently selected hazard configuration (severity threshold/tier) for this selection. This does not mean there is no real impact overall — a different threshold may show real impact.":
             "এই নির্বাচনের জন্য বর্তমানে নির্বাচিত ঝুঁকির কনফিগারেশনে (তীব্রতার সীমা/স্তর) কোনো প্রভাব নেই। এর অর্থ এই নয় যে সামগ্রিকভাবে প্রকৃত কোনো প্রভাব নেই — ভিন্ন একটি সীমা প্রকৃত প্রভাব দেখাতে পারে।",
         "Full Impact Breakdown": "সম্পূর্ণ প্রভাব বিভাজন", "Hazard Contribution": "ঝুঁকির অবদান",
-        "Alert Email": "সতর্কতা ইমেইল", "Open in new tab ↗": "নতুন ট্যাবে খুলুন ↗",
+        "Alert Email": "সতর্কতা ইমেইল", "Warning Email": "সতর্কীকরণ ইমেইল", "Open in new tab ↗": "নতুন ট্যাবে খুলুন ↗",
         "Total: {value}": "মোট: {value}",
         "Illustrative split — a real implementation would compute this from actual per-hazard overlap.":
             "দৃষ্টান্তমূলক বিভাজন — প্রকৃত বাস্তবায়নে এটি প্রতিটি ঝুঁকির প্রকৃত ওভারল্যাপ থেকে গণনা করা হবে।",
@@ -4455,7 +4456,7 @@ def _cat_badge(cat):
                       style={"backgroundColor": _CAT_COLORS.get(label, "#8ea0ab"), "color": "#fff"})
 
 
-def _storm_row(s, bordered=False, has_alert_email=False):
+def _storm_row(s, bordered=False, has_alert_email=False, has_warning_email=False):
     """Storm entry, used both in the top-bar search dropdown and the
     Active Storms list (Global mode, or a selected country). No separate
     'Select' button (matching global_zoom_navigation's row style, not the
@@ -4483,20 +4484,30 @@ def _storm_row(s, bordered=False, has_alert_email=False):
     # Only in the Active Storms list (bordered=True), not the search
     # dropdown, avoids cluttering search results with an action button.
     #
-    # has_alert_email is resolved by the caller (_active_storms_section)
-    # via get_storms_with_alert_emails_at(), a ttl_cached real query against
-    # ALERT_SENT_LOG SCOPED TO THE CURRENTLY SELECTED topbar date/run,
-    # must NOT check "has this storm EVER had ANY alert," which would let
-    # the icon appear and then open an empty "no emails" popup for a
-    # date/time with nothing real to show. Warning/watch emails
-    # are deliberately NOT part of this check, see
-    # get_storms_with_alert_emails_at's own docstring for why (WATCH_SENT_LOG
-    # has no stored email body to view).
+    # has_alert_email/has_warning_email are resolved by the caller
+    # (_active_storms_section) via get_storms_with_alert_emails_at()/
+    # get_storms_with_warning_emails_at(), both ttl_cached real queries
+    # SCOPED TO THE CURRENTLY SELECTED topbar date/run, must NOT check "has
+    # this storm EVER had ANY alert/warning," which would let an icon appear
+    # and then open an empty "no emails" popup for a date/time with nothing
+    # real to show. Two separate icons (not merged into one): an Alert and a
+    # Warning for the same storm/date are genuinely different real emails
+    # (ALERT_SENT_LOG vs WATCH_SENT_LOG), a storm can have either, both, or
+    # neither at a given date/time, and they open different modals/routes.
+    # Colored differently (WIND blue for Alert, amber/yellow for Warning) so
+    # they read as visually distinct severity tiers at a glance, not two
+    # copies of the same control.
     if bordered and has_alert_email:
         right_side.append(dmc.ActionIcon(
             DashIconify(icon="carbon:email", width=14),
             id={"type": "alert-email-btn", "name": s["name"]}, n_clicks=0,
             variant="light", color=WIND, size="sm",
+        ))
+    if bordered and has_warning_email:
+        right_side.append(dmc.ActionIcon(
+            DashIconify(icon="carbon:email", width=14),
+            id={"type": "warning-email-btn", "name": s["name"]}, n_clicks=0,
+            variant="light", color="yellow", size="sm",
         ))
 
     # Real storms with a track but no measurable country impact yet (still
@@ -4732,7 +4743,9 @@ def _active_storms_section(countries=None, date=None, run=None):
     # docstring), one query for the whole list, not one per storm row.
     target_forecast_time = f"{display_date} {display_run}:00:00"
     storms_with_alerts = get_storms_with_alert_emails_at(target_forecast_time)
-    content = html.Div([_storm_row(s, bordered=True, has_alert_email=(s["name"] in storms_with_alerts))
+    storms_with_warnings = get_storms_with_warning_emails_at(target_forecast_time)
+    content = html.Div([_storm_row(s, bordered=True, has_alert_email=(s["name"] in storms_with_alerts),
+                                     has_warning_email=(s["name"] in storms_with_warnings))
                           for s in scoped_storms])
     children = [dmc.Text(label, size="10px", fw=700, c="dimmed", tt="uppercase", mb=10), content]
     if countries:
@@ -8831,7 +8844,7 @@ def _compact_footer():
                 [
                     dmc.Text(_t("Supported by"), size="xs", c="white", opacity=0.8, style={"marginRight": "8px"}),
                     dmc.Anchor(
-                        dmc.Image(src="assets/img/DID-logo-white.png", w=70),
+                        dmc.Image(src="assets/img/DID-logo-white.png", w=74),
                         href="https://www.unicef.org/digitalimpact/what-we-do/artificial-intelligence-children",
                         target="_blank", style={"marginRight": "12px"},
                     ),
@@ -9866,9 +9879,9 @@ def _alert_email_list_modal():
     """Lists a storm's real available Alert emails (ALERT_SENT_LOG), opened
     by clicking a storm row's email icon (_storm_row). One entry per real
     (forecast_time, country_code) pair; clicking an entry opens its full
-    HTML in _alert_email_modal below (_open_alert_email_detail). Warning/
-    watch emails are out of scope, see get_storms_with_alert_emails' own
-    docstring in snowflake_utils.py for why (no stored body to show)."""
+    HTML in _alert_email_modal below (_open_alert_email_detail). A Warning
+    email has no equivalent list step, see _warning_email_modal below
+    (_open_warning_email_detail) for why."""
     return dmc.Modal(
         id="alert-email-list-modal", opened=False, size="md", title=_t("Alert Emails"),
         centered=True, radius="lg", padding="lg", styles=_MODAL_PANEL_STYLES,
@@ -9912,6 +9925,29 @@ def _alert_email_modal():
                     style={"display": "block", "marginTop": "10px", "marginBottom": "10px",
                            "fontSize": "12px", "color": "#1c7ed6"}),
             html.Iframe(id="alert-email-iframe", src="",
+                         style={"width": "100%", "height": "70vh", "border": "1px solid #eef2f5",
+                                "borderRadius": "8px"}),
+        ]),
+    )
+
+
+def _warning_email_modal():
+    # Same real-standalone-HTML-via-iframe reasoning as _alert_email_modal
+    # above, `src` here points at /warning-email/<track_id>/<forecast_date>
+    # (app.py's serve_warning_email) instead. No separate list modal (unlike
+    # Alert): a Warning is always exactly one shared email per (track_id,
+    # forecast_date) covering every affected country at once, never one per
+    # country, so there's never a real choice to list -- see
+    # _open_warning_email_detail's own docstring for the full reasoning.
+    return dmc.Modal(
+        id="warning-email-modal", opened=False, size="xl", title=_t("Warning Email"),
+        centered=True, radius="lg", padding="lg", styles=_MODAL_PANEL_STYLES,
+        overlayProps={"backgroundOpacity": 0.35, "blur": 3},
+        children=html.Div([
+            html.A(_t("Open in new tab ↗"), id="warning-email-new-tab-link", href="", target="_blank",
+                    style={"display": "block", "marginTop": "10px", "marginBottom": "10px",
+                           "fontSize": "12px", "color": "#1c7ed6"}),
+            html.Iframe(id="warning-email-iframe", src="",
                          style={"width": "100%", "height": "70vh", "border": "1px solid #eef2f5",
                                 "borderRadius": "8px"}),
         ]),
@@ -10300,6 +10336,7 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         _map_disclaimer(),
         _alert_email_list_modal(),
         _alert_email_modal(),
+        _warning_email_modal(),
         _compact_footer(),
     ], style={"position": "relative", "width": "100%", "height": "100vh", "overflow": "hidden", "background": "#cfe3ee"})
 
@@ -12074,6 +12111,61 @@ def _open_alert_email_detail(clicks):
     email_url = (f"/alert-email/{urllib.parse.quote(track_id, safe='')}"
                  f"/{urllib.parse.quote(forecast_time, safe='')}/{urllib.parse.quote(country_code, safe='')}")
     return True, title, email_url, email_url, False
+
+
+def _format_watch_forecast_date(forecast_date: str) -> str:
+    """WATCH_SENT_LOG.FORECAST_DATE is a real compact 'YYYYMMDDHHMMSS'
+    string (matches MERCATOR_TILE_IMPACT_MAT's own convention), not a real
+    timestamp type the way ALERT_SENT_LOG.FORECAST_TIME is -- reformats it
+    into the same "YYYY-MM-DD HH:MM:SS" shape _open_alert_email_detail's
+    own title already shows, so the two modals read consistently instead
+    of one showing a raw digit string. Falls back to the value unchanged
+    if it doesn't match the expected 14-digit shape (defensive, should
+    never happen for a real row)."""
+    if len(forecast_date) == 14 and forecast_date.isdigit():
+        return (f"{forecast_date[0:4]}-{forecast_date[4:6]}-{forecast_date[6:8]} "
+                f"{forecast_date[8:10]}:{forecast_date[10:12]}:{forecast_date[12:14]}")
+    return forecast_date
+
+
+@callback(
+    Output("warning-email-modal", "opened"),
+    Output("warning-email-modal", "title"),
+    Output("warning-email-iframe", "src"),
+    Output("warning-email-new-tab-link", "href"),
+    Input({"type": "warning-email-btn", "name": dash.ALL}, "n_clicks"),
+    State("topbar-date", "value"),
+    State("topbar-time", "value"),
+    prevent_initial_call=True,
+)
+def _open_warning_email_detail(clicks, date, run):
+    """Storm row's warning-email icon -> straight to the real Warning email
+    (WATCH_SENT_LOG), no intermediate "pick one" list step: unlike Alert
+    (genuinely one email PER COUNTRY, so a multi-country storm needs a real
+    choice), a Warning is always exactly one shared email per (track_id,
+    forecast_date) covering every affected country at once (see
+    get_warning_emails_for_storm's own docstring) -- there is never a real
+    choice to present, so the extra click Alert's own list modal requires
+    would just be unnecessary friction here."""
+    if not clicks or not any(clicks):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    storm_name = dash.callback_context.triggered_id["name"]
+    date = date or _DEFAULT_FORECAST_DATE
+    run = run if run is not None else _DEFAULT_FORECAST_RUN
+    target_forecast_time = f"{date} {run}:00:00"
+    emails = get_warning_emails_for_storm(storm_name, forecast_time=target_forecast_time)
+    if not emails:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    e = emails[0]
+    forecast_date = str(e["FORECAST_DATE"])
+    if get_warning_email_body(storm_name, forecast_date) is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    countries_raw = [c.strip() for c in (e.get("COUNTRIES") or "").split(",") if c.strip()]
+    countries_display = ", ".join(_CODE_TO_NAME.get(c, c) for c in countries_raw) or storm_name
+    title = f"{storm_name} — {countries_display} ({_format_watch_forecast_date(forecast_date)})"
+    email_url = (f"/warning-email/{urllib.parse.quote(storm_name, safe='')}"
+                 f"/{urllib.parse.quote(forecast_date, safe='')}")
+    return True, title, email_url, email_url
 
 
 @callback(

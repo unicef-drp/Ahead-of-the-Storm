@@ -110,6 +110,20 @@ def serve_alert_email(track_id, forecast_time, country_code):
     return Response(body, mimetype="text/html")
 
 
+@server.route("/warning-email/<track_id>/<forecast_date>")
+def serve_warning_email(track_id, forecast_date):
+    """Serves the warning email HTML (AOTS.TC_ECMWF.WATCH_SENT_LOG.EMAIL_BODY)
+    the same way serve_alert_email above serves an Alert's -- one fewer URL
+    segment since a Warning has no country_code (see get_warning_email_body's
+    own docstring: one shared email per (track_id, forecast_date) covering
+    every affected country, not one per country)."""
+    from components.data.snowflake_utils import get_warning_email_body
+    body = get_warning_email_body(track_id, forecast_date)
+    if body is None:
+        return Response("Warning email not found.", mimetype="text/plain", status=404)
+    return Response(body, mimetype="text/html")
+
+
 app.layout = dmc.MantineProvider(
     [
         dash.page_container,
