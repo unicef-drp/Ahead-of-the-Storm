@@ -1903,6 +1903,11 @@ def _country_options():
 # docstring), _ZERO_STATS/_ZERO_PIN_PCT below are for that case instead.
 _DEFAULT_STATS = {"Children at Risk": "218K", "People at Risk": "640K", "Schools at Risk": "185", "Health Centers at Risk": "46", "Shelters at Risk": "62", "WASH Facilities at Risk": "134"}
 _ZERO_STATS = {k: "0" for k in _DEFAULT_STATS}
+# Raw (un-formatted, un-abbreviated) counterpart to _ZERO_STATS, see
+# _get_country_raw_stats's own docstring for why a caller that SUMS several
+# countries' own numbers together needs this instead of re-parsing each
+# one's already-K/M-abbreviated display string.
+_ZERO_RAW_STATS = {k: 0.0 for k in _DEFAULT_STATS}
 
 # Real per-age labels for the Full Impact Breakdown table's child-age-band
 # rows, sourced from real per-age Snowflake columns
@@ -2587,14 +2592,26 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
                         "Age 5–14 (School-age)": _sum_or_none('school_age_population'),
                         "Age 15–19 (Adolescent)": _sum_or_none('adolescent_population')}
     children = sum(v for v in age_population.values() if v is not None)
-    stats = {
-        "Children at Risk": _format_stat_number(children),
-        "People at Risk": _format_stat_number(population),
-        "Schools at Risk": _format_stat_number(_sum_or_none('num_schools')),
-        "Health Centers at Risk": _format_stat_number(_sum_or_none('num_hcs')),
-        "Shelters at Risk": _format_stat_number(_sum_or_none('num_shelters')),
-        "WASH Facilities at Risk": _format_stat_number(_sum_or_none('num_wash')),
+    # Raw, un-formatted floats first, `stats` (the display-ready K/M
+    # strings) derived from these, not built independently -- so both are
+    # guaranteed to describe the exact same real numbers. Kept alongside
+    # `stats` in this function's own return (as "raw_stats") specifically
+    # so a caller that needs to SUM several countries' own numbers
+    # together (_combined_stats) can sum these raw floats directly instead
+    # of reparsing each country's own already-K/M-abbreviated string, which
+    # would silently throw away real precision before the sum (e.g. a real
+    # 1,499 people formats to "1K", reparsed back as exactly 1,000 -- a
+    # ~33% per-country error that compounds across every country combined,
+    # not a rounding nuance).
+    raw_stats = {
+        "Children at Risk": children,
+        "People at Risk": population,
+        "Schools at Risk": _sum_or_none('num_schools'),
+        "Health Centers at Risk": _sum_or_none('num_hcs'),
+        "Shelters at Risk": _sum_or_none('num_shelters'),
+        "WASH Facilities at Risk": _sum_or_none('num_wash'),
     }
+    stats = {k: _format_stat_number(v) for k, v in raw_stats.items()}
     # None (not 0) whenever the real numerator itself is None, i.e. this
     # country genuinely has no real in-need data (see the .notna().any()
     # fix above), propagated all the way to display (_format_stat_number/
@@ -2672,7 +2689,7 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     # None whenever River Flooding and Rainfall aren't BOTH simultaneously
     # active (see combined_country_totals' own has_flood_split comment in
     # tile_server.py), independent of whether TC is active at all.
-    return {"stats": stats, "pin_pct": pin_pct, "age_split": age_split,
+    return {"stats": stats, "raw_stats": raw_stats, "pin_pct": pin_pct, "age_split": age_split,
             "family_split": totals.get("family_split"),
             "flood_split": totals.get("flood_split")}
 
@@ -2697,6 +2714,24 @@ def _get_country_stats(country, date=None, run=None, wind_kt=None, hz=None):
     honest zero."""
     real = _fetch_real_combined_tile_totals(country, date, run, hz or _wind_only_hz(wind_kt))
     return real["stats"] if real else _ZERO_STATS
+
+
+def _get_country_raw_stats(country, date=None, run=None, wind_kt=None, hz=None):
+    """Raw, un-formatted counterpart to _get_country_stats above -- same
+    real @ttl_cache'd _fetch_real_combined_tile_totals call (a cache hit
+    whenever _get_country_stats already ran for the same key, no extra
+    Snowflake round-trip), returns the un-abbreviated float per metric
+    instead of an already-K/M-formatted display string. Exists for
+    _combined_stats, which must SUM several countries' own numbers
+    together: summing this function's raw floats gives the mathematically
+    correct combined total; summing _get_country_stats' own formatted
+    strings (via a re-parse) would silently sum already-rounded numbers
+    instead, see this project's own memory
+    (repo_aos_impact_numbers_audit_2026_08_22) for the concrete failure
+    case that fix addresses. Falls back to _ZERO_RAW_STATS (real zeros),
+    same contract as _get_country_stats' own _ZERO_STATS fallback."""
+    real = _fetch_real_combined_tile_totals(country, date, run, hz or _wind_only_hz(wind_kt))
+    return real["raw_stats"] if real else _ZERO_RAW_STATS
 
 
 def _get_country_age_split(country, date=None, run=None, wind_kt=None, hz=None):
@@ -2903,6 +2938,17 @@ def _breakdown_from_split(tc_only_n, flood_only_n, both_n, fallback_breakdown):
         "both_pct": (both_n or 0.0) / real_total * 100,
         "tc_only_pct": (tc_only_n or 0.0) / real_total * 100,
         "flood_only_pct": (flood_only_n or 0.0) / real_total * 100,
+        # The real, un-rounded absolute numbers this whole percentage set
+        # was derived from, kept alongside the percentages rather than
+        # discarded: a caller whose own displayed total (`n`, passed to
+        # _hazard_split_line) is itself a re-parse of an already-K/M-
+        # rounded display string (_simple_breakdown_table's own _value_td,
+        # see its own comment) must reconstruct the split from THESE real
+        # numbers, not from `n * pct / 100`, which multiplies a genuinely
+        # real percentage against a rounded, imprecise base -- see
+        # _hazard_split_line's own `real_split` param for the fix this
+        # feeds.
+        "real_split": {"tc_only": tc_only_n or 0.0, "both": both_n or 0.0, "flood_only": flood_only_n or 0.0},
     }
 
 
@@ -3935,27 +3981,24 @@ def _format_stat_number(n):
     return str(n)
 
 
-def _real_member_stats(country, date, run, wind_kt, member, hz=None):
-    """Real replacement for _scaled_stats, that ONE real ensemble member's
-    own real severity numbers (get_track_impacts/TRACK_MAT), not
-    Combined/Probabilistic multiplied by a fake per-member factor. Returns
-    None when no real data resolves for this member (no storm, member not
-    present in this country's real rows, etc.), callers should treat that
-    as "no comparison available" (matching the old function's "unknown
-    member -> no scaling" behavior), not silently substitute anything.
+def _real_member_raw_stats(country, date, run, wind_kt, member, hz=None):
+    """Raw, un-formatted core of _real_member_stats below -- returns the
+    same real per-member numbers as un-abbreviated floats instead of
+    already-K/M-formatted strings. Exists for the same reason
+    _get_country_raw_stats exists alongside _get_country_stats: a caller
+    that needs to SUM several countries' own per-member numbers together
+    (_combined_stats, when called with `member=` for a "Compare Worst Case
+    By" overlay) must sum these raw floats, not re-parse each country's
+    own already-rounded display string. _real_member_stats itself is now a
+    thin formatting wrapper around this function, so both stay guaranteed
+    consistent -- see this function's own body for the full real
+    methodology (get_track_impacts/TRACK_MAT, or the cross-hazard
+    _fetch_family_member_frames/_combine_metric_series branch when a flood
+    hazard is active).
 
-    When `hz` shows a flood hazard is active (River/Rain), branches to the
-    same cross-hazard combination `_resolve_worst_member_multi` uses
-    (_fetch_family_member_frames + _combine_metric_series) instead of the
-    TRACK_MAT-only body below, a real Wind+River+Rain tile-level union,
-    not just Wind/Gust's own scalar total. `hz=None` (any caller that
-    doesn't pass it) preserves wind-only behavior.
-
-    `active_flood` uses the SAME _flood_combine_active(date, run, hz)
-    predicate _fetch_family_member_frames's own routing decision uses,
-    checks both a real UI selection AND real data behind it for this
-    exact date (see that function's own docstring for the concrete
-    failure a toggle-only check would cause)."""
+    Returns None under the exact same "no real data for this member"
+    conditions _real_member_stats returns None for (no storm, member not
+    present in this country's real rows, etc.)."""
     if not member or member in ("combined", "none"):
         return None
     member_int = _CONTROL_MEMBER if member == "control" else _resolve_ensemble_member(member)
@@ -3972,7 +4015,7 @@ def _real_member_stats(country, date, run, wind_kt, member, hz=None):
             val = series.get(member_int)
             if val is not None:
                 any_real = True
-            result[stat_key] = _format_stat_number(val) if val is not None else None
+            result[stat_key] = val
         return result if any_real else None
 
     df = _member_track_impacts(country, date, run, wind_kt)
@@ -3997,13 +4040,32 @@ def _real_member_stats(country, date, run, wind_kt, member, hz=None):
 
     children = _v('severity_infant_population') + _v('severity_school_age_population') + _v('severity_adolescent_population')
     return {
-        "People at Risk": _format_stat_number(_v('severity_population')),
-        "Children at Risk": _format_stat_number(children),
-        "Schools at Risk": _format_stat_number(_v_or_none('severity_schools')),
-        "Health Centers at Risk": _format_stat_number(_v_or_none('severity_hcs')),
-        "Shelters at Risk": _format_stat_number(_v_or_none('severity_num_shelters')),
-        "WASH Facilities at Risk": _format_stat_number(_v_or_none('severity_num_wash')),
+        "People at Risk": _v('severity_population'),
+        "Children at Risk": children,
+        "Schools at Risk": _v_or_none('severity_schools'),
+        "Health Centers at Risk": _v_or_none('severity_hcs'),
+        "Shelters at Risk": _v_or_none('severity_num_shelters'),
+        "WASH Facilities at Risk": _v_or_none('severity_num_wash'),
     }
+
+
+def _real_member_stats(country, date, run, wind_kt, member, hz=None):
+    """Real replacement for _scaled_stats, that ONE real ensemble member's
+    own real severity numbers (get_track_impacts/TRACK_MAT), not
+    Combined/Probabilistic multiplied by a fake per-member factor. Returns
+    None when no real data resolves for this member (no storm, member not
+    present in this country's real rows, etc.), callers should treat that
+    as "no comparison available" (matching the old function's "unknown
+    member -> no scaling" behavior), not silently substitute anything.
+
+    Thin formatting wrapper around _real_member_raw_stats -- see that
+    function's own docstring for the full real methodology (including the
+    hz-gated cross-hazard branch) and for why a raw counterpart exists at
+    all."""
+    raw = _real_member_raw_stats(country, date, run, wind_kt, member, hz=hz)
+    if raw is None:
+        return None
+    return {k: _format_stat_number(v) for k, v in raw.items()}
 
 
 def _real_member_pin_pct(country, date, run, wind_kt, member):
@@ -4189,14 +4251,14 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
     def _fetch(c):
         scaled = None
         if member:
-            # Real per-country per-member lookup (_real_member_stats), a
-            # country this member's envelope doesn't reach at all still
+            # Real per-country per-member lookup (_real_member_raw_stats),
+            # a country this member's envelope doesn't reach at all still
             # falls back to that country's own base/Probabilistic stats
             # (matching the old function's own "unknown member -> no
             # scaling" contract), not a silent zero.
-            scaled = _real_member_stats(c, date, run, wind_kt, member, hz=hz)
+            scaled = _real_member_raw_stats(c, date, run, wind_kt, member, hz=hz)
         if scaled is None:
-            scaled = _get_country_stats(c, date, run, wind_kt, hz=hz)
+            scaled = _get_country_raw_stats(c, date, run, wind_kt, hz=hz)
         return scaled
 
     # Each _fetch(c) call is an
@@ -4208,10 +4270,20 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
     # MELISSA) with no parallelization, unlike the sibling per-country-
     # selected code paths elsewhere in this file. Fetching concurrently
     # turns N sequential round-trips into ~1.
+    #
+    # Sums the RAW float each country's own _get_country_raw_stats/
+    # _real_member_raw_stats returns, not a re-parse of that country's own
+    # already-K/M-abbreviated _format_stat_number() string (the bug this
+    # function used to have, see repo_aos_impact_numbers_audit_2026_08_22
+    # in project memory): a country whose real value is e.g. 1,499 people
+    # displays "1K" on its own row, and re-parsing "1K" back to exactly
+    # 1,000 before summing would silently discard the real 499-person
+    # difference for EVERY country combined, not just round the final
+    # total -- a real, compounding under/overcount, not a display nuance.
     scaled_per_country = list(get_query_executor().map(_fetch, countries))
     for scaled in scaled_per_country:
         for k in keys:
-            v = _parse_stat_number(scaled.get(k, "0"))
+            v = scaled.get(k)
             if v is None:
                 continue
             has_real[k] = True
@@ -6314,7 +6386,16 @@ def _admin1_table(country, regions_real, breakdown):
                                   style={**td_style, "textAlign": "center"})]
             return [html.Td([
                 html.Div(_format_stat_number(base_val), style=_num_style(base_val, {"fontFamily": "monospace", "fontWeight": 700})),
-                _hazard_split_line(base_val, cell_breakdown, font_size="8.5px"),
+                # cell_breakdown's own "real_split" key (see _breakdown_
+                # from_split's own comment) makes this exact regardless,
+                # base_val here is already genuinely raw (region.get(...),
+                # not a re-parsed display string) so this was never the
+                # bug _simple_breakdown_table's own _value_td had -- passed
+                # through anyway for defense-in-depth/consistency, costs
+                # nothing when cell_breakdown is None or the flat
+                # single-family fallback (no real_split key either way).
+                _hazard_split_line(base_val, cell_breakdown, font_size="8.5px",
+                                     real_split=cell_breakdown.get("real_split") if cell_breakdown else None),
             ], style={**td_style, "textAlign": "center"})]
         # None (not 0) when this region's own in-need column is genuinely
         # missing (wind-only, see _fetch_real_combined_admin_totals' own
@@ -6332,7 +6413,16 @@ def _admin1_table(country, regions_real, breakdown):
             if base_val is None else
             html.Td([
                 html.Div(_format_stat_number(base_val), style=_num_style(base_val, {"fontFamily": "monospace", "fontWeight": 700})),
-                _hazard_split_line(base_val, cell_breakdown, font_size="8.5px"),
+                # cell_breakdown's own "real_split" key (see _breakdown_
+                # from_split's own comment) makes this exact regardless,
+                # base_val here is already genuinely raw (region.get(...),
+                # not a re-parsed display string) so this was never the
+                # bug _simple_breakdown_table's own _value_td had -- passed
+                # through anyway for defense-in-depth/consistency, costs
+                # nothing when cell_breakdown is None or the flat
+                # single-family fallback (no real_split key either way).
+                _hazard_split_line(base_val, cell_breakdown, font_size="8.5px",
+                                     real_split=cell_breakdown.get("real_split") if cell_breakdown else None),
             ], style={**td_style, "textAlign": "center"})
         )
         in_need_td = (
@@ -6586,7 +6676,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
     def _num_style(val, base_style):
         return {**base_style, "color": "#adb5bd"} if val == 0 else base_style
 
-    def _value_td(base_n, compare_n, td_style, metric_key=None, col_label=None):
+    def _value_td(base_n, compare_n, td_style, metric_key=None, col_label=None, skip_split=False):
         # Centered, directly under the "At Risk"/"In Need" header labels
         # (already centered via sub_th_style) instead of hugging the left
         # edge, which read as misaligned once the columns were narrowed.
@@ -6601,33 +6691,69 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
         if base_n is None:
             return html.Td(html.Div(_t("N/A"), style={"color": "#adb5bd", "fontStyle": "italic", "fontSize": "11px"}),
                             style={**td_style, "textAlign": "center"})
-        # Real per-metric, per-column breakdown when available (see
-        # breakdown_by_metric_by_col's own comment). Three real cases, NOT
-        # two: (1) a real per-metric split resolved -> use it; (2) both
-        # families are active but no real split resolved for THIS metric
-        # (a genuine data gap, breakdown_by_metric_by_col's own "absent
-        # means no data" contract, see _compute_breakdown_by_metric) ->
-        # None, _hazard_split_line renders an honest "no real split" state,
-        # NEVER the flat illustrative percentages (see that function's own
-        # comment for the full "why" this used to be a bug); (3) only one
-        # family is active at all, nothing to split in the first place ->
-        # the flat `breakdown` is itself real here (its own tc_active/
-        # flood_active gate is what makes _hazard_split_line render nothing
-        # for this case), not an illustrative substitute.
-        if metric_key and col_label:
-            metric_split = breakdown_by_metric_by_col.get(col_label, {}).get(metric_key)
-            if metric_split is not None:
-                cell_breakdown = metric_split
-            elif breakdown["tc_active"] and breakdown["flood_active"]:
-                cell_breakdown = None
+        # skip_split=True: this value has no real per-hazard source to
+        # split in the first place (In Need/PIN/CHIN is wind-only across
+        # the ENTIRE pipeline, no CCI/vulnerability MAT table exists for
+        # river/rain anywhere in ORCHESTRATION or DATAPIPELINE, confirmed
+        # repo-wide), so no split line renders at all -- not even the
+        # honest "no real split" None state _hazard_split_line itself can
+        # show, which would still visually imply a split COULD exist for
+        # this value. Matches _admin1_table's own in_need_td exactly (see
+        # that function's own comment for the same reasoning). Before this
+        # flag existed, every In Need call site below omitted metric_key/
+        # col_label, which fell through to the `else: cell_breakdown =
+        # breakdown` branch below -- the SAME flat illustrative TC/Flood/
+        # Both percentages used for At-Risk cells with no real split,
+        # applied to a real wind-only absolute count, producing a
+        # confident-looking but entirely fabricated 3-number split with no
+        # basis in any real flood-vulnerability data. Real bug, not a
+        # display choice: see [[repo_aos_gust_union_exclusion_2026_08_22]]
+        # for the investigation that found it.
+        if skip_split:
+            children = [html.Div(_format_stat_number(base_n), style=_num_style(base_n, {"fontWeight": 700, "fontFamily": "monospace"}))]
+        else:
+            # Real per-metric, per-column breakdown when available (see
+            # breakdown_by_metric_by_col's own comment). Three real cases,
+            # NOT two: (1) a real per-metric split resolved -> use it; (2)
+            # both families are active but no real split resolved for THIS
+            # metric (a genuine data gap, breakdown_by_metric_by_col's own
+            # "absent means no data" contract, see
+            # _compute_breakdown_by_metric) -> None, _hazard_split_line
+            # renders an honest "no real split" state, NEVER the flat
+            # illustrative percentages (see that function's own comment
+            # for the full "why" this used to be a bug); (3) only one
+            # family is active at all, nothing to split in the first place
+            # -> the flat `breakdown` is itself real here (its own
+            # tc_active/flood_active gate is what makes _hazard_split_line
+            # render nothing for this case), not an illustrative
+            # substitute.
+            if metric_key and col_label:
+                metric_split = breakdown_by_metric_by_col.get(col_label, {}).get(metric_key)
+                if metric_split is not None:
+                    cell_breakdown = metric_split
+                elif breakdown["tc_active"] and breakdown["flood_active"]:
+                    cell_breakdown = None
+                else:
+                    cell_breakdown = breakdown
             else:
                 cell_breakdown = breakdown
-        else:
-            cell_breakdown = breakdown
-        children = [
-            html.Div(_format_stat_number(base_n), style=_num_style(base_n, {"fontWeight": 700, "fontFamily": "monospace"})),
-            _hazard_split_line(base_n, cell_breakdown),
-        ]
+            # Real un-rounded absolute split numbers, when cell_breakdown
+            # came from a real per-metric split (_breakdown_from_split's
+            # own "real_split" key, see its own comment) -- bypasses
+            # _hazard_split_line's own `n * pct / 100` reconstruction,
+            # which would otherwise multiply a genuinely real percentage
+            # against `base_n`, a re-parse of this cell's own already-K/M-
+            # rounded display string, producing a split whose sub-numbers
+            # don't actually sum back to the true real total. None when
+            # cell_breakdown is the flat single-family `breakdown` dict
+            # (no real_split key at all) or None outright -- _hazard_
+            # split_line's own single-family/None branches never reach the
+            # reconstruction in either case, so this is harmless either way.
+            real_split = cell_breakdown.get("real_split") if cell_breakdown else None
+            children = [
+                html.Div(_format_stat_number(base_n), style=_num_style(base_n, {"fontWeight": 700, "fontFamily": "monospace"})),
+                _hazard_split_line(base_n, cell_breakdown, real_split=real_split),
+            ]
         if compare_n is not None:
             children.append(html.Div(f"{_format_stat_number(compare_n)} {member_tag}",
                                        style={"fontSize": "10px", "fontWeight": 700, "color": "#d94f3c", "marginTop": "2px"}))
@@ -6692,7 +6818,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
                 if comp_stats and comp_pin and comp_pin.get(f"{pin_key}_abs") is not None:
                     compare_in_need = math.ceil(comp_pin[f"{pin_key}_abs"])
                 cells.append(_value_td(base_in_need, compare_in_need,
-                                         {**td_style, **_group_style(idx, is_combined)}))
+                                         {**td_style, **_group_style(idx, is_combined)}, skip_split=True))
         rows.append(html.Tr(cells))
 
     # Real per-age children breakdown, At Risk AND In Need, both real
@@ -6724,7 +6850,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
                 compare_age_need = (math.ceil(comp_band["in_need_abs"])
                                      if comp_band and comp_band.get("in_need_abs") is not None else None)
                 cells.append(_value_td(base_age_need, compare_age_need,
-                                         {**td_style, **_group_style(idx, is_combined)}))
+                                         {**td_style, **_group_style(idx, is_combined)}, skip_split=True))
         rows.append(html.Tr(cells))
 
     # Remaining at-risk-only metrics (Schools/Health Centers/Shelters/WASH).

@@ -1105,10 +1105,16 @@ def _make_arc_chart(
 
 
 def _fmt_in_need(n: float | None) -> str:
-    """Format the big in-need headline number with commas (or M/B for very large)."""
+    """Format the big in-need headline number with commas (or M/B for very large).
+
+    math.ceil, not int() truncation: a real fractional in-need count (e.g.
+    42,081.9 real people) must round UP to 42,082, never truncate down to
+    42,081 -- this project's own "never undercount a displayed impact
+    figure" convention (see format_value's own matching math.ceil above),
+    which int() alone silently violated here."""
     if n is None or (isinstance(n, float) and math.isnan(n)):
         return "—"
-    n = int(n)
+    n = math.ceil(n)
     if n >= 1_000_000_000:
         return f"{n / 1_000_000_000:.1f}B"
     if n >= 1_000_000:
