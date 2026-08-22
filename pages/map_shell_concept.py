@@ -2726,9 +2726,7 @@ def _get_country_raw_stats(country, date=None, run=None, wind_kt=None, hz=None):
     together: summing this function's raw floats gives the mathematically
     correct combined total; summing _get_country_stats' own formatted
     strings (via a re-parse) would silently sum already-rounded numbers
-    instead, see this project's own memory
-    (repo_aos_impact_numbers_audit_2026_08_22) for the concrete failure
-    case that fix addresses. Falls back to _ZERO_RAW_STATS (real zeros),
+    instead. Falls back to _ZERO_RAW_STATS (real zeros),
     same contract as _get_country_stats' own _ZERO_STATS fallback."""
     real = _fetch_real_combined_tile_totals(country, date, run, hz or _wind_only_hz(wind_kt))
     return real["raw_stats"] if real else _ZERO_RAW_STATS
@@ -3307,10 +3305,15 @@ def _hazard_split_line(n, breakdown, font_size="9.5px", real_split=None):
     # string, then reconstruct" precision loss _hazard_row's own
     # abs_value param exists to avoid one level up (see its own comment
     # for the full "why": a real 0.6/0.4 split can flip to a displayed
-    # "1/1", or two real numbers can look mutually contradictory). Callers
-    # whose own `n` is already a real unrounded value (_simple_breakdown_
-    # table/_admin1_table, both pass a real un-formatted number) don't
-    # need this and can omit it, the reconstruction is exact for them.
+    # "1/1", or two real numbers can look mutually contradictory). Only
+    # _admin1_table's own `n` is genuinely raw (a region dict field, never
+    # formatted-then-reparsed) and could in principle omit real_split
+    # safely; _simple_breakdown_table's own `n` is NOT raw (it's
+    # `_parse_stat_number(base_stats.get(...))`, a re-parse of an already-
+    # K/M-formatted string, same class of value as the tile-click popup's
+    # own `n` above), so it always threads real_split too, whenever a real
+    # per-metric split resolves -- omitting it there would silently
+    # reintroduce the exact precision-loss bug this param exists to avoid.
     if real_split is not None:
         tc_n = real_split.get("tc_only") or 0.0
         both_n = real_split.get("both") or 0.0
@@ -4273,12 +4276,11 @@ def _combined_stats(countries, member=None, date=None, run=None, wind_kt=None, h
     #
     # Sums the RAW float each country's own _get_country_raw_stats/
     # _real_member_raw_stats returns, not a re-parse of that country's own
-    # already-K/M-abbreviated _format_stat_number() string (the bug this
-    # function used to have, see repo_aos_impact_numbers_audit_2026_08_22
-    # in project memory): a country whose real value is e.g. 1,499 people
-    # displays "1K" on its own row, and re-parsing "1K" back to exactly
-    # 1,000 before summing would silently discard the real 499-person
-    # difference for EVERY country combined, not just round the final
+    # already-K/M-abbreviated _format_stat_number() string: a country whose
+    # real value is e.g. 1,499 people displays "1K" on its own row, and
+    # re-parsing "1K" back to exactly 1,000 before summing would silently
+    # discard the real 499-person difference for EVERY country combined,
+    # not just round the final
     # total -- a real, compounding under/overcount, not a display nuance.
     scaled_per_country = list(get_query_executor().map(_fetch, countries))
     for scaled in scaled_per_country:
@@ -6707,8 +6709,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
         # applied to a real wind-only absolute count, producing a
         # confident-looking but entirely fabricated 3-number split with no
         # basis in any real flood-vulnerability data. Real bug, not a
-        # display choice: see [[repo_aos_gust_union_exclusion_2026_08_22]]
-        # for the investigation that found it.
+        # display choice.
         if skip_split:
             children = [html.Div(_format_stat_number(base_n), style=_num_style(base_n, {"fontWeight": 700, "fontFamily": "monospace"}))]
         else:
