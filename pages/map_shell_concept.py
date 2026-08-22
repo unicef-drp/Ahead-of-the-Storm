@@ -2377,18 +2377,31 @@ def _fetch_real_combined_tile_totals_impl(country, date, run, hz_key):
 
 def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=None):
     """Real per-country 'at risk' aggregates COMBINED across every ACTIVE
-    hazard (Wind/Gust/River/Rain, Storm Surge has no real backend anywhere,
-    see ms-surge-on's own comment, and never contributes here).
+    hazard counted toward a total (Wind/River/Rain; Storm Surge has no real
+    backend anywhere, see ms-surge-on's own comment, and never contributes
+    here). Gust deliberately never reaches this function's own `params`
+    dict at all, regardless of `hz["gust_on"]"/`hz["gust_kt"]` -- see
+    services/tile_server.py's own `_UNION_EXCLUDED_HAZARDS` for the full
+    rationale (gust is a reference-only hazard layer, excluded from every
+    combined impact number). This is a client-side optimization on top of
+    that server-side exclusion, not a second, independent gate: the server
+    would discard gust's contribution from the union either way, so this
+    function skips resolving a gust threshold and paying for a real
+    per-member gust bitmask fetch that would only be thrown away. Restoring
+    gust here is only meaningful once `_UNION_EXCLUDED_HAZARDS` no longer
+    excludes it server-side too.
 
     Combination method: delegates to services/tile_server.py's
     combined_country_totals, which computes the real per-tile bitmask
     union (_combine_bitmask_aware, `tile_mask=None`, every real z14 tile
     in the country) and multiplies by the RAW population/facility columns,
     summed, a true expected-value total under "the real fraction of the
-    51-member ensemble where AT LEAST ONE active hazard hits this tile",
-    the SAME methodology the combined raster/facility-marker/tile-tooltip
-    paths already use. See that endpoint's own docstring for the full
-    methodology writeup.
+    51-member ensemble where AT LEAST ONE COUNTED active hazard hits this
+    tile", the SAME methodology the combined raster/facility-marker/tile-
+    tooltip paths already use (those paths do still resolve and send a real
+    gust threshold when gust is checked, for its own reference-row display,
+    but the server-side union they feed excludes it the same way). See that
+    endpoint's own docstring for the full methodology writeup.
 
     People/Children In Need (PIN/CHIN) stays wind-only regardless of which
     other hazards are active, no vulnerability/CCI pipeline exists for gust/
@@ -2400,6 +2413,9 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     `hz` is a dict from _wind_only_hz() (or an equivalent multi-hazard dict
     built by a real hazard-aware caller), {"wind_on", "gust_on", "river_on",
     "rain_on", "wind_kt", "gust_kt", "rp_tier", "rain_mm", "rain_window"}.
+    `gust_on`/`gust_kt` are still accepted (the map's own tile/raster/
+    tooltip requests need them for their own reference-row resolution) but
+    read nowhere below.
 
     Returns None (callers fall back to _DEFAULT_STATS/_DEFAULT_PIN_PCT, same
     convention as before) when no hazard is active, or none of the active
@@ -2415,7 +2431,11 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     _AGE_IN_NEED_COL = {"Age 0–4 (Infant)": "E_infant_in_need", "Age 5–14 (School-age)": "E_school_age_in_need",
                           "Age 15–19 (Adolescent)": "E_adolescent_in_need"}
 
-    storm_info = _resolve_storm_for_country(country, date, run) if (hz["wind_on"] or hz["gust_on"]) else None
+    # Only wind_on gates storm_info here (not gust_on too): gust never
+    # contributes to this function's own combined total (see this
+    # function's own docstring), so there is no reason to pay for a real
+    # storm-lookup on gust_on's account alone when wind is off.
+    storm_info = _resolve_storm_for_country(country, date, run) if hz["wind_on"] else None
 
     def _resolve_threshold(name, target_kt):
         try:
@@ -2477,7 +2497,10 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
                     if col in df.columns:
                         age_in_need[age_label] = float(df[col].sum()) if df[col].notna().any() else None
 
-    gust_threshold = _resolve_threshold("gust", hz["gust_kt"]) if (hz["gust_on"] and storm_info) else None
+    # Gust deliberately has no threshold resolved here at all -- see this
+    # function's own docstring (_UNION_EXCLUDED_HAZARDS in
+    # services/tile_server.py is the real, server-side exclusion; this is
+    # just not paying for a fetch that would be discarded there anyway).
 
     # river/rain forecast_date resolved here in MAT format (same convention
     # ms-tile-config-store already uses for the raster/facility/tooltip
@@ -2509,7 +2532,7 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
     )
     rain_forecast_time = _mat_forecast_date(date, run) if rain_resolved else None
 
-    if wind_threshold is None and gust_threshold is None and not river_forecast_time and not rain_forecast_time:
+    if wind_threshold is None and not river_forecast_time and not rain_forecast_time:
         return None
 
     params = {}
@@ -2517,10 +2540,8 @@ def _fetch_real_combined_tile_totals_uncached(country, date=None, run=None, hz=N
         params["wind_on"] = True
         params["wind_forecast_date"] = storm_info["mat_forecast_date"]
         params["wind_threshold"] = wind_threshold
-    if gust_threshold is not None and storm_info:
-        params["gust_on"] = True
-        params["wind_forecast_date"] = storm_info["mat_forecast_date"]
-        params["gust_threshold"] = gust_threshold
+    # No gust_on/gust_threshold key is ever added to params: see this
+    # function's own docstring.
     if river_forecast_time:
         params["river_on"] = True
         params["river_forecast_date"] = river_forecast_time
@@ -6062,13 +6083,16 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
     def _fetch_one(code):
         member_name = _CODE_TO_NAME.get(code, country)
         # Same resolution as _fetch_real_combined_tile_totals_uncached's
-        # own wind/gust/river/rain threshold+forecast_time blocks (see
-        # that function's own comments for the full "why" behind each),
+        # own wind/river/rain threshold+forecast_time blocks (see that
+        # function's own comments for the full "why" behind each),
         # duplicated here rather than threaded through as already-resolved
         # params, since this is a per-CODE resolution (a bundled region's
         # members can each independently have/lack a real active storm)
         # while that function resolves once for a single real country.
-        storm_info = _resolve_storm_for_country(member_name, date, run) if (hz.get("wind_on") or hz.get("gust_on")) else None
+        # Gust is deliberately never resolved here either, same reason as
+        # that function's own docstring (_UNION_EXCLUDED_HAZARDS in
+        # services/tile_server.py).
+        storm_info = _resolve_storm_for_country(member_name, date, run) if hz.get("wind_on") else None
 
         def _resolve_threshold(name, target_kt):
             try:
@@ -6083,7 +6107,6 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
             return target_kt if target_kt in numeric else None
 
         wind_threshold = _resolve_threshold("wind", hz.get("wind_kt")) if (hz.get("wind_on") and storm_info) else None
-        gust_threshold = _resolve_threshold("gust", hz.get("gust_kt")) if (hz.get("gust_on") and storm_info) else None
         river_resolved = (
             get_river_extent_forecast_time_for_date(date, hz.get("rp_tier"))
             if (hz.get("river_on") and hz.get("rp_tier") and date) else None
@@ -6096,7 +6119,7 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
         )
         rain_forecast_time = _mat_forecast_date(date, run) if rain_resolved else None
 
-        if wind_threshold is None and gust_threshold is None and not river_forecast_time and not rain_forecast_time:
+        if wind_threshold is None and not river_forecast_time and not rain_forecast_time:
             return []
 
         params = {}
@@ -6104,10 +6127,8 @@ def _fetch_real_combined_admin_totals(country, date=None, run=None, hz=None):
             params["wind_on"] = True
             params["wind_forecast_date"] = storm_info["mat_forecast_date"]
             params["wind_threshold"] = wind_threshold
-        if gust_threshold is not None and storm_info:
-            params["gust_on"] = True
-            params["wind_forecast_date"] = storm_info["mat_forecast_date"]
-            params["gust_threshold"] = gust_threshold
+        # No gust_on/gust_threshold key is ever added: see _fetch_one's own
+        # comment above.
         if river_forecast_time:
             params["river_on"] = True
             params["river_forecast_date"] = river_forecast_time
@@ -7039,7 +7060,13 @@ def _impact_breakdown_content(countries, influencing_factor, expand_admin1=False
         # every real country with real impact data for the selected date.
         all_country_names, river_avail, rain_avail = _global_flood_availability(
             date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
-        global_hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
+        # wind_on=True (matches river/rain's own real-availability gating:
+        # an active storm's own wind data is always real, no live checkbox
+        # needed to decide "is there something to show"); gust_on=False
+        # explicitly, not just left to whatever the checkbox says: Gust is
+        # excluded from every combined total everywhere, not only here, see
+        # _fetch_real_combined_tile_totals_uncached's own docstring.
+        global_hz = _build_hz(True, False, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
         global_stats = _combined_stats(all_country_names, date=date, run=run,
                                          wind_kt=global_hz["wind_kt"], hz=global_hz)
         global_age_split = _combined_age_split(all_country_names, date=date, run=run,
@@ -11617,12 +11644,15 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
     #
     # The Global branch just below (`not countries`)
     # deliberately ignores wind_on/gust_on/river_on/rain_on/surge_on
-    # entirely, it always uses `_build_hz(True, True, river_avail,
-    # rain_avail, ...)` (hardcoded wind/gust True, river/rain from a real
-    # Snowflake availability check, never from the checkbox args) for the
-    # worldwide total, by explicit product decision (see that branch's own
-    # comment: "Global mode's checkbox on/off state is still a pure
+    # entirely, it always uses `_build_hz(True, False, river_avail,
+    # rain_avail, ...)` (hardcoded wind True/gust False, river/rain from a
+    # real Snowflake availability check, never from the checkbox args) for
+    # the worldwide total, by explicit product decision (see that branch's
+    # own comment: "Global mode's checkbox on/off state is still a pure
     # map-display concern... not what counts toward the worldwide total").
+    # Gust's own False here isn't just "ignores the checkbox the same way
+    # wind does" -- it never contributes regardless of what it's hardcoded
+    # to, see _fetch_real_combined_tile_totals_uncached's own docstring.
     # So toggling a hazard checkbox while in Global mode (countries empty)
     # provably cannot change this callback's output, skip the multi-second
     # worldwide recompute for exactly that one case. Country Analysis scopes
@@ -11648,17 +11678,24 @@ def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, 
         #
         # Global mode's checkbox on/off state is a
         # pure map-display concern (which layers paint on the map, not what
-        # counts toward the worldwide total, every hazard always
-        # contributes here regardless of checkbox state), but the total DOES
-        # react to each hazard's own threshold
-        # slider exactly
+        # counts toward the worldwide total: Wind/River/Rain always
+        # contribute here regardless of checkbox state; Gust never does,
+        # checkbox or not, see _fetch_real_combined_tile_totals_uncached's
+        # own docstring), but the total DOES react to each hazard's own
+        # threshold slider exactly
         # like Country Analysis's own hz below does. Matches Country
         # Analysis's single-country/combined blocks in spirit (a real
         # multi-hazard total) without depending on which checkboxes happen
         # to be on.
         all_country_names, river_avail, rain_avail = _global_flood_availability(
             date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
-        global_hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
+        # wind_on=True (matches river/rain's own real-availability gating:
+        # an active storm's own wind data is always real, no live checkbox
+        # needed to decide "is there something to show"); gust_on=False
+        # explicitly, not just left to whatever the checkbox says: Gust is
+        # excluded from every combined total everywhere, not only here, see
+        # _fetch_real_combined_tile_totals_uncached's own docstring.
+        global_hz = _build_hz(True, False, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
         global_stats = _combined_stats(all_country_names, date=date, run=run,
                                          wind_kt=global_hz["wind_kt"], hz=global_hz)
         # impact-subtitle itself is a dmc.Text (renders a <p>), its own
@@ -12034,8 +12071,12 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
     # Threshold-reactive for Global too,
     # same wind_idx/gust_idx/river_idx/rain_idx/rain_window Country
     # Analysis already uses, just still independent of which hazard
-    # CHECKBOXES are on (every hazard always contributes to Global's total).
-    hz = _build_hz(True, True, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window) if is_global else \
+    # CHECKBOXES are on for Wind/River/Rain (every one of those three
+    # always contributes to Global's total). Gust's own gust_on is
+    # hardcoded False here, not True: it never contributes to any combined
+    # total in either scope, see _fetch_real_combined_tile_totals_
+    # uncached's own docstring for the full rationale.
+    hz = _build_hz(True, False, river_avail, rain_avail, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window) if is_global else \
         _build_hz(wind_on, gust_on, river_on, rain_on, wind_idx, gust_idx, river_idx, rain_idx, rain_window, river_window)
     value = _resolve_stat_value(metric, scope, countries, date=date, run=run, wind_kt=wind_kt, hz=hz,
                                    river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)

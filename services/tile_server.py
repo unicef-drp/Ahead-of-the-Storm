@@ -2551,6 +2551,45 @@ def _tile_id_bounds(tile_id: str) -> Optional[tuple[float, float, float, float]]
         return None
 
 
+_UNION_EXCLUDED_HAZARDS: frozenset[str] = frozenset({"gust"})
+"""Hazards with a real per-member bitmask (TILE_GUST_BITMASK_MAT etc,
+resolved and OR'd exactly like every other hazard's own bits) that are
+nonetheless left OUT of every cross-hazard UNION step: the combined
+PROBABILITY/E_* a tile/region/facility/country total reports, and the
+TC-vs-Flood family split. A hazard listed here still resolves its own real
+per-member coverage and is still shown wherever that is reported on its own
+(the single-hazard Gust map view, its own standalone E_population/E_num_*
+figures, and the tile-hover popup's per-hazard "Gust: NN%" reference row,
+none of which route through the union at all) -- only the UNION arithmetic
+itself treats it as absent, so it can never inflate a combined "at least one
+active hazard hit this tile" figure or its downstream expected-population
+count.
+
+Gust is here because its own envelope is a near-deterministic function of
+wind at the same place/time rather than a statistically independent hazard
+(see get_gust_tile_bitmask's own docstring), so OR-ing it into the same
+union wind already contributes to tends to widen coverage at the margin
+(gust's threshold is physically reached at more points than wind's) without
+representing a materially different risk than wind's own figure already
+carries -- a real, reproducible discrepancy (a tile/region can show nonzero
+combined probability sourced ENTIRELY from Gust while Wind/River/Rain all
+read exactly 0.0%) that this set exists to prevent from reaching any
+combined impact number.
+
+To re-include Gust in the union again in the future (e.g. once its
+combination methodology is revisited), remove "gust" from this set -- every
+union call site below reads from it, so no other code needs to change. The
+one companion piece living outside this file: _fetch_real_combined_tile_
+totals_uncached (pages/map_shell_concept.py) deliberately never resolves a
+gust threshold or sends gust_on to this server AT ALL for country/global
+total requests (a client-side optimization -- no point paying for a real
+per-member gust bitmask fetch this server would exclude from the union
+anyway -- not a second, independent exclusion mechanism); restoring gust
+there too is only worthwhile once this set no longer excludes it, otherwise
+the fetched data would still be discarded here.
+"""
+
+
 def _popcount51(bits_arr: np.ndarray) -> np.ndarray:
     """Vectorized popcount over the 51-member bit range: no per-row
     Python loop. Module-level so every caller that needs a member-fraction
@@ -2773,7 +2812,14 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
 
     n_final = len(merged)
     union_bits = np.zeros(n_final, dtype=np.uint64)
-    for arr in hazard_bits.values():
+    # See _UNION_EXCLUDED_HAZARDS's own module-level doc: a hazard listed
+    # there still gets its own real hazard_bits entry above/below (returned
+    # to the caller unchanged, for classification painting or a per-hazard
+    # reference row), it is only skipped HERE, in the union reduction that
+    # produces the combined PROBABILITY/E_* this function returns.
+    for hz_name, arr in hazard_bits.items():
+        if hz_name in _UNION_EXCLUDED_HAZARDS:
+            continue
         union_bits |= arr
 
     p_combined = _popcount51(union_bits) / float(_BITMASK_ENSEMBLE_SIZE)
@@ -3187,6 +3233,14 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
         union_bits = np.zeros(n_t, dtype=np.uint64)
 
         for hz in used_hazard_names:
+            # See _UNION_EXCLUDED_HAZARDS's own module-level doc. This
+            # function has no per-hazard return channel at all (only the
+            # combined p_by_admin/expected_by_admin below), so an excluded
+            # hazard is skipped outright here rather than resolved and then
+            # discarded -- no real per-member fetch is wasted on data this
+            # function would never surface.
+            if hz in _UNION_EXCLUDED_HAZARDS:
+                continue
             p = hazard_params.get(hz)
             if p is None:
                 continue
@@ -7740,6 +7794,13 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
                 union_bits[i] |= np.uint64(b)
 
     for hz in used_hazard_names:
+        # See _UNION_EXCLUDED_HAZARDS's own module-level doc. Like
+        # _combine_bitmask_aware_admin, this function has no per-hazard
+        # return channel (only the combined p_combined below, keyed by
+        # zone_id), so an excluded hazard is skipped outright rather than
+        # resolved and discarded.
+        if hz in _UNION_EXCLUDED_HAZARDS:
+            continue
         p = hazard_params.get(hz)
         if p is None:
             continue
@@ -8730,7 +8791,14 @@ def _combined_bitmask_fracs(
         # `_paint_classification_tile` relies on for its own hit-count.
         n_final = len(merged)
         tc_bits = np.zeros(n_final, dtype=np.uint64)
+        # 'gust' stays out of the TC family bits for the same reason it
+        # stays out of the union p_combined above (_UNION_EXCLUDED_HAZARDS):
+        # this tc_only/both/flood_only split feeds real per-metric numbers,
+        # not just the illustrative badge, so it must stay consistent with
+        # what the combined total itself actually counts.
         for hz in ('wind', 'gust'):
+            if hz in _UNION_EXCLUDED_HAZARDS:
+                continue
             tc_bits |= hazard_bits.get(hz, np.zeros(n_final, dtype=np.uint64))
         flood_bits = np.zeros(n_final, dtype=np.uint64)
         for hz in ('river', 'rain'):
