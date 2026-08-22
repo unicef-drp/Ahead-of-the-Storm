@@ -2554,16 +2554,24 @@ def _tile_id_bounds(tile_id: str) -> Optional[tuple[float, float, float, float]]
 _UNION_EXCLUDED_HAZARDS: frozenset[str] = frozenset({"gust"})
 """Hazards with a real per-member bitmask (TILE_GUST_BITMASK_MAT etc,
 resolved and OR'd exactly like every other hazard's own bits) that are
-nonetheless left OUT of every cross-hazard UNION step: the combined
-PROBABILITY/E_* a tile/region/facility/country total reports, and the
-TC-vs-Flood family split. A hazard listed here still resolves its own real
-per-member coverage and is still shown wherever that is reported on its own
-(the single-hazard Gust map view, its own standalone E_population/E_num_*
-figures, and the tile-hover popup's per-hazard "Gust: NN%" reference row,
-none of which route through the union at all) -- only the UNION arithmetic
-itself treats it as absent, so it can never inflate a combined "at least one
-active hazard hit this tile" figure or its downstream expected-population
-count.
+excluded ONLY from the COUNTED half of every cross-hazard union: any
+population/facility-count WEIGHTED BY a probability (an E_* field, or an
+E_*-derived total -- a tile/region/country's own "expected impact" figure,
+the TC-vs-Flood family split's real per-metric numbers). A hazard listed
+here is NOT hidden from the map or from a raw probability reading -- pure
+hazard-likelihood values (what colors a tile in Probability/Classification
+mode, a region's own combined-layer color, and the tile-hover popup's
+headline "Combined Impact Probability" percentage) still fold every active
+hazard in, Gust included, same as before this set existed. Every union
+function below that has both a display and a counted use returns BOTH
+values (see e.g. _combine_bitmask_aware's own "_counted"/"_all" return-value
+doc) precisely so a caller can pick the one that matches what IT is about
+to do with it, rather than one shared value trying to answer two different
+questions. A hazard listed here also keeps showing its own real per-member
+coverage wherever that's reported entirely on its own, untouched by any of
+this (the single-hazard Gust map view, its own standalone
+E_population/E_num_* figures, and the tile-hover popup's per-hazard
+"Gust: NN%" reference row).
 
 Gust is here because its own envelope is a near-deterministic function of
 wind at the same place/time rather than a statistically independent hazard
@@ -2573,20 +2581,31 @@ union wind already contributes to tends to widen coverage at the margin
 representing a materially different risk than wind's own figure already
 carries -- a real, reproducible discrepancy (a tile/region can show nonzero
 combined probability sourced ENTIRELY from Gust while Wind/River/Rain all
-read exactly 0.0%) that this set exists to prevent from reaching any
-combined impact number.
+read exactly 0.0%, and -- specifically for the COUNTED/E_* side -- a
+population total that swings by an order of magnitude purely from Gust's
+own wider footprint) that this set exists to keep OUT of any
+population-weighted number, while leaving it fully visible as a real
+hazard-probability reading everywhere that's genuinely just "is something
+expected here", map coloring included.
 
-To re-include Gust in the union again in the future (e.g. once its
-combination methodology is revisited), remove "gust" from this set -- every
-union call site below reads from it, so no other code needs to change. The
-one companion piece living outside this file: _fetch_real_combined_tile_
+To also exclude Gust from the display/all track (hide it from map coloring
+too, not just from population-weighted numbers), a caller would need to
+route through the counted value where it currently uses the all-hazard one
+-- there is no single flag for that, by design, since the two tracks answer
+different questions and no call site found so far has needed both to move
+together. To re-include Gust in the COUNTED track too (restore pre-this-
+set behavior everywhere), remove "gust" from this set -- every union call
+site below reads from it, so no other code needs to change. The one
+companion piece living outside this file: _fetch_real_combined_tile_
 totals_uncached (pages/map_shell_concept.py) deliberately never resolves a
 gust threshold or sends gust_on to this server AT ALL for country/global
-total requests (a client-side optimization -- no point paying for a real
-per-member gust bitmask fetch this server would exclude from the union
-anyway -- not a second, independent exclusion mechanism); restoring gust
-there too is only worthwhile once this set no longer excludes it, otherwise
-the fetched data would still be discarded here.
+total requests (a client-side optimization on the COUNTED side specifically
+-- no point paying for a real per-member gust bitmask fetch whose only
+possible use, the counted union, would exclude it anyway; that function has
+no display/map use case at all, so there is no all-hazard side to preserve
+there); restoring gust there too is only worthwhile once this set no
+longer excludes it from the counted track, otherwise the fetched data
+would still be discarded here.
 """
 
 
@@ -2607,13 +2626,23 @@ def _popcount51(bits_arr: np.ndarray) -> np.ndarray:
 def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
                              country: str, storm: str, hazard_params: dict[str, dict],
                              tile_mask: Optional[Callable[[pd.DataFrame], pd.Series]] = None
-                             ) -> tuple[np.ndarray, pd.DataFrame, dict[str, np.ndarray]]:
+                             ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict[str, np.ndarray]]:
     """Per-tile union over the 51-member ensemble: see the module-level
     comment above this function for the combination approach.
 
-    Returns `(p_combined, merged, hazard_bits)`:
-    - `p_combined` aligned 1:1 with `merged`'s own row order: the union
-      across every hazard in `hazard_bits`.
+    Returns `(p_combined_counted, p_combined_all, merged, hazard_bits)`:
+    - `p_combined_counted`/`p_combined_all`, both aligned 1:1 with `merged`'s
+      own row order: TWO parallel unions across every hazard in
+      `hazard_bits`, differing only in whether a hazard listed in
+      _UNION_EXCLUDED_HAZARDS (Gust) is folded in. `_all` is every active
+      hazard, exactly what this function always computed before that
+      constant existed -- pixel color / a headline probability shown to a
+      user. `_counted` additionally excludes Gust -- any population-
+      weighted E_* number computed FROM a probability (multiply raw x prob
+      and call it "expected impact"). See _UNION_EXCLUDED_HAZARDS's own
+      module-level doc for the full rationale; pick whichever matches what
+      your own caller is about to do with it, don't default to one without
+      checking.
     - `merged` itself may come back with MORE rows than it went in with: a
       tile that only a bitmask (not any hazard's own MAT DataFrame) knows
       about gets appended with bounds derived via _tile_id_bounds and
@@ -2811,19 +2840,24 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
     # is no longer needed.
 
     n_final = len(merged)
-    union_bits = np.zeros(n_final, dtype=np.uint64)
-    # See _UNION_EXCLUDED_HAZARDS's own module-level doc: a hazard listed
-    # there still gets its own real hazard_bits entry above/below (returned
-    # to the caller unchanged, for classification painting or a per-hazard
-    # reference row), it is only skipped HERE, in the union reduction that
-    # produces the combined PROBABILITY/E_* this function returns.
+    union_bits_all = np.zeros(n_final, dtype=np.uint64)
+    union_bits_counted = np.zeros(n_final, dtype=np.uint64)
+    # See _UNION_EXCLUDED_HAZARDS's own module-level doc and this
+    # function's own return-value doc above: every hazard (Gust included)
+    # goes into union_bits_all; only the non-excluded ones go into
+    # union_bits_counted. A hazard listed in _UNION_EXCLUDED_HAZARDS still
+    # gets its own real hazard_bits entry above/below (returned to the
+    # caller unchanged, for classification painting or a per-hazard
+    # reference row) either way -- it is only its own union CONTRIBUTION
+    # that differs between the two reductions here.
     for hz_name, arr in hazard_bits.items():
-        if hz_name in _UNION_EXCLUDED_HAZARDS:
-            continue
-        union_bits |= arr
+        union_bits_all |= arr
+        if hz_name not in _UNION_EXCLUDED_HAZARDS:
+            union_bits_counted |= arr
 
-    p_combined = _popcount51(union_bits) / float(_BITMASK_ENSEMBLE_SIZE)
-    return p_combined, merged, hazard_bits
+    p_combined_all = _popcount51(union_bits_all) / float(_BITMASK_ENSEMBLE_SIZE)
+    p_combined_counted = _popcount51(union_bits_counted) / float(_BITMASK_ENSEMBLE_SIZE)
+    return p_combined_counted, p_combined_all, merged, hazard_bits
 
 
 # ---------------------------------------------------------------------------
@@ -3230,17 +3264,21 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
             continue
         mapped_any = True
         tile_index = entry['tile_index']
-        union_bits = np.zeros(n_t, dtype=np.uint64)
+        # Two parallel unions, not one: see _UNION_EXCLUDED_HAZARDS's own
+        # module-level doc for the full rationale (map-display probability
+        # keeps Gust; population-weighted E_* numbers never do). union_bits_
+        # all feeds the region's own returned PROBABILITY (p_by_admin below
+        # -- what colors this region on the map and what a region's own
+        # tooltip headline percentage would show); union_bits_counted feeds
+        # ONLY the expected_by_admin E_* accumulation (exp_acc below -- the
+        # real per-region numbers the Full Impact Breakdown modal's admin-1
+        # table reads via _fetch_real_combined_admin_totals, a DIFFERENT,
+        # numbers-only caller that never touches this function's own
+        # p_by_admin at all, see that caller's own docstring).
+        union_bits_all = np.zeros(n_t, dtype=np.uint64)
+        union_bits_counted = np.zeros(n_t, dtype=np.uint64)
 
         for hz in used_hazard_names:
-            # See _UNION_EXCLUDED_HAZARDS's own module-level doc. This
-            # function has no per-hazard return channel at all (only the
-            # combined p_by_admin/expected_by_admin below), so an excluded
-            # hazard is skipped outright here rather than resolved and then
-            # discarded -- no real per-member fetch is wasted on data this
-            # function would never surface.
-            if hz in _UNION_EXCLUDED_HAZARDS:
-                continue
             p = hazard_params.get(hz)
             if p is None:
                 continue
@@ -3296,17 +3334,27 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
                 _scatter_tile_bits(df, hz_bits, tile_index)
             else:
                 continue
-            union_bits |= hz_bits
+            union_bits_all |= hz_bits
+            if hz not in _UNION_EXCLUDED_HAZARDS:
+                union_bits_counted |= hz_bits
 
         # --- z14 union -> region, using the pipeline's own two aggregations
-        p_tile = _popcount51(union_bits) / float(_BITMASK_ENSEMBLE_SIZE)
+        # p_tile_all: every active hazard, including Gust -- feeds ONLY the
+        # region's own returned PROBABILITY (map coloring / headline %).
+        # p_tile_counted: excludes Gust -- feeds ONLY the E_* accumulation
+        # below. A tile where Gust is the sole contributor is real and
+        # visible in p_tile_all (and thus painted/reported as a nonzero
+        # probability the same way it always was), while contributing
+        # nothing to any of this region's expected-population figures.
+        p_tile_all = _popcount51(union_bits_all) / float(_BITMASK_ENSEMBLE_SIZE)
+        p_tile_counted = _popcount51(union_bits_counted) / float(_BITMASK_ENSEMBLE_SIZE)
         local_to_dest = admin_index.get_indexer(entry['admin_ids'])
         dest_all = local_to_dest[entry['tile_admin']]
         ok = dest_all >= 0
         if not ok.any():
             continue
         dest = dest_all[ok]
-        np.add.at(sum_p, dest, p_tile[ok])
+        np.add.at(sum_p, dest, p_tile_all[ok])
         # Denominator of the AREA-MEAN: EVERY z14 tile in the region, not
         # only the ones some member reached: a region half-covered at
         # probability 1.0 must read 0.5, not 1.0.
@@ -3316,7 +3364,7 @@ def _combine_bitmask_aware_admin(admin_ids: list[str], used_hazard_names: list[s
             arr = entry['raw'].get(raw_col)
             if arr is None:
                 continue
-            contrib = arr[ok] * p_tile[ok]
+            contrib = arr[ok] * p_tile_counted[ok]
             # A NULL raw value means "unknown here", not "zero here": it is
             # left out of the sum, and a region contributes to `have_exp`
             # only where at least one of its tiles carried a real number.
@@ -4017,8 +4065,15 @@ def _fetch_combined_raster_tile(
     # already carries for ensure_mercator above: one resolution path, not
     # two to keep in sync.
     hazard_params = dict(active)
-    p_combined_full, merged, hazard_bits = _combine_bitmask_aware(
+    p_combined_counted, p_combined_full, merged, hazard_bits = _combine_bitmask_aware(
         merged, used_hazard_names, country, storm, hazard_params, tile_mask=_tile_mask)
+    # p_combined_full (every active hazard, Gust included) is what mode==
+    # "probability"/"classification" paint below -- pure hazard likelihood,
+    # the same map coloring Gust always had. p_combined_counted (Gust
+    # excluded) is what mode=="exposure" below multiplies against raw
+    # population/facility counts -- see _UNION_EXCLUDED_HAZARDS's own
+    # module-level doc for why a population-WEIGHTED number needs the
+    # narrower one while a pure-probability color doesn't.
     # `merged` may have gained rows (real tiles a bitmask covers that no
     # MAT DataFrame had, see _combine_bitmask_aware's own docstring), so
     # every array derived from `merged` before this call must be
@@ -4035,7 +4090,7 @@ def _fetch_combined_raster_tile(
 
     if mode == "exposure" and raw_col and raw_col in merged.columns:
         raw_vals = pd.to_numeric(merged[raw_col], errors='coerce').to_numpy(dtype=np.float64)
-        combined_vals = raw_vals * p_combined_full
+        combined_vals = raw_vals * p_combined_counted
         # Same "0 = no data, transparent" convention every single-hazard E_*
         # raster already uses (_fetch_raster_tile's own `vals != 0` branch).
         valid = bounds_valid & np.isfinite(combined_vals) & (combined_vals != 0)
@@ -7793,14 +7848,17 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
             if b is not None and b:
                 union_bits[i] |= np.uint64(b)
 
+    # Unlike _combine_bitmask_aware/_combine_bitmask_aware_admin, this
+    # function's own p_combined is NEVER used to compute a population-
+    # weighted E_* number anywhere (see both of its callers' own comments:
+    # _fetch_combined_facility_rows explicitly never merges E_* fields at
+    # all, only base/descriptive ones; tile_value_combined's own E_*
+    # merge -- see that function's own comment -- is a separate step that
+    # already excludes Gust on its own). So p_combined here is PURE
+    # display (facility marker color / the tile-hover headline
+    # probability), with no _UNION_EXCLUDED_HAZARDS gate needed: every
+    # active hazard, Gust included, genuinely belongs in it.
     for hz in used_hazard_names:
-        # See _UNION_EXCLUDED_HAZARDS's own module-level doc. Like
-        # _combine_bitmask_aware_admin, this function has no per-hazard
-        # return channel (only the combined p_combined below, keyed by
-        # zone_id), so an excluded hazard is skipped outright rather than
-        # resolved and discarded.
-        if hz in _UNION_EXCLUDED_HAZARDS:
-            continue
         p = hazard_params.get(hz)
         if p is None:
             continue
@@ -8185,10 +8243,29 @@ def tile_value_combined(
             continue
         prob = props.get("PROBABILITY")
         if prob is not None:
+            # Gust's own real marginal probability is still tracked here
+            # unconditionally, for the tooltip's per-hazard reference row --
+            # only its population-weighted E_* fields are excluded below.
             per_hazard_probs.append({"hazard": hz, "prob": prob})
         for k, v in props.items():
-            if v is not None and combined_props.get(k) is None:
-                combined_props[k] = v
+            if v is None or combined_props.get(k) is not None:
+                continue
+            # See _UNION_EXCLUDED_HAZARDS's own module-level doc. An "E_"
+            # column is always a population/facility-count WEIGHTED BY a
+            # probability (that hazard's own, upstream), i.e. exactly the
+            # kind of number that must never be sourced from Gust WHEN IT'S
+            # BEING COMBINED with something else, so those keys skip Gust's
+            # own row here even under "first non-null wins" (a non-"E_" key
+            # -- POPULATION, NUM_SCHOOLS, RWI, etc -- is real hazard-
+            # independent baseline data, safe to pick up from any active
+            # hazard's row including Gust's, same as today). Gated on
+            # `len(active) > 1`: when Gust is the ONLY active hazard (the
+            # standalone single-hazard Gust view), this is not a combine at
+            # all, and Gust's own real E_* numbers must show normally, same
+            # as every other hazard's standalone view already does.
+            if hz == 'gust' and k.startswith('E_') and len(active) > 1:
+                continue
+            combined_props[k] = v
 
     if not combined_props and not per_hazard_probs:
         return {"combinedProps": {}, "perHazardProbs": []}
@@ -8781,8 +8858,13 @@ def _combined_bitmask_fracs(
         has_flood_split = False
     else:
         hazard_params = dict(active)
-        p_combined, merged, hazard_bits = _combine_bitmask_aware(merged, used_hazard_names, country, storm, hazard_params,
-                                                                   tile_mask=None)
+        # This function only ever feeds numeric totals (country/admin
+        # E_*/PROBABILITY figures, the TC-vs-Flood split), never map
+        # coloring, so it always wants the Gust-excluded track; the
+        # all-hazard one (2nd return value) is intentionally discarded
+        # here, see _combine_bitmask_aware's own return-value doc.
+        p_combined, _p_combined_all_unused, merged, hazard_bits = _combine_bitmask_aware(
+            merged, used_hazard_names, country, storm, hazard_params, tile_mask=None)
 
         # TC (Wind|Gust) vs Flood (River|Rain) family split, computed from the
         # same per-tile-per-member bits the union itself uses. `both_frac` is

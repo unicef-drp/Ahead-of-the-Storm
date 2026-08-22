@@ -207,6 +207,20 @@ var _AOTS_TT_VALUE = '#16232c';
 var _AOTS_TT_SUB    = '#8ea0ab';
 var _AOTS_TT_DIVIDER = '#eef2f5';
 
+// Client-side mirror of services/tile_server.py's own _UNION_EXCLUDED_
+// HAZARDS: a hazard listed here genuinely counts toward the "Hazard
+// Probability" figures this file renders (Combined %, map coloring in
+// Probability/Classification mode -- both still fold it in, unchanged),
+// but never toward any population-weighted number (the red "(~N)" figures
+// _buildTileTooltip's own fmtE() renders, or any Impact Summary/Breakdown
+// total, computed server-side, never client-side at all). Used here only to
+// decide when to print the "(reference only, not counted toward the red
+// at-risk numbers below)" note next
+// to that hazard's own row in the per-hazard breakdown -- purely a display
+// decision, not a second exclusion mechanism; the real exclusion is the
+// server-side one this list only documents/mirrors for that one purpose.
+var _AOTS_UNION_EXCLUDED_HAZARDS = ['gust'];
+
 function _fmtN(val) {
     if (val === null || val === undefined) return _mapT('N/A');
     if (typeof val === 'number') return new Intl.NumberFormat('en-US').format(Math.ceil(val));
@@ -266,8 +280,17 @@ function _buildTileTooltip(feature, perHazardProbs) {
     // only ever reaches the single-hazard label line below in the
     // degenerate case where exactly one per-hazard probability came back
     // on a combined feature, but a real label beats silently falling back
-    // to wind's ("Tropical Cyclone") for a multi-hazard layer.
-    var _HAZARD_TT_LABELS = { wind: 'Tropical Cyclone', gust: 'Gust', river: 'River Flooding', rain: 'Rainfall',
+    // to wind's ("Sustained Wind") for a multi-hazard layer.
+    //
+    // wind's own label here is "Sustained Wind", not "Tropical Cyclone":
+    // every use of this dict (the single-hazard fallback line just below,
+    // and the per-hazard breakdown row further down) shows ONE hazard's OWN
+    // marginal probability, wind's own sustained-wind envelope specifically,
+    // not a wind+gust "Tropical Cyclone family" figure (that's a genuinely
+    // different concept, computed separately, see _hazard_breakdown/
+    // _active_hazards_indicator in pages/map_shell_concept.py for where
+    // "Tropical Cyclone" legitimately does mean the wind+gust family).
+    var _HAZARD_TT_LABELS = { wind: 'Sustained Wind', gust: 'Gust', river: 'River Flooding', rain: 'Rainfall',
                               combined: 'Combined Hazard' };
     var hazardLabel = _mapT(_HAZARD_TT_LABELS[hazard] || _HAZARD_TT_LABELS.wind);
 
@@ -325,7 +348,15 @@ function _buildTileTooltip(feature, perHazardProbs) {
     if (name) html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:500;margin-bottom:4px;">' + _esc(name) + '</div>';
 
     if (prob > 0) {
-        html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">' + _mapT('Expected Impact') + ':</div>';
+        // Header deliberately says "Hazard Probability", not "Expected
+        // Impact": every number in this block (Combined and the per-hazard
+        // rows below it) is a pure hazard-likelihood percentage, never
+        // population-weighted -- the real "expected impact" figures (the
+        // red "(~N)" numbers) live further down, inline in Tile/Region
+        // Base Data, computed differently (see fmtE below) and, for Gust
+        // specifically, from a DIFFERENT, narrower probability than the
+        // one shown here (see _AOTS_UNION_EXCLUDED_HAZARDS's own comment).
+        html += '<div style="font-size:11px;color:#dc143c;font-weight:600;margin-top:4px;">' + _mapT('Hazard Probability') + ':</div>';
         if (perHazardProbs && perHazardProbs.length > 1) {
             // Multiple hazards active for this tile: show the combined
             // figure first, then each hazard's own real number as a
@@ -356,16 +387,38 @@ function _buildTileTooltip(feature, perHazardProbs) {
             // more important of the two to actually see.
             var isCombinedAdmin = !!(feature.layer && feature.layer.id === 'aots-admin-layer-combined');
             var isMaxBased = isAdmin && !isCombinedAdmin;
-            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';font-weight:600;">' + _mapT('Combined') + ': ' + _fmtPct(prob) + '</div>';
             if (isMaxBased) {
                 html += '<div style="font-size:9.5px;color:' + _AOTS_TT_SUB + ';font-style:italic;">' + _mapT('Combined = highest individual hazard probability, not a joint measurement.') + '</div>';
             }
+            // Counted hazards (contribute to Combined above AND to the
+            // red "(~N)" numbers below) render first, in their normal
+            // order; excluded hazards (Gust -- contribute to Combined but
+            // never to those numbers) render AFTER all of them, as a
+            // stable partition (each group keeps its own original relative
+            // order). A small top margin (not a full <hr>, this is still
+            // the same "Combined" reading, just a different contribution)
+            // visually sets the excluded group apart the moment it starts.
+            var _counted = [], _excluded = [];
             perHazardProbs.forEach(function(hp) {
+                (_AOTS_UNION_EXCLUDED_HAZARDS.indexOf(hp.hazard) !== -1 ? _excluded : _counted).push(hp);
+            });
+            _counted.concat(_excluded).forEach(function(hp, i) {
                 var lbl = _mapT(_HAZARD_TT_LABELS[hp.hazard] || hp.hazard);
-                html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;">' + lbl + ': ' + _fmtPct(hp.prob) + '</div>';
+                var isExcluded = _AOTS_UNION_EXCLUDED_HAZARDS.indexOf(hp.hazard) !== -1;
+                // See _AOTS_UNION_EXCLUDED_HAZARDS's own comment: a hazard
+                // listed there genuinely counts toward Combined above (a
+                // pure probability reading), but never toward any of the
+                // red "(~N)" numbers further down -- flagged inline here so
+                // the two never look silently inconsistent with each other.
+                var note = isExcluded
+                    ? ' <span style="font-weight:400;">' + _mapT('(reference only, not counted toward the red at-risk numbers below)') + '</span>' : '';
+                var startsExcludedGroup = isExcluded && i === _counted.length;
+                var topMargin = startsExcludedGroup ? '6px' : '0';
+                html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;margin-top:' + topMargin + ';">' + lbl + ': ' + _fmtPct(hp.prob) + note + '</div>';
             });
         } else {
-            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + hazardLabel + ' ' + _mapT('Impact Probability') + ': ' + _fmtPct(prob) + '</div>';
+            html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + hazardLabel + ' ' + _mapT('Probability') + ': ' + _fmtPct(prob) + '</div>';
         }
         html += '<hr style="margin:5px 0;border:none;border-top:1px solid ' + _AOTS_TT_DIVIDER + ';">';
     }
