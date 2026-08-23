@@ -7903,6 +7903,81 @@ def _combine_bitmask_aware_points(zone_ids: list[str], lats: np.ndarray, lons: n
     return dict(zip(zone_ids, p_combined))
 
 
+def _river_rain_joint_prob_at_point(lat: float, lon: float, codes: list[str],
+                                     river_params: Optional[dict], rain_params: Optional[dict]) -> Optional[float]:
+    """Real per-member joint (River AND Rain, same ensemble member) probability
+    at a single point -- the exact `river_bits & rain_bits` / popcount51
+    methodology `_combined_bitmask_fracs` already uses for the trusted
+    flood_split "both" number (Impact Breakdown's own "Both" row) and
+    `_paint_classification_tile`'s own crosshatch `hit_count==2` check, so
+    the Tile Statistics popup's "both" figure means the exact same real
+    thing those two already-trusted numbers mean -- independent marginal
+    probabilities (perHazardProbs, both individually nonzero) can be true
+    while this joint figure is 0, because a tile's two hazards can hit
+    entirely different ensemble members without ever hitting the SAME one
+    (see `_paint_classification_tile`'s own docstring for the full "why"
+    this is a materially different, stricter question than "are both
+    hazards' marginal probabilities nonzero here").
+
+    Returns None (not a fabricated 0.0) when River or Rain isn't active, or
+    when EITHER hazard's bitmask table has no real row at this point -- an
+    AND, unlike the union `_combine_bitmask_aware_points` computes, is
+    genuinely invalidated (not just conservatively lower-bounded) by
+    treating a missing side as 0: a structurally-missing Rain table (e.g. a
+    UI-selected threshold_mm value TILE_PRECIP_BITMASK_MAT was never
+    materialized for, or a country not yet onboarded for one hazard's
+    bitmask table) must never silently zero out River's own real coverage
+    and report a confident "0% joint risk" that actually means "Rain
+    couldn't be checked here at all". Tracked as two SEPARATE coverage
+    flags for exactly this reason, not the single shared flag
+    `_combine_bitmask_aware_points` uses (that function is safe to share
+    the flag because ANY one hazard having coverage is enough to make its
+    OR-union meaningful; an AND needs BOTH sides independently meaningful).
+    """
+    if not river_params or not river_params.get('forecast_date'):
+        return None
+    if not rain_params or not rain_params.get('forecast_date') or rain_params.get('threshold_mm') is None:
+        return None
+    from components.data.snowflake_utils import get_river_tile_bitmask, get_rain_tile_bitmask
+    try:
+        t = mercantile.tile(float(lon), float(lat), 14)
+        tile_id = mercantile.quadkey(t)
+    except Exception:
+        return None
+
+    def _bits_for(df: Optional[pd.DataFrame]) -> Optional[int]:
+        if df is None or df.empty or 'TILE_ID' not in df.columns:
+            return None
+        row = df[df['TILE_ID'] == tile_id]
+        if row.empty:
+            return 0
+        b = row.iloc[0]['BITS']
+        return int(b) if pd.notna(b) else 0
+
+    rp_tier = river_params.get('rp_tier') or _RIVER_EXTENT_DEFAULT_RP_TIER
+    step_h = river_params.get('window_h') or _RIVER_WINDOW_DEFAULT
+    rain_window_h = rain_params.get('window_h') or _PRECIP_RATE_DEFAULT_WINDOW_H
+
+    river_bits = np.uint64(0)
+    rain_bits = np.uint64(0)
+    river_has_coverage = False
+    rain_has_coverage = False
+    for code in codes:
+        rb = _bits_for(get_river_tile_bitmask(code, river_params['forecast_date'], rp_tier, step_h))
+        if rb is not None:
+            river_has_coverage = True
+            river_bits |= np.uint64(rb)
+        ib = _bits_for(get_rain_tile_bitmask(code, rain_params['forecast_date'], rain_params['threshold_mm'], rain_window_h))
+        if ib is not None:
+            rain_has_coverage = True
+            rain_bits |= np.uint64(ib)
+
+    if not river_has_coverage or not rain_has_coverage:
+        return None
+    both_bits = np.array([river_bits & rain_bits], dtype=np.uint64)
+    return float(_popcount51(both_bits)[0] / float(_BITMASK_ENSEMBLE_SIZE))
+
+
 def _fetch_combined_facility_rows(
     layer_type: str, country: str, storm: str,
     wind_on: bool, wind_forecast_date: Optional[str], wind_threshold: int,
@@ -8214,12 +8289,18 @@ def tile_value_combined(
 
     Returns `{"combinedProps": {...same shape tile_value() returns per
     hazard, merged: first non-null value per key wins, PROBABILITY
-    replaced by the union value}, "perHazardProbs": [{hazard, prob}, ...]}`
-    , `perHazardProbs` keeps each hazard's own INDIVIDUAL PROBABILITY
-    (read directly off that hazard's own MAT row via
-    `_get_tile_value_for_hazard`) for the breakdown sub-rows
+    replaced by the union value}, "perHazardProbs": [{hazard, prob}, ...],
+    "riverRainBothProb": float|None}`. `perHazardProbs` keeps each hazard's
+    own INDIVIDUAL PROBABILITY (read directly off that hazard's own MAT row
+    via `_get_tile_value_for_hazard`) for the breakdown sub-rows
     `_buildTileTooltip` renders under the headline figure; only the
     headline "Combined" number comes from the per-member union.
+    `riverRainBothProb` is the real per-member JOINT (River AND Rain, same
+    ensemble member) probability -- see `_river_rain_joint_prob_at_point`'s
+    own docstring for why this is a materially different, stricter number
+    than River's and Rain's own independent `perHazardProbs` entries (both
+    can be nonzero while this is 0); None when River+Rain aren't both
+    active or there's no real bitmask coverage at this point.
     """
     # Same active-hazard definition (and same per-hazard param dicts) the
     # combined raster/admin tiles under this tooltip resolve, so the
@@ -8285,9 +8366,20 @@ def tile_value_combined(
     if union_prob is not None:
         combined_props["PROBABILITY"] = float(union_prob)
 
+    # Real per-member joint (River AND Rain) probability, same trusted
+    # methodology the crosshatch/Impact Breakdown "Both" row already use --
+    # see _river_rain_joint_prob_at_point's own docstring for the full
+    # "why" this is a materially different (stricter) number than River's
+    # and Rain's own independent perHazardProbs entries, both of which can
+    # be nonzero while this is 0. None (omitted by the caller, not a
+    # fabricated 0) when River+Rain aren't both active or there's no real
+    # bitmask coverage at this point.
+    joint_both = _river_rain_joint_prob_at_point(lat, lon, codes, hazard_params.get('river'), hazard_params.get('rain'))
+
     return {
         "combinedProps": {k: (None if (isinstance(v, float) and pd.isna(v)) else v) for k, v in combined_props.items()},
         "perHazardProbs": per_hazard_probs,
+        "riverRainBothProb": joint_both,
     }
 
 
@@ -9265,48 +9357,6 @@ def combined_admin_totals(
     )
 
 
-@app.get("/impact/river-curve-excl-rain/{country}/{storm}")
-def river_curve_excl_rain(
-    country: str, storm: str,
-    river_forecast_date: str = Query(...),
-    river_window: Optional[int] = Query(None),
-    rain_forecast_date: str = Query(...),
-    threshold_mm: float = Query(...),
-    window_h: int = Query(...),
-) -> dict:
-    """Batched sibling of combined_country_totals for the Hazard
-    Contribution popup's real River Flooding curve (see
-    _river_curve_totals_excl_rain's own docstring in map_shell_concept.py
-    for the full "why" this needs a real per-tier joint decomposition, not
-    the marginal one).
-
-    Sweeps all 6 River RP tiers in ONE request instead of the caller
-    making 6 separate HTTP round trips: each tier still goes through the
-    exact same `_combined_country_totals_cached` (`@_ttl_cache`d,
-    identical correctness to combined_country_totals above), this
-    endpoint only removes 5 of those 6 round trips' network overhead and
-    this single-process server's own request-serialization cost, letting
-    tiers 2-6 reuse whatever this request's own first tier call already
-    warmed (the rain side stays fixed across all 6 tiers, so its own
-    Zarr/bitmask decode only needs to happen once per request instead of
-    racing across 6 concurrent external requests, see the caller's own
-    comment about the duplicate-Zarr-download symptom this fixes).
-
-    Returns {"tiers": [...6 RP tier strings...], "flood_splits": [...6
-    flood_split dicts, one per tier, same shape combined_country_totals'
-    own "flood_split" key returns...]}.
-    """
-    results = []
-    for tier in _RIVER_EXTENT_RP_TIERS:
-        totals = _combined_country_totals_cached(
-            country=country, storm=storm,
-            river_on=True, river_forecast_date=river_forecast_date, rp_tier=tier, river_window=river_window,
-            rain_on=True, rain_forecast_date=rain_forecast_date, threshold_mm=threshold_mm, window_h=window_h,
-        )
-        results.append(totals.get("flood_split"))
-    return {"tiers": list(_RIVER_EXTENT_RP_TIERS), "flood_splits": results}
-
-
 @app.get("/impact/rain-grid-excl-river/{country}/{storm}")
 def rain_grid_excl_river(
     country: str, storm: str,
@@ -9318,8 +9368,9 @@ def rain_grid_excl_river(
 ) -> dict:
     """Batched sibling of combined_country_totals for the Hazard
     Contribution popup's real Rainfall window x depth-tier grid, same
-    real-per-cell-round-trip-elimination fix as river_curve_excl_rain
-    above, applied to the OTHER member (12 cells instead of 6 tiers).
+    real-per-cell-round-trip-elimination fix river_grid_excl_rain below
+    applies to the OTHER member (12 cells instead of 24 tier x window
+    cells).
 
     `cells` carries the caller's own _RAIN_MM_BY_WINDOW-derived (window,
     mm) pairs as a JSON string (this module stays import-independent of
@@ -9338,6 +9389,44 @@ def rain_grid_excl_river(
             country=country, storm=storm,
             river_on=True, river_forecast_date=river_forecast_date, rp_tier=rp_tier, river_window=river_window,
             rain_on=True, rain_forecast_date=rain_forecast_date, threshold_mm=mm, window_h=int(window_h_s),
+        )
+        results.append(totals.get("flood_split"))
+    return {"cells": cell_list, "flood_splits": results}
+
+
+@app.get("/impact/river-grid-excl-rain/{country}/{storm}")
+def river_grid_excl_rain(
+    country: str, storm: str,
+    river_forecast_date: str = Query(...),
+    rain_forecast_date: str = Query(...),
+    threshold_mm: float = Query(...),
+    window_h: int = Query(...),
+    cells: str = Query(..., description='JSON list of [rp_tier, river_window] pairs to sweep'),
+) -> dict:
+    """Mirror sibling of rain_grid_excl_river above (this side's own
+    window is River's, swept in a 2D grid too -- see
+    _river_grid_totals_excl_rain's own docstring in map_shell_concept.py
+    for the "why" this exists: the popup's own River Flooding table is
+    now genuinely 2D (rp_tier x river_window) in the normal marginal case,
+    _river_curve_totals_excl_rain's own 1D curve (river tier only, held at
+    ONE fixed window) was the one remaining place still showing River as
+    1D whenever River+Rain are both active with a real split -- this
+    endpoint is what makes that case 2D too).
+
+    `cells` carries the caller's own (rp_tier, river_window) pairs as a
+    JSON string, same reasoning as rain_grid_excl_river's own `cells` param
+    (this module stays import-independent of pages/map_shell_concept.py).
+
+    Returns {"cells": [...echoed input pairs...], "flood_splits": [...N
+    flood_split dicts, aligned 1:1 with `cells`...]}.
+    """
+    cell_list = json.loads(cells)
+    results = []
+    for rp_tier, river_window in cell_list:
+        totals = _combined_country_totals_cached(
+            country=country, storm=storm,
+            river_on=True, river_forecast_date=river_forecast_date, rp_tier=rp_tier, river_window=river_window,
+            rain_on=True, rain_forecast_date=rain_forecast_date, threshold_mm=threshold_mm, window_h=window_h,
         )
         results.append(totals.get("flood_split"))
     return {"cells": cell_list, "flood_splits": results}

@@ -245,7 +245,7 @@ function _smodLabel(v) {
     return _mapT('N/A');
 }
 
-function _buildTileTooltip(feature, perHazardProbs) {
+function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
     var p = feature.properties || {};
     var G = function(name) { return _getP(p, name); };
     // Admin layer ids are hazard-suffixed (aots-admin-layer-wind / -gust /
@@ -417,6 +417,21 @@ function _buildTileTooltip(feature, perHazardProbs) {
                 var topMargin = startsExcludedGroup ? '6px' : '0';
                 html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;margin-top:' + topMargin + ';">' + lbl + ': ' + _fmtPct(hp.prob) + note + '</div>';
             });
+            // Real per-member JOINT (River AND Rain, same ensemble member)
+            // figure -- the SAME river_bits & rain_bits methodology the
+            // map's own Classification crosshatch and the Impact
+            // Breakdown's "Both" row already use, see
+            // riverRainBothProb's own docstring in tile_server.py for the
+            // full "why" this is materially different from (and can be
+            // much lower than) River's and Rain's own independent rows
+            // just above: those can both be nonzero purely because each
+            // hazard hits SOME member, with no requirement it's the same
+            // one. Only shown when both hazards are genuinely active AND
+            // there's real bitmask coverage at this point (null otherwise,
+            // never a fabricated 0).
+            if (riverRainBothProb !== null && riverRainBothProb !== undefined) {
+                html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;margin-top:2px;">' + _mapT('Both (same real scenario)') + ': ' + _fmtPct(riverRainBothProb) + '</div>';
+            }
         } else {
             html += '<div style="font-size:11px;color:' + _AOTS_TT_VALUE + ';">' + hazardLabel + ' ' + _mapT('Probability') + ': ' + _fmtPct(prob) + '</div>';
         }
@@ -753,6 +768,12 @@ function _setupHoverTooltips(lMap) {
                 var v = _getP(cprops, 'PROBABILITY_' + hz.toUpperCase());
                 if (v !== null && v !== undefined) cPerHazard.push({ hazard: hz, prob: v });
             });
+            // No river-rain joint ("Both") row here: this admin/region path
+            // reads per-hazard probabilities straight off the vector
+            // tile's own encoded properties, it never calls
+            // tile_value_combined (the tile-hover path below does, and is
+            // where riverRainBothProb comes from) -- a real, scoped-out
+            // follow-up if the admin tooltip ever needs the same figure.
             el.innerHTML = _buildTileTooltip(
                 { properties: cprops, layer: { id: _AOTS_COMBINED_IDS.adminLayer } }, cPerHazard);
             el.style.display = 'block';
@@ -880,7 +901,7 @@ function _setupHoverTooltips(lMap) {
                     return (!best || h.prob > best.prob) ? h : best;
                 }, null);
                 var feature = { properties: combinedProps, layer: { id: 'aots-tiles-layer-' + (topHazard ? topHazard.hazard : 'wind') } };
-                el.innerHTML = _buildTileTooltip(feature, perHazardProbs);
+                el.innerHTML = _buildTileTooltip(feature, perHazardProbs, result && result.riverRainBothProb);
                 el.style.display = 'block';
                 _positionTooltipEl(clientX, clientY);
             }).catch(function() {

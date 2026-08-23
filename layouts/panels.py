@@ -529,7 +529,13 @@ def make_single_page_appshell(country_options, default_country):
             dcc.Interval(id="startup-interval", interval=500, max_intervals=1),
             dcc.Store(id="active-countries-style", data=""),
             dcc.Store(id="active-countries-style-dummy", data=None),
-            dcc.Interval(id="metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
+            # 30 min, not 15: this fires from the browser's own JS timer as
+            # long as a tab is open, even idle -- a real Snowflake query
+            # every firing, not just a client-side check. Halves that real,
+            # ongoing per-open-tab cost with zero risk (a flat interval
+            # bump, not a conditional schedule), see _META_TTL's own
+            # comment in snowflake_utils.py, kept in sync with this value.
+            dcc.Interval(id="metadata-refresh-interval", interval=30 * 60 * 1000, n_intervals=0),
             dcc.Store(id="map-state-store",               data={}),
             dcc.Store(id="envelope-data-store",           data={}),
             dcc.Store(id="population-tiles-data-store",   data={}),

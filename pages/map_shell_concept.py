@@ -501,7 +501,7 @@ _TRANSLATIONS = {
         "Triple overlap (all 3)": "Triple Superposición (los 3)",
         "Hazards included:": "Peligros Incluidos:",
         "Threshold sensitivity (preview) — People at Risk:": "Sensibilidad al Umbral (vista previa) — Personas en Riesgo:",
-        "Rows: depth tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
+        "Rows: intensity tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
             "Filas: nivel de intensidad · Columnas: ventana de acumulación — la celda marcada es la actual ({window}, {tier})",
         "None — toggle a hazard on the map to see impact numbers.":
             "Ninguno — active un peligro en el mapa para ver los números de impacto.",
@@ -676,6 +676,7 @@ _TRANSLATIONS = {
     
         "No real data for this hazard/selection.": "No hay datos reales para este peligro/selección.",
         "No real per-threshold rainfall data for this metric.": "No hay datos reales de precipitación por umbral para esta métrica.",
+        "No real per-threshold river flooding data for this metric.": "No hay datos reales de inundación fluvial por umbral para esta métrica.",
         "No real split data for this cell.": "No hay datos reales de división para esta celda.",
         "Real per-hazard split unavailable for this selection — Tropical Cyclone and Flood contributions cannot be separated right now.": "División real por peligro no disponible para esta selección — las contribuciones de Ciclón Tropical e Inundación no se pueden separar en este momento.",
         "Real per-member Tropical Cyclone only / Both / Flood only split of each value.": "División real por miembro de cada valor en Solo Ciclón Tropical / Ambos / Solo Inundación.",
@@ -806,7 +807,7 @@ _TRANSLATIONS = {
         "Triple overlap (all 3)": "Triple Chevauchement (les 3)",
         "Hazards included:": "Risques Inclus :",
         "Threshold sensitivity (preview) — People at Risk:": "Sensibilité au Seuil (aperçu) — Personnes à Risque :",
-        "Rows: depth tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
+        "Rows: intensity tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
             "Lignes : niveau d'intensité · Colonnes : fenêtre d'accumulation — la cellule entourée est actuelle ({window}, {tier})",
         "None — toggle a hazard on the map to see impact numbers.":
             "Aucun — activez un risque sur la carte pour voir les chiffres d'impact.",
@@ -970,6 +971,7 @@ _TRANSLATIONS = {
     
         "No real data for this hazard/selection.": "Aucune donnée réelle pour ce risque/cette sélection.",
         "No real per-threshold rainfall data for this metric.": "Aucune donnée réelle de précipitations par seuil pour cet indicateur.",
+        "No real per-threshold river flooding data for this metric.": "Aucune donnée réelle d'inondation fluviale par seuil pour cet indicateur.",
         "No real split data for this cell.": "Aucune donnée réelle de répartition pour cette cellule.",
         "Real per-hazard split unavailable for this selection — Tropical Cyclone and Flood contributions cannot be separated right now.": "Répartition réelle par risque indisponible pour cette sélection — les contributions du Cyclone tropical et de l'Inondation ne peuvent pas être séparées pour le moment.",
         "Real per-member Tropical Cyclone only / Both / Flood only split of each value.": "Répartition réelle par membre entre Cyclone tropical seulement / Les deux / Inondation seulement pour chaque valeur.",
@@ -1100,7 +1102,7 @@ _TRANSLATIONS = {
         "Triple overlap (all 3)": "ত্রিগুণ ওভারল্যাপ (৩টিই)",
         "Hazards included:": "অন্তর্ভুক্ত ঝুঁকি:",
         "Threshold sensitivity (preview) — People at Risk:": "থ্রেশহোল্ড সংবেদনশীলতা (পূর্বরূপ) — ঝুঁকিতে থাকা মানুষ:",
-        "Rows: depth tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
+        "Rows: intensity tier · Columns: accumulation window — ringed cell is current ({window}, {tier})":
             "সারি: তীব্রতার স্তর · কলাম: সঞ্চয়ের সময়কাল — বৃত্তাকার ঘরটি বর্তমান ({window}, {tier})",
         "None — toggle a hazard on the map to see impact numbers.":
             "কোনোটি নয় — প্রভাবের সংখ্যা দেখতে মানচিত্রে একটি ঝুঁকি চালু করুন।",
@@ -1260,6 +1262,7 @@ _TRANSLATIONS = {
     
         "No real data for this hazard/selection.": "এই ঝুঁকি/নির্বাচনের জন্য কোনো প্রকৃত তথ্য নেই।",
         "No real per-threshold rainfall data for this metric.": "এই সূচকের জন্য থ্রেশহোল্ড অনুযায়ী কোনো প্রকৃত বৃষ্টিপাতের তথ্য নেই।",
+        "No real per-threshold river flooding data for this metric.": "এই সূচকের জন্য থ্রেশহোল্ড অনুযায়ী কোনো প্রকৃত নদী বন্যার তথ্য নেই।",
         "No real split data for this cell.": "এই কক্ষের জন্য কোনো প্রকৃত বিভাজন তথ্য নেই।",
         "Real per-hazard split unavailable for this selection — Tropical Cyclone and Flood contributions cannot be separated right now.": "এই নির্বাচনের জন্য প্রতি-ঝুঁকি প্রকৃত বিভাজন উপলব্ধ নেই — গ্রীষ্মমন্ডলীয় ঘূর্ণিঝড় এবং বন্যার অবদান এই মুহূর্তে আলাদা করা যাচ্ছে না।",
         "Real per-member Tropical Cyclone only / Both / Flood only split of each value.": "প্রতিটি মানের প্রকৃত প্রতি-সদস্য শুধু গ্রীষ্মমন্ডলীয় ঘূর্ণিঝড় / উভয়ই / শুধু বন্যা বিভাজন।",
@@ -1309,6 +1312,7 @@ _MAP_TOOLTIP_TRANSLATIONS = {
         "Region": "Región", "Tile": "Celda", "Base Data": "Datos Base",
         "Expected Impact": "Impacto Esperado", "Hazard Probability": "Probabilidad de Peligro",
         "(reference only, not counted toward the red at-risk numbers below)": "(solo de referencia, no cuenta para las cifras rojas de riesgo de abajo)",
+        "Both (same real scenario)": "Ambos (mismo escenario real)",
         "Tropical Cyclone": "Ciclón Tropical", "Gust": "Ráfaga", "Combined": "Combinado",
         "Settlement": "Asentamiento", "Wealth Index (RWI)": "Índice de Riqueza (RWI)",
         "Moderate Child Poverty": "Pobreza Infantil Moderada", "Severe Child Poverty": "Pobreza Infantil Severa",
@@ -1348,6 +1352,7 @@ _MAP_TOOLTIP_TRANSLATIONS = {
         "Region": "Région", "Tile": "Cellule", "Base Data": "Données de base",
         "Expected Impact": "Impact attendu", "Hazard Probability": "Probabilité de risque",
         "(reference only, not counted toward the red at-risk numbers below)": "(référence uniquement, non compté dans les chiffres rouges de risque ci-dessous)",
+        "Both (same real scenario)": "Les deux (même scénario réel)",
         "Tropical Cyclone": "Cyclone tropical", "Gust": "Rafale", "Combined": "Combiné",
         "Settlement": "Peuplement", "Wealth Index (RWI)": "Indice de richesse (RWI)",
         "Moderate Child Poverty": "Pauvreté infantile modérée", "Severe Child Poverty": "Pauvreté infantile sévère",
@@ -1387,6 +1392,7 @@ _MAP_TOOLTIP_TRANSLATIONS = {
         "Region": "অঞ্চল", "Tile": "টাইল", "Base Data": "মূল ডেটা",
         "Expected Impact": "প্রত্যাশিত প্রভাব", "Hazard Probability": "বিপদের সম্ভাব্যতা",
         "(reference only, not counted toward the red at-risk numbers below)": "(শুধুমাত্র তথ্যসূত্র, নিচের লাল ঝুঁকিপূর্ণ সংখ্যায় গণনা করা হয়নি)",
+        "Both (same real scenario)": "উভয়ই (একই বাস্তব দৃশ্যকল্প)",
         "Tropical Cyclone": "গ্রীষ্মমন্ডলীয় ঘূর্ণিঝড়", "Gust": "দমকা হাওয়া", "Combined": "সম্মিলিত",
         "Settlement": "বসতি", "Wealth Index (RWI)": "সম্পদ সূচক (RWI)",
         "Moderate Child Poverty": "মাঝারি শিশু দারিদ্র্য", "Severe Child Poverty": "তীব্র শিশু দারিদ্র্য",
@@ -1571,11 +1577,11 @@ def _resolve_default_forecast_date_run():
     get_default_forecast_cycle's own docstring for the full "why" behind
     the wind/gust+precip readiness walk this wraps.
 
-    get_default_forecast_cycle() is itself @ttl_cache'd (15 min, same
+    get_default_forecast_cycle() is itself @ttl_cache'd (30 min, same
     _META_TTL as every other single-value "storm list, forecast times"
     getter in snowflake_utils.py). That means this function is safe to
     call fresh on every page load (see layout() below), not just once at
-    process start: the first visitor in each 15-minute window pays one
+    process start: the first visitor in each 30-minute window pays one
     real multi-query Snowflake round-trip, every other visitor in that
     same window gets the cached result instantly, not a fresh query each
     -- N concurrent visitors don't turn into N queries.
@@ -1671,7 +1677,7 @@ def _live_forecast_ceiling():
     cycle lands (e.g. process starts while 00Z is latest, a real 18Z cycle
     completes hours later) stays stuck offering only up to 00Z in the
     topbar for its entire remaining lifetime, even though "Last Updated"
-    (which already calls this same live query on its own 15-min interval)
+    (which already calls this same live query on its own 30-min interval)
     correctly shows 18Z the whole time. _refresh_forecast_ceiling below is
     what actually closes that gap, on the same interval."""
     try:
@@ -4727,7 +4733,7 @@ def _topbar(initial_countries=None, default_date=_DEFAULT_FORECAST_DATE, default
             # when the underlying data was last refreshed, distinct from the
             # forecast's own valid date/run picked below (see
             # _update_last_updated below), same get_latest_forecast_time_overall()
-            # + 15-min dcc.Interval pattern as update_last_updated_header in
+            # + 30-min dcc.Interval pattern as update_last_updated_header in
             # pages/dashboard.py, just under a distinct id/interval
             # ("ms-..." prefixed) to avoid colliding with layouts/panels.py's own
             # "metadata-refresh-interval", which is live in the same running app.
@@ -7711,6 +7717,72 @@ def _precip_curve_totals(metric, scope, countries, date, run, river_idx=None, ra
     return grid
 
 
+def _river_curve_totals(metric, scope, countries, date, run, river_idx=None, rain_idx=None, rain_window=None, river_window=None):
+    """River sibling of _precip_curve_totals. River's real per-tile data has
+    the exact same second dimension rain's does (STEP_H, a cumulative
+    lead-time window, the same concept as rain's WINDOW_H -- see
+    get_tile_impact_totals_by_threshold's own "river_by_window" docstring
+    in snowflake_utils.py). `_hazard_curve_totals` only ever fetches the
+    ONE currently-selected `river_window`, flattening this second dimension
+    away -- this aggregator exists to sweep it, the same role
+    _precip_curve_totals already plays for rain's own equivalent dimension.
+
+    Returns {"24": [v_rp2, v_rp5, ..., v_rp100], "72": [...], "120": [...],
+    "168": [...]} (values aligned to _RIVER_RP_TIERS' own order, keys are
+    the string forms of _RIVER_EXTENT_STEP_HOURS), or None when `scope`
+    resolves to no real countries at all, same "no real data" contract as
+    _precip_curve_totals/_hazard_curve_totals.
+
+    Ignores `river_window` for data-fetching purposes (matches
+    _precip_curve_totals's own treatment of `rain_window`, see that
+    function's docstring): the grid always shows all 4 real windows at
+    once, the caller (_river_threshold_grid) uses the currently-selected
+    window only to mark which column is "active", not to filter what's
+    fetched.
+    """
+    resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
+    if not resolved_countries:
+        return None
+
+    def _fetch(country):
+        code = _NAME_TO_CODE.get(country)
+        if not code:
+            return None
+        # River is NOT storm-scoped (see get_tile_impact_totals_by_
+        # threshold's own docstring), same as precip's own _fetch above --
+        # storm/forecast_date only affect the (harmless) ttl_cache key.
+        return get_tile_impact_totals_by_threshold(code, "", "", date=date, run=run)
+
+    per_country = list(get_query_executor().map(_fetch, resolved_countries))
+    # Real "no river forecast coverage at all for this date/selection" gap
+    # (e.g. GloFAS hasn't resolved a cycle for any of these countries yet)
+    # is distinct from a real, confirmed-zero exposure (river_by_window IS
+    # present but every real cell happens to sum to 0 people/schools/HCs).
+    # Returning None here, the SAME "no real data" contract
+    # _resolve_curve_countries' own empty-list case already uses, lets
+    # _river_threshold_grid show its honest "no data" state instead of a
+    # fabricated-looking all-0 grid a responder could misread as "checked,
+    # confirmed clear" rather than "never checked" -- see this project's
+    # own fail-visibly-not-soft-default convention.
+    if not any((totals or {}).get("river_by_window") for totals in per_country):
+        return None
+    grid = {}
+    for window in _RIVER_EXTENT_STEP_HOURS:
+        w = str(window)
+        values = []
+        for tier in _RIVER_RP_TIERS:
+            total = 0
+            for totals in per_country:
+                if not totals or not totals.get("river_by_window") or w not in totals["river_by_window"]:
+                    continue
+                v = _curve_metric_value(metric, totals["river_by_window"][w].get(tier))
+                if v is not None:
+                    total += v
+            values.append(total)
+        grid[w] = values
+    return grid
+
+
 def _country_river_rain_forecast_dates(country, date, run, rp_tier=None):
     """Real (river_forecast_time, rain_forecast_time) for `country` at the
     ACTUAL selected topbar `date`/`run`, the same resolution
@@ -7763,45 +7835,33 @@ def _sum_flood_splits(flood_splits, metric):
     return out
 
 
-def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx, rain_window, river_window, river_idx=None):
-    """River-only-excluding-Rain-overlap counterpart to _hazard_curve_totals'
-    own river branch, for the case where River Flooding AND Rainfall are
-    BOTH active (is_real_river_rain in _hazard_contribution_content).
+def _river_grid_totals_excl_rain(metric, scope, countries, date, run, rain_idx, rain_window, river_window=None, river_idx=None):
+    """Genuinely-2D counterpart to _river_curve_totals_excl_rain above, same
+    real joint-decomposition fix as _rain_grid_totals_excl_river applies to
+    Rain, mirrored onto River: every cell of the RP-tier x lead-time-window
+    grid recomputed as River hits AND Rain does NOT, holding Rain's own
+    current threshold fixed, so the grid's own "current" cell reconciles
+    with the "River Flooding" headline row by construction, instead of
+    River's raw marginal exposure at whatever ONE window
+    _river_curve_totals_excl_rain's own 1D curve was stuck showing.
 
-    _hazard_curve_totals' river branch is a MARGINAL per-tier total
-    (river's own real exposure at that tier, regardless of whether Rain
-    also hits the same tiles), which is a genuinely different question
-    from the real WITHIN-Flood headline this popup now shows
-    (river_only_n, river hits AND Rain does NOT, see flood_split_real's
-    own comment) - the two are related (river_only + both ≈ the marginal
-    total, small real-vs-real margin expected) but not the same number,
-    so pairing the marginal curve under the joint-decomposed headline
-    read as broken even though both numbers are real. This function
-    fixes that by computing the SAME joint decomposition at EVERY River
-    tier (not just the currently-selected one), holding Rain's own
-    current threshold fixed, so every point on this curve reconciles with
-    the headline by construction.
+    ONE real HTTP round trip PER COUNTRY (via /impact/river-grid-excl-rain,
+    which sweeps all 24 rp_tier x river_window cells server-side), same
+    "one request, not one per cell" fix _rain_grid_totals_excl_river's own
+    comment explains in full, applied to the OTHER member.
 
-    ONE real HTTP round trip PER COUNTRY (via the tile server's own
-    /impact/river-curve-excl-rain sweep endpoint, which loops all 6 RP
-    tiers server-side), not 6 -- an earlier version of this function did
-    6 separate _combined_flood_split calls (one per tier, parallelized
-    client-side), which meant 6 real Snowflake-backed bitmask
-    decompositions PLUS 6 HTTP round trips serialized through the tile
-    server's single uvicorn process every time this popup opened,
-    genuinely slow (the popup would sit "loading" for minutes on a cold
-    cache). The sweep endpoint does the same 6 decompositions but inside
-    ONE request, so tiers 2-6 reuse whatever tier 1 already warmed
-    instead of racing 6 concurrent external requests against each other.
-
-    Returns a list of 6 real values aligned to _RIVER_RP_TIERS' own
-    order, or None when `metric` has no real flood_split coverage at all
-    or no country resolves to real data."""
+    Returns {"24": [v_rp2, ..., v_rp100], "72": [...], "120": [...],
+    "168": [...]} (values aligned to _RIVER_RP_TIERS' own order, keys the
+    string forms of _RIVER_EXTENT_STEP_HOURS -- the SAME shape
+    _river_curve_totals returns for the marginal case, so
+    _river_threshold_grid renders either one identically), or None when no
+    country resolves to real data."""
     resolved_countries = _resolve_curve_countries(scope, countries, date, run, river_idx=river_idx, rain_idx=rain_idx, rain_window=rain_window, river_window=river_window)
     if not resolved_countries:
         return None
+    cells = [(tier, window) for window in _RIVER_EXTENT_STEP_HOURS for tier in _RIVER_RP_TIERS]
+    cells_json = json.dumps(cells)
     rain_mm = _RAIN_MM_BY_WINDOW[rain_window][rain_idx] if rain_idx is not None else _RAIN_MM_BY_WINDOW[rain_window][1]
-    river_window_resolved = int(river_window) if river_window else _RIVER_WINDOW_DEFAULT
 
     def _fetch(country):
         code = _NAME_TO_CODE.get(country)
@@ -7810,32 +7870,33 @@ def _river_curve_totals_excl_rain(metric, scope, countries, date, run, rain_idx,
             return None
         try:
             resp = requests.get(
-                f"{config.TILE_SERVER_URL}/impact/river-curve-excl-rain/{code}/NONE",
-                params={"river_forecast_date": river_ft, "river_window": river_window_resolved,
-                         "rain_forecast_date": rain_ft, "threshold_mm": rain_mm, "window_h": int(rain_window)},
+                f"{config.TILE_SERVER_URL}/impact/river-grid-excl-rain/{code}/NONE",
+                params={"river_forecast_date": river_ft, "rain_forecast_date": rain_ft,
+                         "threshold_mm": rain_mm, "window_h": int(rain_window), "cells": cells_json},
                 timeout=_MEMBER_IMPACT_HTTP_TIMEOUT,
             )
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            logger.warning("Could not load river curve (excl rain) for %s: %s", country, e)
+            logger.warning("Could not load river grid (excl rain) for %s: %s", country, e)
             return None
 
     per_country = list(get_query_executor().map(_fetch, resolved_countries))
     per_country = [r for r in per_country if r is not None]
     if not per_country:
         return None
-    n_tiers = len(_RIVER_RP_TIERS)
-    values = []
+    grid = {}
     any_real = False
-    for i in range(n_tiers):
-        flood_splits_at_tier = [r["flood_splits"][i] for r in per_country if i < len(r.get("flood_splits") or [])]
-        summed = _sum_flood_splits(flood_splits_at_tier, metric)
+    for cell_i, (tier, window) in enumerate(cells):
+        flood_splits_at_cell = [r["flood_splits"][cell_i] for r in per_country if cell_i < len(r.get("flood_splits") or [])]
+        summed = _sum_flood_splits(flood_splits_at_cell, metric)
         v = summed.get("river_only")
         if v is not None:
             any_real = True
-        values.append(v or 0.0)
-    return values if any_real else None
+        grid.setdefault(str(window), []).append(v or 0.0)
+    if not any_real:
+        return None
+    return grid
 
 
 def _rain_grid_totals_excl_river(metric, scope, countries, date, run, river_idx, river_window, rain_idx=None, rain_window=None):
@@ -8358,31 +8419,39 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
             # When River Flooding + Rainfall are BOTH active (flood_split_real),
             # the row this curve sits under shows the real WITHIN-Flood
             # split (river hits AND rain does NOT), not River's raw
-            # marginal exposure, see _river_curve_totals_excl_rain's own
-            # comment for the full "why" this needs its own real per-tier
-            # fetch instead of reusing _hazard_curve_totals' marginal one
+            # marginal exposure, see _river_grid_totals_excl_rain's own
+            # comment for the full "why" this needs its own real per-cell
+            # fetch instead of reusing _river_curve_totals' marginal one
             # (947-vs-149-style mismatch otherwise: two real numbers, two
             # different questions, that read as contradicting each other).
+            #
+            # This excl-rain sub-case gets the SAME genuinely-2D table as
+            # the normal case below, via _river_grid_totals_excl_rain's own
+            # server-side (rp_tier x river_window) sweep.
             if river_rain_only and flood_split_real:
-                real_values = _river_curve_totals_excl_rain(
+                real_matrix = _river_grid_totals_excl_rain(
                     metric, scope, countries, date, run,
                     rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window, river_window=river_window,
                     river_idx=(hazard_idx or {}).get("River Flooding"))
+                if real_matrix is not None:
+                    _curve_all_zero_by_member[name] = all(
+                        (v or 0) == 0 for vals in real_matrix.values() for v in vals)
+                active_window = str(river_window) if river_window else str(_RIVER_WINDOW_DEFAULT)
+                chart = _river_threshold_grid(labels, active_window, idx, color, real_matrix)
             else:
-                real_values = _hazard_curve_totals(metric, "river", scope, countries, date, run, river_window=river_window,
-                                                      river_idx=(hazard_idx or {}).get("River Flooding"),
-                                                      rain_idx=(hazard_idx or {}).get("Rainfall"), rain_window=rain_window)
-            if real_values is None:
-                raw_values = list(get_query_executor().map(
-                    lambda rp_tier: _resolve_stat_value(metric, scope, countries, date=date, run=run,
-                                                           hz=_river_only_hz(rp_tier, river_window),
-                                                           river_idx=(hazard_idx or {}).get("River Flooding"),
-                                                           rain_idx=(hazard_idx or {}).get("Rainfall"),
-                                                           rain_window=rain_window, river_window=river_window),
-                    _RIVER_RP_TIERS))
-                real_values = [_parse_stat_number(v) if v is not None else 0 for v in raw_values]
-            _curve_all_zero_by_member[name] = all((v or 0) == 0 for v in real_values)
-            chart = _threshold_curve_chart(labels, real_values, idx, color)
+                # Genuinely 2D (RP tier x lead-time window), same table
+                # treatment as Rainfall's own grid below, see
+                # _river_curve_totals's own docstring for the "why" this
+                # replaced the old single-window line chart.
+                real_matrix = _river_curve_totals(
+                    metric, scope, countries, date, run,
+                    river_idx=(hazard_idx or {}).get("River Flooding"), rain_idx=(hazard_idx or {}).get("Rainfall"),
+                    rain_window=rain_window, river_window=river_window)
+                if real_matrix is not None:
+                    _curve_all_zero_by_member[name] = all(
+                        (v or 0) == 0 for vals in real_matrix.values() for v in vals)
+                active_window = str(river_window) if river_window else str(_RIVER_WINDOW_DEFAULT)
+                chart = _river_threshold_grid(labels, active_window, idx, color, real_matrix)
         elif name == "Rainfall":
             # Same real per-cell fetch pattern as Sustained Wind/River
             # Flooding above, via _precip_curve_totals (genuinely 2D, its
@@ -8612,11 +8681,19 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # above vs. that hazard's own People at Risk estimate. Left spacer
     # (width matching the icon+gap _hazard_row's own name column starts
     # after) keeps "Hazard" lined up with the row names below it.
+    # The right-hand number column was hardcoded "People at Risk" here
+    # regardless of `metric` (Children/Schools/Shelters/etc. at Risk all
+    # showed the SAME literal label as the popup's own title correctly
+    # changed above it) -- real bug, not the deliberate "always People at
+    # Risk" design of the Full Impact Breakdown modal's own Threshold
+    # sensitivity preview (a different section, see _hazard_threshold_
+    # preview): this popup's title already commits to one specific real
+    # metric per open, so its own column header must agree with it.
     column_header = dmc.Group([
         html.Div(style={"width": "15px"}),
         dmc.Text(_t("Hazard"), size="9px", fw=700, tt="uppercase", c="dimmed", style={"flex": 1, "minWidth": 0}),
         dmc.Text(_t("Share"), size="9px", fw=700, tt="uppercase", c="dimmed", w=42, ta="right"),
-        dmc.Text(_t("People at Risk"), size="9px", fw=700, tt="uppercase", c="dimmed", w=72, ta="right"),
+        dmc.Text(_t(metric or "People at Risk"), size="9px", fw=700, tt="uppercase", c="dimmed", w=72, ta="right"),
     ], gap=14, wrap="nowrap", mb=8)
 
     # The caption only makes sense when a real illustrative SPLIT is being
@@ -10329,7 +10406,7 @@ def _update_last_updated(_n):
     """Real "Last Updated" timestamp, same source/format as dashboard.py's
     own update_last_updated_header, so both pages agree on what "last
     updated" means. prevent_initial_call=False so this fires immediately on
-    load too, not just after the first 15-minute interval."""
+    load too, not just after the first 30-minute interval."""
     try:
         latest_time = get_latest_forecast_time_overall()
         return latest_time.strftime("%b %d, %Y %H:%M UTC") if latest_time else "N/A"
@@ -10344,7 +10421,7 @@ def _update_last_updated(_n):
 # whatever was "latest" at process start, even as _update_last_updated right
 # above correctly showed newer real cycles the whole time (same underlying
 # query, just called live on every interval instead of once at import).
-# Same ms-metadata-refresh-interval/15-min cadence as _update_last_updated,
+# Same ms-metadata-refresh-interval/30-min cadence as _update_last_updated,
 # and same intent (correct any staleness immediately on load too, not just
 # after the first tick) -- but topbar-time's own `data` already has a
 # plain-Output writer (_guard_future_forecast_run below), so this one must
@@ -10390,10 +10467,10 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
     # docstring): layout() is called fresh by Dash's page router on every
     # page load, so this is what actually closes the staleness gap
     # _refresh_forecast_ceiling below only partially covers -- that
-    # callback live-widens what's SELECTABLE in the topbar every 15 min,
+    # callback live-widens what's SELECTABLE in the topbar every 30 min,
     # but deliberately never touches the already-rendered SELECTED value
     # for a tab that's already open. This is what makes a *new* page load
-    # itself reflect real data within 15 minutes too, without ever needing
+    # itself reflect real data within 30 minutes too, without ever needing
     # a process restart.
     _live_default_date, _live_default_run = _resolve_default_forecast_date_run()
     return html.Div([
@@ -10508,12 +10585,17 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         # why this exists (basemap switching silently does nothing on a
         # fresh load until this fires or the user manually pans/zooms).
         dcc.Interval(id="map-init-nudge", interval=500, n_intervals=0, max_intervals=1),
-        # Real "Last Updated" refresh, same 15-min cadence and
+        # Real "Last Updated" refresh, same 30-min cadence and
         # get_latest_forecast_time_overall() source as dashboard.py's own
         # update_last_updated_header, under an "ms-"-prefixed id so it
         # doesn't collide with layouts/panels.py's live
         # "metadata-refresh-interval" in this same running app.
-        dcc.Interval(id="ms-metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
+        # 30 min, not 15: halves the real, ongoing per-open-tab Snowflake
+        # query cost (this fires from the browser's own JS timer as long as
+        # a tab is open, even idle) with zero risk, see layouts/panels.py's
+        # own identical comment on its sibling interval. Kept in sync with
+        # _META_TTL in snowflake_utils.py.
+        dcc.Interval(id="ms-metadata-refresh-interval", interval=30 * 60 * 1000, n_intervals=0),
         _map_stack(),
         _topbar(initial_countries=initial_countries, default_date=_live_default_date, default_run=_live_default_run),
         _controls_panel(),
@@ -11020,9 +11102,92 @@ def _rain_threshold_grid(labels, active_window, active_idx, color, real_matrix):
             "gridTemplateColumns": f"38px repeat({len(windows)}, 1fr)",
             "gap": "3px", "alignItems": "center",
         }),
-        html.Div(_t("Rows: depth tier · Columns: accumulation window — ringed cell is current ({window}, {tier})",
+        html.Div(_t("Rows: intensity tier · Columns: accumulation window — ringed cell is current ({window}, {tier})",
                      window=_RAIN_WINDOW_LABELS[active_window], tier=_t(labels[active_idx])),
                   style={"fontSize": "8px", "color": "#8ea0ab", "textAlign": "center", "marginTop": "4px"}),
+    ]), style={"minHeight": _HAZARD_CURVE_HEIGHT, "display": "flex", "flexDirection": "column",
+                "justifyContent": "center", "marginBottom": "0px"})
+
+
+def _river_threshold_grid(labels, active_window, active_idx, color, real_matrix):
+    # River Flooding's own version of _rain_threshold_grid, same reasoning
+    # (genuinely 2D real data -- severity tier x lead-time window, see
+    # _river_curve_totals's own docstring for the "why" -- a heatmap grid,
+    # not River's old single-window line chart). A dedicated copy rather
+    # than generalizing _rain_threshold_grid itself: the two hazards'
+    # window lists/labels differ (_RIVER_EXTENT_STEP_HOURS vs
+    # _RAIN_WINDOW_SCALE's keys) and this keeps the already-real, already-
+    # verified Rainfall path completely untouched, same "separate function
+    # per hazard, no shared state to accidentally break" precedent
+    # _threshold_curve_chart/_rain_threshold_grid already set for
+    # Wind+River vs. Rain.
+    #
+    # `real_matrix` is _river_curve_totals's own {"24": [...], "72": [...],
+    # "120": [...], "168": [...]} shape when given. MUST NOT fall back to
+    # an illustrative ratio-scaled matrix when real_matrix is None, same
+    # "no fabricated number under a real headline" rule
+    # _rain_threshold_grid's own comment explains in full.
+    if real_matrix is None:
+        return html.Div(
+            dmc.Text(_t("No real per-threshold river flooding data for this metric."),
+                       size="10px", c="dimmed", fs="italic", ta="center"),
+            style={"minHeight": _HAZARD_CURVE_HEIGHT, "display": "flex", "alignItems": "center", "justifyContent": "center"})
+    windows = [str(w) for w in _RIVER_EXTENT_STEP_HOURS]
+    matrix = real_matrix
+    vmax = max(v for vals in matrix.values() for v in vals) or 1
+    r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+    header = [html.Div()] + [
+        html.Div(_RIVER_WINDOW_LABELS[w], style={
+            "fontSize": "9px", "fontWeight": 700 if w == active_window else 500,
+            "color": color if w == active_window else "#8ea0ab", "textAlign": "center",
+        }) for w in windows
+    ]
+    rows = []
+    for i, tier in enumerate(labels):
+        # rp2/rp5 (Warning/Danger, the two lowest-severity rows) aren't
+        # independently computed upstream (IS_STANDIN=True in
+        # RIVER_FORECASTS -- the pipeline reuses rp10's/Severe's real
+        # extent as a labelled upper-bound stand-in, see
+        # _RIVER_STANDIN_RP_TIERS's own comment). Their numbers in this
+        # table are therefore real query results but NOT independent
+        # estimates -- same real "*" + footnote disclosure the slider's
+        # own _river_readout already surfaces, reusing its exact wording
+        # so this never silently reads as a fully independent 6-tier
+        # result the way the old single-window line chart did.
+        is_standin = _RIVER_RP_TIERS[i] in _RIVER_STANDIN_RP_TIERS
+        rows.append(html.Div(_t(tier) + ("*" if is_standin else ""),
+                               style={"fontSize": "9px", "color": "#57707e", "textAlign": "right",
+                                       "paddingRight": "6px", "whiteSpace": "nowrap", "alignSelf": "center"}))
+        for w in windows:
+            val = matrix[w][i]
+            intensity = val / vmax
+            is_active = (w == active_window and i == active_idx)
+            rows.append(html.Div(
+                _format_stat_number(val),
+                style={
+                    "fontSize": "10px", "fontWeight": 700 if is_active else 500, "fontFamily": "monospace",
+                    "textAlign": "center", "padding": "4px 2px", "borderRadius": "5px",
+                    "background": f"rgba({r},{g},{b},{0.1 + intensity * 0.55:.2f})",
+                    "color": "#16232c" if is_active else "#8ea0ab",
+                    "border": f"2px solid {color}" if is_active else "2px solid transparent",
+                },
+            ))
+    return html.Div(html.Div([
+        html.Div(header + rows, style={
+            "display": "grid",
+            # 64px, not _rain_threshold_grid's own 38px: River's own tier
+            # labels (_RIVER_CURVE_LABELS: "Catastrophic", "Historic") run
+            # longer than Rain's ("Moderate", "Heavy", "Extreme") -- 38px
+            # let "Catastrophic" overflow into the first data column.
+            "gridTemplateColumns": f"64px repeat({len(windows)}, 1fr)",
+            "gap": "3px", "alignItems": "center",
+        }),
+        html.Div(_t("Rows: severity tier · Columns: lead-time window — ringed cell is current ({window}, {tier})",
+                     window=_RIVER_WINDOW_LABELS[active_window], tier=_t(labels[active_idx])),
+                  style={"fontSize": "8px", "color": "#8ea0ab", "textAlign": "center", "marginTop": "4px"}),
+        html.Div("* " + _t("(not natively computed — RP10 used as an upper-bound estimate)"),
+                  style={"fontSize": "8px", "color": "#8ea0ab", "textAlign": "center", "marginTop": "2px"}),
     ]), style={"minHeight": _HAZARD_CURVE_HEIGHT, "display": "flex", "flexDirection": "column",
                 "justifyContent": "center", "marginBottom": "0px"})
 # Matches GloFAS's own return-period ladder (2/5/10/20/50/100-year), not a
@@ -11059,6 +11224,12 @@ _RIVER_STANDIN_RP_TIERS = {"rp2", "rp5"}
 # its `step_h` query param is unvalidated (any int still works server-side,
 # so a direct API call can still request 48/96/144 if ever needed).
 _RIVER_EXTENT_STEP_HOURS = [24, 72, 120, 168]
+# Rain's own window-scale-factor treatment doesn't apply to river (no
+# _RIVER_WINDOW_SCALE): the illustrative-preview ratio path
+# (_RIVER_TIER_FACTOR) never varied by window in the first place, only
+# _river_threshold_grid's real 2D table needs a label per window, matching
+# ms-river-window's own SegmentedControl label pattern ("{d}d") exactly.
+_RIVER_WINDOW_LABELS = {"24": "1d", "72": "3d", "120": "5d", "168": "7d"}
 
 # Mirrors
 # services/tile_server.py's own _RIVER_WINDOW_DEFAULT exactly (168h/the
@@ -11228,25 +11399,29 @@ def _hazard_threshold_preview(breakdown, hazard_idx, total_people_at_risk, rain_
             # Contribution popup shows), not River's raw marginal total,
             # see this function's own river_rain_only/flood_split_real
             # comment above for the full "why".
+            #
+            # excl-rain sub-case now uses the same genuinely-2D table as
+            # the normal case below, via _river_grid_totals_excl_rain's own
+            # server-side (rp_tier x river_window) sweep, same as
+            # _hazard_curve_row's own identical River Flooding branch.
             if river_rain_only and flood_split_real:
-                real_values = _river_curve_totals_excl_rain(
+                real_matrix = _river_grid_totals_excl_rain(
                     "People at Risk", scope, countries, date, run,
                     rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window, river_window=river_window,
                     river_idx=hazard_idx.get("River Flooding"))
+                active_window = str(river_window) if river_window else str(_RIVER_WINDOW_DEFAULT)
+                chart = _river_threshold_grid(labels, active_window, idx, color, real_matrix)
             else:
-                real_values = _hazard_curve_totals("People at Risk", "river", scope, countries, date, run, river_window=river_window,
-                                                      river_idx=hazard_idx.get("River Flooding"),
-                                                      rain_idx=hazard_idx.get("Rainfall"), rain_window=rain_window)
-            if real_values is None:
-                raw_values = list(get_query_executor().map(
-                    lambda rp_tier: _resolve_stat_value("People at Risk", scope, countries, date=date, run=run,
-                                                           hz=_river_only_hz(rp_tier, river_window),
-                                                           river_idx=hazard_idx.get("River Flooding"),
-                                                           rain_idx=hazard_idx.get("Rainfall"),
-                                                           rain_window=rain_window, river_window=river_window),
-                    _RIVER_RP_TIERS))
-                real_values = [_parse_stat_number(v) for v in raw_values]
-            chart = _threshold_curve_chart(labels, real_values, idx, color)
+                # Genuinely 2D (RP tier x lead-time window), same table
+                # treatment as the Rainfall branch below, see
+                # _river_curve_totals's own docstring for the "why" this
+                # replaced the old single-window line chart.
+                real_matrix = _river_curve_totals(
+                    "People at Risk", scope, countries, date, run,
+                    river_idx=hazard_idx.get("River Flooding"), rain_idx=hazard_idx.get("Rainfall"),
+                    rain_window=rain_window, river_window=river_window)
+                active_window = str(river_window) if river_window else str(_RIVER_WINDOW_DEFAULT)
+                chart = _river_threshold_grid(labels, active_window, idx, color, real_matrix)
         elif name == "Rainfall" and rain_window is not None:
             # Real per-cell fetch, same _precip_curve_totals aggregator
             # _hazard_curve_row's own Rainfall branch uses (see that
@@ -13373,7 +13548,7 @@ def _build_global_raw_config(river_on, rain_on, view_as, date, run, _n_intervals
     not just after the first ms-metadata-refresh-interval tick, using
     topbar-date/topbar-time's own initial values (_DEFAULT_FORECAST_DATE/
     _DEFAULT_FORECAST_RUN, the latest real forecast cycle, same default the
-    topbar itself opens on). Re-fires on that same 15-minute interval
+    topbar itself opens on). Re-fires on that same 30-minute interval
     afterwards (reusing it rather than adding a second dcc.Interval) so a new
     forecast cycle landing mid-session is picked up without a page reload,
     and immediately whenever either checkbox, the view-as toggle, or the

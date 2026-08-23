@@ -70,7 +70,11 @@ HAZARD_SOURCE_GLOFAS = "glofas"
 # their computation finishes (success or exception) so the dict never grows
 # unbounded: it only ever holds keys with a computation genuinely in flight.
 
-_META_TTL    = 15 * 60   # 15 min: storm list, forecast times (new storms appear promptly)
+_META_TTL    = 30 * 60   # 30 min: storm list, forecast times, kept in sync with metadata-refresh-interval/
+                         # ms-metadata-refresh-interval's own poll cadence (layouts/panels.py,
+                         # pages/map_shell_concept.py) -- was 15 min, halved for real per-open-tab query
+                         # cost, still well inside real new-storm/new-cycle appearance timescales (hours,
+                         # not minutes)
 _IMPACT_TTL  = 15 * 60   # 15 min: impact queries (new pipeline output picked up within 15 min)
 _BASE_TTL    = 60 * 60   # 60 min: base layers (schools/HCs/tiles; change only on re-init)
 
@@ -1664,6 +1668,12 @@ def get_countries_examined_for_precip_at(forecast_time: str, threshold_mm, windo
 _TOTALS_WIND_THRESHOLDS_KT = [34, 40, 50, 64, 83, 96, 113, 137]
 _TOTALS_GUST_THRESHOLDS_KT = [17, 21, 26, 33, 43, 49, 58, 70]
 _TOTALS_RIVER_RP_TIERS = ["rp2", "rp5", "rp10", "rp20", "rp50", "rp100"]
+# Duplicated from map_shell_concept.py's own _RIVER_EXTENT_STEP_HOURS, same
+# reason as the tier lists above (import-graph ordering); keep in sync.
+# River's own STEP_H column is the same "cumulative lead-time window"
+# concept as rain's WINDOW_H (see _RIVER_WINDOW_DEFAULT's own comment) --
+# these are the same 4 canonical windows the ms-river-window control offers.
+_TOTALS_RIVER_WINDOWS = [24, 72, 120, 168]
 # Duplicated from map_shell_concept.py's own _RAIN_MM_BY_WINDOW, same reason
 # as the tier lists above (import-graph ordering); keep in sync.
 _TOTALS_PRECIP_MM_BY_WINDOW = {"6": [25, 50, 75], "24": [35, 70, 103], "72": [45, 90, 133], "120": [50, 100, 150]}
@@ -1744,10 +1754,11 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
 
     Returns:
         {
-            "wind":   {34: {...}, 40: {...}, ..., 137: {...}},   # kt -> totals
-            "gust":   {17: {...}, 21: {...}, ...,  70: {...}},   # kt -> totals
-            "river":  {"rp2": {...}, ..., "rp100": {...}},        # rp_tier -> totals
-            "precip": {"6": {25: {...}, 50: {...}, 75: {...}}, "24": {...}, "72": {...}, "120": {...}},
+            "wind":            {34: {...}, 40: {...}, ..., 137: {...}},  # kt -> totals
+            "gust":            {17: {...}, 21: {...}, ...,  70: {...}},  # kt -> totals
+            "river":           {"rp2": {...}, ..., "rp100": {...}},       # rp_tier -> totals, AT river_window
+            "river_by_window": {"24": {"rp2": {...}, ...}, "72": {...}, "120": {...}, "168": {...}},
+            "precip":          {"6": {25: {...}, 50: {...}, 75: {...}}, "24": {...}, "72": {...}, "120": {...}},
         }
     where each wind/gust/river/precip `{...}` is the SAME shape:
     {"E_POPULATION": int|None, "E_INFANT_POPULATION": int|None,
@@ -1763,12 +1774,19 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     dataset gap), 0 when the threshold tier simply has no matching rows
     (a real, confirmed-zero exposure at that tier).
 
-    `river_window`: River's own per-RP-tier curve reflects this ONE
-    cumulative window (24/72/120/168h, default the full 168h horizon): see
-    get_river_tile_impacts's own
-    docstring for the underlying STEP_H semantics. Unlike precip's own 2D
-    "river" this stays a flat {rp_tier: {...}} shape at whichever single
-    window is currently selected, not a window x tier grid.
+    `river_window`: only controls which single window `result["river"]`
+    (the flat, backward-compatible {rp_tier: {...}} shape existing callers
+    like _hazard_curve_totals's 1D per-tier curve already expect) reflects
+    -- default the full 168h horizon, see get_river_tile_impacts's own
+    docstring for the underlying STEP_H semantics. `result["river_by_window"]`
+    is genuinely 2D (RP_TIER x STEP_H, 24/72/120/168h) regardless of what
+    `river_window` is set to, fetched from the SAME one query as "river"
+    above (no second round trip) -- this used to be flattened away here
+    ("expanding to a full 2D curve picker would be a separate UI feature"),
+    confirmed live 2026-08-23 that River's real MERCATOR_TILE_RIVER_MAT data
+    always had this second STEP_H dimension per tile, the same way rain's
+    WINDOW_H does; the flattening was a UI scoping gap, not a real 1D data
+    shape, see _river_curve_totals's own docstring in map_shell_concept.py.
 
     Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
     _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS/
@@ -1828,7 +1846,7 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     (_rain_threshold_grid) shows all 4 windows at once, not just the
     currently selected one.
     """
-    result = {"wind": {}, "gust": {}, "river": {}, "precip": {}}
+    result = {"wind": {}, "gust": {}, "river": {}, "river_by_window": {}, "precip": {}}
 
     try:
         wind_df = _run_query(
@@ -1880,31 +1898,46 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
         else:
             river_forecast_time = get_latest_river_forecast_time(country)
         if river_forecast_time is not None:
-            # Filters to the caller's cumulative `river_window` (default
-            # 168h/the full horizon: see _RIVER_WINDOW_DEFAULT's own
-            # comment for why that's an EXACT backward-compat default).
-            # Deliberately NOT expanded into a full 2D (tier x window)
-            # structure the way precip's own "river"-sibling key below is
-            # 2D (window x mm): this feeds one curve (per-RP-tier) at
-            # whichever ONE window is currently selected, not a picker
-            # over every window at once; expanding to a full 2D curve
-            # picker would be a separate UI feature.
+            # Now genuinely 2D (RP_TIER x STEP_H), same "whole grid in one
+            # round trip" design as precip's own WINDOW_H x THRESHOLD_MM
+            # query above -- this used to filter to a single caller-given
+            # `river_window` and stay a flat {rp_tier: {...}} shape (see
+            # _river_curve_totals's own docstring in map_shell_concept.py
+            # for the "why" this was expanded: River's real data always had
+            # this second STEP_H dimension, per-tile, the same way rain's
+            # WINDOW_H does, it just wasn't being swept into a grid the UI
+            # could show, exactly the gap Rainfall's own 2D table doesn't
+            # have). `result["river"]` below is kept as the SAME single-
+            # window slice existing callers (_hazard_curve_totals's 1D
+            # per-tier curve) already expect, sliced out of this one query
+            # rather than a second one, `result["river_by_window"]` is the
+            # new full grid, precip's own {window: {mm: {...}}} shape,
+            # mirrored for river as {window: {rp_tier: {...}}}.
             river_df = _run_query(
                 """
                 WITH per_zone_max AS (
-                    SELECT RP_TIER, ZONE_ID, """ + ", ".join(f"MAX({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+                    SELECT RP_TIER, STEP_H, ZONE_ID, """ + ", ".join(f"MAX({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
                     FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-                    WHERE COUNTRY = %s AND FORECAST_TIME = %s AND STEP_H = %s
-                    GROUP BY RP_TIER, ZONE_ID
+                    WHERE COUNTRY = %s AND FORECAST_TIME = %s AND STEP_H IN (""" + ", ".join(["%s"] * len(_TOTALS_RIVER_WINDOWS)) + """)
+                    GROUP BY RP_TIER, STEP_H, ZONE_ID
                 )
-                SELECT RP_TIER, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
+                SELECT RP_TIER, STEP_H, """ + ", ".join(f"SUM({c}) AS {c}" for c in _TOTALS_IMPACT_COLS) + """
                 FROM per_zone_max
-                GROUP BY RP_TIER
+                GROUP BY RP_TIER, STEP_H
                 """,
-                params=[country, river_forecast_time, river_window or _RIVER_WINDOW_DEFAULT],
+                params=[country, river_forecast_time] + _TOTALS_RIVER_WINDOWS,
             )
-            by_tier = {str(row["RP_TIER"]): _row_to_impact_totals(row) for _, row in river_df.iterrows()}
-            result["river"] = {tier: by_tier.get(tier, _zero_impact_totals()) for tier in _TOTALS_RIVER_RP_TIERS}
+            by_tier_window = {}
+            for _, row in river_df.iterrows():
+                by_tier_window.setdefault(str(row["RP_TIER"]), {})[int(row["STEP_H"])] = _row_to_impact_totals(row)
+            target_window = river_window or _RIVER_WINDOW_DEFAULT
+            result["river"] = {tier: by_tier_window.get(tier, {}).get(target_window, _zero_impact_totals())
+                                for tier in _TOTALS_RIVER_RP_TIERS}
+            result["river_by_window"] = {
+                str(w): {tier: by_tier_window.get(tier, {}).get(w, _zero_impact_totals())
+                          for tier in _TOTALS_RIVER_RP_TIERS}
+                for w in _TOTALS_RIVER_WINDOWS
+            }
     except Exception as e:
         logger.warning("get_tile_impact_totals_by_threshold river failed for %s: %s", country, e)
 
@@ -3243,7 +3276,7 @@ def get_default_forecast_cycle():
     old MAX(FORECAST_TIME) FROM TC_TRACKS resolution (get_latest_
     forecast_time_overall), which only reflects raw TRACK ingestion --
 
-    @ttl_cache, same _META_TTL (15 min) as every other single-value
+    @ttl_cache, same _META_TTL (30 min) as every other single-value
     "storm list, forecast times" getter in this file: this function is now
     called fresh on every page load (see layout() in map_shell_concept.py),
     not just once at process start, so without a shared cache here N
@@ -3251,7 +3284,7 @@ def get_default_forecast_cycle():
     their own full candidate walk (get_recent_track_forecast_times +
     _wind_gust_ready_at + get_precip_forecast_time_near + _ambient_ready_at,
     several real Snowflake round-trips apiece). With this decorator, the
-    first page load in each 15-minute window pays that cost once; every
+    first page load in each 30-minute window pays that cost once; every
     other visitor in that window gets the cached result instantly.
     real, live-confirmed gap: TC-ECMWF-Forecast-Pipeline can publish a new
     track/raw MET_FORECASTS row hours before DATAPIPELINE's own impact
