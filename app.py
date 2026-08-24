@@ -46,10 +46,10 @@ Compress(server)
 # Flask's default SEND_FILE_MAX_AGE_DEFAULT is None, which makes send_file()
 # (and therefore the /assets/ static blueprint use_pages registers for
 # fonts.css/custom.css/map_shell_concept.css/dashExtensions_default.js/etc.)
-# emit Cache-Control: no-cache — every page load, warm or cold, repeat or
+# emit Cache-Control: no-cache, so every page load, warm or cold, repeat or
 # first visit, pays a full conditional-GET round trip through nginx+gunicorn
-# for each of these ~7 files (real measured contributor to the 4s warm-
-# instance page-load time this session's own perf investigation found).
+# for each of these ~7 files (a real measured contributor to warm-instance
+# page-load time).
 # 300s: short enough that a real deploy's asset changes show up within 5
 # min (worst case: a hard refresh during that window while iterating
 # locally), long enough to skip the round trip on the overwhelmingly common
@@ -83,9 +83,9 @@ def serve_map_static(filename):
     resp = make_response(send_from_directory(_MAP_COMPONENTS_DIR, filename))
     # public, max-age=300 (not the old "no-cache"): the old setting still
     # hit the server on EVERY page load to revalidate, even a repeat visit
-    # seconds later — real measured contributor to this session's own perf
-    # investigation (every one of ~7 static files paying a round trip on
-    # every load). 300s bounds staleness to 5 min after a real deploy (or a
+    # seconds later, a real measured contributor to page-load time (every
+    # one of ~7 static files paying a round trip on every load). 300s
+    # bounds staleness to 5 min after a real deploy (or a
     # local hard-refresh away, while iterating); must-revalidate means a
     # client that DOES wait past 300s still gets a real revalidation
     # (ETag/Last-Modified, set by send_from_directory by default) rather

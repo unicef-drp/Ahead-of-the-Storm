@@ -408,8 +408,8 @@ _BASE_TILE_CENTROID_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 # new key while another rewrites an already-cached key whose get_base_tiles
 # entry expired) can both observe the SAME transient, larger len() before
 # either evicts, causing two evictions for one net insertion and the cache
-# trending below its configured cap under concurrent load, reproduced live
-# during a review pass via a synchronized two-thread race. Held only for
+# trending below its configured cap under concurrent load, reproducible via
+# a synchronized two-thread race. Held only for
 # the few dict operations, not the numpy/shapely work, so this cannot
 # serialize the actually expensive part across unrelated countries.
 _BASE_TILE_CENTROID_CACHE_LOCK = threading.Lock()
@@ -2328,10 +2328,10 @@ def _fetch_admin_tile(
         default_options={"quantize_bounds": (merc_b.left, merc_b.bottom, merc_b.right, merc_b.top)},
     )
     raw = bytes(pbf) if not isinstance(pbf, bytes) else pbf
-    # gzip, matching _fetch_mercator_tile's own PBF output above (real
-    # perf-audit finding: admin-region MVT was going out uncompressed while
-    # its mercator sibling already gzipped, purely a historical gap, not a
-    # deliberate choice, since admin-region MVT (property-per-feature,
+    # gzip, matching _fetch_mercator_tile's own PBF output above: admin-
+    # region MVT was going out uncompressed while its mercator sibling
+    # already gzipped, purely a historical gap, not a deliberate choice,
+    # since admin-region MVT (property-per-feature,
     # repeated keys) compresses just as well). _fetch_admin_combined_tile
     # below has the identical fix for the same reason.
     return gzip.compress(raw, compresslevel=6)
@@ -2515,8 +2515,9 @@ def _raw_date_to_mat(raw_date: Optional[str]) -> Optional[str]:
     from a DIFFERENT resolver pair (get_river_extent_forecast_time_for_date/
     get_precip_forecast_time_near) that returns the raw, not mat-format,
     string -- a real, easy-to-miss format difference between otherwise
-    near-identical call sites, caught in review before this endpoint's own
-    river/rain branches were migrated onto the same MAT-backed getters.
+    near-identical call sites, which is exactly what this function exists
+    to bridge before combined_member_impacts's own river/rain branches
+    reach the bitmask getters.
 
     pd.to_datetime (no fixed `format=`, unlike the mat_date_to_* direction)
     on purpose: correctly parses BOTH real shapes above without needing to
@@ -2799,7 +2800,7 @@ def _combine_bitmask_aware(merged: pd.DataFrame, used_hazard_names: list[str],
                 # hazard" with no visible failure anywhere. Treat a
                 # missing threshold_mm as "Rain not resolvable" instead,
                 # same as a missing forecast_date, rather than querying a
-                # value that can never match a real row (caught in review).
+                # value that can never match a real row.
                 if p.get('threshold_mm') is None:
                     continue
                 threshold_mm = p['threshold_mm']
@@ -5513,8 +5514,8 @@ def _fetch_precip_raw_tile_member(forecast_time: str, z: int, x: int, y: int,
 # with no row at all for a given member/step is simply "not flooded"; there
 # is no explicit "False" row anywhere. This code deliberately does NOT filter
 # on below_min_basin: dropping those rows would silently discard real (if
-# lower-confidence) flood signal that the task never asked to exclude, and
-# there is no separately-confirmed-safe cutoff to draw instead.
+# lower-confidence) flood signal, and there is no separately-confirmed-safe
+# cutoff to draw instead.
 #
 # STEP_H CHOICE: 24 (T+24h). Same reasoning as the OLD dis24 layer's own
 # _RIVER_RAW_STEP_INDEX=0 choice above: extent data shares dis24's daily
@@ -8746,8 +8747,8 @@ def combined_member_impacts(
         # params, which already arrive mat-format. _raw_date_to_mat()
         # converts to the format TILE_RIVER_BITMASK_MAT/TILE_PRECIP_
         # BITMASK_MAT are actually keyed on, a real, easy-to-miss
-        # difference between otherwise near-identical call sites, caught
-        # in review before this endpoint's own migration.
+        # difference between otherwise near-identical call sites, the
+        # same conversion `_raw_date_to_mat()`'s own docstring documents.
         river_matrix = np.zeros((n_tiles, n_members), dtype=bool)
         river_resolved = None
         river_mat_date = _raw_date_to_mat(river_forecast_time)
@@ -8769,12 +8770,12 @@ def combined_member_impacts(
         # hit that same silent-empty-result gap; not resolvable at this
         # narrow syntax level since a plain `float` param has no
         # "not provided" sentinel distinct from "explicitly 10.0" the way
-        # `Optional[...] = None` params elsewhere in this file do. Flagged
-        # in review as a real, currently-unreachable-via-the-live-UI risk
+        # `Optional[...] = None` params elsewhere in this file do. A real,
+        # currently-unreachable-via-the-live-UI risk
         # (pages/map_shell_concept.py always resolves a real threshold_mm
         # before calling this endpoint's own caller), not fixed here since
         # doing so properly needs an endpoint signature change with wider
-        # blast radius than this bugfix pass.
+        # blast radius than the rest of this function.
         if rain_mat_date is not None:
             for code in [c.upper() for c in country.split('+') if c.strip()]:
                 rain_matrix |= _decode_bitmask_matrix(

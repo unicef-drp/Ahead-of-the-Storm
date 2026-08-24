@@ -84,8 +84,8 @@ _analysis_data_loaded = False
 # returns by reference (its own @ttl_cache returns one cached object to
 # every caller within the TTL, not a fresh copy per call) with no
 # synchronization, an unguarded concurrent in-place mutation of shared
-# state. Reproduced live during a code-review pass (both threads landing
-# on the identical object id()).
+# state, reproducible with a synchronized two-thread race (both threads
+# landing on the identical object id()).
 _analysis_data_lock = threading.Lock()
 # Real Snowflake network stalls have no timeout floor anywhere in this
 # codebase's connector setup (no login_timeout/network_timeout/

@@ -25,12 +25,21 @@ export SPCS_TOKEN_PATH='/snowflake/session/token'
 export SNOWFLAKE_HOST=''
 export SNOWFLAKE_PORT=''
 
+# Optional: read-only credentials, used instead of SNOWFLAKE_USER/SNOWFLAKE_PASSWORD
+# when SNOWFLAKE_USE_RO=true (a separate, more restricted role for read-only deployments)
+export SNOWFLAKE_USE_RO='false'
+export SNOWFLAKE_RO_USER=''
+export SNOWFLAKE_RO_PASSWORD=''
+
 ################################################################################
 # REQUIRED: Application Data Paths
 ################################################################################
 # These paths point to where pre-processed impact views are stored
-# For SPCS: These will be under /datastore (mounted volume)
 # For local: Use relative or absolute paths
+# (the real production SPCS service spec does not mount a volume at all -- it runs
+# with IMPACT_DATA_STORE=SNOWFLAKE/IMPACT_DATA_SOURCE=SQL, bypassing local paths
+# entirely; Dockerfile's own VOLUME declaration is /DataStore, capitalized, unused
+# by the live deployment)
 export ROOT_DATA_DIR="geodb"
 export VIEWS_DIR="aos_views"
 export RESULTS_DIR="results"
@@ -42,8 +51,9 @@ export REPORT_TEMPLATE_FILE="impact-report-template.html"
 # Controls where pre-processed impact views are read from
 # Options:
 #   - 'LOCAL': Local filesystem (default)
-#     * For SPCS deployment: Uses mounted volume at /datastore (persistent Snowflake storage)
 #     * For local development: Uses local filesystem
+#     * Real production SPCS deployment uses SNOWFLAKE instead (see IMPACT_DATA_SOURCE below),
+#       not a mounted volume
 #   - 'BLOB': Azure Blob Storage (read-only, this app only reads data)
 #   - 'SNOWFLAKE': Snowflake internal stage (read-only, this app only reads data)
 # Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
@@ -86,4 +96,16 @@ export SNOWFLAKE_STAGE_NAME=""
 ################################################################################
 # If not set, the app will use OpenStreetMap tiles as fallback
 export MAPBOX_ACCESS_TOKEN=""
+
+################################################################################
+# OPTIONAL: Tile server URL / reverse-proxy mode
+################################################################################
+# TILE_SERVER_URL: base URL the browser uses for tile/geojson requests.
+#   Local dev default (BEHIND_REVERSE_PROXY unset/false): http://localhost:8001
+#   Set explicitly only if the tile server runs on a different host.
+export TILE_SERVER_URL=""
+# BEHIND_REVERSE_PROXY: set true when nginx fronts both Dash and the tile server on the
+# same host (SPCS or Azure) -- the browser is then sent an empty TILE_SERVER_URL and
+# resolves tile/geojson requests against window.location.origin instead.
+export BEHIND_REVERSE_PROXY='false'
 

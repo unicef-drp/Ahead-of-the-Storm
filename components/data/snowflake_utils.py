@@ -1783,10 +1783,10 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     `river_window` is set to, fetched from the SAME one query as "river"
     above (no second round trip) -- this used to be flattened away here
     ("expanding to a full 2D curve picker would be a separate UI feature"),
-    confirmed live 2026-08-23 that River's real MERCATOR_TILE_RIVER_MAT data
-    always had this second STEP_H dimension per tile, the same way rain's
-    WINDOW_H does; the flattening was a UI scoping gap, not a real 1D data
-    shape, see _river_curve_totals's own docstring in map_shell_concept.py.
+    even though River's real MERCATOR_TILE_RIVER_MAT data always has this
+    second STEP_H dimension per tile, the same way rain's WINDOW_H does; the
+    flattening was a UI scoping gap, not a real 1D data shape, see
+    _river_curve_totals's own docstring in map_shell_concept.py.
 
     Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
     _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS/

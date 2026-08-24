@@ -47,14 +47,13 @@ ALTER TASK AOTS.TC_ECMWF.REFRESH_MATERIALIZED_VIEWS_TASK RESUME;
 
 **Two-format CSV compatibility:**
 
-The pipeline ships two CSV formats with different column counts:
-
-| Format | Countries | Discriminator |
-|---|---|---|
-| Old 12-col | JAM, VNM (pre-2026) | `$13 IS NULL` |
-| New 16-col | PNG, SLB (April 2026+) | `$13 IS NOT NULL` |
-
-Both formats are handled in the same `SELECT` using `IFF($13 IS NULL, old_pos, new_pos)` per column. Old-format files return NULL for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, `E_SMOD_CLASS_L1`.
+The pipeline ships two CSV formats with different column counts (old 12-col, new 16-col), both handled
+in the same `SELECT` using `IFF($13 IS NULL, old_pos, new_pos)` per column. Old-format files return NULL
+for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, `E_SMOD_CLASS_L1`. Which specific
+countries/dates produce old- vs. new-format files is not a fixed mapping (confirmed live: at least one
+country shows both formats interleaved across dates rather than a clean pre/post cutoff) -- check
+`MERCATOR_TILE_IMPACT_MAT`'s own `E_NUM_SHELTERS IS NULL` directly for a given country/date rather than
+assuming from country code alone.
 
 **Adding new columns when the pipeline changes:**
 1. Confirm the new CSV's exact `$N` column positions via a raw stage read (`SKIP_HEADER = 0` so `$1` is the header row, inspect a few sample rows).

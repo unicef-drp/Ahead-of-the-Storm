@@ -1570,8 +1570,8 @@ except Exception as e:
 # cutoff (_max_allowed_run_for_date/_time_options_for_date) and the
 # Active Storms list (_STORMS = _build_real_storms(_LATEST_FORECAST_TIME)
 # below) are both legitimately about real TRACK existence, not impact-
-# computation completeness, changing those would be a different, wider
-# fix than what was actually asked for here.
+# computation completeness; those are deliberately left untouched by the
+# readiness walk below, which is scoped to the topbar default only.
 def _resolve_default_forecast_date_run():
     """Live (date_str, run_str) default for the topbar, see
     get_default_forecast_cycle's own docstring for the full "why" behind
@@ -1747,10 +1747,10 @@ _DEMO_SCENARIOS = [
     # Same real forecast cycle as the Global entry above, zoomed into
     # Bangladesh specifically (Country Analysis mode): a real flood-only
     # scenario (River Flooding + Rainfall both real and active, no active
-    # tropical cyclone), the exact case this session's own Admin Level 1
-    # Breakdown / combined-hazard work was built and verified against:
-    # all 8 real Bangladesh divisions, real per-region TC-only/Both/
-    # Flood-only splits (100% Flood-only here, since no storm is active).
+    # tropical cyclone), the case the Admin Level 1 Breakdown / combined-
+    # hazard logic is verified against: all 8 real Bangladesh divisions,
+    # real per-region TC-only/Both/Flood-only splits (100% Flood-only
+    # here, since no storm is active).
     {"label": "BAVI period — Bangladesh (2 Jul 2026, 06Z)", "date": "2026-07-02", "time": "06",
      "countries": ["Bangladesh"], "mode": "zoom"},
 ]
@@ -7659,8 +7659,7 @@ def _precip_curve_totals(metric, scope, countries, date, run, river_idx=None, ra
 
     Was previously restricted to "People at Risk" only, on the belief that
     "MERCATOR_TILE_PRECIP_MAT has NO real age-band or facility-count
-    columns at all" -- confirmed live this was WRONG, a stale claim that
-    had drifted out of sync with the actual code: _TOTALS_PRECIP_IMPACT_
+    columns at all" -- that belief does not hold: _TOTALS_PRECIP_IMPACT_
     COLS (snowflake_utils.py) is `_TOTALS_IMPACT_COLS` again (the SAME full
     8-column set wind/river use), and get_tile_impact_totals_by_threshold's
     own precip section SELECTs and returns all 8 real columns already, not
@@ -8706,9 +8705,9 @@ def _hazard_contribution_content(value, breakdown, hazard_idx=None, rain_window=
     # more. The WITHIN-Flood sub-split is ALSO real (flood_split_real, via
     # is_real_river_rain in _family_members_block above) whenever exactly
     # River Flooding + Rainfall are the active Flood members, so that case
-    # is excluded here too. What's left as illustrative — and still a real,
+    # is excluded here too. What's left as illustrative (still a real,
     # open gap this popup's own "no illustrative numbers ever" fix hasn't
-    # reached yet — is a 3-member Flood selection (River+Rain+Storm Surge,
+    # reached yet) is a 3-member Flood selection (River+Rain+Storm Surge,
     # Storm Surge has no real backend, see ms-surge-on's own comment)
     # still falling back to the old fixed-weight (_HAZARD_MULTI_FRAC/
     # _HAZARD_TRIPLE_FRAC) split entirely, via _family_members_block. Since
@@ -9396,10 +9395,10 @@ def _legend_raster_info(hazard, tile_config):
     hazard_name = _t(_LEGEND_HAZARD_LABELS[hazard])
     return {
         "title": f"{hazard_name} — {prop_label}" if has_data else prop_label,
-        # Short version for the compact strip: the full "Hazard —
-        # Property" title comfortably fits the full card's own 300px width
-        # on its own line, but not squeezed onto the same row as the bar
-        # and chevron too.
+        # Short version for the compact strip: the full "Hazard / Property"
+        # title comfortably fits the full card's own 300px width on its own
+        # line, but not squeezed onto the same row as the bar and chevron
+        # too.
         "compact_title": hazard_name if has_data else prop_label,
         "bar": html.Div(style={"height": "10px", "borderRadius": "5px",
                                  "background": f"linear-gradient(to right, {', '.join(colors)})"}),
@@ -12344,7 +12343,7 @@ def _open_hazard_contribution(clicks, countries, wind_on, gust_on, river_on, rai
     # ALWAYS the real combination of every hazard (_update_impact_summary's
     # Global branch, independent of the sidebar checkboxes), so this
     # popup's breakdown must NOT read the LIVE checkbox state regardless of
-    # scope: that would show "None — toggle a hazard..." for a Global stat
+    # scope: that would show "None, toggle a hazard..." for a Global stat
     # while every checkbox happens to be unchecked, even though the number
     # just clicked came from a real all-hazard total. Global scope forces
     # the same all-hazards-on view Global's own total already uses; Country
@@ -13006,7 +13005,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # Must NOT switch
     # resolved_prop to the hazard-weighted E_* column the instant ANY
     # checkbox is checked, regardless of whether that hazard actually
-    # resolves real data: that would show "Sustained Wind — Population"
+    # resolves real data: that would show "Sustained Wind / Population"
     # for a country with no active storm at all (e.g. Bangladesh on a
     # quiet date). Sustained Wind stays CHECKED by default even
     # while ms-wind-on is DISABLED (Dash still reports the checkbox's true
@@ -13157,10 +13156,10 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # reasoning), not a plain serial for loop. A genuinely multi-storm
     # Global-mode selection (e.g. two real simultaneously active storms,
     # confirmed to happen, see _hurricane_family's own DOLPHIN/GENEVIEVE
-    # comment) previously paid N groups x up to 2 hazards x _hazard_stats'
-    # own 2 sequential HTTP round-trips back-to-back, one extra storm group
-    # away from the exact same serial-chain cost the original perf audit
-    # already fixed for the primary group.
+    # comment) would otherwise pay N groups x up to 2 hazards x
+    # _hazard_stats' own 2 sequential HTTP round-trips back-to-back, one
+    # extra storm group away from the same serial-chain cost the primary
+    # group's own parallel-fetch fix below already avoids.
     extra_wind_groups, extra_gust_groups = [], []
     _extra_hazard_tasks = []
     for extra_storm, g in extra_groups_by_storm.items():
