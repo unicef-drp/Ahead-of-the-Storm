@@ -16,7 +16,7 @@
 -- Prerequisites:
 --   - 02_regional_groups.sql has been run (REFRESH_REGIONAL_GROUPS procedure exists)
 --   - All MEMBER_CODES must already exist as rows in PIPELINE_COUNTRIES
---   - COUNTRY_BOUNDARY is intentionally left NULL for regions — the pipeline
+--   - COUNTRY_BOUNDARY is intentionally left NULL for regions: the pipeline
 --     uses it for spatial storm filtering but skips rows where it is NULL.
 --     Regions are excluded from pipeline processing via IS_REGION=TRUE
 --     (see country_utils.py in the DATAPIPELINE repo).
@@ -31,7 +31,7 @@ ALTER TABLE PIPELINE_COUNTRIES ADD COLUMN IF NOT EXISTS MEMBER_CODES ARRAY;
 UPDATE PIPELINE_COUNTRIES SET IS_REGION = FALSE WHERE IS_REGION IS NULL;
 
 -- ============================================================================
--- ECA (East Caribbean Area) — registered 2026-04-17, example for reference
+-- ECA (East Caribbean Area), example region, for reference
 -- ============================================================================
 /*
 MERGE INTO PIPELINE_COUNTRIES AS target

@@ -2,7 +2,7 @@
 
 Storm Melissa presents a significant threat to Jamaica on October 28, 2025 at 00Z UTC. The current forecast indicates substantial escalation risk, with a potential for severe humanitarian impacts, especially for vulnerable populations and social infrastructure.
 
-At the 50kt wind threshold, the situation demands close monitoring and preparation, as more than 260,000 people—including over 71,000 children—are expected to face risk, with certain areas projected for rapid escalation.
+At the 50kt wind threshold, the situation demands close monitoring and preparation, as more than 260,000 people (including over 71,000 children) are expected to face risk, with certain areas projected for rapid escalation.
 
 ## SECTION 2: EXPECTED IMPACT
 
@@ -66,11 +66,11 @@ Analyzing the distribution for the 50kt threshold, there are 42 ensemble members
 
 If conditions worsen, impacts could rise from expected (260,194) toward worst-case (980,352), highlighting escalation risk mainly for key parishes.
 
-At higher thresholds (64kt/83kt), population impacts drop sharply—e.g., at 64kt only 64,944 people at risk (96.7% reduction from 34kt), indicating most impacts occur in less-exposed or more robust regions.
+At higher thresholds (64kt/83kt), population impacts drop sharply, e.g., at 64kt only 64,944 people at risk (96.7% reduction from 34kt), indicating most impacts occur in less-exposed or more robust regions.
 
 ## SECTION 4: TREND ANALYSIS
 
-In comparing the current forecast (October 28, 2025 00Z UTC) to the previous run (October 27, 2025 18Z UTC) at the 50kt wind threshold, most administrative areas show escalating risk. The most significant increases are focused in Saint James (+20,409), Clarendon (+10,755), and Saint Elizabeth (+10,207)—reflecting a steep rise compared to previous forecast data.
+In comparing the current forecast (October 28, 2025 00Z UTC) to the previous run (October 27, 2025 18Z UTC) at the 50kt wind threshold, most administrative areas show escalating risk. The most significant increases are focused in Saint James (+20,409), Clarendon (+10,755), and Saint Elizabeth (+10,207), reflecting a steep rise compared to previous forecast data.
 
 The upward trend in affected population across several parishes signals an intensifying situation that requires dynamic reassessment and heightened readiness at critical sites.
 

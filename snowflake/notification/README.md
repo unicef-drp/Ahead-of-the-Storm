@@ -1,6 +1,6 @@
-# Alert Agent — Storm Email Alerts
+# Alert Agent: Storm Email Alerts
 
-SQL scripts for the automated storm alert email system. When `REFRESH_MATERIALIZED_VIEWS()` completes a MAT table update, it calls `SEND_NEW_STORM_ALERT()` automatically — no separate polling task or additional warehouse cost.
+SQL scripts for the automated alert email system. When `REFRESH_MATERIALIZED_VIEWS()` completes a MAT table update, it calls `SEND_ALERT()` automatically, no separate polling task or additional warehouse cost.
 
 ---
 
@@ -8,13 +8,13 @@ SQL scripts for the automated storm alert email system. When `REFRESH_MATERIALIZ
 
 | File | Purpose |
 |---|---|
-| `01_map_udf.sql` | `GENERATE_ADMIN_MAP_PNG(VARCHAR)` — Python UDF that renders a choropleth map of admin-level impact as a base64 PNG, embedded in the email |
-| `02_send_alert_procedure.sql` | `SEND_NEW_STORM_ALERT()` — Python stored procedure; one `CORTEX.COMPLETE` call per country, builds HTML email, fans out to `ALERT_SUBSCRIBERS` via `AOTS_EMAIL_INTEGRATION` |
+| `01_map_udf.sql` | `GENERATE_ADMIN_MAP_PNG(VARCHAR)`: Python UDF that renders a choropleth map of admin-level impact as a base64 PNG, embedded in the email |
+| `02_send_alert_procedure.sql` | `SEND_ALERT()`: Python stored procedure; one `CORTEX.COMPLETE` call per country, builds HTML email, fans out to `ALERT_SUBSCRIBERS` via `AOTS_EMAIL_INTEGRATION` |
 | `03_monitoring.sql` | Read-only queries: delivery log, Cortex LLM token usage, warehouse compute, combined cost view, rolling totals |
 
 ---
 
-## How SEND_NEW_STORM_ALERT() Works
+## How SEND_ALERT() Works
 
 The procedure is implemented in **Python** and builds the email deterministically:
 
@@ -22,7 +22,7 @@ The procedure is implemented in **Python** and builds the email deterministicall
 - `SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', ...)` is called **once per country** and generates three sections: a brief `SUMMARY`, a multi-threshold `NARRATIVE`, and a `SHIFT` analysis
 - The choropleth map is rendered via `GENERATE_ADMIN_MAP_PNG` (UDF in `01_map_udf.sql`); if the UDF fails or returns NULL, the map section is silently omitted
 - Results are cached in `ALERT_SENT_LOG` so N subscribers for the same country receive the same email without repeat LLM calls
-- Deduplication on `(TRACK_ID, FORECAST_TIME, COUNTRY_CODE)` — the same storm run is never sent twice
+- Deduplication on `(TRACK_ID, FORECAST_TIME, COUNTRY_CODE)`: the same storm run is never sent twice
 
 ### Procedure Steps
 
@@ -38,24 +38,24 @@ The procedure is implemented in **Python** and builds the email deterministicall
 | 2f-tz | UTC → local timezone conversion for all timing displays |
 | 2g | Centroid shift (calls `GET_CENTROID_SHIFT`) |
 | 2h | Admin GeoJSON for choropleth map |
-| 3 | `CORTEX.COMPLETE` call — SUMMARY, NARRATIVE, and SHIFT sections |
+| 3 | `CORTEX.COMPLETE` call: SUMMARY, NARRATIVE, and SHIFT sections |
 | 4 | Build full HTML email |
 | 5 | Cache in `ALERT_SENT_LOG` |
 | 6 | Fan out to matched subscribers via `SYSTEM$SEND_EMAIL` |
 
 ### Email Sections
 
-1. **Header** — blue banner: storm name, country, forecast issuance time (UTC + local)
-2. **Situation Summary box** — AI-generated summary sentence, population trend badge, wind arrival time
-3. **Situation Overview** — AI-generated narrative: all wind thresholds with data, child-focused lens, trend vs previous forecast
+1. **Header** (blue banner): storm name, country, forecast issuance time (UTC + local)
+2. **Situation Summary box**: AI-generated summary sentence, population trend badge, wind arrival time
+3. **Situation Overview**: AI-generated narrative: all wind thresholds with data, child-focused lens, trend vs previous forecast
 4. **Expected Impact at 50kt:**
    - Impact bullet list (population, children 0–19 by age band, schools, HCs, shelters, WASH)
    - Choropleth map PNG (children at risk by admin area)
    - Admin breakdown table (top areas with delta badges vs previous forecast)
-   - Forecast stability / centroid shift paragraph (always shown — three states: LLM shift analysis / static stability note / first alert)
+   - Forecast stability / centroid shift paragraph (always shown, three states: LLM shift analysis / static stability note / first alert)
    - Storm arrival timing box (earliest / consensus / latest with local times)
-5. **Impact by Wind Speed** — cross-threshold table, all thresholds with population > 0
-6. **Footer** — forecast data attribution, issuance time, AI disclaimer
+5. **Impact by Wind Speed**: cross-threshold table, all thresholds with population > 0
+6. **Footer**: forecast data attribution, issuance time, AI disclaimer
 
 ### Wind Speed Terminology
 
@@ -74,9 +74,9 @@ The procedure is implemented in **Python** and builds the email deterministicall
 
 One call per country returns three structured sections:
 
-- **SUMMARY** (1–2 sentences): headline — storm name, country, 50kt exposure, top region. Shown in the Situation Summary box.
+- **SUMMARY** (1–2 sentences), headline: storm name, country, 50kt exposure, top region. Shown in the Situation Summary box.
 - **NARRATIVE** (4–6 sentences): multi-threshold risk profile, child-focused framing, trend vs previous forecast. Shown in Situation Overview.
-- **SHIFT** (2–3 sentences): explains what the centroid shift means for the evolving risk picture. Only generated by the LLM when shift ≥ 5 km — otherwise a deterministic stability note is shown (stable footprint + population trend, or "first alert" if no previous forecast).
+- **SHIFT** (2–3 sentences): explains what the centroid shift means for the evolving risk picture. Only generated by the LLM when shift ≥ 5 km; otherwise a deterministic stability note is shown (stable footprint + population trend, or "first alert" if no previous forecast).
 
 ### Timing Display
 
@@ -85,7 +85,7 @@ All times shown in local time with UTC offset. Timezone mapping covers 60+ AOTS 
 ### Map: PNG UDF
 
 `GENERATE_ADMIN_MAP_PNG` (`01_map_udf.sql`) renders an admin choropleth as a base64 PNG using matplotlib + shapely:
-- Full geometry — no ST_SIMPLIFY, offshore islands preserved
+- Full geometry, no ST_SIMPLIFY, offshore islands preserved
 - 10×6 inch at 150 dpi (1500×900 px)
 - Admin name labels auto-wrap at nearest space
 - Dashboard colour scale: `#ffffcc` → `#800026` (light yellow to dark red)
@@ -115,4 +115,4 @@ WHERE EMAIL = 'responder@unicef.org';
 
 ## Email Verification Requirement
 
-Snowflake requires each recipient address to be verified before emails can be delivered. When a new address is first used, Snowflake sends a one-time confirmation link — the subscriber must click it before receiving alerts. Factor this into onboarding.
+Snowflake requires each recipient address to be verified before emails can be delivered. When a new address is first used, Snowflake sends a one-time confirmation link; the subscriber must click it before receiving alerts. Factor this into onboarding.

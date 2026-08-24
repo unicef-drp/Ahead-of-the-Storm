@@ -23,21 +23,21 @@ USE SCHEMA TC_ECMWF;
 -- at zoom level 14. These are the headline figures used in Section 2.
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'JAM')
---   storm_name         — Storm name (e.g. 'MELISSA')
---   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   country_code      : ISO3 country code (e.g. 'JAM')
+--   storm_name        : Storm name (e.g. 'MELISSA')
+--   forecast_date_str : Forecast run timestamp (e.g. '20251028000000')
+--   wind_threshold_val: Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
---   row_count                 — number of tiles matched
---   total_population          — expected population at risk
---   total_schools             — expected schools at risk (float; fractional counts are normal)
---   total_hcs                 — expected health centers at risk
---   total_shelters            — expected shelters at risk
---   total_wash                — expected WASH facilities at risk
---   total_school_age_children — expected school-age children (5–14) at risk
---   total_infant_children     — expected infant children (0–4) at risk
---   total_children            — total expected children at risk (0–19: infants + school-age + adolescents)
+--   row_count                : number of tiles matched
+--   total_population         : expected population at risk
+--   total_schools            : expected schools at risk (float; fractional counts are normal)
+--   total_hcs                : expected health centers at risk
+--   total_shelters           : expected shelters at risk
+--   total_wash               : expected WASH facilities at risk
+--   total_school_age_children: expected school-age children (5–14) at risk
+--   total_infant_children    : expected infant children (0–4) at risk
+--   total_children           : total expected children at risk (0–19: infants + school-age + adolescents)
 --
 -- Example:
 --   GET_EXPECTED_IMPACT_VALUES('JAM', 'MELISSA', '20251028000000', '50')
@@ -106,15 +106,15 @@ $$;
 -- Used when the user does not specify a storm name.
 --
 -- Parameters:
---   country_code      — ISO3 country code (e.g. 'JAM')
---   forecast_date_str — Forecast run timestamp (e.g. '20251028000000').
+--   country_code     : ISO3 country code (e.g. 'JAM')
+--   forecast_date_str: Forecast run timestamp (e.g. '20251028000000').
 --                       Pass '' or NULL to return storms across all dates.
 --
 -- Returns: JSON object with
---   country            — echoed country_code
---   forecast_date      — echoed forecast_date_str
---   available_storms[] — array of { storm, forecast_date, wind_threshold, row_count, total_population }
---   count              — number of storm/threshold combinations returned
+--   country           : echoed country_code
+--   forecast_date     : echoed forecast_date_str
+--   available_storms[]: array of { storm, forecast_date, wind_threshold, row_count, total_population }
+--   count             : number of storm/threshold combinations returned
 --
 -- Example:
 --   DISCOVER_AVAILABLE_STORMS('JAM', '20251028000000')
@@ -179,18 +179,18 @@ $$;
 -- to any available threshold if no 50kt data exists.
 --
 -- Parameters:
---   country_code — ISO3 country code (e.g. 'PHL')
---   storm_name   — Storm name (e.g. 'NOKAEN'). Pass '' or NULL to return
+--   country_code: ISO3 country code (e.g. 'PHL')
+--   storm_name  : Storm name (e.g. 'NOKAEN'). Pass '' or NULL to return
 --                  dates across all storms for the country.
 --
 -- Returns: JSON object with
---   country              — echoed country_code
---   storm                — echoed storm_name, or 'ANY' if not specified
---   latest_dates[]       — up to 10 most recent { forecast_date, storm, row_count }
---   latest_forecast_date — date string of the most recent entry, or null
---   latest_storm         — storm name of the most recent entry, or null
---   fallback_applied     — true if 50kt had no data and any-threshold fallback was used
---   warning              — null, or explanation if fallback was applied
+--   country             : echoed country_code
+--   storm               : echoed storm_name, or 'ANY' if not specified
+--   latest_dates[]      : up to 10 most recent { forecast_date, storm, row_count }
+--   latest_forecast_date: date string of the most recent entry, or null
+--   latest_storm        : storm name of the most recent entry, or null
+--   fallback_applied    : true if 50kt had no data and any-threshold fallback was used
+--   warning             : null, or explanation if fallback was applied
 --
 -- Example:
 --   GET_LATEST_FORECAST_DATE('PHL', 'NOKAEN')
@@ -231,7 +231,7 @@ $$
     dates.push({ forecast_date: r50.getColumnValue(1), storm: r50.getColumnValue(2), row_count: r50.getColumnValue(3) });
   }
 
-  // ---- ATTEMPT 2: fallback — any available threshold (if no 50kt data) ----
+  // ---- ATTEMPT 2: fallback, any available threshold (if no 50kt data) ----
   if (dates.length === 0) {
     fallback_applied = true;
     var sql_any, binds_any;
@@ -276,12 +276,12 @@ $$;
 -- Parameters: none
 --
 -- Returns: JSON object with
---   latest_data[]        — up to 20 entries: { country, storm, forecast_date, row_count, total_population }
---   latest_forecast_date — date string of the most recent entry globally, or null
---   latest_country       — country code of the most recent entry, or null
---   latest_storm         — storm name of the most recent entry, or null
---   fallback_applied     — true if 50kt had no data and any-threshold fallback was used
---   warning              — null, or explanation if fallback was applied
+--   latest_data[]       : up to 20 entries: { country, storm, forecast_date, row_count, total_population }
+--   latest_forecast_date: date string of the most recent entry globally, or null
+--   latest_country      : country code of the most recent entry, or null
+--   latest_storm        : storm name of the most recent entry, or null
+--   fallback_applied    : true if 50kt had no data and any-threshold fallback was used
+--   warning             : null, or explanation if fallback was applied
 --
 -- Example:
 --   GET_LATEST_DATA_OVERALL()
@@ -311,7 +311,7 @@ $$
                 total_population: r50.getColumnValue(5) });
   }
 
-  // ---- ATTEMPT 2: fallback — any threshold ----
+  // ---- ATTEMPT 2: fallback, any threshold ----
   if (data.length === 0) {
     fallback_applied = true;
     var rAny = snowflake.createStatement({
@@ -349,21 +349,21 @@ $$;
 -- risk range in Section 2.
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'JAM')
---   storm_name         — Storm name (e.g. 'MELISSA')
---   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   country_code      : ISO3 country code (e.g. 'JAM')
+--   storm_name        : Storm name (e.g. 'MELISSA')
+--   forecast_date_str : Forecast run timestamp (e.g. '20251028000000')
+--   wind_threshold_val: Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
---   ensemble_member     — zone_id of the worst-case ensemble member
---   population          — worst-case total population at risk
---   school_age_children — worst-case school-age children (5–14)
---   infants             — worst-case infant children (0–4)
---   children            — worst-case total children (0–19: infants + school-age + adolescents)
---   schools             — worst-case schools at risk
---   health_centers      — worst-case health centers at risk
---   shelters            — worst-case shelters at risk
---   wash_facilities     — worst-case WASH facilities at risk
+--   ensemble_member    : zone_id of the worst-case ensemble member
+--   population         : worst-case total population at risk
+--   school_age_children: worst-case school-age children (5–14)
+--   infants            : worst-case infant children (0–4)
+--   children           : worst-case total children (0–19: infants + school-age + adolescents)
+--   schools            : worst-case schools at risk
+--   health_centers     : worst-case health centers at risk
+--   shelters           : worst-case shelters at risk
+--   wash_facilities    : worst-case WASH facilities at risk
 --   (all numeric fields are 0 and ensemble_member is null if no data found)
 --
 -- Example:
@@ -465,25 +465,25 @@ $$;
 -- Used for Section 3 scenario analysis.
 --
 -- Risk classification rules (computed inline):
---   SPECIAL CASE — <10% of members near worst-case AND worst/median ratio >5×
---   PLAUSIBLE    — 10–30% of members near worst-case OR ratio 3–5×
---   REAL THREAT  — >30% of members near worst-case OR ratio <3×
+--   SPECIAL CASE: <10% of members near worst-case AND worst/median ratio >5×
+--   PLAUSIBLE   : 10–30% of members near worst-case OR ratio 3–5×
+--   REAL THREAT : >30% of members near worst-case OR ratio <3×
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'JAM')
---   storm_name         — Storm name (e.g. 'MELISSA')
---   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   country_code      : ISO3 country code (e.g. 'JAM')
+--   storm_name        : Storm name (e.g. 'MELISSA')
+--   forecast_date_str : Forecast run timestamp (e.g. '20251028000000')
+--   wind_threshold_val: Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
---   total_members                         — count of ensemble members with population > 0
+--   total_members                        : count of ensemble members with population > 0
 --   population { min, p10, p25, p50, p75, p90, max, mean, stddev }
 --   children   { min, p50, max, mean }
 --   schools    { min, p50, max, mean }
 --   health_centers { min, p50, max, mean }
---   members_within_20_percent_of_worst_case — count of members within 80% of max population
---   percentage_near_worst_case            — percentage of members within 80% of max
---   worst_to_median_ratio                 — max population / p50 population
+--   members_within_20_percent_of_worst_case: count of members within 80% of max population
+--   percentage_near_worst_case           : percentage of members within 80% of max
+--   worst_to_median_ratio                : max population / p50 population
 --   risk_classification { classification, description, reasoning }
 --
 -- Example:
@@ -585,7 +585,7 @@ $$
   var pct   = Math.round(percentage_near_worst * 10) / 10;
   var ratio = Math.round(worst_to_median_ratio * 10) / 10;
 
-  // Inline risk classification — replaces the separate GET_RISK_CLASSIFICATION call
+  // Inline risk classification based on percentage of members near worst-case and the worst-to-median ratio
   var classification, description, reasoning;
   if (pct < 10.0 && ratio > 5.0) {
     classification = 'SPECIAL CASE';
@@ -594,7 +594,7 @@ $$
   } else if ((pct >= 10.0 && pct <= 30.0) || (ratio >= 3.0 && ratio <= 5.0)) {
     classification = 'PLAUSIBLE';
     description    = 'but NOT MOST LIKELY';
-    reasoning      = pct.toFixed(1) + '% of members project impacts within 20% of worst-case; worst-case is ' + ratio.toFixed(1) + 'x the median. A meaningful minority project severe outcomes — CREDIBLE ESCALATION RISK.';
+    reasoning      = pct.toFixed(1) + '% of members project impacts within 20% of worst-case; worst-case is ' + ratio.toFixed(1) + 'x the median. A meaningful minority project severe outcomes. CREDIBLE ESCALATION RISK.';
   } else if (pct > 30.0 || ratio < 3.0) {
     classification = 'REAL THREAT';
     description    = '';
@@ -669,17 +669,17 @@ $$;
 -- first; falls back to any available threshold if needed.
 --
 -- Parameters:
---   country_code      — ISO3 country code (e.g. 'PHL')
---   storm_name        — Storm name (e.g. 'NOKAEN')
---   forecast_date_str — Current forecast date (e.g. '20260115060000');
+--   country_code     : ISO3 country code (e.g. 'PHL')
+--   storm_name       : Storm name (e.g. 'NOKAEN')
+--   forecast_date_str: Current forecast date (e.g. '20260115060000');
 --                       returns the date immediately before this one
 --
 -- Returns: JSON object with
---   previous_forecast_date — date string of the previous run, or null
---   row_count              — tile count for that date (at zoom 14)
---   has_previous           — false if no earlier date exists in the data
---   fallback_applied       — true if 50kt had no data and any-threshold fallback was used
---   warning                — null, or explanation if fallback was applied
+--   previous_forecast_date: date string of the previous run, or null
+--   row_count             : tile count for that date (at zoom 14)
+--   has_previous          : false if no earlier date exists in the data
+--   fallback_applied      : true if 50kt had no data and any-threshold fallback was used
+--   warning               : null, or explanation if fallback was applied
 --
 -- Example:
 --   GET_PREVIOUS_FORECAST_DATE('PHL', 'NOKAEN', '20260115060000')
@@ -711,7 +711,7 @@ $$
     return { previous_forecast_date: r50.getColumnValue(1), row_count: r50.getColumnValue(2), has_previous: true, fallback_applied: false };
   }
 
-  // ---- ATTEMPT 2: fallback — any threshold ----
+  // ---- ATTEMPT 2: fallback, any threshold ----
   var rAny = snowflake.createStatement({
     sqlText: `SELECT forecast_date, COUNT(*)::INT AS row_count
               FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
@@ -739,16 +739,16 @@ $$;
 -- scenario table.
 --
 -- Parameters:
---   country_code      — ISO3 country code (e.g. 'JAM')
---   storm_name        — Storm name (e.g. 'MELISSA')
---   forecast_date_str — Forecast run timestamp (e.g. '20251028000000')
+--   country_code     : ISO3 country code (e.g. 'JAM')
+--   storm_name       : Storm name (e.g. 'MELISSA')
+--   forecast_date_str: Forecast run timestamp (e.g. '20251028000000')
 --
 -- Returns: JSON object with
---   thresholds[] — array sorted by wind_threshold ASC; each entry:
+--   thresholds[]: array sorted by wind_threshold ASC; each entry:
 --     { wind_threshold, row_count, total_population, total_schools,
 --       total_hcs, total_children, percentage_reduction_from_34kt }
 --     (percentage_reduction_from_34kt is null if no 34kt data exists)
---   count        — number of thresholds returned
+--   count       : number of thresholds returned
 --
 -- Example:
 --   GET_ALL_WIND_THRESHOLDS_ANALYSIS('JAM', 'MELISSA', '20251028000000')
@@ -847,15 +847,15 @@ $$;
 -- Sorted by population descending. Used in all report sections.
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'JAM')
---   storm_name         — Storm name (e.g. 'MELISSA')
---   forecast_date_str  — Forecast run timestamp (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   country_code      : ISO3 country code (e.g. 'JAM')
+--   storm_name        : Storm name (e.g. 'MELISSA')
+--   forecast_date_str : Forecast run timestamp (e.g. '20251028000000')
+--   wind_threshold_val: Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
---   admin_areas[] — array sorted by population DESC; each entry:
+--   admin_areas[]: array sorted by population DESC; each entry:
 --     { administrative_area, population, children, schools, health_centers }
---   count         — number of admin areas returned
+--   count        : number of admin areas returned
 --
 -- Example:
 --   GET_ADMIN_LEVEL_BREAKDOWN('JAM', 'MELISSA', '20251028000000', '50')
@@ -967,18 +967,18 @@ $$;
 -- human-readable names. Used in Section 4 trend analysis.
 --
 -- Parameters:
---   country_code               — ISO3 country code (e.g. 'JAM')
---   storm_name                 — Storm name (e.g. 'MELISSA')
---   current_forecast_date_str  — Most recent forecast date (e.g. '20251028000000')
---   previous_forecast_date_str — Earlier forecast date (e.g. '20251027180000')
---   wind_threshold_val         — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   country_code              : ISO3 country code (e.g. 'JAM')
+--   storm_name                : Storm name (e.g. 'MELISSA')
+--   current_forecast_date_str : Most recent forecast date (e.g. '20251028000000')
+--   previous_forecast_date_str: Earlier forecast date (e.g. '20251027180000')
+--   wind_threshold_val        : Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
 --
 -- Returns: JSON object with
---   admin_trends[] — array sorted by |change| DESC; each entry:
+--   admin_trends[]: array sorted by |change| DESC; each entry:
 --     { administrative_area, current_population, previous_population,
 --       change, percentage_change }
 --     (percentage_change is null if previous_population was 0)
---   count          — number of admin areas returned
+--   count         : number of admin areas returned
 --
 -- Example:
 --   GET_ADMIN_LEVEL_TREND_COMPARISON('JAM', 'MELISSA', '20251028000000', '20251027180000', '50')
@@ -1185,16 +1185,16 @@ $$;
 -- scenario analysis table.
 --
 -- Parameters:
---   country_code      — ISO3 country code (e.g. 'JAM')
---   storm_name        — Storm name (e.g. 'MELISSA')
---   forecast_date_str — Forecast run timestamp (e.g. '20251028000000')
+--   country_code     : ISO3 country code (e.g. 'JAM')
+--   storm_name       : Storm name (e.g. 'MELISSA')
+--   forecast_date_str: Forecast run timestamp (e.g. '20251028000000')
 --
 -- Returns: JSON object with
---   probabilities[] — array sorted by wind_threshold ASC; each entry:
+--   probabilities[]: array sorted by wind_threshold ASC; each entry:
 --     { wind_threshold, probability }
 --     (probability is averaged across admin areas for that threshold)
---   count           — number of threshold entries returned
---   has_data        — false if no probability data found for these parameters
+--   count          : number of threshold entries returned
+--   has_data       : false if no probability data found for these parameters
 --
 -- Example:
 --   GET_THRESHOLD_PROBABILITIES('JAM', 'MELISSA', '20251028000000')
@@ -1255,20 +1255,20 @@ $$;
 -- Call this first when the user provides a country name rather than a code.
 --
 -- Parameters:
---   country_name — Free-text country name (e.g. 'Jamaica', 'Philippines',
---                  'Philipp' — partial match is supported)
+--   country_name: Free-text country name (e.g. 'Jamaica', 'Philippines',
+--                  'Philipp', partial match is supported)
 --
 -- Returns: JSON object with (when found):
---   found        — true
---   country_code — ISO3 code (e.g. 'JAM')
---   country_name — full name as stored in PIPELINE_COUNTRIES
---   match_type   — 'exact' or 'partial'
---   all_matches  — up to 10 matches: [{ country_code, country_name }]
+--   found       : true
+--   country_code: ISO3 code (e.g. 'JAM')
+--   country_name: full name as stored in PIPELINE_COUNTRIES
+--   match_type  : 'exact' or 'partial'
+--   all_matches : up to 10 matches: [{ country_code, country_name }]
 --
 --   When not found:
---   found        — false
---   error        — 'Country not found in PIPELINE_COUNTRIES table'
---   suggestions  — [] (empty array)
+--   found       : false
+--   error       : 'Country not found in PIPELINE_COUNTRIES table'
+--   suggestions : [] (empty array)
 --
 -- Example:
 --   GET_COUNTRY_ISO3_CODE('Jamaica')
@@ -1354,30 +1354,30 @@ $$;
 -- full 5-section report pipeline (3–6× cheaper than a full report).
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'PHL')
---   storm_name         — Storm name (e.g. 'NOKAEN')
---   forecast_date_str  — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold_val — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
---   metric_name        — One of (case-insensitive):
---                          expected_population     — total expected population at risk
---                          expected_children       — expected children at risk (0–19: infants + school-age + adolescents)
---                          expected_school_age     — expected school-age children (5–14)
---                          expected_infants        — expected infant children (0–4)
---                          expected_adolescents    — expected adolescents (15–19)
---                          expected_schools        — expected schools at risk
---                          expected_health_centers — expected health centers at risk
---                          worst_case_population   — worst-case ensemble member population
---                          worst_case_children     — worst-case ensemble member children
---                          worst_to_expected_ratio — ratio of worst-case to expected population
---                          ensemble_count          — number of ensemble members in the dataset
+--   country_code      : ISO3 country code (e.g. 'PHL')
+--   storm_name        : Storm name (e.g. 'NOKAEN')
+--   forecast_date_str : Forecast run timestamp (e.g. '20260115060000')
+--   wind_threshold_val: Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   metric_name       : One of (case-insensitive):
+--                          expected_population    : total expected population at risk
+--                          expected_children      : expected children at risk (0–19: infants + school-age + adolescents)
+--                          expected_school_age    : expected school-age children (5–14)
+--                          expected_infants       : expected infant children (0–4)
+--                          expected_adolescents   : expected adolescents (15–19)
+--                          expected_schools       : expected schools at risk
+--                          expected_health_centers: expected health centers at risk
+--                          worst_case_population  : worst-case ensemble member population
+--                          worst_case_children    : worst-case ensemble member children
+--                          worst_to_expected_ratio: ratio of worst-case to expected population
+--                          ensemble_count         : number of ensemble members in the dataset
 --
 -- Returns: JSON object with
---   metric_name     — echoed metric_name
---   value           — numeric result (rounded)
---   unit            — 'people', 'facilities', 'ensemble members', or 'x (ratio)'
---   source_citation — provenance string for the agent to include in its response
---   query_context   — { country_code, storm_name, forecast_date, wind_threshold_kt }
---   error           — present only if metric_name is unrecognised or no data found
+--   metric_name    : echoed metric_name
+--   value          : numeric result (rounded)
+--   unit           : 'people', 'facilities', 'ensemble members', or 'x (ratio)'
+--   source_citation: provenance string for the agent to include in its response
+--   query_context  : { country_code, storm_name, forecast_date, wind_threshold_kt }
+--   error          : present only if metric_name is unrecognised or no data found
 --
 -- Example:
 --   GET_SINGLE_METRIC('PHL', 'NOKAEN', '20260115060000', '50', 'expected_population')
@@ -1572,15 +1572,15 @@ GRANT USAGE ON PROCEDURE GET_SINGLE_METRIC(VARCHAR, VARCHAR, VARCHAR, VARCHAR, V
 -- for each date to build a multi-run trend picture.
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'PHL')
---   storm_name         — Storm name (e.g. 'NOKAEN')
---   n                  — How many forecast dates to return (max 10)
+--   country_code      : ISO3 country code (e.g. 'PHL')
+--   storm_name        : Storm name (e.g. 'NOKAEN')
+--   n                 : How many forecast dates to return (max 10)
 --
 -- Returns:
---   dates              — array of forecast date strings, newest first
---   count              — number of dates returned
---   fallback_applied   — true if 50kt had no data and any-threshold fallback was used
---   warning            — null or explanation if fallback was applied
+--   dates             : array of forecast date strings, newest first
+--   count             : number of dates returned
+--   fallback_applied  : true if 50kt had no data and any-threshold fallback was used
+--   warning           : null or explanation if fallback was applied
 --
 -- Example: GET_FORECAST_DATE_HISTORY('PHL', 'NOKAEN', 4)
 -- Returns the 4 most recent forecast runs for NOKAEN/Philippines.
@@ -1602,7 +1602,7 @@ $$
   var fallback_applied = false;
 
   // ---- ATTEMPT 1: wind_threshold = 50 (matches agent default) ----
-  // LIMIT must be a literal — cannot use bind parameter for LIMIT in Snowflake JS
+  // LIMIT must be a literal; cannot use bind parameter for LIMIT in Snowflake JS
   var r50 = snowflake.createStatement({
     sqlText: `SELECT DISTINCT forecast_date
               FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT
@@ -1612,7 +1612,7 @@ $$
   }).execute();
   while (r50.next()) dates.push(r50.getColumnValue(1));
 
-  // ---- ATTEMPT 2: fallback — any threshold ----
+  // ---- ATTEMPT 2: fallback, any threshold ----
   if (dates.length === 0) {
     fallback_applied = true;
     var rAny = snowflake.createStatement({
@@ -1640,17 +1640,17 @@ $$;
 -- country / storm / forecast date / wind threshold.
 --
 -- Parameters:
---   country_code    — ISO3 country code (e.g. 'PHL')
---   storm_name      — Storm name (e.g. 'NOKAEN')
---   forecast_date   — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold  — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
---   min_probability — Minimum probability to include (0–1). Pass '' to use default 0.0.
+--   country_code   : ISO3 country code (e.g. 'PHL')
+--   storm_name     : Storm name (e.g. 'NOKAEN')
+--   forecast_date  : Forecast run timestamp (e.g. '20260115060000')
+--   wind_threshold : Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   min_probability: Minimum probability to include (0–1). Pass '' to use default 0.0.
 --
 -- Returns:
---   facilities[]      — array of school objects, sorted by probability DESC
---   count             — number of facilities returned (max 50)
---   total_exposed     — all schools with any exposure (probability > 0)
---   threshold_applied — the min_probability value used
+--   facilities[]     : array of school objects, sorted by probability DESC
+--   count            : number of facilities returned (max 50)
+--   total_exposed    : all schools with any exposure (probability > 0)
+--   threshold_applied: the min_probability value used
 --
 -- Each facility object:
 --   school_name, education_level, probability, zone_id, latitude, longitude
@@ -1671,7 +1671,7 @@ LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-  // Default to 0.0 — always return top-50 schools by probability.
+  // Default to 0.0: always return top-50 schools by probability.
   // Users/agents may pass a higher threshold (e.g. '0.5') to filter down.
   var threshold = (MIN_PROBABILITY !== '' && MIN_PROBABILITY !== null && MIN_PROBABILITY !== undefined)
     ? parseFloat(MIN_PROBABILITY) : 0.0;
@@ -1756,17 +1756,17 @@ $$;
 -- country / storm / forecast date / wind threshold.
 --
 -- Parameters:
---   country_code    — ISO3 country code (e.g. 'PHL')
---   storm_name      — Storm name (e.g. 'NOKAEN')
---   forecast_date   — Forecast run timestamp (e.g. '20260115060000')
---   wind_threshold  — Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
---   min_probability — Minimum probability to include (0–1). Pass '' to use default 0.0.
+--   country_code   : ISO3 country code (e.g. 'PHL')
+--   storm_name     : Storm name (e.g. 'NOKAEN')
+--   forecast_date  : Forecast run timestamp (e.g. '20260115060000')
+--   wind_threshold : Wind threshold in knots: '34', '40', '50', '64', '83', '96', '113', or '137'
+--   min_probability: Minimum probability to include (0–1). Pass '' to use default 0.0.
 --
 -- Returns:
---   facilities[]      — array of health center objects, sorted by probability DESC
---   count             — number of facilities returned (max 50)
---   total_exposed     — all facilities with any exposure (probability > 0)
---   threshold_applied — the min_probability value used
+--   facilities[]     : array of health center objects, sorted by probability DESC
+--   count            : number of facilities returned (max 50)
+--   total_exposed    : all facilities with any exposure (probability > 0)
+--   threshold_applied: the min_probability value used
 --
 -- Each facility object:
 --   name, health_amenity_type, amenity, operational_status, beds, emergency,
@@ -1789,7 +1789,7 @@ LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-  // Default to 0.0 — always return top-50 facilities by probability.
+  // Default to 0.0: always return top-50 facilities by probability.
   var threshold = (MIN_PROBABILITY !== '' && MIN_PROBABILITY !== null && MIN_PROBABILITY !== undefined)
     ? parseFloat(MIN_PROBABILITY) : 0.0;
   if (isNaN(threshold) || threshold < 0) threshold = 0.0;
@@ -1885,19 +1885,19 @@ $$;
 -- writing Section 2. If match = false, it must re-check inputs and re-run tools.
 --
 -- Parameters:
---   country_code       — ISO3 country code (e.g. 'JAM')
---   storm_name         — Storm name (e.g. 'MELISSA')
---   forecast_date_str  — Forecast date (e.g. '20251028000000')
---   wind_threshold_val — Wind threshold as string: '34', '50', '64', etc.
+--   country_code      : ISO3 country code (e.g. 'JAM')
+--   storm_name        : Storm name (e.g. 'MELISSA')
+--   forecast_date_str : Forecast date (e.g. '20251028000000')
+--   wind_threshold_val: Wind threshold as string: '34', '50', '64', etc.
 --
 -- Returns:
---   match          — true if difference is within 1% tolerance
---   admin_total    — sum of E_population from ADMIN_ALL_IMPACT_MAT
---   tile_total     — sum of E_population from MERCATOR_TILE_IMPACT_MAT
---   pct_diff       — absolute percentage difference between the two totals
---   tolerance_pct  — tolerance threshold used (1.0)
---   data_available — false if either query returns zero rows (bad inputs)
---   warning        — null if match, explanation string if mismatch
+--   match         : true if difference is within 1% tolerance
+--   admin_total   : sum of E_population from ADMIN_ALL_IMPACT_MAT
+--   tile_total    : sum of E_population from MERCATOR_TILE_IMPACT_MAT
+--   pct_diff      : absolute percentage difference between the two totals
+--   tolerance_pct : tolerance threshold used (1.0)
+--   data_available: false if either query returns zero rows (bad inputs)
+--   warning       : null if match, explanation string if mismatch
 --
 -- Example:
 --   CALL VALIDATE_ADMIN_TOTALS('JAM', 'MELISSA', '20251028000000', '50')
@@ -1976,7 +1976,7 @@ $$
     pct_diff: pct_diff,
     tolerance_pct: tolerance,
     warning: match ? null
-      : 'Admin total (' + Math.round(admin_total) + ') differs from tile total (' + Math.round(tile_total) + ') by ' + pct_diff + '%. Exceeds 1% tolerance — re-check inputs before writing Section 2.'
+      : 'Admin total (' + Math.round(admin_total) + ') differs from tile total (' + Math.round(tile_total) + ') by ' + pct_diff + '%. Exceeds 1% tolerance. Re-check inputs before writing Section 2.'
   };
 $$;
 
@@ -1993,7 +1993,7 @@ GRANT USAGE ON PROCEDURE VALIDATE_ADMIN_TOTALS(VARCHAR, VARCHAR, VARCHAR, VARCHA
 -- (TC_TRACKS.WIND_FIELD_POLYGON_{N}KT) with the country boundary
 -- (PIPELINE_COUNTRIES.COUNTRY_BOUNDARY).
 --
--- wind_threshold_val — Wind threshold in knots: '34', '50', or '64'
+-- wind_threshold_val: Wind threshold in knots: '34', '50', or '64'
 --   (only these three thresholds have wind field polygon columns in TC_TRACKS)
 --   Use '50' for storm-force arrival (agent default).
 --
@@ -2003,17 +2003,17 @@ GRANT USAGE ON PROCEDURE VALIDATE_ADMIN_TOTALS(VARCHAR, VARCHAR, VARCHAR, VARCHA
 --   latest    = last member to arrive        (worst-case, full window close)
 --
 -- Returns:
---   has_timing              — false if no member ever intersects the country
---   wind_threshold          — threshold used (echoed back)
---   earliest_impact_hours   — hours to first member arrival
---   earliest_impact_time    — corresponding VALID_TIME (YYYY-MM-DD HH24:MI UTC)
---   consensus_impact_hours  — median hours to arrival across intersecting members
---   consensus_impact_time   — corresponding VALID_TIME
---   latest_impact_hours     — hours to last member arrival (window close)
---   latest_impact_time      — corresponding VALID_TIME
---   members_hitting         — count of members whose field intersects country
---   total_members           — total ensemble size
---   warning                 — null or description if timing unavailable
+--   has_timing             : false if no member ever intersects the country
+--   wind_threshold         : threshold used (echoed back)
+--   earliest_impact_hours  : hours to first member arrival
+--   earliest_impact_time   : corresponding VALID_TIME (YYYY-MM-DD HH24:MI UTC)
+--   consensus_impact_hours : median hours to arrival across intersecting members
+--   consensus_impact_time  : corresponding VALID_TIME
+--   latest_impact_hours    : hours to last member arrival (window close)
+--   latest_impact_time     : corresponding VALID_TIME
+--   members_hitting        : count of members whose field intersects country
+--   total_members          : total ensemble size
+--   warning                : null or description if timing unavailable
 -- ============================================================================
 CREATE OR REPLACE PROCEDURE GET_STORM_ARRIVAL_TIMING(
     COUNTRY_CODE       VARCHAR,
@@ -2030,7 +2030,7 @@ AS $$
   var fdQ = FORECAST_DATE_STR.replace(/[^0-9]/g, '').padEnd(14, '0');
 
   // TC_TRACKS stores wind field polygons as separate columns per threshold.
-  // Only 34, 50, and 64 kt have polygon columns — validate and construct name.
+  // Only 34, 50, and 64 kt have polygon columns; validate and construct name.
   var threshNum = parseInt(WIND_THRESHOLD_VAL);
   if ([34, 50, 64].indexOf(threshNum) === -1) threshNum = 50;
   var windCol = 'WIND_FIELD_POLYGON_' + threshNum + 'KT';
@@ -2080,7 +2080,7 @@ AS $$
           AND t.${windCol} IS NOT NULL
           AND ST_INTERSECTS(TRY_TO_GEOGRAPHY(t.${windCol}), c.COUNTRY_BOUNDARY)
       ),
-      -- First intersection per ensemble member — defines each member's arrival
+      -- First intersection per ensemble member: defines each member's arrival
       first_per_member AS (
         SELECT
           ENSEMBLE_MEMBER,
@@ -2167,12 +2167,12 @@ GRANT USAGE ON DATABASE AOTS TO ROLE SYSADMIN;
 -- The centroid is weighted by expected children at risk (age 0–19) per admin area.
 --
 -- Returns: JSON object with
---   has_previous       — boolean; false if no prior forecast exists
---   dist_km            — shift distance in kilometres (integer)
---   direction          — 8-point compass direction: N/NE/E/SE/S/SW/W/NW
---   top_gainer         — { name, delta } — admin area with largest increase in children at risk
---   top_loser          — { name, delta } — admin area with largest decrease (delta is negative)
---   previous_forecast_date — the previous forecast date used for comparison
+--   has_previous           : boolean; false if no prior forecast exists
+--   dist_km                : shift distance in kilometres (integer)
+--   direction              : 8-point compass direction: N/NE/E/SE/S/SW/W/NW
+--   top_gainer             : { name, delta } (admin area with largest increase in children at risk)
+--   top_loser              : { name, delta } (admin area with largest decrease; delta is negative)
+--   previous_forecast_date : the previous forecast date used for comparison
 --
 -- Example:
 --   GET_CENTROID_SHIFT('JAM', 'MELISSA', '20251027180000', '50')

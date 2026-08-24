@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 def make_header(active_tab="tab-home"):
     # Timestamp is populated by the update_last_updated_header callback in dashboard.py
-    # which fires on startup and every 15 min — never frozen at container start time.
+    # which fires on startup and every 15 min, never frozen at container start time.
     last_updated = dmc.Group([
         dmc.Text("Last Updated:", size="xs", c="white", opacity=0.8),
         dmc.Text("—", id="header-last-updated", size="sm", fw=500, c="white")

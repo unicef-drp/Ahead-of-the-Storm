@@ -30,9 +30,12 @@ pip install -r requirements.txt
 #### Snowflake Configuration
 - `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`
 - `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`
+- `SNOWFLAKE_USE_RO` (optional, default `false`): when `true`, connects using `SNOWFLAKE_RO_USER`/
+  `SNOWFLAKE_RO_PASSWORD` instead of `SNOWFLAKE_USER`/`SNOWFLAKE_PASSWORD` (a separate, more restricted
+  read-only role)
 
 #### Data Storage Configuration
-- `RESULTS_DIR` (default: `results`) — stores report templates and generated JSON reports
+- `RESULTS_DIR` (default: `results`): stores report templates and generated JSON reports
 - `ROOT_DATA_DIR` (default: `geodb`)
 - `VIEWS_DIR` (default: `aos_views`)
 - `REPORT_TEMPLATE_FILE` (default: `impact-report-template.html`)
@@ -41,23 +44,25 @@ pip install -r requirements.txt
 
 Two independent variables control how the app loads impact data:
 
-**`IMPACT_DATA_SOURCE`** — controls *which* data source is used for impact views:
+**`IMPACT_DATA_SOURCE`**: controls *which* data source is used for impact views:
 - `STAGE` (default): downloads CSV/Parquet files from the file store (see `IMPACT_DATA_STORE` below)
-- `SQL`: queries Snowflake materialized tables (`*_MAT`) directly via SQL — faster, no file downloads, works regardless of `IMPACT_DATA_STORE` as long as Snowflake credentials are present
+- `SQL`: queries Snowflake materialized tables (`*_MAT`) directly via SQL, faster, no file downloads, works regardless of `IMPACT_DATA_STORE` as long as Snowflake credentials are present
 
   When `IMPACT_DATA_SOURCE=SQL` the app queries:
-  - `MERCATOR_TILE_IMPACT_MAT` — tile-level probabilistic impact
-  - `ADMIN_ALL_IMPACT_MAT` — admin-region impact with probability
-  - `MERCATOR_TILE_CCI_MAT` / `ADMIN_ALL_CCI_MAT` — Child Climate Index overlays
-  - `SCHOOL_IMPACT_MAT` / `HC_IMPACT_MAT` — point data for schools and health centres
-  - `TRACK_MAT` — per-ensemble-member severity and envelope geometry
+  - `MERCATOR_TILE_IMPACT_MAT`: tile-level probabilistic impact
+  - `ADMIN_ALL_IMPACT_MAT`: admin-region impact with probability
+  - `MERCATOR_TILE_CCI_MAT` / `ADMIN_ALL_CCI_MAT`: Child Climate Index overlays
+  - `SCHOOL_IMPACT_MAT` / `HC_IMPACT_MAT`: point data for schools and health centres
+  - `TRACK_MAT`: per-ensemble-member severity and envelope geometry
 
-  These tables must be set up first — see `snowflake/mat_tables/README.md`.
+  These tables must be set up first, see `snowflake/mat_tables/README.md`.
 
-**`IMPACT_DATA_STORE`** — controls *where* stage files are stored (only relevant when `IMPACT_DATA_SOURCE=STAGE`):
+**`IMPACT_DATA_STORE`**: controls *where* stage files are stored (only relevant when `IMPACT_DATA_SOURCE=STAGE`):
 - `LOCAL` (default): local filesystem
-  - **For SPCS deployment**: uses mounted volume at `/datastore`
   - **For local development**: uses local filesystem
+  - The real production SPCS deployment uses `SNOWFLAKE` instead (see `IMPACT_DATA_SOURCE` above), not
+    a mounted volume -- the `Dockerfile`'s own `VOLUME ["/DataStore"]` declaration (capitalized,
+    different from this doc's older lowercase `/datastore` references) is unused by the live service
 - `BLOB`: Azure Blob Storage (read-only)
 - `SNOWFLAKE`: Snowflake internal stage (read-only)
 
@@ -67,15 +72,16 @@ Note: Snowflake is used for BOTH raw hurricane forecast data (TC_TRACKS / TC_ENV
 - If using Snowflake stage: `SNOWFLAKE_STAGE_NAME` (name of the Snowflake internal stage)
 
 #### SPCS Authentication (Snowflake Container Services deployment only)
-- `SPCS_RUN` — set to `true` to enable OAuth token auth via `/snowflake/session/token` (default: `false`)
+- `SPCS_RUN`: set to `true` to enable OAuth token auth via `/snowflake/session/token` (default: `false`)
 - `SPCS_TOKEN_PATH` (default: `/snowflake/session/token`)
-- `SNOWFLAKE_HOST`, `SNOWFLAKE_PORT` — required when `SPCS_RUN=true`
+- `SNOWFLAKE_HOST`, `SNOWFLAKE_PORT`: required when `SPCS_RUN=true`
 
 #### Tile server
-- `TILE_SERVER_URL` (optional) — override the tile server base URL used by browser clientside callbacks. Defaults to `window.location.origin` (correct when nginx proxies `/tiles/` and `/geojson/` on the same host). Set explicitly only if the tile server is on a different host.
+- `TILE_SERVER_URL` (optional): the tile server base URL used by browser clientside callbacks. Two different defaults apply depending on deployment mode: in local development (both `SPCS_RUN` and `BEHIND_REVERSE_PROXY` unset/false) the app falls back to `http://localhost:8001`; when running behind nginx (SPCS or Azure, `BEHIND_REVERSE_PROXY=true`) it's sent to the browser as an empty string so the browser resolves tile/geojson requests against `window.location.origin` instead. Set explicitly only if the tile server is on a different host than the one serving the Dash app.
+- `BEHIND_REVERSE_PROXY` (optional, default `false`): set `true` whenever nginx fronts both Dash and the tile server on the same host (SPCS and Azure both use this), which changes the `TILE_SERVER_URL` behavior above.
 
 #### Mapbox (for map visualization)
-- `MAPBOX_ACCESS_TOKEN` (optional — falls back to OpenStreetMap tiles)
+- `MAPBOX_ACCESS_TOKEN` (optional, falls back to OpenStreetMap tiles)
 
 ## Data Requirements
 
@@ -83,18 +89,18 @@ Note: Snowflake is used for BOTH raw hurricane forecast data (TC_TRACKS / TC_ENV
 
 **When `IMPACT_DATA_SOURCE=STAGE`**: pre-processed impact views must be available in the configured `IMPACT_DATA_STORE`. For `IMPACT_DATA_STORE=LOCAL`, the following directories are expected:
 
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/` — base Mercator tiles (demographic/infrastructure)
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/` — school impact data
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/` — health centre impact data
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/shelter_views/` — shelter impact data
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/wash_views/` — WASH facility impact data
-- `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/` — hurricane track data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/mercator_views/`: base Mercator tiles (demographic/infrastructure)
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/school_views/`: school impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/hc_views/`: health centre impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/shelter_views/`: shelter impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/wash_views/`: WASH facility impact data
+- `{ROOT_DATA_DIR}/{VIEWS_DIR}/track_views/`: hurricane track data
 
 ### Setting Up Data Processing
 
 To generate the required data, follow the setup guide in the **[Ahead-of-the-Storm-DATAPIPELINE](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)** repository:
 
-1. **Initialize base data** (demographic and infrastructure data — one-time setup)
+1. **Initialize base data** (demographic and infrastructure data, one-time setup)
 2. **Process storm data** (run regularly to update with new storm data from Snowflake)
 
 The hurricane forecast data is processed by the **[TC-ECMWF-Forecast-Pipeline](https://github.com/unicef-drp/TC-ECMWF-Forecast-Pipeline)** and loaded into Snowflake.
@@ -106,11 +112,13 @@ The hurricane forecast data is processed by the **[TC-ECMWF-Forecast-Pipeline](h
 The Dash app and tile server must both be running. Start them in two separate terminals:
 
 ```bash
-# Terminal 1 — Dash app (http://127.0.0.1:8050)
+# Terminal 1: Dash app (http://127.0.0.1:8050)
 python app.py
 
-# Terminal 2 — FastAPI tile server (http://127.0.0.1:8001)
-uvicorn services.tile_server:app --host 127.0.0.1 --port 8001 --reload
+# Terminal 2: FastAPI tile server (http://127.0.0.1:8001)
+# IMPACT_DATA_STORE=SNOWFLAKE is required here even if your .env sets LOCAL for the
+# Dash app -- the tile server's own impact-tile endpoints need it explicitly.
+IMPACT_DATA_STORE=SNOWFLAKE uvicorn services.tile_server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 ### Production Deployment (SPCS)
@@ -118,7 +126,7 @@ uvicorn services.tile_server:app --host 127.0.0.1 --port 8001 --reload
 Production runs as a Docker container on **Snowflake Container Services (SPCS)**. `entrypoint.sh` orchestrates three processes inside the container:
 
 ```
-nginx  0.0.0.0:8000   (public — reverse proxy + tile cache)
+nginx  0.0.0.0:8000   (public, reverse proxy + tile cache)
   ├─► gunicorn Dash   127.0.0.1:8050  (1 worker × 8 threads)
   └─► uvicorn tiles   127.0.0.1:8001  (FastAPI tile server)
 ```
@@ -132,14 +140,14 @@ A single gunicorn worker (1 process × 8 threads) is required to avoid fork-safe
 
 ## Application Features
 
-The application provides three main views:
-
-1. **Dashboard** (`/`): Interactive map showing:
-   - Hurricane tracks (ensemble members and deterministic track)
-   - Impact envelopes at different wind thresholds
-   - Schools, health centers, shelters, and WASH facilities at risk
-   - Population impact tiles
-   - Impact metrics (deterministic, probabilistic, worst-case scenarios)
+1. **Map shell** (`/`): Full-bleed Global/Country-Analysis map, the app's main view. Independently
+   toggleable hazard layers (Sustained Wind, Gust, River Flooding, Rainfall, Storm Surge preview) with
+   per-hazard threshold sliders; a tile-click Hazard Contribution popup; a Full Impact Breakdown modal
+   with a printable report page; schools/health centers/shelters/WASH facilities at risk; population
+   impact tiles; i18n (es/fr/bn); a real Alert Email viewer (per-country, opened from the Active Storms
+   list) and a real Warning Email viewer (per-storm). An older page with a different feature set
+   (deterministic/probabilistic/worst-case impact metrics) is kept at `/legacy` as a reference/fallback,
+   unlinked from any navigation.
 
 ![app_preview.png](assets/img/app_preview.png)
 
@@ -150,6 +158,10 @@ The application provides three main views:
    - Percentile analysis
 
 3. **Impact Report** (`/report`): HTML-based impact report with detailed administrative-level breakdowns
+
+4. **AI Agent**: the `HURRICANE_INTELLIGENCE` Snowflake Cortex agent generates situation reports from
+   the same MAT tables the map shell reads (see `snowflake/intelligence/`), queried through
+   `snowflake_utils.py`.
 
 ## Troubleshooting
 
@@ -192,7 +204,7 @@ The application provides three main views:
 - **Frontend**: Dash with Mantine Components, MapLibre GL JS for tile rendering (Dash Leaflet as map container), Plotly for charts
 - **Backend**: Python with GeoPandas for geospatial processing; FastAPI tile server sidecar (`services/tile_server.py`, port 8001) serves WebP raster tiles and MVT vector tiles
 - **Data Sources**:
-  - Snowflake — hurricane track/envelope data (`TC_TRACKS`, `TC_ENVELOPES_COMBINED`) and, when `IMPACT_DATA_SOURCE=SQL`, impact data via materialized tables (`*_MAT`)
-  - Pre-processed impact views via [giga-spatial](https://github.com/unicef/giga-spatial) — used when `IMPACT_DATA_SOURCE=STAGE` (local filesystem, Azure Blob, or Snowflake stage)
-- **AI Agent**: `HURRICANE_INTELLIGENCE` Snowflake Cortex agent — generates situation reports from the same MAT tables (see `snowflake/intelligence/`)
-- **Deployment**: Docker container on Snowflake Container Services (SPCS) — nginx reverse proxy + gunicorn Dash app + uvicorn tile server (see `entrypoint.sh` and `Dockerfile`)
+  - Snowflake: hurricane track/envelope data (`TC_TRACKS`, `TC_ENVELOPES_COMBINED`) and, when `IMPACT_DATA_SOURCE=SQL`, impact data via materialized tables (`*_MAT`)
+  - Pre-processed impact views via [giga-spatial](https://github.com/unicef/giga-spatial), used when `IMPACT_DATA_SOURCE=STAGE` (local filesystem, Azure Blob, or Snowflake stage)
+- **AI Agent**: `HURRICANE_INTELLIGENCE` Snowflake Cortex agent: generates situation reports from the same MAT tables (see `snowflake/intelligence/`)
+- **Deployment**: Docker container on Snowflake Container Services (SPCS): nginx reverse proxy + gunicorn Dash app + uvicorn tile server (see `entrypoint.sh` and `Dockerfile`)

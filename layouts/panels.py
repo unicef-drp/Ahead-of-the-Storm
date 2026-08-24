@@ -1,6 +1,6 @@
 """
 Dashboard layout definitions.
-All visual components — left controls panel, center map panel, right metrics panel —
+All visual components (left controls panel, center map panel, right metrics panel)
 assembled into the three-panel AppShell returned by make_single_page_appshell().
 
 Accepts startup-computed data (country_options, default_country) as parameters so
@@ -23,7 +23,7 @@ from components.map.javascript import (
 )
 
 # ---------------------------------------------------------------------------
-# Shared style constants — imported by dashboard.py for use in callbacks too
+# Shared style constants: imported by dashboard.py for use in callbacks too
 # ---------------------------------------------------------------------------
 _SWITCH_TRACK_BASE = {"minWidth": "5.5rem"}
 _SWITCH_LABEL_BASE = {"fontSize": "11px", "fontWeight": 600, "paddingLeft": "12px", "paddingRight": "4px"}
@@ -249,7 +249,7 @@ def make_single_page_appshell(country_options, default_country):
         ], style=_sub_radio_row),
         html.Div([
             html.Span("ℹ︎ ", style={"marginRight": "4px"}),
-            "Across all wind speeds — not wind speed specific",
+            "Across all wind speeds, not wind speed specific",
         ], id="in-need-tiles-note", style={"display": "none", "fontSize": "0.72em", "fontWeight": 600, "color": "#5c7a9e", "backgroundColor": "#e8f0fb", "border": "1px solid #c5d8f5", "borderRadius": "6px", "padding": "5px 10px", "marginLeft": "12px", "marginTop": "4px", "marginBottom": "8px"}),
         html.Div([
             dmc.Radio(id="children-total-tiles-layer", label="Children (total)", value="children-total"),
@@ -260,7 +260,7 @@ def make_single_page_appshell(country_options, default_country):
         ], style=_sub_radio_row),
         html.Div([
             html.Span("ℹ︎ ", style={"marginRight": "4px"}),
-            "Across all wind speeds — not wind speed specific",
+            "Across all wind speeds, not wind speed specific",
         ], id="in-need-children-tiles-note", style={"display": "none", "fontSize": "0.72em", "fontWeight": 600, "color": "#5c7a9e", "backgroundColor": "#e8f0fb", "border": "1px solid #c5d8f5", "borderRadius": "6px", "padding": "5px 10px", "marginLeft": "12px", "marginTop": "4px", "marginBottom": "8px"}),
         dmc.Radio(id="infant-tiles-layer",     label=html.Span("Age 0–4",   style={"paddingLeft": "12px", "color": "#888", "fontSize": "0.88em"}), value="infant",     mb=6),
         dmc.Radio(id="school-age-tiles-layer", label=html.Span("Age 5–14",  style={"paddingLeft": "12px", "color": "#888", "fontSize": "0.88em"}), value="school-age", mb=6),
@@ -520,7 +520,7 @@ def make_single_page_appshell(country_options, default_country):
     )
 
     # -------------------------------------------------------------------------
-    # Center Panel — MapLibre (bottom) + Leaflet (top)
+    # Center Panel: MapLibre (bottom) + Leaflet (top)
     # -------------------------------------------------------------------------
     center_panel = dmc.GridCol(
         html.Div([
@@ -529,7 +529,13 @@ def make_single_page_appshell(country_options, default_country):
             dcc.Interval(id="startup-interval", interval=500, max_intervals=1),
             dcc.Store(id="active-countries-style", data=""),
             dcc.Store(id="active-countries-style-dummy", data=None),
-            dcc.Interval(id="metadata-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
+            # 30 min, not 15: this fires from the browser's own JS timer as
+            # long as a tab is open, even idle -- a real Snowflake query
+            # every firing, not just a client-side check. Halves that real,
+            # ongoing per-open-tab cost with zero risk (a flat interval
+            # bump, not a conditional schedule), see _META_TTL's own
+            # comment in snowflake_utils.py, kept in sync with this value.
+            dcc.Interval(id="metadata-refresh-interval", interval=30 * 60 * 1000, n_intervals=0),
             dcc.Store(id="map-state-store",               data={}),
             dcc.Store(id="envelope-data-store",           data={}),
             dcc.Store(id="population-tiles-data-store",   data={}),
@@ -542,7 +548,7 @@ def make_single_page_appshell(country_options, default_country):
             dcc.Store(id="layer-availability-store",      data={}),
             dcc.Store(id="maplibre-tile-config-store",    data={}),
             html.Div([
-                # MapLibre canvas — renders tile/admin layers underneath Leaflet
+                # MapLibre canvas: renders tile/admin layers underneath Leaflet
                 html.Div(
                     id="maplibre-container",
                     **{"data-mapbox-token": mapbox_token or ""},
@@ -553,7 +559,7 @@ def make_single_page_appshell(country_options, default_country):
                         "top": 0, "left": 0, "zIndex": 0,
                     },
                 ),
-                # Leaflet map — tracks, envelopes, schools, etc. on top
+                # Leaflet map: tracks, envelopes, schools, etc. on top
                 dl.Map(
                     [
                         dl.LayersControl(
@@ -600,7 +606,7 @@ def make_single_page_appshell(country_options, default_country):
                         dl.GeoJSON(id="health-overlay-json",   data={}, zoomToBounds=False, pointToLayer=point_to_layer_schools_health, onEachFeature=tooltip_health),
                         dl.GeoJSON(id="shelters-overlay-json", data={}, zoomToBounds=False, pointToLayer=point_to_layer_schools_health, onEachFeature=tooltip_shelters),
                         dl.GeoJSON(id="wash-overlay-json",     data={}, zoomToBounds=False, pointToLayer=point_to_layer_schools_health, onEachFeature=tooltip_wash),
-                        # These four hold empty GeoJSON — MapLibre renders the actual tiles.
+                        # These four hold empty GeoJSON; MapLibre renders the actual tiles.
                         # They exist only as Dash state containers for hideout props (tile coloring).
                         dl.GeoJSON(id="population-tiles-json",  data={}, zoomToBounds=False, hideout={"hidden": True}),
                         dl.GeoJSON(id="population-admin-json",  data={}, zoomToBounds=False, hideout={"hidden": True}),
@@ -631,7 +637,7 @@ def make_single_page_appshell(country_options, default_country):
     )
 
     # -------------------------------------------------------------------------
-    # Right Panel — Impact metrics, specific track, exceedance chart
+    # Right Panel: Impact metrics, specific track, exceedance chart
     # -------------------------------------------------------------------------
     impact_summary = dmc.Paper([
         dmc.Group([

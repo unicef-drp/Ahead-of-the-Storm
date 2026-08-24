@@ -47,22 +47,28 @@ ALTER TASK AOTS.TC_ECMWF.REFRESH_MATERIALIZED_VIEWS_TASK RESUME;
 
 **Two-format CSV compatibility:**
 
-The pipeline ships two CSV formats with different column counts:
+The pipeline ships two CSV formats with different column counts (old 12-col, new 16-col), both handled
+in the same `SELECT` using `IFF($13 IS NULL, old_pos, new_pos)` per column. Old-format files return NULL
+for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, `E_SMOD_CLASS_L1`. Which specific
+countries/dates produce old- vs. new-format files is not a fixed mapping (confirmed live: at least one
+country shows both formats interleaved across dates rather than a clean pre/post cutoff) -- check
+`MERCATOR_TILE_IMPACT_MAT`'s own `E_NUM_SHELTERS IS NULL` directly for a given country/date rather than
+assuming from country code alone.
 
-| Format | Countries | Discriminator |
-|---|---|---|
-| Old 12-col | JAM, VNM (pre-2026) | `$13 IS NULL` |
-| New 16-col | PNG, SLB (April 2026+) | `$13 IS NOT NULL` |
-
-Both formats are handled in the same `SELECT` using `IFF($13 IS NULL, old_pos, new_pos)` per column. Old-format files return NULL for `E_ADOLESCENT_POPULATION`, `E_NUM_SHELTERS`, `E_NUM_WASH`, `E_SMOD_CLASS_L1`.
-
-**Adding new columns when the pipeline changes:** see `MAT_TABLE_FIX.md`.
+**Adding new columns when the pipeline changes:**
+1. Confirm the new CSV's exact `$N` column positions via a raw stage read (`SKIP_HEADER = 0` so `$1` is the header row, inspect a few sample rows).
+2. Confirm the existing format discriminator (`$13 IS NULL` for mercator, `$15 IS NULL` for admin) still distinguishes old vs. new format, or pick a new one: must be NULL in the old format, always non-NULL in the new format, and at a different position than any prior discriminator.
+3. Update both places that must stay in sync: the `CREATE OR REPLACE TABLE ... AS SELECT` initial load, and `REFRESH_MATERIALIZED_VIEWS()`'s own `INSERT INTO table (...)` column list plus its `SELECT` expression (Snowflake inserts positionally within that explicit column list).
+4. Rerun the setup script to recreate the tables and update the REFRESH procedure; the scheduled task picks up the new procedure automatically.
+5. Add the new column to the relevant `get_tile_impacts()`/`get_admin_impacts()`/`get_tile_cci()`/`get_admin_cci()` function in `components/data/snowflake_utils.py` (`_norm()` in `data_store_utils.py` handles name normalisation automatically, no changes needed there).
+6. If displaying the new column, update the tile/admin tooltip assign blocks in `components/map/javascript.py`, conditionally showing `N/A` for old countries where the column is NULL.
+7. Verify: cross-check the new column's MAT value against a direct stage read for a known zone_id.
 
 ### Step 2: Set Up Regional Groups (`02_regional_groups.sql`)
 
-Creates `REFRESH_REGIONAL_GROUPS()` — the procedure that derives regional rows in every MAT table from member-country rows. Run once after Step 1.
+Creates `REFRESH_REGIONAL_GROUPS()`, the procedure that derives regional rows in every MAT table from member-country rows. Run once after Step 1.
 
-`REFRESH_REGIONAL_GROUPS()` is called automatically at the end of `REFRESH_MATERIALIZED_VIEWS()` — no separate task or manual call needed after this setup.
+`REFRESH_REGIONAL_GROUPS()` is called automatically at the end of `REFRESH_MATERIALIZED_VIEWS()`: no separate task or manual call needed after this setup.
 
 **How regional groups work:**
 
@@ -73,11 +79,11 @@ A region is a row in `PIPELINE_COUNTRIES` with `IS_REGION = TRUE` and a `MEMBER_
 | Tile / admin / facility / CCI | Union of all member-country rows, re-tagged with the region code |
 | `TRACK_MAT` | SUM of severities per `zone_id` (ensemble member) across member countries |
 
-**Pipeline exclusion:** Regions are excluded from data pipeline processing via `IS_REGION = TRUE`. The `DATAPIPELINE` repo filters `WHERE IS_REGION IS NULL OR IS_REGION = FALSE` in all country selection queries (`country_utils.py`). `COUNTRY_BOUNDARY` is intentionally left NULL for regions — the pipeline's spatial storm filter already skips NULL rows.
+**Pipeline exclusion:** Regions are excluded from data pipeline processing via `IS_REGION = TRUE`. The `DATAPIPELINE` repo filters `WHERE IS_REGION IS NULL OR IS_REGION = FALSE` in all country selection queries (`country_utils.py`). `COUNTRY_BOUNDARY` is intentionally left NULL for regions: the pipeline's spatial storm filter already skips NULL rows.
 
 ### Step 3: Register a Region (`02b_add_regional_group.sql`)
 
-Template for registering a new multi-country region (e.g. ECA — East Caribbean Area). Run once per region; no other files need to change. ECA is included as a commented-out reference example.
+Template for registering a new multi-country region (e.g. ECA, East Caribbean Area). Run once per region; no other files need to change. ECA is included as a commented-out reference example.
 
 Fill in the values at the bottom of the script and run it. The next `REFRESH_MATERIALIZED_VIEWS()` call (or the hourly task) will populate the regional rows automatically.
 

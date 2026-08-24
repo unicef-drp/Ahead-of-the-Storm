@@ -24,6 +24,8 @@ nohup.out
 .DS_Store
 .idea/
 .claude/
+.dev-pids/
+.dev-logs/
 
 *.share
 
@@ -54,3 +56,8 @@ snowflake_spcs/
 !services/README.md
 !snowflake/intelligence/README.md
 !snowflake/mat_tables/README.md
+
+.map_shell_backups/
+.perf_scratch_test/
+.perf_prototype_spike/
+dev.sh

@@ -140,7 +140,7 @@ def refactor_html_str(html_str,d):
     d_refactored = d.copy()
 
     # Detect first forecast: no previous forecast to compare against.
-    # When children_change_perc is missing/null/'-', change values equal population values — suppress all indicators.
+    # When children_change_perc is missing/null/'-', change values equal population values: suppress all indicators.
     is_first_forecast = d.get('children_change_perc', '-') in ('-', '', None, False)
     d_refactored['is_first_forecast'] = is_first_forecast
 
@@ -204,13 +204,13 @@ def refactor_html_str(html_str,d):
                 if key.startswith(prefix) and d_refactored[key] in (0, None):
                     d_refactored[key] = None
 
-    # Urban/rural: if both are 0 or None, SMOD data is unavailable — show N/A
+    # Urban/rural: if both are 0 or None, SMOD data is unavailable, show N/A
     if d.get('expected_pop_urban', 0) in (0, None) and d.get('expected_pop_rural', 0) in (0, None):
         for key in list(d_refactored.keys()):
             if ('urban' in key or 'rural' in key) and d_refactored[key] in (0, None):
                 d_refactored[key] = None
 
-    # Poverty/severe: if both are 0 or None, RWI data is unavailable — show N/A
+    # Poverty/severe: if both are 0 or None, RWI data is unavailable, show N/A
     if d.get('expected_pop_poverty', 0) in (0, None) and d.get('expected_pop_severe', 0) in (0, None):
         for key in list(d_refactored.keys()):
             if ('poverty' in key or 'severe' in key) and d_refactored[key] in (0, None):
@@ -222,7 +222,7 @@ def refactor_html_str(html_str,d):
             if not d_refactored.get(f'{prefix}_{i}'):
                 d_refactored[f'{prefix}_{i}'] = 'Name unknown'
 
-    # Format all numeric count fields — int, float, or None (grey zero, comma-separated ceiling-rounded integer, or N/A)
+    # Format all numeric count fields: int, float, or None (grey zero, comma-separated ceiling-rounded integer, or N/A)
     for key, val in list(d_refactored.items()):
         if (val is None or (isinstance(val, (int, float)) and not isinstance(val, bool))) and key.startswith('expected_'):
             d_refactored[key] = _fmt_count(val)
@@ -254,7 +254,7 @@ def refactor_html_str(html_str,d):
         else:
             d_refactored['pop_change'] = '0'
 
-    # expected_children is now the total of all age groups (0–4 + 5–14 + 15–19)
+    # expected_children is the total of all age groups (0–4 + 5–14 + 15–19)
     raw_children = d.get('expected_children', 0)
     if isinstance(raw_children, (int, float)):
         d_refactored['expected_children_u24'] = _fmt_count(math.ceil(raw_children))
@@ -390,7 +390,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         from pyproj import Transformer
         from components.data.snowflake_utils import get_snowflake_connection
     except ImportError as e:
-        logger.warning(f"Impact report map: missing dependency — {e}")
+        logger.warning(f"Impact report map: missing dependency: {e}")
         return None
 
     try:
@@ -415,7 +415,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         rows = cur.fetchall()
         cur.close()
     except Exception as e:
-        logger.error(f"Impact report map: error querying tile data — {e}")
+        logger.error(f"Impact report map: error querying tile data: {e}")
         return None
 
     if not rows:
@@ -464,7 +464,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         pts_per_px = 72 / _dpi
         marker_size = max((tile_px * pts_per_px) ** 2, 2.0)
 
-        # Fixed 0–100% scale — low-probability storms stay yellow, not red.
+        # Fixed 0–100% scale so low-probability storms stay yellow, not red.
         # Colors loaded from tile_palettes.json (single source of truth).
         _palettes_path = os.path.join(os.path.dirname(__file__), '..', 'components', 'map', 'tile_palettes.json')
         with open(_palettes_path) as _f:
@@ -495,14 +495,14 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
 
         ax.set_axis_off()
 
-        # Wind threshold label — bottom-right corner of the map
+        # Wind threshold label (bottom-right corner of the map)
         ax.text(0.98, 0.02, f'Wind speed threshold: {wind_threshold} kt',
                 transform=ax.transAxes, ha='right', va='bottom',
                 fontsize=9, color='#333333',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85,
                           edgecolor='#cccccc', linewidth=0.5))
 
-        # Horizontal colorbar below the map — appended via make_axes_locatable
+        # Horizontal colorbar below the map, appended via make_axes_locatable
         # so it never overlaps the map content.
         divider = make_axes_locatable(ax)
         cbar_ax = divider.append_axes('bottom', size='4%', pad=0.08)
@@ -524,7 +524,7 @@ def _generate_map_image(country, storm, forecast_date, wind_threshold=34):
         return base64.b64encode(buf.read()).decode('utf-8')
 
     except Exception as e:
-        logger.error(f"Impact report map: error generating figure — {e}")
+        logger.error(f"Impact report map: error generating figure: {e}")
         return None
 
 
@@ -608,7 +608,7 @@ _BASE_LAYERS_WARNING_HTML = """
 <!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;color:#333">
 <div style="max-width:480px;margin:4rem auto;padding:1.5rem 2rem;border-left:4px solid #f59f00;background:#fff9db;border-radius:4px">
   <h3 style="margin-top:0;color:#e67700">No Impact Data Available</h3>
-  <p>The current layers show <strong>base context data only</strong> — no storm impact has been calculated for this selection.<br>
+  <p>The current layers show <strong>base context data only</strong>: no storm impact has been calculated for this selection.<br>
   An impact report requires a storm with processed impact data.<br>
   Please select a storm and forecast time that has impact data available on the dashboard.</p>
 </div></body></html>
@@ -659,7 +659,7 @@ def update_iframe(i_country,i_storm,i_date,i_is_region,i_base_layers_only,s_coun
 
         html_str = _load_template()
         if not html_str:
-            logger.warning(f"Impact report: Template not found in data store — cannot render report")
+            logger.warning(f"Impact report: Template not found in data store, cannot render report")
             return dash.no_update, False
 
         # Read the JSON data file

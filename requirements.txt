@@ -13,8 +13,16 @@ contextily>=1.4.0
 # For Snowflake
 snowflake-connector-python[pandas]>=3.10.0
 
+# Zarr (reads raw global precip/river forecast arrays from Snowflake stage)
+zarr>=3.1
+
+# Parquet (reads the raw global river flood-extent per-member array from
+# Snowflake stage, row-group-by-row-group: see services/tile_server.py's
+# _RiverExtentCache)
+pyarrow>=14.0.0
+
 # For Dash web app
-dash>=4.1.0
+dash>=4.4.1
 plotly>=5.15.0
 dash-mantine-components>=2.7.0
 dash-iconify>=0.1.2

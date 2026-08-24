@@ -1,14 +1,14 @@
 -- ============================================================================
--- 04_data/01_materialized_tables.sql — Materialized Tables for Hurricane Impact Analysis
+-- 04_data/01_materialized_tables.sql: Materialized Tables for Hurricane Impact Analysis
 -- ============================================================================
 -- Creates the data layer that stored procedures query.
 --
 -- Architecture: stage files -> materialized tables
---   1. File formats        — CSV and Parquet format specs for stage reads
---   2. Materialized tables — real Snowflake tables loaded from stage; clustered
+--   1. File formats:        CSV and Parquet format specs for stage reads
+--   2. Materialized tables: real Snowflake tables loaded from stage; clustered
 --                            for fast filtered queries (<1s vs 17–50s on stage)
---   3. Refresh procedure   — CALL REFRESH_MATERIALIZED_VIEWS() to reload all tables
---   4. Scheduled task      — runs refresh every hour; new data available within ~60 min
+--   3. Refresh procedure:   CALL REFRESH_MATERIALIZED_VIEWS() to reload all tables
+--   4. Scheduled task:      runs refresh every hour; new data available within ~60 min
 --
 -- Cluster keys match the WHERE clauses used by stored procedures:
 --   (country, storm, forecast_date, wind_threshold)
@@ -30,7 +30,7 @@
 --   • New files: $13 = E_num_schools ≥ 0.0 (never None from the pipeline)
 --
 -- Admin CSV uses $15 as discriminator (NULL=old, probability float=new).
--- CCI CSV format is stable — simple positional refs used.
+-- CCI CSV format is stable, simple positional refs used.
 --
 --
 -- Configuration:
@@ -46,7 +46,7 @@ USE SCHEMA TC_ECMWF;
 -- File Formats
 -- ============================================================================
 
--- Standard CSV format with header skip — used for all CSV stage reads.
+-- Standard CSV format with header skip, used for all CSV stage reads.
 -- ERROR_ON_COLUMN_COUNT_MISMATCH=FALSE allows accessing $N beyond the row width
 -- (returns NULL), which is how we detect old vs new format.
 CREATE FILE FORMAT IF NOT EXISTS CSV_ADMIN_VIEWS_FORMAT
@@ -58,7 +58,7 @@ CREATE FILE FORMAT IF NOT EXISTS CSV_ADMIN_VIEWS_FORMAT
     TRIM_SPACE = TRUE
     ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE;
 
--- Legacy alias kept for reference — identical to CSV_ADMIN_VIEWS_FORMAT.
+-- Legacy alias kept for reference: identical to CSV_ADMIN_VIEWS_FORMAT.
 -- PARSE_HEADER=TRUE is only useful with COPY INTO MATCH_BY_COLUMN_NAME,
 -- which cannot be combined with INCLUDE_METADATA. Not used for data loads.
 CREATE FILE FORMAT IF NOT EXISTS CSV_NAMED_COLS_FORMAT
@@ -88,7 +88,7 @@ CREATE FILE FORMAT IF NOT EXISTS PARQUET_ADMIN_FORMAT
 -- Format discriminator: $13 IS NULL → old 12-col; $13 IS NOT NULL → new 16-col
 -- ($13 = E_num_schools in new format, always ≥ 0.0, never None)
 --
--- CRITICAL: Use FLOAT for schools/hcs — CSV contains decimals (e.g. 0.583333)
+-- CRITICAL: Use FLOAT for schools/hcs: CSV contains decimals (e.g. 0.583333)
 --           that get truncated if cast to NUMBER.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS MERCATOR_TILE_IMPACT_MAT
@@ -174,7 +174,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/admin_views/
 -- MERCATOR_TILE_CCI_MAT
 -- ----------------------------------------------------------------------------
 -- Source: mercator_views/{country}_{storm}_{date}_{zoom}_cci.csv
--- CCI format is stable — positional refs used directly.
+-- CCI format is stable, positional refs used directly.
 --   $1=idx $2=zone_id $3=CCI_children $4=E_CCI_children $5=CCI_school_age
 --   $6=E_CCI_school_age $7=CCI_infants $8=E_CCI_infants $9=CCI_pop
 --   $10=E_CCI_pop $11=id (admin_id)
@@ -207,7 +207,7 @@ FROM @AOTS.TC_ECMWF.AOTS_ANALYSIS/geodb/aos_views/mercator_views/
 -- ADMIN_ALL_CCI_MAT
 -- ----------------------------------------------------------------------------
 -- Source: admin_views/{country}_{storm}_{date}_admin{N}_cci.csv
--- CCI format is stable — positional refs used directly.
+-- CCI format is stable, positional refs used directly.
 --   $1=idx $2=tile_id $3=CCI_children $4=E_CCI_children $5=CCI_school_age
 --   $6=E_CCI_school_age $7=CCI_infants $8=E_CCI_infants $9=CCI_pop $10=E_CCI_pop
 -- Admin level parsed from filename. Pattern matches _admin1_cci.csv only.
@@ -430,10 +430,10 @@ WHERE COALESCE(zone_id_direct, tile_id_direct, zone_id_props, tile_id_props) IS 
 
 
 -- ============================================================================
--- Refresh Stored Procedure — superseded by 09_orchestration/03_procedures.sql
+-- Refresh Stored Procedure (superseded by 09_orchestration/03_procedures.sql)
 -- ============================================================================
 -- This JavaScript version is superseded by the native SQL implementation in
--- 09_orchestration/03_procedures.sql. Do not run this block standalone —
+-- 09_orchestration/03_procedures.sql. Do not run this block standalone;
 -- running 09_orchestration/03_procedures.sql will replace it.
 -- Kept here for reference.
 -- ============================================================================
@@ -441,8 +441,8 @@ WHERE COALESCE(zone_id_direct, tile_id_direct, zone_id_props, tile_id_props) IS 
 -- Runtime: ~2–5 minutes. Call manually or let the Task below run it.
 --
 -- Uses same IFF-based format detection as CREATE TABLE above:
---   IFF($13 IS NULL, old_pos, new_pos)  — mercator tile impact
---   IFF($15 IS NULL, old_pos, new_pos)  — admin impact
+--   IFF($13 IS NULL, old_pos, new_pos)  : mercator tile impact
+--   IFF($15 IS NULL, old_pos, new_pos)  : admin impact
 
 CREATE OR REPLACE PROCEDURE REFRESH_MATERIALIZED_VIEWS()
 RETURNS VARCHAR
@@ -789,7 +789,7 @@ $$
   }
 
   // Derive regional group rows (e.g. ECA) from the member-country rows just loaded.
-  // Defined in 02_regional_groups.sql — must be run before this procedure is called.
+  // Defined in 02_regional_groups.sql, must be run before this procedure is called.
   try {
     run('CALL AOTS.TC_ECMWF.REFRESH_REGIONAL_GROUPS()');
     refreshed.push('REGIONAL_GROUPS');
@@ -798,7 +798,7 @@ $$
   }
 
   // Refresh base layer tables (country-static: tiles, schools, HCs, shelters, WASH).
-  // Defined in 04_base_layer_tables.sql — must be run before this procedure is called.
+  // Defined in 04_base_layer_tables.sql, must be run before this procedure is called.
   try {
     run('CALL AOTS.TC_ECMWF.REFRESH_BASE_LAYER_TABLES()');
     refreshed.push('BASE_LAYER_TABLES');
@@ -816,7 +816,7 @@ GRANT USAGE ON PROCEDURE REFRESH_MATERIALIZED_VIEWS() TO ROLE SYSADMIN;
 
 
 -- ============================================================================
--- Scheduled Task — refresh every hour
+-- Scheduled Task: refresh every hour
 -- ============================================================================
 CREATE OR REPLACE TASK REFRESH_MATERIALIZED_VIEWS_TASK
   WAREHOUSE = AOTS_WH

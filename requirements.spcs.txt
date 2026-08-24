@@ -1,5 +1,5 @@
 # Requirements for SPCS (Snowflake Container Services) deployment.
-# Omits Azure Blob dependencies — SPCS uses IMPACT_DATA_SOURCE=SQL or
+# Omits Azure Blob dependencies: SPCS uses IMPACT_DATA_SOURCE=SQL or
 # IMPACT_DATA_STORE=SNOWFLAKE, so azure-storage-blob is never needed.
 
 # Data processing
@@ -16,6 +16,14 @@ contextily>=1.4.0
 
 # For Snowflake
 snowflake-connector-python[pandas]>=3.10.0
+
+# Zarr (reads raw global precip/river forecast arrays from Snowflake stage)
+zarr>=3.1
+
+# Parquet (reads the raw global river flood-extent per-member array from
+# Snowflake stage, row-group-by-row-group, see services/tile_server.py's
+# _RiverExtentCache)
+pyarrow>=14.0.0
 
 # For Dash web app
 dash>=4.1.0

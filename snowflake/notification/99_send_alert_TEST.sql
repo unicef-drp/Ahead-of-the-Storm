@@ -1,15 +1,14 @@
 -- ==============================================================================
--- 07b_alert_agent/02_send_alert_procedure.sql: SEND_ALERT()
--- Deploy via Python connector (snow sql cannot handle { chars in f-strings).
--- Deploy 01_map_udf.sql first. The procedure calls GENERATE_ADMIN_MAP_PNG().
+-- snowflake/notification/99_send_alert_TEST.sql: TEST VERSION
 -- ==============================================================================
-
-USE ROLE SYSADMIN;
-USE DATABASE AOTS;
-USE SCHEMA TC_ECMWF;
-USE WAREHOUSE AOTS_WH;
-
-CREATE OR REPLACE PROCEDURE SEND_ALERT()
+-- Pinned to MELISSA / JAM for development and testing.
+-- DO NOT deploy to production. Use 02_send_alert_procedure.sql instead.
+-- Differences from production:
+--   - FORECAST_TIME pinned to 2025-10-27 00Z (not rolling -3 days)
+--   - COUNTRY_CODE = 'CUB' filter active
+--   - LIMIT 1 active
+-- ==============================================================================
+CREATE OR REPLACE PROCEDURE SEND_ALERT_TEST()
     RETURNS VARCHAR
     LANGUAGE PYTHON
     RUNTIME_VERSION = '3.11'
@@ -157,9 +156,11 @@ def main(session):
             AND asl.FORECAST_TIME = te.FORECAST_TIME
             AND asl.COUNTRY_CODE  = pc.COUNTRY_CODE
         WHERE pc.ACTIVE = TRUE
-          AND te.FORECAST_TIME >= DATEADD('day', -3, CURRENT_TIMESTAMP())
+          AND te.FORECAST_TIME = '2025-10-27 00:00:00'
+          AND pc.COUNTRY_CODE = 'CUB'
           AND asl.TRACK_ID IS NULL
         ORDER BY FORECAST_TIME DESC, TRACK_ID
+        LIMIT 1
     """).collect():
         new_pairs.append({
             'track_id':     row[0],
@@ -196,6 +197,9 @@ def main(session):
             if not exp or not exp.get('total_population'):
                 errors.append(f"{pair['track_id']}/{pair['country_code']}: no 50kt impact data")
                 continue
+            adolescents = ((exp.get('total_children') or 0)
+                           - (exp.get('total_school_age_children') or 0)
+                           - (exp.get('total_infant_children') or 0))
 
             # ── 2c: All wind thresholds (cross-threshold table) ───────────────
             all_thresh = call_proc(f"CALL GET_ALL_WIND_THRESHOLDS_ANALYSIS('{t_cc}', '{t_sn}', '{t_fd}')")
@@ -259,13 +263,13 @@ def main(session):
                     except Exception as tz_err:
                         errors.append(f'TZ conversion failed: {tz_err}')
 
-            # ── 2g: Centroid shift since previous forecast ────────────────────
+            # ── 2h: Centroid shift since previous forecast ────────────────────
             centroid_shift = None
             shift_result   = call_proc(f"CALL GET_CENTROID_SHIFT('{t_cc}', '{t_sn}', '{t_fd}', '50')")
             if shift_result and shift_result.get('has_previous') and (shift_result.get('dist_km') or 0) >= 5:
                 centroid_shift = shift_result
 
-            # ── 2h: Admin-level GeoJSON for PNG map ────────────────────────────
+            # ── 2g: Admin-level GeoJSON for PNG map ────────────────────────────
             map_geo_rows = []
             try:
                 for geo_row in session.sql(f"""
@@ -351,13 +355,12 @@ def main(session):
                 f"Children at risk (0-19): {fmt_n(exp.get('total_children'))}\n"
                 f"  Age 0-4 (infants): {fmt_n(exp.get('total_infant_children'))}\n"
                 f"  Age 5-14 (school-age): {fmt_n(exp.get('total_school_age_children'))}\n"
-                f"  Age 15-19 (adolescents): {fmt_n(exp.get('total_adolescent_children'))}\n"
                 f"Schools at risk (50kt): {fmt_n(exp.get('total_schools'))}\n"
                 f"Health centers at risk (50kt): {fmt_n(exp.get('total_hcs'))}\n"
-                + (f"Shelters at risk: {fmt_n(exp.get('total_shelters'))}\n"
-                   if exp.get('total_shelters') is not None else '')
-                + (f"WASH facilities at risk: {fmt_n(exp.get('total_wash'))}\n"
-                   if exp.get('total_wash') is not None else '')
+                + (f"Shelters at risk: {fmt_n(exp.get('total_shelters', 0))}\n"
+                   if (exp.get('total_shelters') or 0) > 0 else '')
+                + (f"WASH facilities at risk: {fmt_n(exp.get('total_wash', 0))}\n"
+                   if (exp.get('total_wash') or 0) > 0 else '')
                 + f"Population by wind speed: {thresh_ctx}\n"
                 f"Most affected areas (50kt): {admin_summary or 'N/A'}\n"
                 f"Forecast trend vs previous run: {trend_str}\n"
@@ -470,6 +473,12 @@ def main(session):
                     pass
 
             # Impact bullet list
+            adolescent_li = (f'<li>Age 15–19 (adolescents): {fmt_n(adolescents)}{lbl("data")}</li>'
+                             if math.ceil(adolescents) > 0 else '')
+            shelter_li    = (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters", 0))}</strong>{lbl("data")}</li>'
+                             if (exp.get('total_shelters') or 0) > 0 else '')
+            wash_li       = (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash", 0))}</strong>{lbl("data")}</li>'
+                             if (exp.get('total_wash') or 0) > 0 else '')
             impact_bullets = (
                 '<ul style="margin:8px 0; padding-left:20px;">'
                 f'<li>Expected population at risk: <strong>{fmt_n(exp.get("total_population"))}</strong>{lbl("data")}</li>'
@@ -477,28 +486,19 @@ def main(session):
                 '<ul style="margin:4px 0; padding-left:20px;">'
                 f'<li>Age 0–4 (infants): {fmt_n(exp.get("total_infant_children"))}{lbl("data")}</li>'
                 f'<li>Age 5–14 (school-age): {fmt_n(exp.get("total_school_age_children"))}{lbl("data")}</li>'
-                f'<li>Age 15–19 (adolescents): {fmt_n(exp.get("total_adolescent_children"))}{lbl("data")}</li>'
+                f'{adolescent_li}'
                 '</ul></li>'
                 f'<li>Expected schools at risk: <strong>{fmt_n(exp.get("total_schools"))}</strong>{lbl("data")}</li>'
                 f'<li>Expected health centers at risk: <strong>{fmt_n(exp.get("total_hcs"))}</strong>{lbl("data")}</li>'
-                + (f'<li>Expected shelters at risk: <strong>{fmt_n(exp.get("total_shelters"))}</strong>{lbl("data")}</li>'
-                   if exp.get('total_shelters') is not None else '')
-                + (f'<li>Expected WASH facilities at risk: <strong>{fmt_n(exp.get("total_wash"))}</strong>{lbl("data")}</li>'
-                   if exp.get('total_wash') is not None else '')
-                + '</ul>'
+                f'{shelter_li}{wash_li}'
+                '</ul>'
             )
 
             # Admin breakdown table
-            prev_date_fmt = (
-                f'{months[int(prev_date[4:6]) - 1]} {int(prev_date[6:8])}, '
-                f'{prev_date[0:4]} {prev_date[8:10]}Z'
-                if prev_date else None
-            )
-
             admin_table = ''
             if admin_areas:
-                admin_has_shelters = any(a.get('shelters') is not None for a in admin_areas)
-                admin_has_wash     = any(a.get('wash_facilities') is not None for a in admin_areas)
+                admin_has_shelters = any((a.get('shelters') or 0) > 0 for a in admin_areas)
+                admin_has_wash     = any((a.get('wash_facilities') or 0) > 0 for a in admin_areas)
                 s_th = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">Shelters</th>'
                         if admin_has_shelters else '')
                 w_th = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">WASH</th>'
@@ -543,45 +543,18 @@ def main(session):
                     '</tbody></table>'
                     f'<p style="font-size:0.88em; color:#777; margin-top:4px;">Expected impact at storm-force winds (50kt) '
                     f'by administrative area. {lbl("data")} Values are rounded to the nearest integer; '
-                    'the sum across administrative areas may exceed the totals shown above.'
-                    + (f' Trend arrows (▲/▼) compare to the previous forecast ({prev_date_fmt}).'
-                       if prev_date_fmt and admin_delta_map else '')
-                    + '</p>'
+                    'the sum across administrative areas may exceed the totals shown above.</p>'
                 )
 
-            # Forecast stability / centroid shift section (always shown)
+            # Centroid shift section
+            shift_section = ''
             if use_shift_llm and shift_llm_text:
-                # Significant shift (≥5 km): LLM-generated analysis
                 shift_section = (
                     f"<p style=\"margin:14px 0 4px;\">{shift_llm_text}</p>"
                     "<p style=\"font-size:0.88em; color:#999; margin:0 0 4px;\">" + lbl("data") +
                     " Shift computed from children-at-risk-weighted centroid of expected impact values "
                     "across all ECMWF forecast members (50kt). This reflects a change in the forecast's "
                     "overall probability distribution, not movement of a single storm track.</p>"
-                )
-            elif prev_date:
-                # No significant shift: static stability note with overall population trend
-                if pop_delta is not None and abs(pop_delta) >= 1000:
-                    trend_dir  = 'increased' if pop_delta > 0 else 'decreased'
-                    trend_note = (f' Overall, population at risk has {trend_dir} by '
-                                  f'{fmt_n(abs(math.ceil(pop_delta)))} since the previous run '
-                                  f'({fmt_n(prev_pop)} → {fmt_n(exp["total_population"])}).')
-                else:
-                    trend_note = ' Overall population at risk remains broadly similar to the previous run.'
-                shift_section = (
-                    f'<p style="margin:14px 0 4px; color:#555;">The expected impact footprint is '
-                    f'<strong>broadly stable</strong> since the previous forecast ({prev_date_fmt}).'
-                    f'{trend_note}</p>'
-                    '<p style="font-size:0.88em; color:#999; margin:0 0 4px;">No significant geographic '
-                    'shift detected in the ensemble-average impact distribution (shift &lt;&nbsp;5&nbsp;km). '
-                    + lbl("data") + '</p>'
-                )
-            else:
-                # No previous forecast available
-                shift_section = (
-                    '<p style="margin:14px 0 4px; color:#555;">'
-                    'No previous forecast is available for comparison. '
-                    'This is the first alert for this storm.</p>'
                 )
 
             # Bottom-line box
@@ -673,8 +646,8 @@ def main(session):
                 )
 
             # Cross-threshold table
-            has_shelters = any(th.get('total_shelters') is not None for th in thresholds)
-            has_wash     = any(th.get('total_wash') is not None for th in thresholds)
+            has_shelters = any((th.get('total_shelters') or 0) > 0 for th in thresholds)
+            has_wash     = any((th.get('total_wash') or 0)     > 0 for th in thresholds)
             s_th2 = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">Shelters</th>'
                      if has_shelters else '')
             w_th2 = ('<th style="text-align:right; padding:8px 10px; border:1px solid #1499c7; color:white; font-weight:bold;">WASH Facilities</th>'

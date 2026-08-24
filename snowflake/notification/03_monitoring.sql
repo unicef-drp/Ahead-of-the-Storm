@@ -1,14 +1,14 @@
 -- ==============================================================================
--- 07b_alert_agent/03_monitoring.sql — Alert Cost & Delivery Monitoring
+-- 07b_alert_agent/03_monitoring.sql: Alert Cost & Delivery Monitoring
 -- ==============================================================================
 -- Run any section independently in Snowsight to inspect alert activity and cost.
 --
 -- Sections:
---   1. Delivery log         — what was sent, to how many recipients, when
---   2. Cortex LLM usage     — token consumption per alert window
---   3. Warehouse compute    — credits consumed by SEND_NEW_STORM_ALERT()
---   4. Combined cost view   — LLM + compute joined to alert log by timestamp
---   5. Rolling totals       — spend by day / week / month
+--   1. Delivery log        : what was sent, to how many recipients, when
+--   2. Cortex LLM usage     : token consumption per alert window
+--   3. Warehouse compute    : credits consumed by SEND_ALERT()
+--   4. Combined cost view   : LLM + compute joined to alert log by timestamp
+--   5. Rolling totals       : spend by day / week / month
 --
 -- Note on latency: SNOWFLAKE.ACCOUNT_USAGE views have up to 45-minute lag.
 -- For immediate post-run checks use the INFORMATION_SCHEMA table functions
@@ -28,7 +28,7 @@ SET credit_price_usd = 3.00;
 -- What was sent, to whom, and when.
 -- ==============================================================================
 
--- 1a. All alerts — most recent first
+-- 1a. All alerts, most recent first
 SELECT
     SENT_AT,
     TRACK_ID,
@@ -41,7 +41,7 @@ FROM AOTS.TC_ECMWF.ALERT_SENT_LOG
 ORDER BY SENT_AT DESC;
 
 
--- 1b. Summary — alerts per storm
+-- 1b. Summary: alerts per storm
 SELECT
     TRACK_ID,
     COUNT(DISTINCT COUNTRY_CODE)     AS countries_alerted,
@@ -66,7 +66,7 @@ ORDER BY 1 DESC;
 
 -- ==============================================================================
 -- SECTION 2: Cortex LLM usage
--- Token consumption from CORTEX.COMPLETE calls made by SEND_NEW_STORM_ALERT().
+-- Token consumption from CORTEX.COMPLETE calls made by SEND_ALERT().
 -- ACCOUNT_USAGE lag: up to 45 minutes.
 -- ==============================================================================
 
@@ -86,7 +86,7 @@ GROUP BY 1, 2
 ORDER BY 1 DESC, credits_used DESC;
 
 
--- 2b. Per-call detail — last 7 days (useful for spotting outlier prompt sizes)
+-- 2b. Per-call detail, last 7 days (useful for spotting outlier prompt sizes)
 SELECT
     START_TIME,
     MODEL_NAME,
@@ -114,8 +114,8 @@ GROUP BY 1;
 
 
 -- ==============================================================================
--- SECTION 3a: Warehouse compute — ACCOUNT_USAGE (45-min lag, 365-day history)
--- Finds queries belonging to SEND_NEW_STORM_ALERT() by procedure name + warehouse.
+-- SECTION 3a: Warehouse compute, ACCOUNT_USAGE (45-min lag, 365-day history)
+-- Finds queries belonging to SEND_ALERT() by procedure name + warehouse.
 -- ==============================================================================
 
 SELECT
@@ -128,7 +128,7 @@ SELECT
 FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
 WHERE START_TIME >= DATEADD('day', -30, CURRENT_TIMESTAMP())
   AND (
-      QUERY_TEXT ILIKE '%SEND_NEW_STORM_ALERT%'
+      QUERY_TEXT ILIKE '%SEND_ALERT%'
       OR QUERY_TEXT ILIKE '%ALERT_SENT_LOG%'
       OR QUERY_TEXT ILIKE '%AOTS_EMAIL_INTEGRATION%'
   )
@@ -137,7 +137,7 @@ ORDER BY 1 DESC;
 
 
 -- ==============================================================================
--- SECTION 3b: Warehouse compute — INFORMATION_SCHEMA (near real-time, 7 days)
+-- SECTION 3b: Warehouse compute, INFORMATION_SCHEMA (near real-time, 7 days)
 -- Use this immediately after a test run for instant feedback.
 -- ==============================================================================
 
@@ -155,7 +155,7 @@ FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(
 ))
 WHERE WAREHOUSE_NAME = 'AOTS_WH'
   AND (
-      QUERY_TEXT ILIKE '%SEND_NEW_STORM_ALERT%'
+      QUERY_TEXT ILIKE '%SEND_ALERT%'
       OR QUERY_TEXT ILIKE '%ALERT_SENT_LOG%'
       OR QUERY_TEXT ILIKE '%AOTS_EMAIL_INTEGRATION%'
   )
@@ -211,10 +211,10 @@ ORDER BY SENT_AT DESC;
 
 
 -- ==============================================================================
--- SECTION 5: Rolling totals — spend by period
+-- SECTION 5: Rolling totals, spend by period
 -- ==============================================================================
 
--- 5a. Daily spend (LLM only — warehouse metering requires separate join)
+-- 5a. Daily spend (LLM only, warehouse metering requires separate join)
 SELECT
     DATE_TRUNC('day', START_TIME)                          AS day,
     SUM(INPUT_TOKENS)                                      AS input_tokens,
@@ -241,7 +241,7 @@ GROUP BY 1
 ORDER BY 1 DESC;
 
 
--- 5c. Cost per recipient (amortised — LLM cost divided across all emails sent)
+-- 5c. Cost per recipient (amortised, LLM cost divided across all emails sent)
 WITH llm_total AS (
     SELECT ROUND(SUM(TOKEN_CREDITS) * $credit_price_usd, 4) AS total_llm_usd
     FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_FUNCTIONS_USAGE_HISTORY

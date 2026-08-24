@@ -28,9 +28,16 @@ class Config:
     """Centralized configuration class"""
     
     # Snowflake Configuration
+    # SNOWFLAKE_USE_RO=true swaps in SNOWFLAKE_RO_USER/SNOWFLAKE_RO_PASSWORD
+    # (a read-only service account, e.g. AOTS_AZURE_SERVICE) in place of the
+    # normal SNOWFLAKE_USER/SNOWFLAKE_PASSWORD, used for locally sanity-checking
+    # a read-only credential before it's used in a real deployment, without
+    # touching the primary credentials. Unset/false: behaves exactly as
+    # before, only SNOWFLAKE_USER/SNOWFLAKE_PASSWORD are read.
     SNOWFLAKE_ACCOUNT = os.getenv('SNOWFLAKE_ACCOUNT')
-    SNOWFLAKE_USER = os.getenv('SNOWFLAKE_USER')
-    SNOWFLAKE_PASSWORD = os.getenv('SNOWFLAKE_PASSWORD')
+    _USE_RO = os.getenv('SNOWFLAKE_USE_RO', 'false').lower() == 'true'
+    SNOWFLAKE_USER = os.getenv('SNOWFLAKE_RO_USER') if _USE_RO else os.getenv('SNOWFLAKE_USER')
+    SNOWFLAKE_PASSWORD = os.getenv('SNOWFLAKE_RO_PASSWORD') if _USE_RO else os.getenv('SNOWFLAKE_PASSWORD')
     SNOWFLAKE_WAREHOUSE = os.getenv('SNOWFLAKE_WAREHOUSE')
     SNOWFLAKE_DATABASE = os.getenv('SNOWFLAKE_DATABASE')
     SNOWFLAKE_SCHEMA = os.getenv('SNOWFLAKE_SCHEMA')
@@ -64,6 +71,18 @@ class Config:
 
     # Tile sidecar URL (FastAPI server serving raster/vector tiles, stats, and preload endpoints)
     TILE_SERVER_URL = os.getenv('TILE_SERVER_URL', 'http://localhost:8001')
+
+    # Whether nginx is fronting this process (entrypoint.sh sets this: true for
+    # BOTH SPCS and Azure Web App for Containers, since both run the exact same
+    # Docker image/entrypoint.sh with nginx proxying Dash+tile-server on one
+    # public port; false for local `python app.py` dev, which has no nginx and
+    # talks to the tile server directly on TILE_SERVER_URL). Deliberately NOT
+    # the same flag as SPCS_RUN, which only selects Snowflake auth mode; Azure
+    # has SPCS_RUN=false but IS behind nginx just like SPCS, so a value keyed
+    # on SPCS_RUN alone cannot tell local dev and Azure apart correctly for
+    # either setting. Browser-facing tile_server_url fields must key on THIS,
+    # not on SPCS_RUN (see map_shell_concept.py).
+    BEHIND_REVERSE_PROXY = os.getenv('BEHIND_REVERSE_PROXY', 'false').lower() == 'true'
 
     CCI_COL = 'cci_children'
     E_CCI_COL = 'E_cci_children'
