@@ -98,42 +98,69 @@ _active_storm_country_codes = _f_active_storm_codes.result()
 # pages/dashboard.py's own module-level `data_store = get_data_store()`.
 _giga_store = get_data_store()
 
-# COUNTRY_NAME (e.g. "Jamaica"), not COUNTRY_CODE, is used as the dropdown
-# VALUE below. Every existing dict-keyed-by-display-name lookup elsewhere
-# on this page (country selection values were always display names, e.g.
-# "Philippines") keeps working unchanged against real data.
-_CODE_TO_NAME = (dict(zip(_countries_df['COUNTRY_CODE'], _countries_df['COUNTRY_NAME']))
-                 if not _countries_df.empty else {})
-_NAME_TO_CODE = {v: k for k, v in _CODE_TO_NAME.items()}
-_ACTIVE_STORM_COUNTRY_NAMES = [_CODE_TO_NAME.get(code, code) for code in _active_storm_country_codes]
-
-# A region row's own COUNTRY_CODE (e.g. "ECA") is a synthetic code, not a
-# real ISO3 the tile server understands. Its real member codes live in
-# PIPELINE_COUNTRIES.MEMBER_CODES as a JSON array string (e.g.
-# '["ATG","BRB","DMA",...]'), analogous to pages/dashboard.py's own
-# REGION_MEMBERS dict (which this page doesn't import/build, since its
-# country picker already stores a flat list of individually-selected
-# names (plain countries and regions both by NAME) rather than
-# dashboard.py's single-dropdown-value-expands-to-members model).
-_CODE_TO_MEMBER_CODES = (
-    dict(zip(_countries_df['COUNTRY_CODE'], _countries_df.get('MEMBER_CODES', pd.Series(dtype=object))))
-    if not _countries_df.empty and 'MEMBER_CODES' in _countries_df.columns else {}
-)
-
-# NAME -> (lat, lon, zoom) real per-country map view, straight from
-# get_active_countries()'s own CENTER_LAT/CENTER_LON/VIEW_ZOOM columns
-# (PIPELINE_COUNTRIES), same _countries_df already used for _CODE_TO_NAME/
-# _NAME_TO_CODE above. Feeds the ms-main-map viewport-follows-selection
-# callback further down; entries with a missing/NaN center are simply
-# omitted (that country falls back to not moving the map, not a crash).
+_CODE_TO_NAME = {}
+_NAME_TO_CODE = {}
+_ACTIVE_STORM_COUNTRY_NAMES = []
+_CODE_TO_MEMBER_CODES = {}
 _NAME_TO_CENTER = {}
-if not _countries_df.empty and {'CENTER_LAT', 'CENTER_LON'}.issubset(_countries_df.columns):
-    for _, _row in _countries_df.iterrows():
-        if pd.notna(_row.get('CENTER_LAT')) and pd.notna(_row.get('CENTER_LON')):
-            _NAME_TO_CENTER[_row['COUNTRY_NAME']] = (
-                float(_row['CENTER_LAT']), float(_row['CENTER_LON']),
-                float(_row['VIEW_ZOOM']) if pd.notna(_row.get('VIEW_ZOOM')) else 6,
-            )
+
+
+def _refresh_countries_snapshot():
+    """(Re-)populates _countries_df and every dict derived from it, from
+    get_active_countries()'s own real Snowflake query and 30-min ttl_cache.
+
+    Called once below at module import time, and again at the top of every
+    layout() call (same per-request-refresh pattern _resolve_default_
+    forecast_date_run() already uses for the topbar's default date/run) --
+    without this second call, a newly-added PIPELINE_COUNTRIES row is
+    invisible in the country selector until the whole app process restarts,
+    since a bare module-level snapshot taken once at import is never read
+    again on its own. get_active_countries()'s own cache keeps repeat calls
+    here cheap (a real Snowflake round trip at most once per 30 min, not
+    once per page load).
+    """
+    global _countries_df, _CODE_TO_NAME, _NAME_TO_CODE, _CODE_TO_MEMBER_CODES, _NAME_TO_CENTER
+    _countries_df = get_active_countries()
+
+    # COUNTRY_NAME (e.g. "Jamaica"), not COUNTRY_CODE, is used as the
+    # dropdown VALUE below. Every existing dict-keyed-by-display-name lookup
+    # elsewhere on this page (country selection values were always display
+    # names, e.g. "Philippines") keeps working unchanged against real data.
+    _CODE_TO_NAME = (dict(zip(_countries_df['COUNTRY_CODE'], _countries_df['COUNTRY_NAME']))
+                     if not _countries_df.empty else {})
+    _NAME_TO_CODE = {v: k for k, v in _CODE_TO_NAME.items()}
+
+    # A region row's own COUNTRY_CODE (e.g. "ECA") is a synthetic code, not
+    # a real ISO3 the tile server understands. Its real member codes live in
+    # PIPELINE_COUNTRIES.MEMBER_CODES as a JSON array string (e.g.
+    # '["ATG","BRB","DMA",...]'), analogous to pages/dashboard.py's own
+    # REGION_MEMBERS dict (which this page doesn't import/build, since its
+    # country picker already stores a flat list of individually-selected
+    # names (plain countries and regions both by NAME) rather than
+    # dashboard.py's single-dropdown-value-expands-to-members model).
+    _CODE_TO_MEMBER_CODES = (
+        dict(zip(_countries_df['COUNTRY_CODE'], _countries_df.get('MEMBER_CODES', pd.Series(dtype=object))))
+        if not _countries_df.empty and 'MEMBER_CODES' in _countries_df.columns else {}
+    )
+
+    # NAME -> (lat, lon, zoom) real per-country map view, straight from
+    # get_active_countries()'s own CENTER_LAT/CENTER_LON/VIEW_ZOOM columns
+    # (PIPELINE_COUNTRIES), same _countries_df already used for _CODE_TO_NAME/
+    # _NAME_TO_CODE above. Feeds the ms-main-map viewport-follows-selection
+    # callback further down; entries with a missing/NaN center are simply
+    # omitted (that country falls back to not moving the map, not a crash).
+    _NAME_TO_CENTER = {}
+    if not _countries_df.empty and {'CENTER_LAT', 'CENTER_LON'}.issubset(_countries_df.columns):
+        for _, _row in _countries_df.iterrows():
+            if pd.notna(_row.get('CENTER_LAT')) and pd.notna(_row.get('CENTER_LON')):
+                _NAME_TO_CENTER[_row['COUNTRY_NAME']] = (
+                    float(_row['CENTER_LAT']), float(_row['CENTER_LON']),
+                    float(_row['VIEW_ZOOM']) if pd.notna(_row.get('VIEW_ZOOM')) else 6,
+                )
+
+
+_refresh_countries_snapshot()
+_ACTIVE_STORM_COUNTRY_NAMES = [_CODE_TO_NAME.get(code, code) for code in _active_storm_country_codes]
 
 
 def _resolve_tile_codes(countries):
@@ -10472,6 +10499,14 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
     # itself reflect real data within 30 minutes too, without ever needing
     # a process restart.
     _live_default_date, _live_default_run = _resolve_default_forecast_date_run()
+    # Same "closes the staleness gap on every fresh page load" reasoning as
+    # the date/run refresh directly above, applied to the country selector:
+    # a newly-added PIPELINE_COUNTRIES row is otherwise invisible until the
+    # whole app process restarts, since _countries_df/_CODE_TO_NAME/etc. were
+    # previously only ever populated once, at import time. Cheap in practice
+    # (get_active_countries()'s own ttl_cache bounds real Snowflake round
+    # trips to once per 30 min, not once per page load).
+    _refresh_countries_snapshot()
     return html.Div([
         dcc.Store(id="selected-country-store", data=initial_countries),
         # Written by _select_storm below when the clicked storm has no real
