@@ -157,9 +157,7 @@ A single gunicorn worker (1 process × 8 threads) is required to avoid fork-safe
    - Impact summaries for population, children, infants, schools, health centers, and built surface
    - Percentile analysis
 
-3. **Impact Report** (`/report`): HTML-based impact report with detailed administrative-level breakdowns
-
-4. **AI Agent**: the `HURRICANE_INTELLIGENCE` Snowflake Cortex agent generates situation reports from
+3. **AI Agent**: the `HURRICANE_INTELLIGENCE` Snowflake Cortex agent generates situation reports from
    the same MAT tables the map shell reads (see `snowflake/intelligence/`), queried through
    `snowflake_utils.py`.
 

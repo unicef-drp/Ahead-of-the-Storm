@@ -112,11 +112,17 @@ with ThreadPoolExecutor(max_workers=3) as _startup_pool:
     _latlon_bulk = _f_latlons.result()
 
 # =============================================================================
-# SECTION 3: COUNTRY AND REGION CONFIGURATION
-# Build per-country map centres/zooms (COUNTRY_MAP_CONFIG), region member
-# lookup (REGION_MEMBERS), and the country dropdown options list
-# (COUNTRY_OPTIONS) from startup data.
+# SECTION 3: COUNTRY CONFIGURATION
+# Build per-country map centres/zooms (COUNTRY_MAP_CONFIG) and the country
+# dropdown options list (COUNTRY_OPTIONS) from startup data. Region rows
+# (IS_REGION=TRUE, e.g. the Caribbean "ECA" rollup) are filtered out right
+# here, before anything else in this file reads countries_df: this page only
+# supports selecting individual real countries, matching
+# pages/forecast_analysis.py's own COUNTRY_OPTIONS construction.
 # =============================================================================
+
+if not countries_df.empty and 'IS_REGION' in countries_df.columns:
+    countries_df = countries_df[countries_df['IS_REGION'] != True].reset_index(drop=True)
 
 # Build country-specific map centers and zoom levels from Snowflake data
 COUNTRY_MAP_CONFIG = {}
@@ -126,7 +132,7 @@ if not countries_df.empty:
         center_lat = row['CENTER_LAT'] if pd.notna(row['CENTER_LAT']) else map_config.center["lat"]
         center_lon = row['CENTER_LON'] if pd.notna(row['CENTER_LON']) else map_config.center["lon"]
         view_zoom = row['VIEW_ZOOM'] if pd.notna(row['VIEW_ZOOM']) else map_config.zoom
-        
+
         COUNTRY_MAP_CONFIG[country_code] = {
             "center": [center_lat, center_lon],
             "zoom": int(view_zoom) if pd.notna(view_zoom) else map_config.zoom
@@ -140,59 +146,9 @@ DEFAULT_MAP_CONFIG = {"center": [map_config.center["lat"], map_config.center["lo
 
 # Build country options list for dropdowns
 COUNTRY_OPTIONS = []
-REGION_MEMBERS = {}  # {'ECA': [{'value': 'AIA', 'label': 'Anguilla'}, ...]}
-
-
-def _get_base_multi(fn, country, *args):
-    """Call a get_base_* function for a country or each member of a region, then concat.
-
-    Individual per-country results are TTL-cached (60 min), so repeated calls are free.
-    Returns same type as the single-country function (DataFrame or GeoDataFrame).
-    """
-    codes = ([item['value'] for item in REGION_MEMBERS[country]]
-             if country in REGION_MEMBERS else [country])
-    frames = [fn(c, *args) for c in codes]
-    non_empty = [f for f in frames if not f.empty]
-    if not non_empty:
-        return frames[0]
-    result = pd.concat(non_empty, ignore_index=True)
-    if isinstance(non_empty[0], gpd.GeoDataFrame):
-        result = gpd.GeoDataFrame(result, geometry='geometry', crs=non_empty[0].crs)
-    return result
-
 
 if not countries_df.empty:
-    sql_mode = config.IMPACT_DATA_SOURCE == 'SQL'
-
-    regions   = countries_df[countries_df['IS_REGION'] == True]
-    countries = countries_df[countries_df['IS_REGION'] != True]
-
-    # Build region member options for the drill-down selector
-    code_to_name = dict(zip(countries_df['COUNTRY_CODE'], countries_df['COUNTRY_NAME']))
-    if sql_mode:
-        for _, row in regions.iterrows():
-            members = row.get('MEMBER_CODES')
-            if members:
-                if isinstance(members, str):
-                    members = json.loads(members)
-                REGION_MEMBERS[row['COUNTRY_CODE']] = [
-                    {"value": m, "label": code_to_name.get(m, m)} for m in members
-                ]
-
-    # Exclude region member countries from the main dropdown (accessible via drill-down)
-    member_codes = {item['value'] for opts in REGION_MEMBERS.values() for item in opts}
-    standalone = countries[~countries['COUNTRY_CODE'].isin(member_codes)]
-    country_items = [{"value": r['COUNTRY_CODE'], "label": r['COUNTRY_NAME']} for _, r in standalone.iterrows()]
-
-    if sql_mode and not regions.empty:
-        region_items = [{"value": r['COUNTRY_CODE'], "label": r['COUNTRY_NAME']} for _, r in regions.iterrows()]
-        COUNTRY_OPTIONS = [
-            {"group": "Regions",   "items": region_items},
-            {"group": "Countries", "items": country_items},
-        ]
-    else:
-        COUNTRY_OPTIONS = country_items
-
+    COUNTRY_OPTIONS = [{"value": r['COUNTRY_CODE'], "label": r['COUNTRY_NAME']} for _, r in countries_df.iterrows()]
     DEFAULT_COUNTRY = None  # No pre-selection: tracks auto-load for latest forecast on startup
 else:
     DEFAULT_COUNTRY = None
@@ -285,14 +241,13 @@ layout = make_single_page_appshell(COUNTRY_OPTIONS, DEFAULT_COUNTRY)
 @callback(
     Output("effective-country-store", "data"),
     Output("country-store", "data"),
-    Output("country-is-region-store", "data"),
     Input("country-select", "value"),
-    Input("individual-country-select", "value"),
 )
-def update_effective_country_store(country, individual):
-    effective = individual if individual else country
-    is_region = effective in REGION_MEMBERS and not individual
-    return effective, effective, is_region
+def update_effective_country_store(country):
+    # Region rows are filtered out of COUNTRY_OPTIONS entirely (see SECTION 3),
+    # so `country` here is always a real, individually-selectable country code,
+    # never a region code.
+    return country, country
 
 @callback(
     Output("storm-store", "data"),
@@ -310,20 +265,6 @@ def update_date_store(date, time):
     if date and time:
         return f"{date.replace('-', '')}{time.replace(':', '')}00"
     return dash.no_update
-
-@callback(
-    Output("individual-country-select", "data"),
-    Output("individual-country-select", "style"),
-    Output("individual-country-select", "value"),
-    Input("country-select", "value"),
-    Input("active-storm-countries-store", "data"),
-    prevent_initial_call=True,
-)
-def update_individual_country_select(country, _active_countries):
-    if country and country in REGION_MEMBERS:
-        members = [{"value": m["value"], "label": m["label"]} for m in REGION_MEMBERS[country]]
-        return members, {"display": "block"}, None
-    return [], {"display": "none"}, None
 
 
 def _unwrap_track_lons(lons):
@@ -478,23 +419,16 @@ def update_last_updated_header(_):
 def update_country_storm_ui(active_countries):
     """
     1. Pulse the red corner indicator on the Select when any country has an active storm.
-    2. Sort COUNTRY_OPTIONS with active countries (and regions with active members) first.
+    2. Sort COUNTRY_OPTIONS with active countries first.
     3. Inject CSS that adds a right-aligned "ACTIVE" badge (red, bold) to each active
        country's dropdown option via [data-combobox-option][value="{code}"]::after.
-       Also flags region entries (e.g. ECA) if any member country is active.
     """
     active_set = set(active_countries or [])
-
-    # Also flag any region whose members contain an active country
-    active_with_regions = set(active_set)
-    for region_code, members in REGION_MEMBERS.items():
-        if any(m["value"] in active_set for m in members):
-            active_with_regions.add(region_code)
 
     css_rules = [
         "[data-combobox-option] { display: flex !important; align-items: center; }",
     ]
-    for code in active_with_regions:
+    for code in active_set:
         safe = code.replace("'", "\\'")
         css_rules.append(
             f'[data-combobox-option][value="{safe}"]::after '
@@ -503,16 +437,10 @@ def update_country_storm_ui(active_countries):
         )
 
     def sort_key(item):
-        return (item.get("value", "") not in active_with_regions, item.get("label", ""))
+        return (item.get("value", "") not in active_set, item.get("label", ""))
 
     try:
-        if COUNTRY_OPTIONS and isinstance(COUNTRY_OPTIONS[0], dict) and "group" in COUNTRY_OPTIONS[0]:
-            sorted_data = [
-                {"group": opt["group"], "items": sorted(opt.get("items", []), key=sort_key)}
-                for opt in COUNTRY_OPTIONS
-            ]
-        else:
-            sorted_data = sorted(COUNTRY_OPTIONS, key=sort_key)
+        sorted_data = sorted(COUNTRY_OPTIONS, key=sort_key)
     except Exception:
         sorted_data = COUNTRY_OPTIONS
 
@@ -1419,9 +1347,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
             # Skip full GeoJSON loading. Only fetch aggregate stats for the legend.
             import urllib.request as _urllib_req
             import urllib.parse as _urllib_parse
-            # For regions, expand to '+'-joined member codes for the tile server.
-            _tile_country = ('+'.join(m['value'] for m in REGION_MEMBERS[country])
-                             if country in REGION_MEMBERS else country)
+            _tile_country = country
             try:
                 _stats_url = (
                     f"{config.TILE_SERVER_URL}/stats/{_urllib_parse.quote(_tile_country)}/"
@@ -1565,9 +1491,7 @@ def load_all_layers(n_clicks, country, storm, forecast_date, forecast_time, wind
         vuln_admin_available = 'E_people_in_need' in admin_props
 
         _map_cfg = COUNTRY_MAP_CONFIG.get(country, DEFAULT_MAP_CONFIG)
-        # For regions, pass '+'-joined member codes so the tile server can query all members.
-        tile_country = ('+'.join(m['value'] for m in REGION_MEMBERS[country])
-                        if country in REGION_MEMBERS else country)
+        tile_country = country
         maplibre_config = {
             "country": tile_country,
             "storm": storm,
@@ -2362,10 +2286,7 @@ def _do_preload(country, storm, forecast_date, forecast_time, wind_threshold):
         time_compact = forecast_time.replace(':', '')   # '00:00' → '0000'
         forecast_date_str = f"{date_compact}{time_compact}00"  # '20260510000000'
         threshold = int(wind_threshold) if wind_threshold else 34
-        # For regions, expand to '+'-joined member codes the tile server understands
-        tile_country = ('+'.join(m['value'] for m in REGION_MEMBERS[country])
-                        if country in REGION_MEMBERS else country)
-        url = f"http://127.0.0.1:8001/preload/{tile_country}/{storm}/{forecast_date_str}"
+        url = f"http://127.0.0.1:8001/preload/{country}/{storm}/{forecast_date_str}"
         requests.get(url, params={"wind_threshold": threshold}, timeout=30)
     except Exception:
         pass  # Best-effort: never propagate errors back to Dash

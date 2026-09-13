@@ -17,6 +17,7 @@ Usage:
 
 import logging
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,11 @@ def get_data_store():
     def _build():
         if impact_data_store == 'BLOB':
             from gigaspatial.core.io.adls_data_store import ADLSDataStore
-            return ADLSDataStore()
+            return ADLSDataStore(
+                container=app_config.ADLS_CONTAINER_NAME,
+                account_url=app_config.ADLS_ACCOUNT_URL,
+                sas_token=app_config.ADLS_SAS_TOKEN,
+            )
         elif impact_data_store == 'SNOWFLAKE':
             try:
                 from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
@@ -118,6 +123,138 @@ def get_data_store():
             return LocalDataStore()
 
     return _LazyDataStore(_build)
+
+
+# --- Blob-first read, with a legacy-Snowflake-stage fallback, for the two
+# --- global raw hazard layers ---
+#
+# The TC-ECMWF/GloFAS pipelines' Blob cutover moved new met/ writes (precip
+# tp, river ro) to real Azure Blob storage (mirrored into Snowflake only as
+# the AOTS_ANALYSIS_BLOB EXTERNAL stage), but this app's configured
+# SNOWFLAKE_STAGE_NAME still points at the legacy INTERNAL AOTS_ANALYSIS
+# stage. Confirmed via a real LIST comparison that AOTS_ANALYSIS_BLOB is NOT
+# a mirror of AOTS_ANALYSIS; it's a strict subset (~51k objects vs
+# ~247k), holding only what's been written since each pipeline's own
+# cutover. Every new precip-raw/river-raw forecast cycle from the cutover
+# onward exists ONLY in Blob, while all historical data (geodb/aos_views,
+# eval, project_results, glofas, etc.) still lives only in the legacy
+# internal stage, for now. The legacy stage is being wound down, so this
+# tries Blob FIRST (the common, growing case) and falls back to the legacy
+# stage only for whatever's old enough to predate the cutover: the
+# opposite priority of a transitional "primary=legacy, fallback=Blob"
+# design, deliberately, since that priority will only get more wrong over
+# time as more of the legacy stage's content ages past relevance. Flipping
+# SNOWFLAKE_STAGE_NAME globally instead would break every OTHER read of
+# anything only in the legacy stage, so this is applied ONLY at the two call
+# sites that actually hit the gap (services/tile_server.py's
+# precip-raw/river-raw caches), via read_stage_file_with_blob_fallback
+# below, not app-wide.
+#
+# Blob reads go DIRECTLY to Azure (ADLSDataStore, the same class this app
+# already uses for IMPACT_DATA_STORE='BLOB' mode), not through the
+# AOTS_ANALYSIS_BLOB Snowflake stage: Snowflake's GET/PUT file-transfer
+# commands are unconditionally rejected on any EXTERNAL stage regardless of
+# warehouse ("091003: GET and PUT commands are not supported with external
+# stage", confirmed live); this is a hard Snowflake limitation, not a cost
+# tradeoff, so reading through Snowflake at all was never actually an
+# option for this file. Going straight to Blob is also strictly cheaper
+# than a working Snowflake-stage read would have been: zero warehouse
+# involvement, not just a smaller one.
+_MISSING_PATH_TTL_S = 300
+_missing_paths_lock = threading.Lock()
+_missing_paths: dict[str, float] = {}
+
+_blob_store_lock = threading.Lock()
+_blob_store = None
+
+
+def _get_blob_store():
+    global _blob_store
+    if _blob_store is None:
+        with _blob_store_lock:
+            if _blob_store is None:
+                from gigaspatial.core.io.adls_data_store import ADLSDataStore
+                # Same relative path layout as the Snowflake stage (both are
+                # rooted at "met/...", "geodb/...", etc.); stage_path needs
+                # no transformation between the two.
+                _blob_store = ADLSDataStore(
+                    container=app_config.ADLS_CONTAINER_NAME,
+                    account_url=app_config.ADLS_ACCOUNT_URL,
+                    sas_token=app_config.ADLS_SAS_TOKEN,
+                )
+    return _blob_store
+
+
+def _is_snowflake_missing_file_error(err) -> bool:
+    """True only for Snowflake's own real "file does not exist" GET failure
+    (error code 253006: "While getting file(s) there was an error: the file
+    does not exist."), NOT a stage-level misconfiguration/permission error
+    like "Stage '...' does not exist or not authorized" (002003); that
+    error also contains the bare phrase "does not exist" but means a real
+    ops incident (dropped/renamed/de-authorized stage), not real data
+    absence, and must not be treated as "retry Blob, maybe negative-cache."
+    A live reproduction confirmed a bare substring check alone misclassifies
+    that case, so this requires the specific error code alongside it."""
+    s = str(err)
+    return '253006' in s and 'does not exist' in s.lower()
+
+
+def _is_blob_missing_error(err) -> bool:
+    """True for a genuine missing-blob failure (BlobNotFound). Checked via
+    both the stable Azure error code and the free-text phrase, for the same
+    defense-in-depth reason as _is_snowflake_missing_file_error above:
+    live reproductions of a bad SAS token, a wrong container, and a bad
+    account host all confirmed neither substring ever appears for those
+    failures, only for a real 404."""
+    s = str(err).lower()
+    return 'blobnotfound' in s or 'does not exist' in s
+
+
+def read_stage_file_with_blob_fallback(stage_path: str):
+    """Read `stage_path` from Azure Blob first, falling back to the app's
+    configured (legacy internal) Snowflake stage when Blob doesn't have it
+    (see the module comment above this function for the full "why", including
+    why Blob is tried FIRST rather than as the fallback).
+
+    Meaningless outside IMPACT_DATA_STORE='SNOWFLAKE' (the stage-duality gap
+    this solves is Snowflake-stage-specific, and in BLOB mode
+    get_data_store() already IS the Blob store): under LOCAL/BLOB this is a
+    plain passthrough to get_data_store().read_file(), no fallback, no
+    negative cache.
+    """
+    if app_config.IMPACT_DATA_STORE != 'SNOWFLAKE':
+        return get_data_store().read_file(stage_path)
+
+    now = time.time()
+    with _missing_paths_lock:
+        missed_at = _missing_paths.get(stage_path)
+    if missed_at is not None and (now - missed_at) < _MISSING_PATH_TTL_S:
+        raise IOError(
+            f"{stage_path}: confirmed missing from both Azure Blob and the legacy "
+            f"{app_config.SNOWFLAKE_STAGE_NAME} Snowflake stage within the last "
+            f"{_MISSING_PATH_TTL_S}s (cached, not re-checked)"
+        )
+
+    try:
+        return _get_blob_store().read_file(stage_path)
+    except (IOError, OSError) as blob_err:
+        if not _is_blob_missing_error(blob_err):
+            raise
+        logger.warning(
+            "%s: not found in Azure Blob, retrying against the legacy %s Snowflake stage",
+            stage_path, app_config.SNOWFLAKE_STAGE_NAME,
+        )
+        try:
+            return get_data_store().read_file(stage_path)
+        except (IOError, OSError) as legacy_err:
+            if not _is_snowflake_missing_file_error(legacy_err):
+                raise
+            with _missing_paths_lock:
+                _missing_paths[stage_path] = now
+            raise IOError(
+                f"{stage_path}: missing from both Azure Blob and the legacy "
+                f"{app_config.SNOWFLAKE_STAGE_NAME} Snowflake stage"
+            ) from legacy_err
 
 
 def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):

@@ -21,6 +21,7 @@ Start:
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextlib
 import gzip
@@ -1278,6 +1279,92 @@ _SHARED_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 _PRELOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=6, thread_name_prefix="aots-preload",
 )
+
+# Dedicated small pool for the raw GLOBAL river/precip layers' own request-
+# path cold loads (ensure_precip_raw/ensure_member_rate_grid/
+# ensure_river_extent, each up to ~90-160s on a genuine cache miss: a fresh
+# Zarr/Parquet download+decode). Every route in this file is a plain `def`,
+# so FastAPI/Starlette already dispatches all of them off the event loop via
+# anyio's shared default thread pool (unsized, ~40 workers), which is fine
+# for cheap routes (/health, /stats/, hover lookups), but that pool is shared
+# and unsplit: a cold load for precip-raw/river-raw would consume one of
+# its slots for up to ~100s, and every unrelated cheap request queues
+# behind it once the shared pool is saturated. Routes that can trigger one
+# of the three `ensure_*` calls above (see _run_on_raw_layer_pool's own
+# call sites below) submit onto THIS pool instead via
+# `loop.run_in_executor`, explicitly bypassing anyio's default dispatch for
+# just those routes; every other route (including /health, /stats/, and
+# even precip-raw's own /stats/precip-raw, which deliberately never
+# downloads the grid, see get_precip_raw_stats's own docstring) is
+# unaffected and stays on the shared pool exactly as today.
+#
+# Sized at 3, not left at an arbitrary default. Per-key locking already
+# inside ensure_precip_raw/ensure_river_extent (see each class's own
+# _lock_for) coalesces every concurrent request for the SAME cache key
+# (forecast_time for precip; (forecast_time, rp_tier) for river) onto ONE
+# real download: for example, a browser opening 30 tiles for a brand-new
+# forecast cycle at once occupies pool workers briefly (blocked on that
+# key's lock) but only one of them actually downloads anything. Genuine
+# concurrent DISTINCT-key cold loads are the real capacity question, and
+# are realistically rare (a live cycle plus a fixed historical/demo date,
+# or two different river rp_tiers), not "many concurrent users," since
+# most requests hit an already-warm key. Per-load memory is real and
+# confirmed asymmetric: precip's cold path holds the full downloaded Zarr
+# (~1.2GB, see ensure_precip_raw's own comment) plus ~270MB of transient
+# per-window decode arrays at once; river's per-row-group streaming design
+# (see _RiverExtentCache's own AGGREGATION/MEMORY SAFETY comment)
+# deliberately avoids an equivalent multi-GB spike for its own up-to-
+# ~74M-row/28MB-compressed file. 3 concurrent worst-case precip-shaped
+# loads is ~4.5-5GB peak, a safe fraction of the confirmed 4 vCPU/14GB
+# Azure P3v2 host once the rest of the process's own footprint (impact
+# caches, _SHARED_EXECUTOR/_PRELOAD_EXECUTOR workers, gunicorn, nginx) is
+# accounted for, and still 3x the realistic concurrent-distinct-key
+# count above, not a tight fit against it.
+_RAW_LAYER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=3, thread_name_prefix="aots-raw-layer",
+)
+
+# A ThreadPoolExecutor's own internal work queue is unbounded: without a
+# cap, a genuine burst of concurrent cold-load requests past max_workers=3
+# would queue indefinitely on THIS pool instead of the shared one,
+# recreating the exact problem this fix exists to solve, just moved one
+# level down (and now invisible to /health, since it's a different pool,
+# but very much still felt by the next raw-layer request in line). Past
+# this cap, a request fails fast with 503 rather than queuing: MapLibre
+# already re-requests visible tiles as the map pans/re-renders, so a
+# quick, explicit rejection here is preferable to an open-ended wait that
+# would itself pile up further duplicate retries.
+_RAW_LAYER_MAX_QUEUED = 12
+_raw_layer_inflight = 0
+_raw_layer_inflight_lock = threading.Lock()
+
+
+async def _run_on_raw_layer_pool(func: Callable, *args):
+    """Run a heavy, synchronous raw-layer function on _RAW_LAYER_EXECUTOR
+    instead of anyio's shared default thread pool, enforcing
+    _RAW_LAYER_MAX_QUEUED. Raises HTTPException(503) if the pool is
+    already saturated (see _RAW_LAYER_MAX_QUEUED's own comment for why
+    that's preferable to unbounded queuing here too).
+
+    Every route calling this must itself be `async def` (not plain `def`);
+    otherwise FastAPI would still dispatch the route itself via the
+    shared pool before this ever runs, defeating the point.
+    """
+    global _raw_layer_inflight
+    with _raw_layer_inflight_lock:
+        if _raw_layer_inflight >= _RAW_LAYER_MAX_QUEUED:
+            raise HTTPException(
+                status_code=503,
+                detail="Raw hazard layer is busy loading a new forecast cycle, retry shortly.",
+                headers={"Retry-After": "2"},
+            )
+        _raw_layer_inflight += 1
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_RAW_LAYER_EXECUTOR, func, *args)
+    finally:
+        with _raw_layer_inflight_lock:
+            _raw_layer_inflight -= 1
 
 # TTL for the base (threshold/storm/hazard-independent) mercator/admin
 # caches, see _ensure_mercator_base_one/_ensure_admin_base_one. Population,
@@ -4825,17 +4912,24 @@ _PRECIP_RAW_BY_TIME_SQL = """
     WHERE PARAM = 'tp' AND FORECAST_TIME = %s
 """
 
-# Rolling prewarm window (see _prewarm_raw_caches's own comment): the 3 most
-# recent DISTINCT real forecast times, not just the single latest one. DISTINCT
-# matters here: MET_FORECASTS has many rows per FORECAST_TIME (one per param/
-# tile), so a plain ORDER BY ... LIMIT 3 without it could return 3 rows that
-# all share the same forecast_time instead of 3 different cycles.
-_LATEST_3_PRECIP_RAW_SQL = """
+# Rolling prewarm window (see _prewarm_raw_caches's own comment): covers the
+# real latest 3 DAYS, not just the single latest cycle. Real cadence,
+# confirmed live against AOTS.TC_ECMWF.MET_FORECASTS (distinct FORECAST_TIME
+# values genuinely land on 00/06/12/18Z, every 6h, no gaps observed) is
+# 6-hourly, so 3 days = 12 distinct cycles, not 3, unlike river-raw below,
+# whose own real cadence is once-daily (see _LATEST_3_RIVER_EXTENT_SQL's own
+# comment), where 3 cycles already IS 3 days. Do not assume the two hazards
+# share one window size; re-verify against real data before changing either.
+# DISTINCT matters here: MET_FORECASTS has many rows per FORECAST_TIME (one
+# per param/tile), so a plain ORDER BY ... LIMIT N without it could return N
+# rows that all share the same forecast_time instead of N different cycles.
+_PRECIP_RAW_PREWARM_CYCLES = 12
+_PRECIP_RAW_PREWARM_SQL = f"""
     SELECT DISTINCT FORECAST_TIME, STAGE_PATH
     FROM AOTS.TC_ECMWF.MET_FORECASTS
     WHERE PARAM = 'tp'
     ORDER BY FORECAST_TIME DESC
-    LIMIT 3
+    LIMIT {_PRECIP_RAW_PREWARM_CYCLES}
 """
 
 
@@ -4862,11 +4956,16 @@ class _PrecipRawCache:
     on demand per request. With 4 windows and ~3 thresholds each (+1 legacy
     default), that's ~17 small (n_lat, n_lon) float32 grids (~2.6MB each ->
     ~45MB per forecast_time) versus retaining 4 full (51, n_lat, n_lon)
-    per-member arrays (~133MB EACH -> ~530MB per forecast_time), which would
-    multiply across the rolling 3-forecast_time prewarm window into ~1.6GB of
-    steady-state extra memory. Precomputing is far cheaper both in steady-
-    state memory and in per-request compute (a real request is now a plain
-    dict lookup, not a comparison+reduction over a retained (51, H, W) array).
+    per-member arrays (~133MB EACH -> ~530MB per forecast_time). At the
+    current _PRECIP_RAW_PREWARM_CYCLES=12 (3-day, real 6-hourly-cadence
+    window, see _PRECIP_RAW_PREWARM_SQL's own comment), the chosen
+    precompute design's real steady-state cost is ~45MB x 12 =~ 540MB; the
+    rejected retain-per-member alternative would instead be ~530MB x 12 =~
+    6.4GB, an even stronger case for precomputing at this wider window
+    than the ~135MB-vs-~1.6GB comparison that held at the original 3-cycle
+    window. Precomputing is far cheaper both in steady-state memory and in
+    per-request compute (a real request is now a plain dict lookup, not a
+    comparison+reduction over a retained (51, H, W) array).
 
     TTL: _PRECIP_RAW_TTL (4h), not _TILE_TTL (see module comment above).
     Thread-safe via double-checked locking, same pattern as _DataCache.
@@ -4993,8 +5092,8 @@ class _PrecipRawCache:
             log.info("PrecipRaw: downloading+opening tp Zarr for %s (%s)…", forecast_time, stage_path)
             # Local import: pulls in the giga-spatial DataStore abstraction, which
             # this otherwise fully self-contained file never needs for anything else.
-            from components.data.data_store_utils import get_data_store
-            raw_bytes = get_data_store().read_file(stage_path)
+            from components.data.data_store_utils import read_stage_file_with_blob_fallback
+            raw_bytes = read_stage_file_with_blob_fallback(stage_path)
             with tempfile.NamedTemporaryFile(suffix=".zarr.zip") as tmp:
                 tmp.write(raw_bytes)
                 tmp.flush()
@@ -5159,8 +5258,8 @@ class _PrecipRawCache:
 
             log.info("PrecipRaw: downloading tp Zarr for per-member window_h=%d, %s (%s)…",
                       window_h, forecast_time, stage_path)
-            from components.data.data_store_utils import get_data_store
-            raw_bytes = get_data_store().read_file(stage_path)
+            from components.data.data_store_utils import read_stage_file_with_blob_fallback
+            raw_bytes = read_stage_file_with_blob_fallback(stage_path)
             with tempfile.NamedTemporaryFile(suffix=".zarr.zip") as tmp:
                 tmp.write(raw_bytes)
                 tmp.flush()
@@ -5707,12 +5806,20 @@ def _river_extent_param(rp_tier: str) -> str:
     table uses, across all 6 tiers."""
     return f"extent_{rp_tier}_bymember"
 
-# Rolling prewarm window, see _LATEST_3_PRECIP_RAW_SQL's own comment for why
+# Rolling prewarm window, see _PRECIP_RAW_PREWARM_SQL's own comment for why
 # DISTINCT is required (RIVER_FORECASTS has one row per pixel/member, not one
 # per forecast_time). Parameterized by PARAM (rp_tier): the rolling prewarm
 # covers all 6 return-period tiers, not just the default rp10, since the
 # RP-tier slider is a frequently-used control, without prewarming, switching
 # to any other tier would pay a full cold Parquet download+scan every time.
+#
+# Deliberately still LIMIT 3, NOT widened to match precip-raw's 12: real
+# cadence, confirmed live against AOTS.TC_ECMWF.RIVER_FORECASTS (distinct
+# FORECAST_TIME values all land on 00:00, one per calendar day, no intraday
+# cycles observed), is once-daily (GloFAS), not 6-hourly like precip. 3
+# distinct cycles here already covers the real latest 3 days; blindly
+# bumping this to 12 would warm 12 days of river-raw data, well beyond the
+# "3 days" this window is meant to cover, for zero benefit.
 _LATEST_3_RIVER_EXTENT_SQL = """
     SELECT DISTINCT FORECAST_TIME, STAGE_PATH
     FROM AOTS.TC_ECMWF.RIVER_FORECASTS
@@ -5957,8 +6064,8 @@ class _RiverExtentCache:
                       _river_extent_param(rp_tier), forecast_time, stage_path, step_hours)
             t0 = time.perf_counter()
             # Local import: same reasoning as _RiverRawCache/_PrecipRawCache above.
-            from components.data.data_store_utils import get_data_store
-            raw_bytes = get_data_store().read_file(stage_path)
+            from components.data.data_store_utils import read_stage_file_with_blob_fallback
+            raw_bytes = read_stage_file_with_blob_fallback(stage_path)
 
             n14 = 1 << _RIVER_EXTENT_ZOOM  # 16384 tiles per axis at z=14
             max_step = step_hours[-1]
@@ -6481,8 +6588,8 @@ _PREWARM_ACCESS_GRACE_SECONDS = 20 * 60
 
 
 def _prewarm_raw_caches() -> None:
-    """Background loop (single daemon thread): keeps a ROLLING WINDOW of the
-    3 most recent real forecast times for precip-raw and river-raw (now
+    """Background loop (single daemon thread): keeps a ROLLING 3-DAY WINDOW
+    of real forecast times for precip-raw and river-raw (now
     extent_rp10_bymember-based, see _RiverExtentCache) always warm, re-checked
     every _PREWARM_INTERVAL_SECONDS. Reuses ensure_precip_raw()/
     ensure_river_extent() directly (same functions the /preload/* endpoints
@@ -6492,15 +6599,20 @@ def _prewarm_raw_caches() -> None:
     logged and swallowed so a warm-up failure (e.g. Snowflake hiccup) never
     crashes this thread or blocks the server.
 
-    Keeps the latest 3 distinct forecast times warm rather than only the
-    single latest one, so a user looking at yesterday's or the day-before's
-    real data (a completely normal thing to do) does not pay a full cold
-    ~1.2GB Zarr / real Parquet download. Each cycle re-resolves the real
-    latest-3-distinct-times set from Snowflake (_LATEST_3_PRECIP_RAW_SQL/
-    _LATEST_3_RIVER_EXTENT_SQL) and evicts any previously-warmed entry that
-    has since aged out of that window, so the process doesn't grow
-    unbounded: each precip-raw grid alone can be sized in the hundreds of
-    MB once decoded.
+    "3 days" is NOT the same cycle-count for both hazards, since their real
+    upstream cadences differ (confirmed live against Snowflake, see
+    _PRECIP_RAW_PREWARM_SQL's and _LATEST_3_RIVER_EXTENT_SQL's own
+    comments): precip-raw is genuinely 6-hourly, so 3 days =
+    _PRECIP_RAW_PREWARM_CYCLES=12 distinct cycles; river-raw (GloFAS) is
+    genuinely once-daily, so 3 days is still just 3 distinct cycles. Keeps
+    these windows warm rather than only the single latest cycle, so a user
+    looking at yesterday's or a few-days-old real data (a completely normal
+    thing to do) does not pay a full cold ~1.2GB Zarr / real Parquet
+    download. Each cycle re-resolves the real latest-window set from
+    Snowflake (_PRECIP_RAW_PREWARM_SQL/_LATEST_3_RIVER_EXTENT_SQL) and
+    evicts any previously-warmed entry that has since aged out of that
+    window, so the process doesn't grow unbounded: each precip-raw grid
+    alone can be sized in the hundreds of MB once decoded.
 
     River-raw warms all 6 return-period tiers (rp2/rp5/rp10/rp20/rp50/
     rp100), not just the default rp10, since the RP-tier slider is an
@@ -6522,10 +6634,10 @@ def _prewarm_raw_caches() -> None:
     time any user selects one of them."""
     while True:
         try:
-            rows = _run_query(_LATEST_3_PRECIP_RAW_SQL, [])
+            rows = _run_query(_PRECIP_RAW_PREWARM_SQL, [])
             latest_times = {str(r["FORECAST_TIME"]) for r in rows}
         except Exception as e:
-            log.error("Prewarm: could not resolve latest-3 precip-raw times: %s", e)
+            log.error("Prewarm: could not resolve latest-%d precip-raw times: %s", _PRECIP_RAW_PREWARM_CYCLES, e)
             latest_times = None
         if latest_times is not None:
             if not latest_times:
@@ -6567,8 +6679,8 @@ def _prewarm_raw_caches() -> None:
                     log.error("Prewarm: precip-raw stale-eviction pass failed: %s", e)
                     stale = set()
                 if stale:
-                    log.info("Prewarm: evicted %d stale precip-raw grid(s) outside the latest-3 window: %s",
-                              len(stale), sorted(stale))
+                    log.info("Prewarm: evicted %d stale precip-raw grid(s) outside the latest-%d window: %s",
+                              len(stale), _PRECIP_RAW_PREWARM_CYCLES, sorted(stale))
 
         # River-raw: one latest-3 resolution PER rp_tier, each tier is its
         # own distinct Parquet file/forecast_time set (rp2's own file, in
@@ -8390,7 +8502,7 @@ def tile_value_combined(
 # ---------------------------------------------------------------------------
 
 @app.get("/tiles/raster/precip-raw/{forecast_time}/{z}/{x}/{y}.webp", response_class=Response)
-def precip_raw_tile(
+async def precip_raw_tile(
     forecast_time: str, z: int, x: int, y: int,
     mode: str = Query("mean", pattern="^(mean|probability)$"),
     window_h: int = Query(_PRECIP_RATE_DEFAULT_WINDOW_H),
@@ -8422,12 +8534,22 @@ def precip_raw_tile(
     a separate, short-TTL, on-demand fetch (see _PrecipRawCache.
     ensure_member_rate_grid): NOT the persistent aggregate cache this
     endpoint otherwise uses.
+
+    Runs on _RAW_LAYER_EXECUTOR (see that pool's own module-level comment),
+    not anyio's shared default pool: both branches below can trigger a
+    genuine cold Zarr download+decode (ensure_precip_raw/
+    ensure_member_rate_grid), which must never delay unrelated cheap
+    requests sharing the default pool.
     """
     try:
         if member is not None:
-            webp_bytes = _fetch_precip_raw_tile_member(forecast_time, z, x, y, window_h, member)
+            webp_bytes = await _run_on_raw_layer_pool(
+                _fetch_precip_raw_tile_member, forecast_time, z, x, y, window_h, member)
         else:
-            webp_bytes = _fetch_precip_raw_tile(forecast_time, z, x, y, mode, window_h, threshold_mm)
+            webp_bytes = await _run_on_raw_layer_pool(
+                _fetch_precip_raw_tile, forecast_time, z, x, y, mode, window_h, threshold_mm)
+    except HTTPException:
+        raise
     except Exception as exc:
         log.error("precip_raw_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -8444,7 +8566,7 @@ def precip_raw_tile(
 
 
 @app.get("/tile-value/precip-raw/{forecast_time}")
-def precip_raw_tile_value(
+async def precip_raw_tile_value(
     forecast_time: str,
     lon: float = Query(...),
     lat: float = Query(...),
@@ -8476,7 +8598,25 @@ def precip_raw_tile_value(
     `member` (1-51, optional): when set, ignores `mode`/`threshold_mm` and
     returns that one member's own rate (from _PrecipRawCache's short-TTL
     member-grid cache, the same one precip_raw_tile's own member branch
-    uses) instead of the aggregate mean/probability."""
+    uses) instead of the aggregate mean/probability.
+
+    Runs on _RAW_LAYER_EXECUTOR (see that pool's own module-level comment):
+    despite being a cheap hover lookup once the relevant grid is warm, both
+    branches below start with a real ensure_precip_raw/
+    ensure_member_rate_grid call, which can be a genuine cold Zarr
+    download+decode on a cache miss (e.g. the very first hover after a new
+    forecast cycle lands), exactly the case this pool exists to isolate.
+    """
+    return await _run_on_raw_layer_pool(
+        _precip_raw_tile_value_impl, forecast_time, lon, lat, mode, window_h, threshold_mm, member)
+
+
+def _precip_raw_tile_value_impl(
+    forecast_time: str, lon: float, lat: float, mode: str,
+    window_h: int, threshold_mm: float, member: Optional[int],
+) -> dict:
+    """Synchronous body of precip_raw_tile_value, run via
+    _run_on_raw_layer_pool. See that route's own docstring."""
     if member is not None:
         resolved_m = _precip_cache.ensure_member_rate_grid(forecast_time, window_h)
         if resolved_m is None:
@@ -9515,7 +9655,7 @@ def preload_precip_raw(forecast_time: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/tiles/raster/river-raw/{forecast_time}/{z}/{x}/{y}.webp", response_class=Response)
-def river_raw_raster_tile(
+async def river_raw_raster_tile(
     forecast_time: str, z: int, x: int, y: int,
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
     step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
@@ -9557,9 +9697,17 @@ def river_raw_raster_tile(
     flood extent (a flat single-color mask) instead of the aggregate
     member-agreement gradient, see _fetch_river_extent_raster_tile's own
     docstring for the rationale.
+
+    Runs on _RAW_LAYER_EXECUTOR (see that pool's own module-level comment),
+    not anyio's shared default pool: this can trigger a genuine cold
+    Parquet download+row-group-scan (ensure_river_extent), which must
+    never delay unrelated cheap requests sharing the default pool.
     """
     try:
-        webp_bytes = _fetch_river_extent_raster_tile(forecast_time, z, x, y, rp_tier, step_h, member)
+        webp_bytes = await _run_on_raw_layer_pool(
+            _fetch_river_extent_raster_tile, forecast_time, z, x, y, rp_tier, step_h, member)
+    except HTTPException:
+        raise
     except Exception as exc:
         log.error("river_raw_raster_tile error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -9576,7 +9724,7 @@ def river_raw_raster_tile(
 
 
 @app.get("/tile-value/river-raw/{forecast_time}")
-def river_raw_tile_value(
+async def river_raw_tile_value(
     forecast_time: str,
     lon: float = Query(...),
     lat: float = Query(...),
@@ -9604,7 +9752,22 @@ def river_raw_tile_value(
     `member` (1-51, optional), when set, returns a boolean `flooded` for
     that one member (decoded from the same per-tile BITS bitmask
     river_raw_raster_tile uses) instead of the aggregate `probability`
-    fraction."""
+    fraction.
+
+    Runs on _RAW_LAYER_EXECUTOR (see that pool's own module-level comment):
+    despite being a cheap hover lookup once the relevant grid is warm, this
+    starts with a real ensure_river_extent call, which can be a genuine
+    cold Parquet download+row-group-scan on a cache miss."""
+    return await _run_on_raw_layer_pool(
+        _river_raw_tile_value_impl, forecast_time, lon, lat, rp_tier, step_h, member)
+
+
+def _river_raw_tile_value_impl(
+    forecast_time: str, lon: float, lat: float, rp_tier: str, step_h: int,
+    member: Optional[int],
+) -> dict:
+    """Synchronous body of river_raw_tile_value, run via
+    _run_on_raw_layer_pool. See that route's own docstring."""
     resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
     if resolved is None:
         return {}
@@ -9633,7 +9796,7 @@ def river_raw_tile_value(
 
 
 @app.get("/stats/river-raw/{forecast_time}")
-def get_river_raw_stats(
+async def get_river_raw_stats(
     forecast_time: str,
     rp_tier: str = Query(_RIVER_EXTENT_DEFAULT_RP_TIER, pattern="^(rp2|rp5|rp10|rp20|rp50|rp100)$"),
     step_h: int = Query(_RIVER_EXTENT_DEFAULT_STEP_H),
@@ -9655,8 +9818,14 @@ def get_river_raw_stats(
     `step_h` is a CUMULATIVE window (see river_raw_raster_tile's own
     docstring), echoed back verbatim: this endpoint's own [0,1] breaks/
     ensemble_size shape is unaffected by the window itself.
+
+    Runs on _RAW_LAYER_EXECUTOR (see that pool's own module-level comment):
+    unlike get_precip_raw_stats (which deliberately never downloads the
+    grid), this endpoint calls ensure_river_extent directly and so can
+    trigger a genuine cold Parquet download+row-group-scan.
     """
-    resolved = _river_extent_cache.ensure_river_extent(forecast_time, rp_tier, step_h)
+    resolved = await _run_on_raw_layer_pool(
+        _river_extent_cache.ensure_river_extent, forecast_time, rp_tier, step_h)
     is_standin = rp_tier in _RIVER_EXTENT_STANDIN_RP_TIERS
     if resolved is None:
         return {"min": None, "max": None, "forecast_time": None,

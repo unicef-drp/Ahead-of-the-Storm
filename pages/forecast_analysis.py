@@ -143,9 +143,24 @@ def _load_analysis_data():
             return
         countries_df = get_active_countries()
         if not countries_df.empty:
+            # Region rows (IS_REGION=TRUE, e.g. the Caribbean "ECA" rollup)
+            # are excluded from this page's country dropdown entirely: this
+            # page only supports selecting individual real countries.
+            # get_track_impacts()/get_tile_impacts() (via get_impact_data())
+            # filter Snowflake with a plain COUNTRY = %s equality, so a
+            # region code passed through here would either silently hit a
+            # precomputed COUNTRY='ECA' rollup row in the SQL path (a
+            # separate, still-in-place Snowflake mechanism this page no
+            # longer needs to depend on) or, in the STAGE path, look for a
+            # nonexistent per-region parquet/CSV file the data pipeline
+            # never produces for a synthetic region code.
+            _region_col = countries_df.get('IS_REGION')
+            _real_countries_df = (
+                countries_df[_region_col != True] if _region_col is not None else countries_df
+            )
             COUNTRY_OPTIONS = [
                 {"value": row['COUNTRY_CODE'], "label": row['COUNTRY_NAME']}
-                for _, row in countries_df.iterrows()
+                for _, row in _real_countries_df.iterrows()
             ]
             # Set default country to JAM if available, otherwise first in list
             DEFAULT_COUNTRY = "JAM" if "JAM" in [opt["value"] for opt in COUNTRY_OPTIONS] else (COUNTRY_OPTIONS[0]["value"] if COUNTRY_OPTIONS else None)

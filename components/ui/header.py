@@ -67,22 +67,6 @@ def make_header(active_tab="tab-home"):
                                             "color": "inherit", 
                                         },
                                     ),
-                                    dmc.Anchor(
-                                        dmc.TabsTab(
-                                            "Report",
-                                            value="tab-report",
-                                            leftSection=DashIconify(
-                                                icon="carbon:report", height=16
-                                            ),
-                                            #disabled=True,
-                                            #c="black"
-                                        ),
-                                        href="/report",
-                                        style={
-                                            "textDecoration": "none",
-                                            "color": "inherit", 
-                                        },
-                                    ),
                                 ],
                                 justify="flex-end",
                                 style={

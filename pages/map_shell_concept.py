@@ -3771,14 +3771,15 @@ def _fetch_family_member_frames(countries, date, run, hz):
       {"wind": {country: df|None}}, no flood hazard active
       {"combined": {country: df|None}}, a flood hazard is active
 
-    A real Wind+Gust+River+Rain tile-level union is available (see
+    A real Wind+River+Rain tile-level union is available (see
     services/tile_server.py's combined_member_impacts and this module's
     own _member_combined_impacts) whenever a flood hazard is active, so
     THAT path is used whenever _flood_combine_active(date, run, hz) is
     true (both toggled on AND real data resolves for this date, see that
     function's own docstring), folding Wind's own real contribution in
     too, with no separate scalar Wind fetch to later combine via an
-    independence formula.
+    independence formula. Gust is never part of this union in practice,
+    see below.
 
     The pure wind-only case (no flood hazard active) deliberately stays
     on the OLDER, TRACK_MAT-scalar-only path (_member_track_impacts)
