@@ -55,7 +55,8 @@ Two independent variables control how the app loads impact data:
   - `SCHOOL_IMPACT_MAT` / `HC_IMPACT_MAT`: point data for schools and health centres
   - `TRACK_MAT`: per-ensemble-member severity and envelope geometry
 
-  These tables must be set up first, see `snowflake/mat_tables/README.md`.
+  These tables must be set up first by a separate, internal data pipeline that is not part of
+  this public repo.
 
 **`IMPACT_DATA_STORE`**: controls *where* stage files are stored (only relevant when `IMPACT_DATA_SOURCE=STAGE`):
 - `LOCAL` (default): local filesystem
@@ -164,7 +165,8 @@ A single gunicorn worker (1 process × 8 threads) is required to avoid fork-safe
 ## Troubleshooting
 
 ### "No data available" or missing views
-- If using `IMPACT_DATA_SOURCE=SQL`: verify Snowflake MAT tables are populated (see `snowflake/mat_tables/README.md`)
+- If using `IMPACT_DATA_SOURCE=SQL`: verify Snowflake MAT tables are populated by the internal
+  data pipeline (not part of this repo)
 - If using `IMPACT_DATA_SOURCE=STAGE`: verify that impact views exist in `{ROOT_DATA_DIR}/{VIEWS_DIR}/`
 - Run the storm processing pipeline from the [DATAPIPELINE repository](https://github.com/unicef-drp/Ahead-of-the-Storm-DATAPIPELINE)
 - Check that Snowflake contains the expected storm data

@@ -74,8 +74,21 @@ _META_TTL    = 30 * 60   # 30 min: storm list, forecast times, kept in sync with
                          # ms-metadata-refresh-interval's own poll cadence (layouts/panels.py,
                          # pages/map_shell_concept.py) -- was 15 min, halved for real per-open-tab query
                          # cost, still well inside real new-storm/new-cycle appearance timescales (hours,
-                         # not minutes)
-_IMPACT_TTL  = 15 * 60   # 15 min: impact queries (new pipeline output picked up within 15 min)
+                         # not minutes). Kept short deliberately: this is what governs how quickly a
+                         # genuinely NEW cycle/storm becomes visible at all, unlike _IMPACT_TTL below.
+_IMPACT_TTL  = 4 * 60 * 60  # 4h: impact queries for one already-known (country, storm, forecast_date,
+                         # threshold, ...) combination. Was 15 min, which forced a real, user-visible
+                         # cold Snowflake re-fetch every 15 min for the SAME still-current, actively-
+                         # viewed cycle. Confirmed real cause of intermittent "feels slow" reports
+                         # (2026-09-22 investigation): the cache key is pinned to a specific forecast
+                         # cycle already, so a completed cycle's real data does not change on its own;
+                         # the only real reason to see fresher data sooner is a rare, manual backfill
+                         # correcting an already-cached cycle, which now
+                         # needs either this TTL to lapse or a container restart to surface, not routine
+                         # per-viewer traffic. 4h keeps a real cycle "warm" for essentially its entire
+                         # practical lifetime (new cycles land ~every 6h) while still self-healing a
+                         # rare backfill within a few hours without needing a restart. See services/
+                         # tile_server.py's matching _TILE_TTL, deliberately kept in sync with this one.
 _BASE_TTL    = 60 * 60   # 60 min: base layers (schools/HCs/tiles; change only on re-init)
 
 
@@ -390,29 +403,52 @@ def get_available_wind_thresholds(storm, forecast_time):
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_latest_forecast_time_overall():
     """
-    Get the latest forecast issue time from Snowflake across all storms
+    Real topbar-ceiling resolution across ALL three hazard families, not
+    wind alone.
     
+    Takes the real MAX across TC_TRACKS' own latest cycle and the two
+    existing global (no-country-argument) latest-cycle resolvers already
+    used elsewhere in this file for the raw river/precip layers
+    (get_latest_river_extent_forecast_time() and get_latest_precip_forecast_
+    time()) rather than duplicating their queries here. Deliberately the
+    RAW upstream cycle time for river/precip (not gated on MAT-table
+    readiness the way get_default_forecast_cycle()'s more careful walk is):
+    this function only decides the topbar's max-SELECTABLE bound, not where
+    it lands by default, so being slightly optimistic here (a user can pick
+    a run whose MAT tables haven't finished yet) is the same honest,
+    already-handled-downstream "empty result until it lands" case every
+    hazard's own data-fetching function already tolerates. The real risk
+    this function exists to avoid is the opposite direction: silently
+    blocking access to data that IS genuinely ready.
+
     Returns:
-        datetime: Latest forecast issue time (when the most recent forecast was issued), or None if no data found
+        datetime | None: Latest forecast issue time across all hazards, or
+        None only if all three sources are genuinely empty.
     """
     try:
-        # Query to get the most recent forecast time across all storms
-        query = """
-        SELECT MAX(FORECAST_TIME) as MAX_FORECAST_TIME
-        FROM TC_TRACKS
-        """
-        
+        query = "SELECT MAX(FORECAST_TIME) as MAX_FORECAST_TIME FROM TC_TRACKS"
         df = _run_query(query)
-        
-        if not df.empty and pd.notna(df['MAX_FORECAST_TIME'].iloc[0]):
-            latest_time = df['MAX_FORECAST_TIME'].iloc[0]
-            return latest_time
-        else:
-            return None
-            
+        wind_latest = df['MAX_FORECAST_TIME'].iloc[0] if not df.empty else None
     except Exception as e:
-        logger.error("Error getting latest forecast time from Snowflake: %s", e)
-        return None
+        logger.error("Error getting latest wind forecast time from Snowflake: %s", e)
+        wind_latest = None
+
+    try:
+        river_result = get_latest_river_extent_forecast_time()
+        river_latest = pd.Timestamp(river_result[0]) if river_result else None
+    except Exception as e:
+        logger.error("Error getting latest river forecast time for topbar ceiling: %s", e)
+        river_latest = None
+
+    try:
+        precip_result = get_latest_precip_forecast_time()
+        precip_latest = pd.Timestamp(precip_result[0]) if precip_result else None
+    except Exception as e:
+        logger.error("Error getting latest precip forecast time for topbar ceiling: %s", e)
+        precip_latest = None
+
+    candidates = [pd.Timestamp(t) for t in (wind_latest, river_latest, precip_latest) if pd.notna(t)]
+    return max(candidates) if candidates else None
 
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_latest_river_forecast_time(country: str):
@@ -1110,11 +1146,20 @@ def get_storms_for_country_date(country: str, forecast_date: str) -> list:
 
     Returns [] (not a fallback) when there's genuinely no real data for that
     country/date combination.
+
+    Ordered by real total population impact, descending (most severe storm
+    first), NOT an arbitrary/undefined order: when two storms both have real
+    impact on the same country at the same date (e.g. two hurricanes
+    concurrently threatening the same coastline), a caller that only wants
+    ONE storm (most of this function's own callers, see
+    _resolve_storm_for_country) needs a real, deterministic, meaningful
+    choice, not whatever order Snowflake happens to return DISTINCT rows in.
+    Same real severity signal get_active_storm_countries() already uses.
     """
     try:
         df = _run_query(
-            "SELECT DISTINCT STORM FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT "
-            "WHERE COUNTRY = %s AND FORECAST_DATE = %s",
+            "SELECT STORM, SUM(E_POPULATION) AS TOTAL_POP FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT "
+            "WHERE COUNTRY = %s AND FORECAST_DATE = %s GROUP BY STORM ORDER BY TOTAL_POP DESC",
             params=[country, forecast_date],
         )
         return [r['STORM'] for r in df.to_dict('records')] if not df.empty else []
@@ -1715,6 +1760,78 @@ def _row_to_precip_impact_totals(row) -> dict:
     return {col: (math.ceil(row[col]) if pd.notna(row[col]) else None) for col in _TOTALS_PRECIP_IMPACT_COLS}
 
 
+# RIVER_MAT/PRECIP_MAT variants of the 3 point-facility tables (School is
+# deliberately excluded: its own river/precip per-facility country coverage
+# is broad and consistent with the tile aggregate's, no known gap there).
+_RIVER_PRECIP_FACILITY_TABLES = {
+    "E_NUM_HCS":      ("HC_RIVER_MAT", "HC_PRECIP_MAT"),
+    "E_NUM_SHELTERS": ("SHELTER_RIVER_MAT", "SHELTER_PRECIP_MAT"),
+    "E_NUM_WASH":     ("WASH_RIVER_MAT", "WASH_PRECIP_MAT"),
+}
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=256)
+def _river_precip_facility_has_data(hazard: str, facility_col: str, country: str, forecast_time: str) -> bool:
+    """
+    True only if the REAL per-facility-point table (e.g. HC_RIVER_MAT) has at
+    least one row for this exact country + cycle. Needed because
+    MERCATOR_TILE_RIVER_MAT/PRECIP_MAT's own E_NUM_HCS/E_NUM_SHELTERS/
+    E_NUM_WASH are a separate, density/raster-based exposure estimate that
+    can be real and nonzero for a country even when the actual per-facility
+    table has zero rows there. Real example: Sierra Leone river,
+    E_NUM_HCS sums to a real nonzero fraction, ceil'd to a displayed "1",
+    while HC_RIVER_MAT has zero SLE rows at any date; also Nicaragua's WASH
+    specifically, same cycle, while its own HC/Shelter both have real
+    current data. The two pipelines have inconsistent, in some
+    cases per-(country, facility type) rather than per-country, coverage.
+    This check exists so the displayed count is never shown without a real
+    facility record backing it, regardless of what causes a given gap or
+    whether/when it closes.
+    """
+    if hazard not in ("river", "precip"):
+        return True
+    table = _RIVER_PRECIP_FACILITY_TABLES[facility_col][0 if hazard == "river" else 1]
+    try:
+        df = _run_query(f"SELECT 1 FROM AOTS.TC_ECMWF.{table} WHERE COUNTRY = %s AND FORECAST_TIME = %s LIMIT 1",
+                         params=[country, forecast_time])
+        return not df.empty
+    except Exception as e:
+        logger.warning("_river_precip_facility_has_data failed for %s/%s/%s/%s: %s", hazard, facility_col, country, forecast_time, e)
+        # Fail closed: an unconfirmed check must not let an unbacked count through.
+        return False
+
+
+def _null_unbacked_river_precip_facilities(totals: dict, hazard: str, country: str, forecast_time: str) -> dict:
+    """Nulls E_NUM_HCS/E_NUM_SHELTERS/E_NUM_WASH in a totals dict (river/precip
+    only) when _river_precip_facility_has_data says this country/cycle has no
+    real per-facility rows backing that column (see that function's own
+    docstring). Applied once per (hazard, country, forecast_time), not per
+    tier/window/admin-row, since availability doesn't vary within a cycle."""
+    if forecast_time is None:
+        return totals
+    unbacked = {col for col in _RIVER_PRECIP_FACILITY_TABLES
+                if not _river_precip_facility_has_data(hazard, col, country, forecast_time)}
+    if not unbacked:
+        return totals
+    return {col: (None if col in unbacked else v) for col, v in totals.items()}
+
+
+def _null_unbacked_river_precip_facility_columns_df(df: pd.DataFrame, hazard: str, country: str, forecast_time: str) -> pd.DataFrame:
+    """DataFrame sibling of _null_unbacked_river_precip_facilities, for the
+    admin-region breakdown (get_admin_river_impacts/get_admin_precip_impacts,
+    one row per admin unit rather than one totals dict). Same per-(hazard,
+    country, forecast_time) unbacked-column check, applied across every row
+    at once rather than per admin unit, since availability doesn't vary
+    within a cycle."""
+    if df.empty or forecast_time is None:
+        return df
+    unbacked = [col for col in _RIVER_PRECIP_FACILITY_TABLES
+                if col in df.columns and not _river_precip_facility_has_data(hazard, col, country, forecast_time)]
+    if unbacked:
+        df[unbacked] = None
+    return df
+
+
 def _zero_impact_totals() -> dict:
     return {col: 0 for col in _TOTALS_IMPACT_COLS}
 
@@ -1931,10 +2048,14 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
             for _, row in river_df.iterrows():
                 by_tier_window.setdefault(str(row["RP_TIER"]), {})[int(row["STEP_H"])] = _row_to_impact_totals(row)
             target_window = river_window or _RIVER_WINDOW_DEFAULT
-            result["river"] = {tier: by_tier_window.get(tier, {}).get(target_window, _zero_impact_totals())
+            result["river"] = {tier: _null_unbacked_river_precip_facilities(
+                                    by_tier_window.get(tier, {}).get(target_window, _zero_impact_totals()),
+                                    "river", country, river_forecast_time)
                                 for tier in _TOTALS_RIVER_RP_TIERS}
             result["river_by_window"] = {
-                str(w): {tier: by_tier_window.get(tier, {}).get(w, _zero_impact_totals())
+                str(w): {tier: _null_unbacked_river_precip_facilities(
+                            by_tier_window.get(tier, {}).get(w, _zero_impact_totals()),
+                            "river", country, river_forecast_time)
                           for tier in _TOTALS_RIVER_RP_TIERS}
                 for w in _TOTALS_RIVER_WINDOWS
             }
@@ -1964,7 +2085,10 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
             for _, row in precip_df.iterrows():
                 by_window_mm.setdefault(str(int(row["WINDOW_H"])), {})[int(row["THRESHOLD_MM"])] = _row_to_precip_impact_totals(row)
             result["precip"] = {
-                window: {mm: by_window_mm.get(window, {}).get(mm, _zero_precip_impact_totals()) for mm in mm_tiers}
+                window: {mm: _null_unbacked_river_precip_facilities(
+                            by_window_mm.get(window, {}).get(mm, _zero_precip_impact_totals()),
+                            "precip", country, precip_forecast_time)
+                         for mm in mm_tiers}
                 for window, mm_tiers in _TOTALS_PRECIP_MM_BY_WINDOW.items()
             }
     except Exception as e:
@@ -2071,6 +2195,7 @@ def get_admin_river_impacts(country: str, forecast_time: str, rp_tier: str, step
         """
         df = _run_query(query, params=[country, forecast_time, rp_tier, step_h, admin_level])
         logger.info("Loaded %d admin river impact rows (%s/%s/%s/%dh L%d)", len(df), country, forecast_time, rp_tier, step_h, admin_level)
+        df = _null_unbacked_river_precip_facility_columns_df(df, "river", country, forecast_time)
         return df.copy()
     except Exception as e:
         logger.error("Error querying ADMIN_ALL_RIVER_MAT: %s", e)
@@ -2101,6 +2226,7 @@ def get_admin_precip_impacts(country: str, forecast_time: str, threshold_mm: flo
         """
         df = _run_query(query, params=[country, forecast_time, threshold_mm, window_h, admin_level])
         logger.info("Loaded %d admin precip impact rows (%s/%s/%smm/%dh L%d)", len(df), country, forecast_time, threshold_mm, window_h, admin_level)
+        df = _null_unbacked_river_precip_facility_columns_df(df, "precip", country, forecast_time)
         return df.copy()
     except Exception as e:
         logger.error("Error querying ADMIN_ALL_PRECIP_MAT: %s", e)
@@ -2284,7 +2410,7 @@ def get_wind_tile_bitmask(country: str, storm: str, forecast_date: str, wind_thr
     today; TILE_WIND_BITMASK_MAT itself has no SOURCE column yet (a future
     source, e.g. Google WeatherNext, would need its own table, same
     "separate tables per hazard, combined only via the app layer"
-    convention this repo's own ORCHESTRATION MAT tables already follow,
+    convention the pipeline's own MAT tables already follow,
     not an ALTER TABLE onto this one). Accepted here (not silently
     ignored) so a caller passing anything else fails LOUDLY rather than
     silently getting ECMWF data under a different label.
@@ -2391,7 +2517,7 @@ def get_river_tile_bitmask(country: str, forecast_time: str, rp_tier: str, step_
     Replaces services/tile_server.py's own live _RiverExtentCache decode
     of the raw global GloFAS extent_rp{N}_bymember Parquet (a real,
     measured multi-minute cold-cache cost per (forecast_time, rp_tier),
-    see 17_river_rain_bitmask_mat_tables.sql in the ORCHESTRATION repo for
+    see 17_river_rain_bitmask_mat_tables.sql in the internal data pipeline for
     the full "why" this table exists) with a plain, fast indexed SELECT
     against an already-materialized MAT table -- this is a
     performance-only change, the underlying per-member methodology
@@ -3027,7 +3153,7 @@ def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
 # Warning has exactly one real email per (track_id, forecast_date), not one
 # per country. FORECAST_DATE itself is a real VARCHAR in 'YYYYMMDDHH24MISS'
 # form (matching MERCATOR_TILE_IMPACT_MAT's own convention, see WATCH_
-# SENT_LOG's own CREATE TABLE comment in the ORCHESTRATION repo), not a
+# SENT_LOG's own CREATE TABLE comment in the internal data pipeline), not a
 # TIMESTAMP_NTZ like ALERT_SENT_LOG.FORECAST_TIME -- callers still pass the
 # same "YYYY-MM-DD HH:MM:SS" string the Alert functions take (the topbar's
 # own resolved forecast_time), converted to that format inside the query via
@@ -3158,86 +3284,145 @@ def get_recent_track_forecast_times(n: int = 8):
         return []
 
 
-def _wind_gust_ready_at(forecast_time) -> bool:
-    """True when every real storm that ACTUALLY NEEDS wind/gust impact
-    processing at this exact forecast_time has real, queryable output in
-    BOTH MERCATOR_TILE_IMPACT_MAT (wind) and MERCATOR_TILE_GUST_MAT (gust)
-    for it -- i.e. DATAPIPELINE has genuinely finished computing and
-    materializing wind AND gust for this cycle, not just that TC-ECMWF-
-    Forecast-Pipeline has published the raw track.
+def get_recent_precip_forecast_times(n: int = 8):
+    """Real, most-recent `n` DISTINCT exact PARAM='tp' forecast_time cycles
+    from MET_FORECASTS, newest first, each a real pd.Timestamp. Precip
+    sibling of get_recent_track_forecast_times, used by
+    get_default_forecast_cycle to anchor its candidate walk on precip's own
+    cycle list instead of TC_TRACKS' (see that function's own docstring for
+    the full "why": river/precip are NOT storm-scoped and keep advancing
+    with no active storm at all, so anchoring the walk on TC_TRACKS silently
+    stalls the app's own default landing cycle for the whole duration of any
+    quiet period, the same wind-only-ceiling problem get_latest_forecast_
+    time_overall() solves for the topbar's own max-selectable bound).
+    Precip's own cycles are
+    irregular-hour (see get_precip_forecast_time_near's own docstring), so
+    this is a real DISTINCT list, not synthesized from a fixed 6-hourly
+    grid."""
+    try:
+        df = _run_query(
+            "SELECT DISTINCT FORECAST_TIME FROM AOTS.TC_ECMWF.MET_FORECASTS "
+            "WHERE PARAM = 'tp' ORDER BY FORECAST_TIME DESC LIMIT %s",
+            params=[n],
+        )
+        return [pd.Timestamp(t) for t in df['FORECAST_TIME'] if pd.notna(t)]
+    except Exception as e:
+        logger.error("Error querying recent precip forecast times: %s", e)
+        return []
 
-    Checks the real FINAL OUTPUT tables directly, not a completion-
-    bookkeeping log: a log can go silently
-    stale/orphaned the moment the pipeline's own trigger path changes,
-    while the actual output tables the dashboard queries are, by
-    construction, always the ground truth for "is there real data to
-    show right now". Confirmed live: TC_PIPELINE_RUN_LOG (this function's
-    OWN prior implementation) stopped receiving any writes at all once
-    the live pipeline moved from an SPCS-triggered path (which called
-    update_storms(), the only writer of that table) to the current
-    Databricks-scheduled path (databricks/04_production_scheduler.py in
-    the DATAPIPELINE repo, which calls the compute functions directly and
-    never calls update_storms()) -- the dashboard's own default-cycle
-    selector was stuck showing a real storm's 19 Aug 00Z cycle as "latest"
-    for over a day, well after real, alert-triggering data for the 18Z
-    19 Aug and 00Z 20 Aug cycles was already fully computed and
-    materialized (confirmed live: MERCATOR_TILE_IMPACT_MAT already had
-    472,848 real PHL rows for the 00Z 20 Aug SAUDEL cycle, and a real
-    WATCH_SENT_LOG warning had already gone out for it, while this
-    function's own TC_PIPELINE_RUN_LOG-based check still reported it as
-    NOT ready). This real-output check is immune to that whole class of
-    bug: whichever path (SPCS or Databricks, or any future replacement)
-    actually writes the materialized tables, this function sees it.
 
-    Deliberately scoped to TC_ENVELOPES_COMBINED (a real envelope within
-    1500km of an active country), the EXACT SAME real-work definition the
-    Databricks scheduler's own wind_work discovery query uses (see
-    databricks/04_production_scheduler.py in the DATAPIPELINE repo) --
+def _wind_ready_at(forecast_time) -> bool:
+    """True when every real country that ACTUALLY NEEDS wind impact
+    processing at this exact forecast_time has a real, confirmed SUCCESS
+    outcome for it in TC_PIPELINE_RUN_LOG, either genuinely materialized
+    (COUNTRIES_PROCESSED) or genuinely confirmed zero-impact
+    (NO_IMPACT_COUNTRIES): i.e. DATAPIPELINE has genuinely finished
+    working on this cycle for that country, whatever the real outcome was.
+
+    Gust is deliberately NOT part of this check (previously named
+    _wind_gust_ready_at, requiring MERCATOR_TILE_GUST_MAT too): confirmed
+    gust is optional and independent everywhere in this codebase.
+    `main_pipeline.py`'s own docstring says gust's absence "never affects
+    the wind results", gust failures are isolated per-country so they
+    never flip a country's own SUCCESS status, and the app itself treats
+    gust as an independently-toggleable, off-by-default layer with its
+    own honest "no gust data" UI state (see the `ms-gust-on` checkbox in
+    map_shell_concept.py). There is no real feature anywhere that
+    silently assumes gust is complete whenever a cycle is shown. Gating
+    the app's own DEFAULT LANDING CYCLE on gust was never a deliberate
+    decision (confirmed via git blame: it was inherited mechanically from
+    an earlier implementation that happened to log wind+gust as one
+    bundled SUCCESS row, not a considered requirement) and caused real,
+    permanent false negatives for storms with real usable wind data but
+    no gust data at all (e.g. real historical case: DOLPHIN).
+
+    Checks TC_PIPELINE_RUN_LOG (a real completion-bookkeeping table,
+    genuinely written today by databricks/04_scheduler_windgust.py in the
+    DATAPIPELINE repo via log_run_start/log_run_complete), NOT
+    MERCATOR_TILE_IMPACT_MAT row presence: confirmed live and directly, a
+    country whose real impact is genuinely, correctly zero writes NO row
+    at all to MERCATOR_TILE_IMPACT_MAT. main_pipeline.py's
+    run_complete_impact_analysis() only ever writes output for countries
+    it determines are affected, and the MAT table's own refresh path is a
+    pure stage-file scan with no placeholder/marker mechanism of any kind,
+    making "not yet processed" and "processed, confirmed zero impact"
+    permanently indistinguishable by row presence alone. Confirmed this
+    was not a rare edge case but a common, recurring one (307 real
+    historical (storm, forecast_time) pairs found matching this exact
+    pattern, with real documented stuck-cycle episodes lasting 7.5-24
+    days when every candidate in the lookback window was simultaneously
+    affected), directly causing the app's own default landing cycle to
+    silently serve stale data with no indication anything was wrong. This
+    exact per-country TC_PIPELINE_RUN_LOG check (STATUS='SUCCESS' AND
+    COUNTRY_CODE in COUNTRIES_PROCESSED or NO_IMPACT_COUNTRIES) already
+    exists and is proven correct elsewhere: it's the EXACT SAME "is this
+    country's real work already done" definition
+    databricks/04_scheduler_windgust.py's own discovery query uses to
+    decide what still needs processing, mirrored here, not
+    reinvented, so the pipeline's and the dashboard's definitions of
+    "done" can never silently drift apart again.
+
+    Deliberately scoped to TC_ENVELOPES_COMBINED within 100km of an active
+    country (ST_DWITHIN, real meters), tightened from an earlier 1500km
+    prefilter, to match the EXACT real buffer main_pipeline.py's own
+    affected-country determination uses (get_countries_in_range /
+    _python_buffer_check, both real 100km buffers, confirmed directly).
+    The old 1500km prefilter was 15x wider than the pipeline's own real
+    "affected" test, meaning it routinely flagged storms as "needing
+    processing" that the pipeline's own authoritative, tighter test was
+    always going to correctly rule out as unaffected: a real structural
+    amplifier of the zero-impact ambiguity above, independent of it.
     NOT every row in TC_TRACKS: joining TC_TRACKS directly would count
     every tracked storm, including weak/dissipating ones that never get a
-    real envelope and thus never receive real MAT output at all (a normal
-    pattern). Such a storm would count as perpetually "not done", meaning
-    almost every real cycle failed this check forever and
-    get_default_forecast_cycle always fell through to its own
-    newest-cycle fallback -- silently defeating the
-    entire point of this function.
+    real envelope at all (a normal pattern); such a storm would count as
+    perpetually "not done", silently defeating the entire point of this
+    function.
 
     `total == 0` (no real envelope needing processing at all for this
-    cycle) counts as ready, not "not ready": vacuously true, there was
-    genuinely nothing to wait for.
+    cycle, at the real 100km buffer) counts as ready, not "not ready":
+    vacuously true, there was genuinely nothing to wait for. A storm
+    counts as "done" only when EVERY real country it matches within
+    100km has its own confirmed SUCCESS, not just any one of them, see
+    the real BOOLAND_AGG per-storm aggregation below.
 
     False (not True) on a query error: an unreadable table must never be
     silently treated as "ready", see get_default_forecast_cycle's own
     fail-closed reasoning."""
     try:
-        # The Snowflake connector cannot bind a pandas Timestamp directly
-        # against a TIMESTAMP_NTZ column (confirmed live: every candidate
-        # silently failed this check with "Binding data in type (timestamp)
-        # is not supported" until this fix, masked by this function's own
-        # fail-closed False -- get_default_forecast_cycle just always fell
-        # through to its own fallback, a real bug caught before ever
-        # shipping), same real fix DATAPIPELINE's own main_pipeline.py
-        # already applies before its own timestamp binds
-        # (is_ambient_forecast_processed's own .to_pydatetime() comment).
+        # Same real pandas-Timestamp-can't-bind-directly conversion as
+        # _ambient_ready_at's own comment.
         forecast_time = pd.Timestamp(forecast_time).to_pydatetime()
         df = _run_query(
-            "SELECT COUNT(DISTINCT te.TRACK_ID) AS total, "
-            "COUNT(DISTINCT CASE WHEN wd.STORM IS NOT NULL AND gd.STORM IS NOT NULL THEN te.TRACK_ID END) AS done "
-            "FROM TC_ENVELOPES_COMBINED te "
-            "JOIN PIPELINE_COUNTRIES pc ON pc.ACTIVE = TRUE AND ST_DWITHIN(pc.COUNTRY_BOUNDARY, te.ENVELOPE_REGION, 1500000) "
-            "LEFT JOIN (SELECT DISTINCT STORM, FORECAST_DATE FROM MERCATOR_TILE_IMPACT_MAT) wd "
-            "ON wd.STORM = te.TRACK_ID AND wd.FORECAST_DATE = TO_CHAR(te.FORECAST_TIME, 'YYYYMMDDHH24MISS') "
-            "LEFT JOIN (SELECT DISTINCT STORM, FORECAST_DATE FROM MERCATOR_TILE_GUST_MAT) gd "
-            "ON gd.STORM = te.TRACK_ID AND gd.FORECAST_DATE = TO_CHAR(te.FORECAST_TIME, 'YYYYMMDDHH24MISS') "
-            "WHERE te.FORECAST_TIME = %s",
+            """
+            WITH matches AS (
+                SELECT te.TRACK_ID, pc.COUNTRY_CODE,
+                    EXISTS (
+                        SELECT 1 FROM TC_PIPELINE_RUN_LOG rl
+                        WHERE rl.STORM_ID = te.TRACK_ID AND rl.FORECAST_TIME = te.FORECAST_TIME
+                          AND rl.STATUS = 'SUCCESS'
+                          AND (ARRAY_CONTAINS(pc.COUNTRY_CODE::VARIANT, rl.COUNTRIES_PROCESSED)
+                               OR ARRAY_CONTAINS(pc.COUNTRY_CODE::VARIANT, rl.NO_IMPACT_COUNTRIES))
+                    ) AS is_done
+                FROM TC_ENVELOPES_COMBINED te
+                JOIN PIPELINE_COUNTRIES pc ON pc.ACTIVE = TRUE AND ST_DWITHIN(pc.COUNTRY_BOUNDARY, te.ENVELOPE_REGION, 100000)
+                WHERE te.FORECAST_TIME = %s
+            ),
+            per_storm AS (
+                SELECT TRACK_ID, BOOLAND_AGG(is_done) AS all_done
+                FROM matches
+                GROUP BY TRACK_ID
+            )
+            SELECT COUNT(*) AS total, COUNT(CASE WHEN all_done THEN 1 END) AS done
+            FROM per_storm
+            """,
             params=[forecast_time],
         )
         if df.empty:
-            return True  # no real envelope row at all for this cycle -- vacuously nothing to wait for
+            return True  # no real storm needing processing at this cycle, vacuously nothing to wait for
         total, done = int(df['TOTAL'].iloc[0] or 0), int(df['DONE'].iloc[0] or 0)
         return total == 0 or total == done
     except Exception as e:
-        logger.warning("Could not check wind/gust readiness for %s: %s", forecast_time, e)
+        logger.warning("Could not check wind readiness for %s: %s", forecast_time, e)
         return False
 
 
@@ -3250,10 +3435,10 @@ def _ambient_ready_at(source: str, param: str, forecast_time) -> bool:
     docstring for why that distinction matters: a raw MET_FORECASTS/
     RIVER_FORECASTS row can exist hours before the real impact computation
     for it actually finishes). False on any query error, same fail-closed
-    reasoning as _wind_gust_ready_at."""
+    reasoning as _wind_ready_at."""
     try:
-        # Same real pandas-Timestamp-can't-bind-directly fix as
-        # _wind_gust_ready_at's own comment; forecast_time here can arrive
+        # Same real pandas-Timestamp-can't-bind-directly conversion as
+        # _wind_ready_at's own comment; forecast_time here can arrive
         # as either (get_precip_forecast_time_near's own real Snowflake-
         # sourced value, already a pandas Timestamp) or a plain
         # date-derived pd.Timestamp, .to_pydatetime() covers both.
@@ -3274,7 +3459,7 @@ def get_default_forecast_cycle():
     app's own topbar default landing date/run (_DEFAULT_FORECAST_DATE/
     _DEFAULT_FORECAST_RUN in pages/map_shell_concept.py), replacing the
     old MAX(FORECAST_TIME) FROM TC_TRACKS resolution (get_latest_
-    forecast_time_overall), which only reflects raw TRACK ingestion --
+    forecast_time_overall), which only reflects raw TRACK ingestion.
 
     @ttl_cache, same _META_TTL (30 min) as every other single-value
     "storm list, forecast times" getter in this file: this function is now
@@ -3282,7 +3467,7 @@ def get_default_forecast_cycle():
     not just once at process start, so without a shared cache here N
     concurrent visitors within the same few minutes would each trigger
     their own full candidate walk (get_recent_track_forecast_times +
-    _wind_gust_ready_at + get_precip_forecast_time_near + _ambient_ready_at,
+    _wind_ready_at + get_precip_forecast_time_near + _ambient_ready_at,
     several real Snowflake round-trips apiece). With this decorator, the
     first page load in each 30-minute window pays that cost once; every
     other visitor in that window gets the cached result instantly.
@@ -3296,79 +3481,104 @@ def get_default_forecast_cycle():
     user on that kind of half-computed cycle by default shows a
     confusing/wrong-looking Impact Summary with no explanation.
 
-    Walks the most recent real TC_TRACKS cycles (get_recent_track_
-    forecast_times), newest first, and returns the first one where:
-      - every real storm tracked at that exact forecast_time has real,
-        materialized wind AND gust output (see _wind_gust_ready_at's own
-        docstring for the full "why" behind checking real output tables
-        instead of a completion-bookkeeping log);
-      - the real ambient precip cycle nearest that date/run
-        (get_precip_forecast_time_near) has a real AMBIENT_HAZARD_RUN_LOG
-        (source='precip', param='tp') row.
-    River is deliberately NOT gated here: unlike wind/precip's own
-    per-cycle processing lag this function exists to route around,
-    river's real staleness right now is
-    a SEPARATE, already-known, accepted gap (the GloFAS ingestion task has
-    been suspended, confirmed live: the most recent real
-    AMBIENT_HAZARD_RUN_LOG(source='river') row is for the 2026-07-14
-    cycle, over a month old) -- gating on it would make this function
-    permanently fall through to its own fallback below, a no-op in
-    today's real data state, defeating the whole point of the fix for
-    wind/precip (which DO update on their real ~30min/6h cadences).
-    River's own real per-country availability is still handled honestly
-    wherever it's actually shown (_global_flood_availability/
-    get_countries_with_river_impact_at), independent of this function.
+    Walks the most recent real PRECIP cycles (get_recent_precip_forecast_
+    times), newest first, NOT TC_TRACKS: a real change from this
+    function's own original design (confirmed live: TC_TRACKS
+    can go days without a new row whenever no storm is active at all, since
+    it only ever gets a new row when one is, while precip keeps advancing
+    on its own independent schedule the whole time; anchoring the walk on
+    TC_TRACKS meant the app's own default landing cycle silently froze for
+    the ENTIRE quiet period, even though real, fully-computed precip data
+    kept arriving the whole time). Precip anchors this walk because it's the
+    hazard that reliably advances regardless of storm activity, the same
+    real reasoning get_latest_forecast_time_overall() applies to the
+    topbar's max-SELECTABLE bound, applied here to the default LANDING
+    point instead. Returns the first candidate where:
+      - the candidate's own precip cycle has a real AMBIENT_HAZARD_RUN_LOG
+        (source='precip', param='tp') row (real ambient processing done,
+        not just raw MET_FORECASTS ingestion; see the staleness example
+        above for why that distinction matters);
+      - every real country needing wind impact processing at that exact
+        forecast_time has a real, confirmed SUCCESS outcome for it (see
+        _wind_ready_at's own docstring for the full "why"; vacuously True
+        when no storm is active at all at this exact time, so a quiet
+        period never blocks on this check, only on a
+        genuinely active-but-still-processing storm, the original
+        half-computed-cycle risk this whole function exists to route
+        around).
+    River is deliberately NOT a blocking condition here (a real, explicit
+    design change): GloFAS is once-daily and can legitimately
+    lag behind precip's own more frequent cycle by up to ~24h even when
+    everything is working correctly, and blocking the whole app's default
+    on river specifically would silently re-stall the same way the old
+    TC_TRACKS anchor did whenever river's own daily cycle hasn't landed yet
+    for "today". Instead, river readiness for any given date is exposed
+    separately via is_river_outstanding_for_date() below, which the topbar's
+    own time picker uses to mark an affected run with an honest "*" +
+    explanatory tooltip rather than either hiding the gap or blocking on it.
 
-    Two-tier fallback if NONE of the recent candidates have wind+precip
-    BOTH ready: the original single-tier version fell straight to
-    candidates[0], the raw newest cycle, EVEN IF that cycle's own
-    wind/gust was itself still mid-processing; live-reproduced: the
-    newest real cycle had total=1, done=0 in the wind/gust readiness
-    join, a storm actively being computed):
-      1. The newest candidate that's at least wind/gust-ready (even if
-         precip is lagging behind it) -- wind/gust incomplete is the more
-         visibly broken failure mode (silently undercounted population/
-         school/health-center numbers, with nothing telling the user the
-         cycle isn't finished), the exact thing this whole function
-         exists to route around. Precip alone lagging on an otherwise-
-         ready cycle is a narrower, single-hazard gap, already handled
-         honestly downstream (see below).
-      2. Only if NOTHING in the window is even wind/gust-ready: the raw
-         newest TC_TRACKS cycle (the original fallback) -- a genuinely
-         fresh/just-started environment, or a real sustained pipeline
-         stall, still needs SOME real default rather than never advancing
-         at all.
-    Either fallback tier's own real per-hazard availability is still
-    handled honestly downstream by _global_flood_availability/
-    get_countries_with_*_impact_at (this function only decides the
-    STARTING point, not what gets shown).
+    Single-tier fallback if NONE of the recent precip candidates are even
+    precip-ready (a genuinely fresh/empty environment, or a real sustained
+    precip-pipeline stall): the raw newest precip candidate, same
+    "still needs SOME real default rather than never advancing at all"
+    reasoning the original fallback used. Falls back further to the raw
+    newest TC_TRACKS cycle only if MET_FORECASTS itself has no PARAM='tp'
+    rows at all. Every real per-hazard availability is still handled
+    honestly downstream by _global_flood_availability/get_countries_with_*_
+    impact_at (this function only decides the STARTING point, not what
+    gets shown).
 
-    Returns a real pd.Timestamp, or None when TC_TRACKS itself is
-    completely empty (a genuinely fresh/empty environment)."""
-    candidates = get_recent_track_forecast_times(8)
+    Returns a real pd.Timestamp, or None when both MET_FORECASTS and
+    TC_TRACKS are completely empty (a genuinely fresh/empty environment)."""
+    candidates = get_recent_precip_forecast_times(8)
     if not candidates:
-        return None
-    wind_gust_ready_fallback = None
+        # MET_FORECASTS itself has no PARAM='tp' rows at all (a genuinely
+        # fresh/empty precip environment): fall back to TC_TRACKS, but
+        # still prefer a wind-ready cycle over the raw newest one. Returning
+        # the raw newest cycle unconditionally, with no readiness check at
+        # all, could land the default on a genuinely active but still
+        # mid-processing storm, exactly the half-computed-cycle risk this
+        # whole function exists to avoid.
+        track_candidates = get_recent_track_forecast_times(8)
+        if not track_candidates:
+            return None
+        for candidate in track_candidates:
+            if _wind_ready_at(candidate):
+                return candidate
+        return track_candidates[0]
     for candidate in candidates:
-        date_str = candidate.strftime('%Y-%m-%d')
-        run_str = f"{(candidate.hour // 6) * 6:02d}"
-        if not _wind_gust_ready_at(candidate):
+        if not _ambient_ready_at('precip', 'tp', candidate):
             continue
-        if wind_gust_ready_fallback is None:
-            wind_gust_ready_fallback = candidate
-        precip_resolved = get_precip_forecast_time_near(date_str, run_str)
-        if not precip_resolved:
-            continue
-        precip_forecast_time = precip_resolved[0] if isinstance(precip_resolved, tuple) else precip_resolved
-        if not _ambient_ready_at('precip', 'tp', precip_forecast_time):
+        if not _wind_ready_at(candidate):
+            # A genuinely active storm at this exact cycle is still
+            # mid-processing, the real half-computed-cycle risk this
+            # function exists to route around. Try the next (older)
+            # precip candidate rather than landing on it. _wind_ready_at
+            # does an exact TC_ENVELOPES_COMBINED timestamp match, which
+            # would only matter here if a precip candidate ever landed off
+            # the standard 6-hourly grid: checked directly against real
+            # MET_FORECASTS history, zero off-grid PARAM='tp'
+            # rows exist, every real cycle is exactly 00/06/12/18Z, so this
+            # is not a live risk in practice.
             continue
         return candidate
-    # Nothing in the recent window has wind+precip both ready -- tier 1
-    # (see docstring): prefer the newest wind/gust-ready cycle over the
-    # raw newest regardless of wind/gust state.
-    if wind_gust_ready_fallback is not None:
-        return wind_gust_ready_fallback
-    # Tier 2: nothing is even wind/gust-ready, fall back to the raw
-    # newest real cycle -- still better than never advancing the app's
-    # own default.
+    # No precip candidate is both precip-ready and wind-ready (e.g. an
+    # active storm has been mid-processing across the whole recent window),
+    # still needs SOME real default rather than never advancing.
     return candidates[0]
+
+
+@ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
+def is_river_outstanding_for_date(date_str: str) -> bool:
+    """True when this calendar date does NOT yet have a real,
+    confirmed-processed GloFAS river cycle (river has no run/hour concept,
+    always the 00:00 UTC calendar-day row, same convention get_default_
+    forecast_cycle's own docstring and get_river_extent_forecast_time_for_
+    date use, so this is genuinely per-DATE, not per-run: every run on the
+    same date shares one answer). Used by the topbar (_time_options_for_
+    date) to mark a run as having an outstanding river caveat instead of
+    either silently hiding the gap or blocking the whole app's default on
+    it (see get_default_forecast_cycle's own docstring for the full "why"
+    river was made non-blocking there)."""
+    river_forecast_time = f"{date_str} 00:00:00"
+    return not _ambient_ready_at('river', 'rp10', river_forecast_time)

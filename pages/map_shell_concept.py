@@ -48,7 +48,8 @@ from components.map.javascript import (
 )
 from components.data.snowflake_utils import (
     get_active_countries, get_snowflake_data, get_active_storm_countries,
-    get_latest_forecast_time_overall, get_default_forecast_cycle, get_available_wind_thresholds,
+    get_latest_forecast_time_overall, get_default_forecast_cycle, is_river_outstanding_for_date,
+    get_available_wind_thresholds,
     get_country_totals, get_snowflake_connection,
     get_envelope_data_snowflake, get_gust_envelope_data_snowflake, get_storms_for_country_date,
     get_storms_and_countries_for_date, get_storms_and_countries_examined_for_date,
@@ -288,8 +289,8 @@ def _build_real_storms(latest_time):
     """Real replacement for the old hardcoded 4-entry _STORMS mock.
 
     Combines three independently-real signals, none of which alone matches
-    the old mock's exact (name/countries/date/cat) shape, per the task's own
-    "adapt the mock shape to match reality" guidance:
+    the old mock's exact (name/countries/date/cat) shape, adapted to match
+    reality:
       - get_snowflake_data(): distinct TRACK_ID/FORECAST_TIME combos already
         in TC_TRACKS (a storm's name + when its forecast was issued).
       - latest_time (get_latest_forecast_time_overall(), computed once at
@@ -1580,29 +1581,43 @@ except Exception as e:
 # 08:26 but MERCATOR_TILE_PRECIP_MAT still hadn't caught up over 6.5 hours
 # later, and a Databricks run was separately still processing a genuinely
 # new storm cycle for over an hour). get_default_forecast_cycle() instead
-# walks backwards from the latest track until it finds a cycle where wind
-# (+gust) AND precip are BOTH genuinely done (real materialized MAT output
-# for wind/gust, AMBIENT_HAZARD_RUN_LOG completion bookkeeping for precip,
-# not raw ingestion; see _wind_gust_ready_at's own docstring for why wind/
-# gust readiness checks real output tables directly, not a completion log),
-# so a user isn't dropped by default onto a half-computed cycle with a
-# confusing/wrong-looking Impact Summary and no explanation. River is
-# deliberately NOT gated here (see that function's own docstring: its real
-# staleness right now is a separate, already-known, accepted gap, the
-# GloFAS ingestion task has been suspended for over a month; gating on it
-# would make this fix a permanent no-op in today's real data state).
+# walks backwards from the latest PRECIP cycle (not the latest track,
+# a real change; see that function's own docstring for the full
+# "why": TC_TRACKS only gets a new row when a storm is active, so anchoring
+# on it silently froze the app's own default for the whole duration of any
+# quiet period even though real precip data kept arriving) until it finds
+# one where precip is genuinely done (AMBIENT_HAZARD_RUN_LOG completion
+# bookkeeping, not raw ingestion) AND wind is genuinely done for that same
+# cycle if a storm happens to be active at it (TC_PIPELINE_RUN_LOG
+# per-country completion bookkeeping, see _wind_ready_at's own docstring for
+# why this checks the real run log rather than MERCATOR_TILE_IMPACT_MAT row
+# presence, and why gust is deliberately excluded; vacuously satisfied when
+# no storm is active at all), so a user isn't dropped by default onto a
+# half-computed cycle with a confusing/wrong-looking Impact Summary and no
+# explanation. River is deliberately NOT a blocking condition here (also
+# a reversal of an earlier design): GloFAS is
+# once-daily and can legitimately lag precip by up to ~24h even when
+# everything is working correctly, so gating the whole app's default on it
+# would reintroduce exactly the same kind of stalling this design otherwise
+# avoids. Instead, river's own readiness is surfaced separately and non-
+# blockingly to the user via a "*" + tooltip on the topbar's time picker
+# (see _time_options_for_date's own docstring, is_river_outstanding_for_date
+# in snowflake_utils.py).
 #
 # _LATEST_FORECAST_TIME itself is intentionally left untouched above: the
 # date/time picker's own "don't let a user pick a future/nonexistent date"
-# cutoff (_max_allowed_run_for_date/_time_options_for_date) and the
-# Active Storms list (_STORMS = _build_real_storms(_LATEST_FORECAST_TIME)
-# below) are both legitimately about real TRACK existence, not impact-
-# computation completeness; those are deliberately left untouched by the
-# readiness walk below, which is scoped to the topbar default only.
+# cutoff (_max_allowed_run_for_date/_time_options_for_date) is legitimately
+# about the true latest cycle across every hazard, not impact-computation
+# completeness, and is deliberately left untouched by the readiness walk
+# below, which is scoped to the topbar default only. The Active Storms list
+# is a separate, wind-only concept and does NOT use _LATEST_FORECAST_TIME at
+# all (see _STORMS's own construction further down for why: passing the
+# broadened _LATEST_FORECAST_TIME there would silently blank the list
+# whenever river/precip's own cycle is newer than TC_TRACKS' latest row).
 def _resolve_default_forecast_date_run():
     """Live (date_str, run_str) default for the topbar, see
     get_default_forecast_cycle's own docstring for the full "why" behind
-    the wind/gust+precip readiness walk this wraps.
+    the precip-anchored, river-non-blocking readiness walk this wraps.
 
     get_default_forecast_cycle() is itself @ttl_cache'd (30 min, same
     _META_TTL as every other single-value "storm list, forecast times"
@@ -1678,12 +1693,36 @@ def _time_options_for_date(date_str, latest_forecast_time=_LATEST_FORECAST_TIME,
     disabled state; _guard_future_forecast_run below is what actually
     blocks selecting one, this just makes that same boundary visible).
     Same live-ceiling-override params as _max_allowed_run_for_date, for the
-    same reason."""
+    same reason.
+
+    Every SELECTABLE run also gets a real river-outstanding check
+    (is_river_outstanding_for_date; river has no run/hour concept, so this
+    is genuinely the same answer for every run on this date, not per-run):
+    when GloFAS hasn't caught up yet for this calendar day, the label gets
+    a real "*" + a hover Tooltip explaining why, instead of either hiding
+    the gap or blocking the date/run on it (see get_default_forecast_
+    cycle's own docstring for the full "why" river is non-blocking here).
+    zIndex explicitly set above the topbar's own 1000 (see topbar-date's
+    own popoverProps for the same real approach, same reason: this bar's own
+    stacking context would otherwise clip the tooltip's popup)."""
     max_run = _max_allowed_run_for_date(date_str, latest_forecast_time, default_forecast_date, default_forecast_run)
+    try:
+        river_outstanding = is_river_outstanding_for_date(date_str)
+    except Exception:
+        river_outstanding = False
     data = []
     for r in _RUN_VALUES:
         if max_run is not None and int(r) <= int(max_run):
-            data.append({"value": r, "label": f"{r}Z"})
+            if river_outstanding:
+                label = dmc.Tooltip(
+                    html.Span(f"{r}Z*"),
+                    label=_t("River flood data for this date hasn't finished processing yet "
+                              "(GloFAS updates once daily and can lag wind/precip by design)."),
+                    multiline=True, w=240, withArrow=True, position="top", zIndex=2000,
+                )
+            else:
+                label = f"{r}Z"
+            data.append({"value": r, "label": label})
         else:
             data.append({"value": r, "label": html.Span(
                 f"{r}Z", style={"opacity": 0.35, "cursor": "not-allowed"})})
@@ -1736,7 +1775,20 @@ def _live_forecast_ceiling():
 # genuinely affect more than one nation, and impact MAT tables are computed
 # per-country, so a single TRACK_ID having real data for several countries
 # at once isn't hypothetical.
-_STORMS = _build_real_storms(_LATEST_FORECAST_TIME)
+#
+# Deliberately NOT _LATEST_FORECAST_TIME here: _build_real_storms does an
+# EXACT equality match against _metadata_df's own FORECAST_TIME
+# (TC_TRACKS-only), but _LATEST_FORECAST_TIME is the real MAX across
+# wind/river/precip (see get_latest_forecast_time_overall's own docstring).
+# Whenever river or precip's own cycle is newer than TC_TRACKS' latest row,
+# that exact-equality match would silently come back empty and blank the
+# Active Storms list even with a real storm still active in TC_TRACKS.
+# Active Storms is inherently a wind/track concept, so it stays anchored to
+# TC_TRACKS' own latest value regardless of what the topbar's own
+# (correctly broader) ceiling shows. Already loaded in _metadata_df, so
+# this is a free local max(), not a second Snowflake call.
+_wind_latest_track_time = _metadata_df['FORECAST_TIME'].max() if not _metadata_df.empty else None
+_STORMS = _build_real_storms(_wind_latest_track_time)
 # Keyed by full category label (get_available_wind_thresholds-derived, via
 # _category_label_from_kt), not a bare "Category 1/2/3", _cat_badge below
 # still extracts just the digit for its "Cat N" text, so visually this is
@@ -1877,8 +1929,9 @@ def _language_switcher(lang):
     # cutting into this dropdown's own (lower, Mantine-default) z-index.
     ], zIndex=2000)
 
-# Real REGION_MEMBERS bundle (snowflake/mat_tables/02b_add_regional_group.sql:34-48,
-# a "registered 2026-04-17, example for reference" template), East
+# Real REGION_MEMBERS bundle (defined in the internal data pipeline's own
+# SQL setup, not part of this repo; a "registered 2026-04-17, example for
+# reference" template), East
 # Caribbean Area, member ISO codes AIA/ATG/BRB/VGB/DMA/GRD/MSR/KNA/LCA/VCT/
 # TTO/TCA (12 countries). Illustrated here with 3 of the real 12 (the ones
 # ELARA (see _STORMS) already affects), not the full list, to keep the
@@ -1973,7 +2026,7 @@ def _mat_forecast_date(date, run):
     return f"{date.replace('-', '')}{run}0000"
 
 
-def _resolve_storm_for_country(country, date=None, run=None):
+def _resolve_storm_for_country(country, date=None, run=None, preferred_storm=None):
     """REACTIVE replacement for `next((s for s in _STORMS if country in
     s["countries"]), None)`, answers "what storm has real impact data for
     THIS country at THIS selected topbar date/run", not "what's currently
@@ -1984,6 +2037,19 @@ def _resolve_storm_for_country(country, date=None, run=None):
     real forecast cycle, same default the topbar itself opens on) when date/
     run aren't supplied, e.g. for callers outside a callback that has the
     live topbar-date/topbar-time values.
+
+    preferred_storm (optional): when a country has real impact from MORE
+    THAN ONE storm at once (e.g. two hurricanes concurrently threatening the
+    same coastline), get_storms_for_country_date already returns every real
+    storm ordered by severity, but most callers here only want ONE. Without
+    this, that's always the most severe one; preferred_storm (typically the
+    storm the user actually clicked, see ms-clicked-storm-store) overrides
+    that default WHEN it's actually one of the real storms for this country/
+    date, so the storm you clicked is the one whose stats/tiles/category you
+    see, not silently whichever is most severe. Ignored (falls through to
+    the severity default) when it names a storm not real for this country/
+    date/run right now, e.g. a stale preference left over from a previous
+    country/date selection.
 
     Returns a dict shaped like a _STORMS entry ({"name", "cat"}) plus the two
     date-string forms downstream callers need: "forecast_time"
@@ -2006,10 +2072,11 @@ def _resolve_storm_for_country(country, date=None, run=None):
         return None
     if not storms:
         return None
-    storm_name = storms[0]
+    storm_name = preferred_storm if preferred_storm in storms else storms[0]
     forecast_time_str = f"{date} {run}:00:00"
     cat = _category_label_ensemble_max(storm_name, forecast_time_str)
-    return {"name": storm_name, "cat": cat, "forecast_time": forecast_time_str, "mat_forecast_date": mat_date}
+    return {"name": storm_name, "cat": cat, "forecast_time": forecast_time_str, "mat_forecast_date": mat_date,
+            "all_storms": storms}
 
 
 @ttl_cache(ttl_seconds=900, maxsize=64)
@@ -3023,7 +3090,7 @@ def _compute_breakdown_by_metric(family_split, breakdown):
 
 def _get_data_availability_real(country):
     """Real per-country data-availability snapshot, the same facility-count
-    + dataset-boolean check Ahead-of-the-Storm-ORCHESTRATION's own
+    + dataset-boolean check the internal data pipeline's own
     08_utilities/check_baseline_data.py already runs against Snowflake.
     Returns None (same as the old dict's `.get()` miss) when the country has
     no base-layer data in Snowflake at all yet.
@@ -4620,7 +4687,7 @@ def _cat_badge(cat):
                       style={"backgroundColor": _CAT_COLORS.get(label, "#8ea0ab"), "color": "#fff"})
 
 
-def _storm_row(s, bordered=False, has_alert_email=False, has_warning_email=False):
+def _storm_row(s, bordered=False, has_alert_email=False, has_warning_email=False, is_selected=None):
     """Storm entry, used both in the top-bar search dropdown and the
     Active Storms list (Global mode, or a selected country). No separate
     'Select' button (matching global_zoom_navigation's row style, not the
@@ -4637,6 +4704,19 @@ def _storm_row(s, bordered=False, has_alert_email=False, has_warning_email=False
     descendant)
     means its click never reaches the select-storm div's own listener at
     all, so clicking it can no longer trigger storm selection.
+
+    is_selected (optional, only meaningful in Country Analysis mode, see
+    _active_storms_section's own docstring): None when there's no single
+    "currently driving the view" storm concept to apply here (Global mode,
+    or the top-bar search dropdown), which renders exactly as before, no
+    highlighting either way. True/False once a country is selected AND it
+    has more than one real storm at once: True is this row's normal
+    appearance (it's the one actually driving the map/tiles/tracks right
+    now, matching _resolve_storm_for_country's own resolution incl.
+    preferred_storm), False grays it out so it stays visible/clickable
+    (still real, concurrent impact for this country) but is unambiguously
+    not what's currently shown. Click still switches to it, same
+    {"type": "select-storm", ...} target as any other row.
     """
     style = {"padding": "9px 12px"}
     if bordered:
@@ -4678,10 +4758,18 @@ def _storm_row(s, bordered=False, has_alert_email=False, has_warning_email=False
     # at sea) carry an empty `countries` list (see _resolve_storms_for_date),
     # say so explicitly rather than rendering a blank subtitle line.
     subtitle = ", ".join(s["countries"]) if s["countries"] else _t("No country impact yet")
+    name_block_style = {"lineHeight": 1.3, "cursor": "pointer"}
+    if is_selected is False:
+        # Only the name/subtitle text dims. The border, CAT badge, and
+        # email icons stay at full opacity either way, so a grayed-out row
+        # still reads clearly (this storm's category and its real alert/
+        # warning emails are still fully legible/clickable), just visually
+        # deemphasized as "not the one currently shown."
+        name_block_style["opacity"] = 0.45
     name_block = html.Div(
         [dmc.Text(s["name"], fw=700, size="sm"), dmc.Text(subtitle, size="xs", c="dimmed")],
         id={"type": "select-storm", "name": s["name"]}, n_clicks=0,
-        style={"lineHeight": 1.3, "cursor": "pointer"},
+        style=name_block_style,
     )
     return html.Div(
         dmc.Group([
@@ -4864,7 +4952,18 @@ def _topbar(initial_countries=None, default_date=_DEFAULT_FORECAST_DATE, default
 # Global down to plain checkboxes, the same "what if this hits Category X"
 # question is just as valid before you've zoomed into a place.
 # ---------------------------------------------------------------------------
-def _active_storms_section(countries=None, date=None, run=None):
+def _active_storms_section(countries=None, date=None, run=None, resolved_storm=None):
+    # resolved_storm (optional, passed only by _controls_zoom): the real
+    # storm name currently driving the Country Analysis map/tiles/tracks
+    # for the primary selected country (_resolve_storm_for_country's own
+    # resolution, honoring preferred_storm/ms-clicked-storm-store). When
+    # set, every OTHER real storm row for this country renders grayed out
+    # (_storm_row's own is_selected=False), so a country with more than one
+    # concurrent real storm never leaves it ambiguous which one is actually
+    # shown. None in Global mode (no single "currently shown" storm concept
+    # applies there) or the top-bar search dropdown. Every row renders
+    # exactly as before.
+    #
     # Standalone, sits ABOVE the Tropical Cyclone family in both modes, not
     # nested inside it. Scoped to whichever countries are selected. A storm
     # matches if it affects ANY of the selected countries (not all), BAVI
@@ -4909,7 +5008,8 @@ def _active_storms_section(countries=None, date=None, run=None):
     storms_with_alerts = get_storms_with_alert_emails_at(target_forecast_time)
     storms_with_warnings = get_storms_with_warning_emails_at(target_forecast_time)
     content = html.Div([_storm_row(s, bordered=True, has_alert_email=(s["name"] in storms_with_alerts),
-                                     has_warning_email=(s["name"] in storms_with_warnings))
+                                     has_warning_email=(s["name"] in storms_with_warnings),
+                                     is_selected=(s["name"] == resolved_storm) if resolved_storm else None)
                           for s in scoped_storms])
     children = [dmc.Text(label, size="10px", fw=700, c="dimmed", tt="uppercase", mb=10), content]
     if countries:
@@ -4930,8 +5030,8 @@ def _active_storms_section(countries=None, date=None, run=None):
 # NOT translated (same convention as this file's numeric legend values):
 # only the "Source: " prefix passes through _t().
 #   - Storm Tracks/Sustained Wind: ECMWF tropical cyclone ensemble track
-#     forecasts, BUFR format, via ECMWF Open Data (Ahead-of-the-Storm-
-#     ORCHESTRATION/04_data/04_tc_ecmwf_tables.sql:14, 42-46, 51 members +
+#     forecasts, BUFR format, via ECMWF Open Data (internal data pipeline's
+#     04_data/04_tc_ecmwf_tables.sql:14, 42-46, 51 members +
 #     control, NOT TIGGE).
 #   - Gust: same ECMWF ensemble, 10m wind gust (10fg) field
 #     (.../11_tc_gust_envelope_tables.sql:17-19).
@@ -5925,17 +6025,31 @@ def _hazard_render_mode_switch():
     ], style={"padding": "16px 18px", "borderBottom": "1px solid #eef2f5"})
 
 
-def _controls_zoom(countries=None, date=None, run=None):
+def _controls_zoom(countries=None, date=None, run=None, clicked_storm=None):
     # Order: Active Storm(s) first if there are any (nothing rendered at all
     # otherwise, the switch below just becomes the first thing shown), then
     # the Exposure/Hazard switch, then whichever pane it's set to.
+    #
+    # Resolved via the SAME _resolve_storm_for_country call (and the same
+    # preferred_storm=clicked_storm) that actually drives the map/tiles/
+    # tracks for the primary country, so the Active Storm(s) panel's
+    # graying-out below is always consistent with what's actually shown,
+    # never a separately-derived guess. Only the primary (first) selected
+    # country: with more than one country selected, the OTHER countries'
+    # own real storms aren't what's driving this view's tracks/envelopes
+    # (see _load_ms_tracks_and_envelopes's own docstring), so there's
+    # nothing meaningful to highlight/gray for them here.
+    resolved_storm = None
+    if countries:
+        _info = _resolve_storm_for_country(countries[0], date, run, preferred_storm=clicked_storm)
+        resolved_storm = _info["name"] if _info else None
     #
     # Same reasoning as
     # _controls_global above: _active_storms_section/
     # _hurricane_family/_flood_hazards_family are independent of each other
     # and of the exposure pane build below.
     # Fetching the three concurrently via the shared executor.
-    _builders = [lambda: _active_storms_section(countries=countries, date=date, run=run),
+    _builders = [lambda: _active_storms_section(countries=countries, date=date, run=run, resolved_storm=resolved_storm),
                   lambda: _hurricane_family(countries=countries, date=date, run=run),
                   lambda: _flood_hazards_family(countries=countries, date=date, run=run)]
     active_storms, hurricane_family, flood_hazards_family = get_query_executor().map(lambda f: f(), _builders)
@@ -6730,7 +6844,7 @@ def _simple_breakdown_table(cols, breakdown, member="combined", pin_source=None,
         # skip_split=True: this value has no real per-hazard source to
         # split in the first place (In Need/PIN/CHIN is wind-only across
         # the ENTIRE pipeline, no CCI/vulnerability MAT table exists for
-        # river/rain anywhere in ORCHESTRATION or DATAPIPELINE, confirmed
+        # river/rain anywhere in the internal data pipeline or DATAPIPELINE, confirmed
         # repo-wide), so no split line renders at all -- not even the
         # honest "no real split" None state _hazard_split_line itself can
         # show, which would still visually imply a split COULD exist for
@@ -10521,6 +10635,23 @@ def layout(lang="en", zoom_countries=None, open_breakdown=None, **kwargs):
         # (no risk of two callbacks racing to set the same viewport from
         # one click), see _select_storm's own comment for the full "why".
         dcc.Store(id="ms-storm-flyto-store", data=None),
+        # Which real storm the user actually clicked (a name, matching
+        # get_storms_for_country_date's own STORM values), for when the
+        # currently-selected country has real impact from MORE THAN ONE
+        # storm at once (see _resolve_storm_for_country's own preferred_
+        # storm docstring): without this, that case always silently defaults
+        # to whichever storm is most severe, with no way to see or drive
+        # tiles/stats for the OTHER one. Set by _select_storm (a storm-row
+        # click); cleared by _clear_countries_on_global/_apply_demo_scenario
+        # (paths that change the country selection WITHOUT a specific storm
+        # click, where a stale preference from a previous selection would be
+        # actively wrong, not just unused). Left as-is on a direct
+        # topbar-country-select edit (typing/toggling a country chip): a
+        # stale preference there is automatically ignored the moment it no
+        # longer names a real storm for the new selection (same "ignored
+        # when not real" fallback _resolve_storm_for_country already has),
+        # so no explicit clear is needed for every possible interaction path.
+        dcc.Store(id="ms-clicked-storm-store", data=None),
         # Real hazard tile-config bridge (see the "Hazard tile-config bridge"
         # section near the bottom of this file's callbacks): assembled by a
         # reactive Python callback (country/storm selection + all 5 hazard
@@ -10694,8 +10825,9 @@ clientside_callback(
     Input("selected-country-store", "data"),
     Input("topbar-date", "value"),
     Input("topbar-time", "value"),
+    Input("ms-clicked-storm-store", "data"),
 )
-def _switch_mode_content(mode, countries, date, run):
+def _switch_mode_content(mode, countries, date, run, clicked_storm):
     # selected-country-store must be an Input, not State, picking a
     # different/additional country while ALREADY in zoom mode doesn't
     # necessarily change topbar-mode itself (see _country_selected's
@@ -10708,8 +10840,14 @@ def _switch_mode_content(mode, countries, date, run):
     # applying a Demo Scenario, which sets both at once) needs to re-render
     # this too, or Sustained Wind/Gust/Tracks would stay stuck disabled/
     # enabled from whatever date was selected when zoom mode was first entered.
+    # ms-clicked-storm-store is an Input too: clicking a DIFFERENT real
+    # storm's row for a country that's already selected (switching which
+    # one of several concurrent storms drives the view) doesn't change
+    # country/date/run/mode at all, so without this the Active Storm(s)
+    # panel's graying-out (_controls_zoom's own resolved_storm) would stay
+    # stuck showing whichever storm was previously selected.
     if mode == "zoom":
-        return _controls_zoom(countries=countries, date=date, run=run)
+        return _controls_zoom(countries=countries, date=date, run=run, clicked_storm=clicked_storm)
     return _controls_global(date=date, run=run)
 
 
@@ -11663,6 +11801,7 @@ def _storm_track_bounds(tracks_geojson, storm_name, expected_forecast_time=None)
 @callback(
     Output("topbar-country-select", "value"),
     Output("ms-storm-flyto-store", "data"),
+    Output("ms-clicked-storm-store", "data"),
     Input({"type": "select-storm", "name": dash.ALL}, "n_clicks"),
     State("topbar-date", "value"),
     State("topbar-time", "value"),
@@ -11671,7 +11810,7 @@ def _storm_track_bounds(tracks_geojson, storm_name, expected_forecast_time=None)
 )
 def _select_storm(clicks, date, run, tracks_geojson):
     if not clicks or not any(clicks):
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     triggered = dash.callback_context.triggered_id
     name = triggered["name"]
     # Storm rows are rendered by _active_storms_section from the date/run-
@@ -11690,7 +11829,7 @@ def _select_storm(clicks, date, run, tracks_geojson):
         # storm with no error and no visual indication. No-op instead,
         # matching the safe "return None rather than something wrong"
         # convention _storm_track_bounds itself already follows.
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     countries = list(storm["countries"])
     if countries:
         # Real country impact: the existing selected-country-store ->
@@ -11698,7 +11837,12 @@ def _select_storm(clicks, date, run, tracks_geojson):
         # center(s), ms-storm-flyto-store must stay untouched here, not
         # emptied, two callbacks racing to set ms-main-map's viewport from
         # the same click would be a real bug, not just redundant.
-        return countries, dash.no_update
+        # ms-clicked-storm-store DOES get set here (see its own comment):
+        # this is exactly the "which storm did the user click" signal that
+        # store exists for, so a country with real impact from more than
+        # one storm shows/drives tiles for the one actually clicked, not
+        # silently whichever is most severe.
+        return countries, dash.no_update, name
     # No country impact yet (still at sea): fly to the storm's own real
     # track extent instead (see _storm_track_bounds above), so a click on
     # one of these storms isn't a dead no-op. topbar-mode still correctly
@@ -11711,7 +11855,13 @@ def _select_storm(clicks, date, run, tracks_geojson):
     expected_forecast_time = f"{date} {run}:00:00" if date and run is not None else None
     bounds = _storm_track_bounds(tracks_geojson, name, expected_forecast_time)
     flyto = {"bounds": bounds, "transition": "flyToBounds"} if bounds else dash.no_update
-    return countries, flyto
+    # No real country impact yet, nothing for ms-clicked-storm-store to
+    # usefully drive (no tile config/country stats exist for this storm at
+    # all yet), left untouched rather than cleared to None: if the user had
+    # a real prior preference selected for a DIFFERENT, already-selected
+    # country, clicking a still-at-sea storm elsewhere in the list must not
+    # wipe that out.
+    return countries, flyto, dash.no_update
 
 
 # Companion to _fly_map_to_selection just below: same Output, different
@@ -11824,13 +11974,14 @@ def _fly_map_to_selection(countries):
 @callback(
     Output("topbar-country-select", "value", allow_duplicate=True),
     Output("selected-country-store", "data", allow_duplicate=True),
+    Output("ms-clicked-storm-store", "data", allow_duplicate=True),
     Input("topbar-mode", "value"),
     prevent_initial_call=True,
 )
 def _clear_countries_on_global(mode):
     if mode == "global":
-        return [], []
-    return dash.no_update, dash.no_update
+        return [], [], None
+    return dash.no_update, dash.no_update, dash.no_update
 
 
 # _update_map_legend must NOT read the 4
@@ -12585,17 +12736,22 @@ def _open_warning_email_detail(clicks, date, run):
     Output("topbar-date", "value", allow_duplicate=True),
     Output("topbar-time", "value", allow_duplicate=True),
     Output("topbar-country-select", "value", allow_duplicate=True),
+    Output("ms-clicked-storm-store", "data", allow_duplicate=True),
     Input({"type": "demo-scenario", "index": dash.ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
 def _apply_demo_scenario(clicks):
     if not clicks or not any(clicks):
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     # Only sets date/time/countries, mode and selected-country-store
     # already cascade from topbar-country-select changing, the same
     # mechanism a storm-row click uses (_select_storm -> _country_selected).
+    # ms-clicked-storm-store is cleared (not left as-is): a scenario jumps to
+    # a completely different date/run, any prior click preference is stale
+    # by definition, and letting it silently persist could pin a scenario's
+    # tile layer to whichever OLD storm name happens to still be real there.
     scenario = _DEMO_SCENARIOS[dash.callback_context.triggered_id["index"]]
-    return scenario["date"], scenario["time"], scenario["countries"]
+    return scenario["date"], scenario["time"], scenario["countries"], None
 
 
 # Command-bar pills mirror the rail checkboxes (ms-{hz}-on) rather than being
@@ -12809,7 +12965,7 @@ def _hazard_stats(tile_country, hazard, path_storm, path_date, wind_threshold, e
     return stats, admin_stats
 
 
-def _resolve_primary_storm_group(countries, date, run):
+def _resolve_primary_storm_group(countries, date, run, preferred_storm=None):
     """Cheap, ttl-cached storm/forecast_date resolution shared by
     _build_hazard_tile_config and _load_ms_tracks_and_envelopes.
     Deliberately excludes everything from
@@ -12821,10 +12977,18 @@ def _resolve_primary_storm_group(countries, date, run):
     callbacks call this for the same country/date/run concurrently, only
     one of them actually pays the Snowflake round trip.
 
+    preferred_storm (optional, typically ms-clicked-storm-store's value):
+    passed straight through to every _resolve_storm_for_country call. Each
+    country only honors it when that storm is actually real for that
+    country/date (see _resolve_storm_for_country's own docstring), so this
+    is safe to pass uniformly across every selected country rather than
+    needing to know in advance which one is "primary".
+
     Returns (codes, primary_country_code, storm, forecast_date,
-    country_storm_infos), country_storm_infos is exposed for
-    _build_hazard_tile_config's own extra_groups_by_storm (multi-storm)
-    logic, which needs the full per-country list, not just the primary.
+    country_storm_infos). country_storm_infos is exposed for
+    _build_hazard_tile_config's own extra_groups_by_storm (multi-storm-
+    by-DIFFERENT-COUNTRY) logic, which needs the full per-country list, not
+    just the primary.
     """
     codes = _resolve_tile_codes(countries or [])
     primary_country_code = codes[0] if codes else None
@@ -12841,7 +13005,7 @@ def _resolve_primary_storm_group(countries, date, run):
     _candidates = [(c, _NAME_TO_CODE.get(c)) for c in (countries or [])]
     _candidates = [(c, code) for c, code in _candidates if code]
     _storm_infos = (
-        list(get_query_executor().map(lambda cc: _resolve_storm_for_country(cc[0], date, run), _candidates))
+        list(get_query_executor().map(lambda cc: _resolve_storm_for_country(cc[0], date, run, preferred_storm), _candidates))
         if _candidates else []
     )
     country_storm_infos = [
@@ -12874,13 +13038,14 @@ def _resolve_primary_storm_group(countries, date, run):
     Input("cmdbar-detail", "value"),
     Input("ms-hazards-hidden-store", "data"),
     Input("ms-hazard-render-mode-store", "data"),
+    Input("ms-clicked-storm-store", "data"),
     State("ms-wind-slider", "value"),
     State("ms-gust-slider", "value"),
     State("ms-river-slider", "value"),
     State("ms-rain-slider", "value"),
 )
 def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, wind_on, gust_on, river_on, rain_on, surge_on, rain_window,
-                                river_window, _debounce_tick, date, run, view_mode, hazards_hidden, hazard_render_mode,
+                                river_window, _debounce_tick, date, run, view_mode, hazards_hidden, hazard_render_mode, clicked_storm,
                                 wind_idx, gust_idx, river_idx, rain_idx):
     countries = countries or []
     # cmdbar-detail ("tiles"/"admin") only ever renders in Country Analysis
@@ -12954,7 +13119,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
     # waiting on this whole callback's slower Output (the stats fan-out
     # further below, not this cheap part).
     codes, primary_code, storm, forecast_date, country_storm_infos = \
-        _resolve_primary_storm_group(countries, date, run)
+        _resolve_primary_storm_group(countries, date, run, preferred_storm=clicked_storm)
     tile_country = "+".join(codes)
     # Selecting a
     # country with genuinely no active storm at all, e.g. Bangladesh on a
@@ -13398,6 +13563,7 @@ def _build_hazard_tile_config(countries, exposure_prop, view_as, tc_view_as, win
         # backend anywhere (see this file's own ms-surge-on comment): always
         # False, no tile-server request is ever built for it.
         "surge_visible": False,
+
     }
 
 
@@ -14045,15 +14211,17 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
             "ensemble_member": member_int,
             "wind_threshold": int(row[threshold_col]),
             "hazard": hazard,
-            # severity_population/max_population deliberately absent when
-            # attribution was never attempted at all (Global mode, no
-            # country to attribute to), style_envelopes (components/map/
-            # javascript.py) renders that case as a flat orange/yellow
-            # consensus fill. When it WAS attempted (Country Analysis mode,
-            # attributing_severity below), every member gets a real value,
-            # defaulting to a CONFIRMED zero, see that branch's own
-            # comment for the invariant this maintains.
         }
+        if storm:
+            properties["track_id"] = storm
+        # severity_population/max_population deliberately absent when
+        # attribution was never attempted at all (Global mode, no
+        # country to attribute to), style_envelopes (components/map/
+        # javascript.py) renders that case as a flat orange/yellow
+        # consensus fill. When it WAS attempted (Country Analysis mode,
+        # attributing_severity below), every member gets a real value,
+        # defaulting to a CONFIRMED zero, see that branch's own
+        # comment for the invariant this maintains.
         if attributing_severity:
             # Must NOT only set the property
             # when member_int is a key in severity_by_member, that would
@@ -14099,6 +14267,46 @@ def _build_ms_envelope_geojson(envelope_df, wind_kt, country=None, storm=None, f
     # doesn't matter.
     features.sort(key=lambda f: f["properties"].get("severity_population") or 0)
     return {"type": "FeatureCollection", "features": features}
+
+
+# Same 4h window as snowflake_utils.py's own _IMPACT_TTL (kept as a separate
+# local constant rather than importing that private name, same convention
+# services/tile_server.py's own _TILE_TTL already follows). Every
+# Snowflake call _build_ms_envelope_geojson makes internally
+# (get_envelope_data_snowflake/get_gust_envelope_data_snowflake/
+# get_track_impacts/get_gust_track_impacts) is already cached on that TTL,
+# so this wrapper can never outlive the data it was built from.
+_ENVELOPE_GEOJSON_TTL = 4 * 60 * 60
+
+
+@ttl_cache(ttl_seconds=_ENVELOPE_GEOJSON_TTL, maxsize=256)
+def _build_ms_envelope_geojson_cached(track_id, forecast_time_str, threshold_kt, country=None,
+                                       forecast_date=None, hazard="wind"):
+    """Cached wrapper around _build_ms_envelope_geojson.
+
+    The per-row shapely parse, antimeridian-unwrap, severity-attribution and
+    sort work inside that function is real CPU cost paid on gunicorn's
+    single shared gthread pool (see entrypoint.sh), not just a Snowflake
+    round-trip. The raw data fetch below is already cheap on a warm cache,
+    but the geometry/feature-building work was being redone from scratch on
+    every debounced slider tick and by every concurrent viewer of the same
+    storm/threshold, holding the GIL for everyone else each time. Caching
+    the finished FeatureCollection removes that repeated cost.
+
+    `forecast_time_str` is the Snowflake-query-format timestamp (matches
+    get_envelope_data_snowflake's own `forecast_time` arg); `forecast_date`
+    is the original topbar-format string forwarded unchanged to
+    _build_ms_envelope_geojson's own severity-attribution call. Callers
+    use genuinely different string formats for the same instant, preserved
+    here rather than conflated into one.
+    """
+    fetch_fn = get_gust_envelope_data_snowflake if hazard == "gust" else get_envelope_data_snowflake
+    envelope_df = fetch_fn(track_id, forecast_time_str)
+    if envelope_df is not None and not envelope_df.empty and 'geometry' in envelope_df.columns:
+        envelope_df = envelope_df[envelope_df['geometry'].notna() & (envelope_df['geometry'].astype(str).str.strip() != '')]
+    return _build_ms_envelope_geojson(
+        envelope_df, threshold_kt, country=country, storm=track_id,
+        forecast_date=forecast_date, hazard=hazard)
 
 
 @callback(
@@ -14211,6 +14419,7 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     # `value` itself is not a live Input; only the already-debounced
     # settle event is, so this does not reintroduce a double-fire.
     Input("ms-slider-debounce-store", "data"),
+    Input("ms-clicked-storm-store", "data"),
     # wind_idx/gust_idx are used in BOTH branches below, this callback
     # does not receive tile_config at all (see comment above), so Country
     # Analysis mode must resolve its threshold from these State values
@@ -14219,7 +14428,7 @@ def _sort_ensemble_members_by_impact(countries, date, run, _debounce_tick, wind_
     State("ms-gust-slider", "value"),
 )
 def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust_on, tc_view_as, member_select,
-                                     _debounce_tick, wind_idx, gust_idx):
+                                     _debounce_tick, clicked_storm, wind_idx, gust_idx):
     """Fetch real track/envelope GeoJSON for the placeholder ms-tracks-json/
     ms-envelopes-json layers whenever country/storm selection, date/run, the
     tracks/wind/gust checkboxes, or tc-view-as change, OR ms-slider-
@@ -14279,7 +14488,7 @@ def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust
     tracks_on = tracks_on is not False
 
     codes, primary_country_code, storm, forecast_date, _infos = \
-        _resolve_primary_storm_group(countries, date, run)
+        _resolve_primary_storm_group(countries, date, run, preferred_storm=clicked_storm)
 
     if not primary_country_code:
         # get_track_ids_for_date, NOT _resolve_storms_for_date -- the latter
@@ -14327,21 +14536,19 @@ def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust
             wind_kt = _resolve_wind_kt(wind_idx)
             for track_id in track_ids:
                 try:
-                    env_df = get_envelope_data_snowflake(track_id, forecast_time_str)
+                    fc = _build_ms_envelope_geojson_cached(track_id, forecast_time_str, wind_kt, hazard="wind")
                 except Exception as e:
                     logger.warning("Could not load Global-mode wind envelope for %s/%s: %s", track_id, forecast_time_str, e)
                     continue
-                fc = _build_ms_envelope_geojson(env_df, wind_kt, storm=track_id, hazard="wind")
                 envelope_features.extend(fc.get("features", []))
         if gust_on:
             gust_kt = _resolve_gust_kt(gust_idx)
             for track_id in track_ids:
                 try:
-                    gust_env_df = get_gust_envelope_data_snowflake(track_id, forecast_time_str)
+                    fc = _build_ms_envelope_geojson_cached(track_id, forecast_time_str, gust_kt, hazard="gust")
                 except Exception as e:
                     logger.warning("Could not load Global-mode gust envelope for %s/%s: %s", track_id, forecast_time_str, e)
                     continue
-                fc = _build_ms_envelope_geojson(gust_env_df, gust_kt, storm=track_id, hazard="gust")
                 envelope_features.extend(fc.get("features", []))
         envelope_features.sort(key=lambda f: f["properties"].get("severity_population") or 0)
         envelope_data = {"type": "FeatureCollection", "features": envelope_features} if envelope_features else dict(_MS_EMPTY_FC)
@@ -14396,46 +14603,52 @@ def _load_ms_tracks_and_envelopes(countries, date, run, tracks_on, wind_on, gust
         logger.error("Could not parse forecast_date %r for tracks/envelopes: %s", forecast_date, e)
         return _MS_EMPTY_FC, dash.no_update, _MS_EMPTY_FC, dash.no_update
 
-    tracks_data = dict(_MS_EMPTY_FC)
+    # Only the resolved primary storm renders here. `storm` above already
+    # honors preferred_storm (see _resolve_storm_for_country's own
+    # docstring): clicking a storm and switching to Country Analysis mode
+    # always shows THAT storm for the country, not silently whichever one
+    # is most severe. Rendering every concurrently-affecting storm for a
+    # country at once was tried and reverted, over a real concern about
+    # impact-number correctness when a country has genuine overlapping impact
+    # from more than one storm at the same time.
+    track_features = []
+    envelope_features = []
     try:
-        # get_tracks_for_storm (not a bare inline query anymore), cached on
-        # (storm, forecast_dt_str), same perf fix as the envelope queries
-        # below: tracks don't depend on the wind/gust threshold at all, so a
-        # slider tick shouldn't re-fetch them from Snowflake.
+        # get_tracks_for_storm (not a bare inline query anymore), cached
+        # on (storm, forecast_dt_str), same perf fix as the envelope
+        # queries below: tracks don't depend on the wind/gust threshold
+        # at all, so a slider tick shouldn't re-fetch them from
+        # Snowflake.
         df_tracks = get_tracks_for_storm(storm, forecast_dt_str)
         if not df_tracks.empty:
-            tracks_data = {"type": "FeatureCollection", "features": _build_ms_track_features(df_tracks)}
+            track_features = _build_ms_track_features(df_tracks)
     except Exception as e:
         logger.error("Error loading tracks for map_shell_concept (%s/%s): %s", storm, forecast_dt_str, e)
 
     # Wind and Gust envelopes combine into ONE FeatureCollection (each
-    # feature tagged "hazard") rather than a second dl.GeoJSON layer, see
-    # _build_ms_envelope_geojson's own docstring. get_gust_envelope_data_
-    # snowflake/TC_GUST_ENVELOPES_COMBINED and get_gust_track_impacts/
-    # TRACK_GUST_MAT are both genuinely real, separately deployed tables.
-    envelope_features = []
+    # feature tagged "hazard") rather than a second dl.GeoJSON layer,
+    # see _build_ms_envelope_geojson's own docstring. get_gust_envelope_
+    # data_snowflake/TC_GUST_ENVELOPES_COMBINED and get_gust_track_
+    # impacts/TRACK_GUST_MAT are both genuinely real, separately
+    # deployed tables.
     if show_envelopes and wind_on_cfg and wind_kt is not None:
         try:
-            envelope_df = get_envelope_data_snowflake(storm, forecast_dt_str)
-            if not envelope_df.empty and 'geometry' in envelope_df.columns:
-                envelope_df = envelope_df[envelope_df['geometry'].notna() & (envelope_df['geometry'].astype(str).str.strip() != '')]
-                fc = _build_ms_envelope_geojson(
-                    envelope_df, wind_kt,
-                    country=primary_country_code, storm=storm, forecast_date=forecast_date, hazard="wind")
-                envelope_features.extend(fc.get("features", []))
+            fc = _build_ms_envelope_geojson_cached(
+                storm, forecast_dt_str, wind_kt, country=primary_country_code,
+                forecast_date=forecast_date, hazard="wind")
+            envelope_features.extend(fc.get("features", []))
         except Exception as e:
             logger.error("Error loading wind envelopes for map_shell_concept (%s/%s): %s", storm, forecast_dt_str, e)
     if show_envelopes and gust_on_cfg and gust_kt is not None:
         try:
-            gust_envelope_df = get_gust_envelope_data_snowflake(storm, forecast_dt_str)
-            if not gust_envelope_df.empty and 'geometry' in gust_envelope_df.columns:
-                gust_envelope_df = gust_envelope_df[gust_envelope_df['geometry'].notna() & (gust_envelope_df['geometry'].astype(str).str.strip() != '')]
-                fc = _build_ms_envelope_geojson(
-                    gust_envelope_df, gust_kt,
-                    country=primary_country_code, storm=storm, forecast_date=forecast_date, hazard="gust")
-                envelope_features.extend(fc.get("features", []))
+            fc = _build_ms_envelope_geojson_cached(
+                storm, forecast_dt_str, gust_kt, country=primary_country_code,
+                forecast_date=forecast_date, hazard="gust")
+            envelope_features.extend(fc.get("features", []))
         except Exception as e:
             logger.error("Error loading gust envelopes for map_shell_concept (%s/%s): %s", storm, forecast_dt_str, e)
+
+    tracks_data = {"type": "FeatureCollection", "features": track_features} if track_features else dict(_MS_EMPTY_FC)
     envelope_features.sort(key=lambda f: f["properties"].get("severity_population") or 0)
     envelope_geojson = {"type": "FeatureCollection", "features": envelope_features} if envelope_features else dict(_MS_EMPTY_FC)
 

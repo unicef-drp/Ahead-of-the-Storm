@@ -39,7 +39,7 @@ from typing import Callable, Optional
 
 # Tile data and rendered tiles expire after this many seconds so new pipeline
 # output is served without a container restart (matches snowflake_utils TTL).
-_TILE_TTL = 15 * 60  # 15 minutes
+_TILE_TTL = 4 * 60 * 60  # 4 hours
 
 # _DataCache size caps (see its own _evict_oldest_if_over), generous enough
 # to hold several countries/storms/dates at once without ever growing
@@ -1371,7 +1371,7 @@ async def _run_on_raw_layer_pool(func: Callable, *args):
 # infrastructure counts, and admin-region geometry only change when the
 # pipeline re-runs for a country (not per-forecast), so this is deliberately
 # much longer-lived than _TILE_TTL (the per-threshold impact data).
-_BASE_DATA_TTL = _TILE_TTL * 4  # 60 minutes
+_BASE_DATA_TTL = _TILE_TTL * 4  # 16 hours (scales with _TILE_TTL above)
 _MERCATOR_BASE_CACHE_MAX = 16
 _ADMIN_BASE_CACHE_MAX = 16
 
