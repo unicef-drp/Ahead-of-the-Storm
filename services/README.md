@@ -59,6 +59,4 @@ precip-raw/river-raw caches, not this per-country/storm/date cache.
 
 The tile server is wired into the dashboard via `components/map/maplibre_tiles.js`.  MapLibre
 sources are configured by `applyTileConfig()`, called reactively as the user changes hazard/layer/date
-selections on the current root page (`pages/map_shell_concept.py`) -- there is no separate "Load
-Layers" button on that page. The legacy `/legacy` page (`pages/dashboard.py`) does have a "Load Layers"
-button as part of its own, different UI flow.
+selections on the app's only page (`pages/map_shell_concept.py`)

@@ -141,24 +141,16 @@ A single gunicorn worker (1 process × 8 threads) is required to avoid fork-safe
 
 ## Application Features
 
-1. **Map shell** (`/`): Full-bleed Global/Country-Analysis map, the app's main view. Independently
+1. **Map shell** (`/`): Full-bleed Global/Country-Analysis map, the app's only page. Independently
    toggleable hazard layers (Sustained Wind, Gust, River Flooding, Rainfall, Storm Surge preview) with
    per-hazard threshold sliders; a tile-click Hazard Contribution popup; a Full Impact Breakdown modal
    with a printable report page; schools/health centers/shelters/WASH facilities at risk; population
    impact tiles; i18n (es/fr/bn); a real Alert Email viewer (per-country, opened from the Active Storms
-   list) and a real Warning Email viewer (per-storm). An older page with a different feature set
-   (deterministic/probabilistic/worst-case impact metrics) is kept at `/legacy` as a reference/fallback,
-   unlinked from any navigation.
+   list) and a real Warning Email viewer (per-storm).
 
 ![app_preview.png](assets/img/app_preview.png)
 
-2. **Forecast Analysis** (`/analysis`): Statistical analysis including:
-   - Box plots showing impact distribution across ensemble members
-   - Exceedance probability curves
-   - Impact summaries for population, children, infants, schools, health centers, and built surface
-   - Percentile analysis
-
-3. **AI Agent**: the `HURRICANE_INTELLIGENCE` Snowflake Cortex agent generates situation reports from
+2. **AI Agent**: the `HURRICANE_INTELLIGENCE` Snowflake Cortex agent generates situation reports from
    the same MAT tables the map shell reads (see `snowflake/intelligence/`), queried through
    `snowflake_utils.py`.
 

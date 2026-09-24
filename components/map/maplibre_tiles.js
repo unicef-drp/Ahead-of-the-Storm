@@ -77,15 +77,15 @@ function initMaplibre() {
     window._aots_mapbox_token = mapboxToken;
     var initialTiles = mapboxToken
         ? ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + mapboxToken]
-        : ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-           'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-           'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
+        : ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+           'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+           'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'];
     var basemapSource = {
         'basemap-source': {
             type: 'raster',
             tiles: initialTiles,
             tileSize: 256,
-            attribution: mapboxToken ? '© Mapbox © OpenStreetMap contributors' : '© CARTO © OpenStreetMap contributors',
+            attribution: mapboxToken ? '© Mapbox © OpenStreetMap contributors' : '© OpenStreetMap contributors',
         }
     };
     var basemapLayer = { id: 'basemap-tiles', type: 'raster', source: 'basemap-source', minzoom: 0, maxzoom: 22 };
@@ -1052,24 +1052,18 @@ function swapMaplibreBasemap(name) {
     var tiles;
     if (name === 'Mapbox Light' && token) {
         tiles = ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + token];
+    } else if (name === 'Mapbox Dark' && token) {
+        tiles = ['https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}?access_token=' + token];
     } else if (name === 'OpenStreetMap') {
         tiles = ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
                  'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
                  'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'];
-    } else if (name === 'CartoDB Light') {
-        tiles = ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                 'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                 'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
-    } else if (name === 'CartoDB Dark') {
-        tiles = ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                 'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                 'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'];
     } else if (name === 'Satellite') {
         tiles = ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'];
     } else {
         tiles = token
             ? ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + token]
-            : ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
+            : ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'];
     }
     map.getSource('basemap-source').setTiles(tiles);
     console.log('[AoTS] swapMaplibreBasemap →', name);

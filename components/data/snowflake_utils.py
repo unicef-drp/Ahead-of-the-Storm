@@ -3398,7 +3398,22 @@ def _wind_ready_at(forecast_time) -> bool:
                 SELECT te.TRACK_ID, pc.COUNTRY_CODE,
                     EXISTS (
                         SELECT 1 FROM TC_PIPELINE_RUN_LOG rl
-                        WHERE rl.STORM_ID = te.TRACK_ID AND rl.FORECAST_TIME = te.FORECAST_TIME
+                        WHERE rl.STORM_ID = te.TRACK_ID
+                          -- te.FORECAST_TIME (TC_ENVELOPES_COMBINED) is TIMESTAMP_NTZ; rl.FORECAST_TIME
+                          -- is TIMESTAMP_TZ. A bare NTZ = TZ comparison implicitly promotes the naive
+                          -- side using the SESSION's own TIMEZONE parameter (America/Los_Angeles),
+                          -- not treating it as already-UTC -- confirmed live 2026-09-24: once
+                          -- TC_PIPELINE_RUN_LOG.FORECAST_TIME was fixed to be genuinely UTC-tagged
+                          -- (see pipeline_runlog.py's own fix in the DATAPIPELINE repo), this bare
+                          -- comparison stopped matching ANY row at all, for every storm, not just the
+                          -- one originally found broken: it had only ever "worked" because the write
+                          -- side's OLD bug (also wrongly -07:00-tagged) happened to cancel out this
+                          -- same implicit NTZ promotion. CONVERT_TIMEZONE('UTC', ...) on rl.FORECAST_TIME
+                          -- (a genuinely tz-aware value) is a real, session-independent instant
+                          -- conversion, not an implicit reinterpretation, so this now correctly matches
+                          -- te.FORECAST_TIME's own naive-but-really-UTC wall-clock value regardless of
+                          -- the session's TIMEZONE parameter.
+                          AND CONVERT_TIMEZONE('UTC', rl.FORECAST_TIME)::TIMESTAMP_NTZ = te.FORECAST_TIME
                           AND rl.STATUS = 'SUCCESS'
                           AND (ARRAY_CONTAINS(pc.COUNTRY_CODE::VARIANT, rl.COUNTRIES_PROCESSED)
                                OR ARRAY_CONTAINS(pc.COUNTRY_CODE::VARIANT, rl.NO_IMPACT_COUNTRIES))

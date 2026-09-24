@@ -1,20 +1,9 @@
 """
 Map-first shell (full-bleed map, floating dismissible panels, mode-aware
-Controls, two-tier timeline): the main dashboard, promoted from the
-/map-shell concept exploration. Synthesizes pieces from three earlier
-Artifact mockups: global_zoom_navigation.html (top bar shape, Global-mode
-content: simple worldwide checkboxes + Active Storms list),
-weatherlab_style_navigation.html (floating-panel treatment), and
-dashboard_synthesis_v2.html (always-visible Impact Summary panel).
-
-Now wired to a real MapLibre/Leaflet dual-layer map (same stack as
-layouts/panels.py) for base-layer rendering, zoom/pan, and basemap
-switching. The synthetic canvas placeholder is gone. Hazard/tile/facility
-DATA layers are still separate follow-up work (see the project plan). The
-old dashboard (pages/dashboard.py) is kept at /legacy as a working
-reference/fallback. Deliberately skips the app's usual make_header/AppShell
-chrome: this page's own full-bleed shell replaces it, not the other way
-around.
+Controls, two-tier timeline): the app's only real page (path="/"). Renders
+a MapLibre/Leaflet dual-layer map for base-layer rendering, zoom/pan, and
+basemap switching, plus its own independently-built topbar/footer
+(_topbar(), _compact_footer()) rather than a shared header/AppShell module.
 """
 import hashlib
 import json
@@ -395,7 +384,7 @@ _TRANSLATIONS = {
     "es": {
         "N/A": "N/D",
         # Basemap
-        "Light": "Claro", "Dark": "Oscuro", "Satellite": "Satélite", "OSM": "OSM",
+        "Satellite": "Satélite",
         # Countries
         "Philippines": "Filipinas", "Vietnam": "Vietnam", "Mozambique": "Mozambique",
         "Pacific Islands": "Islas del Pacífico",
@@ -681,6 +670,7 @@ _TRANSLATIONS = {
         "Jamaica": "Jamaica",
         "MELISSA — Jamaica (28 Oct 2025, 00Z)": "MELISSA — Jamaica (28 Oct 2025, 00Z)",
         "Mapbox Light": "Mapbox Light",
+        "Mapbox Dark": "Mapbox Dark",
         "Mexico": "México",
         "Moderate Poverty Probability": "Probabilidad de Pobreza Moderada",
         "Montserrat": "Montserrat",
@@ -711,7 +701,7 @@ _TRANSLATIONS = {
     },
     "fr": {
         "N/A": "N/D",
-        "Light": "Clair", "Dark": "Sombre", "Satellite": "Satellite", "OSM": "OSM",
+        "Satellite": "Satellite",
         "Philippines": "Philippines", "Vietnam": "Vietnam", "Mozambique": "Mozambique",
         "Pacific Islands": "Îles du Pacifique",
         "Pacific Islands (region — several small nations bundled together)":
@@ -976,6 +966,7 @@ _TRANSLATIONS = {
         "Jamaica": "Jamaïque",
         "MELISSA — Jamaica (28 Oct 2025, 00Z)": "MELISSA — Jamaïque (28 oct. 2025, 00Z)",
         "Mapbox Light": "Mapbox Light",
+        "Mapbox Dark": "Mapbox Dark",
         "Mexico": "Mexique",
         "Moderate Poverty Probability": "Probabilité de pauvreté modérée",
         "Montserrat": "Montserrat",
@@ -1006,7 +997,7 @@ _TRANSLATIONS = {
     },
     "bn": {
         "N/A": "প্রযোজ্য নয়",
-        "Light": "হালকা", "Dark": "গাঢ়", "Satellite": "স্যাটেলাইট", "OSM": "OSM",
+        "Satellite": "স্যাটেলাইট",
         "Philippines": "ফিলিপাইন", "Vietnam": "ভিয়েতনাম", "Mozambique": "মোজাম্বিক",
         "Pacific Islands": "প্রশান্ত মহাসাগরীয় দ্বীপপুঞ্জ",
         "Pacific Islands (region — several small nations bundled together)":
@@ -1267,6 +1258,7 @@ _TRANSLATIONS = {
         "Jamaica": "জামাইকা",
         "MELISSA — Jamaica (28 Oct 2025, 00Z)": "MELISSA — জামাইকা (28 Oct 2025, 00Z)",
         "Mapbox Light": "Mapbox Light",
+        "Mapbox Dark": "Mapbox Dark",
         "Mexico": "মেক্সিকো",
         "Moderate Poverty Probability": "মাঝারি দারিদ্র্যের সম্ভাব্যতা",
         "Montserrat": "মন্টসেরাট",
@@ -1534,20 +1526,16 @@ _EXPERIMENTAL_DISCLAIMER = (
 # tiles on every pan/zoom, this constant needs no network request at all.
 _BLANK_TILE_URL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
-# Same 4 named options as the real app's dl.LayersControl (layouts/panels.py):
-# CartoDB Light (default), CartoDB Dark, Satellite, OpenStreetMap/Mapbox
-# Light. This pill is the only control the user interacts with, its
+# This pill is the only control the user interacts with; its
 # clientside_callback below clicks the matching (visually hidden) native
 # Leaflet LayersControl radio input, so Leaflet's own 'baselayerchange'
 # event fires and swapMaplibreBasemap (maplibre_tiles.js) does the real
-# tile swap, exactly as it already does for panels.py's own LayersControl.
+# tile swap.
 def _basemap_options():
-    osm_label = _t("Mapbox Light") if mapbox_token else _t("OSM")
     return [
-        {"value": "cartodb-light", "label": _t("Light")},
-        {"value": "cartodb-dark", "label": _t("Dark")},
+        {"value": "mapbox-light", "label": _t("Mapbox Light")},
+        {"value": "mapbox-dark", "label": _t("Mapbox Dark")},
         {"value": "satellite", "label": _t("Satellite")},
-        {"value": "osm", "label": osm_label},
     ]
 
 # Shared with _topbar's own DatePickerInput/SegmentedControl initial values
@@ -1881,13 +1869,8 @@ def _bottom_left_controls():
     return html.Div([
         dmc.SegmentedControl(
             id="basemap-select",
-            # Matches initMaplibre()'s own token-conditional default tiles
-            # (maplibre_tiles.js): with a real Mapbox token, the map already
-            # renders Mapbox Light tiles on first load regardless of this
-            # value, so the pill needs to start on "osm" (→ "Mapbox Light")
-            # to avoid showing "Light" selected while different tiles are
-            # actually on screen.
-            value="osm" if mapbox_token else "cartodb-light",
+            # Matches initMaplibre()'s own default tiles (maplibre_tiles.js).
+            value="mapbox-light",
             data=_basemap_options(),
             size="xs",
         ),
@@ -10421,13 +10404,19 @@ def _map_stack():
                                 checked=bool(mapbox_token),
                             ),
                             dl.BaseLayer(
-                                dl.TileLayer(url=_BLANK_TILE_URL, opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a><br>' + _UN_DISCLAIMER),
-                                name="CartoDB Light",
-                                checked=not mapbox_token,
-                            ),
-                            dl.BaseLayer(
-                                dl.TileLayer(url=_BLANK_TILE_URL, opacity=0, attribution='© <a href="https://carto.com/attributions">CARTO</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>' + _UN_DISCLAIMER),
-                                name="CartoDB Dark",
+                                dl.TileLayer(
+                                    url=_BLANK_TILE_URL,
+                                    opacity=0,
+                                    attribution=(
+                                        ('© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> '
+                                         '© <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a><br>'
+                                         + _UN_DISCLAIMER)
+                                        if mapbox_token else
+                                        ('© <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors<br>'
+                                         + _UN_DISCLAIMER)
+                                    ),
+                                ),
+                                name="Mapbox Dark",
                                 checked=False,
                             ),
                             dl.BaseLayer(
@@ -10794,10 +10783,9 @@ clientside_callback(
     """
     function(basemapId) {
         var nameByValue = {
-            "cartodb-light": "CartoDB Light",
-            "cartodb-dark": "CartoDB Dark",
+            "mapbox-light": window._aots_mapbox_token ? "Mapbox Light" : "OpenStreetMap",
+            "mapbox-dark": window._aots_mapbox_token ? "Mapbox Dark" : "OpenStreetMap",
             "satellite": "Satellite",
-            "osm": window._aots_mapbox_token ? "Mapbox Light" : "OpenStreetMap",
         };
         var targetName = nameByValue[basemapId];
         if (!targetName) { return basemapId; }
