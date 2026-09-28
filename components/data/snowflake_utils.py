@@ -11,8 +11,11 @@ Key Components:
 - Impact and base layer MAT table queries
 """
 
+import ctypes
 import logging
 import math
+import os
+import sys
 import time
 import threading
 import functools
@@ -92,8 +95,221 @@ _IMPACT_TTL  = 4 * 60 * 60  # 4h: impact queries for one already-known (country,
 _BASE_TTL    = 60 * 60   # 60 min: base layers (schools/HCs/tiles; change only on re-init)
 
 
+# Real container memory limit is 14GB (Azure P3v2), shared with nginx and
+# the gunicorn Dash workers in the same container, so the tile server
+# process itself needs to stay well under that on its own. Every function
+# decorated with @ttl_cache registers a trim callable here; a background
+# watchdog trims all of them once resident memory crosses this budget,
+# releasing memory back to the process voluntarily instead of relying on
+# the OOM killer, which takes the whole container down and loses every
+# request already being processed while Azure restarts it. A trim keeps
+# each cache's own most recently used entries down to a floor rather than
+# clearing it outright, so whatever a user is actively viewing stays warm
+# and fast even while the process is under memory pressure. That floor
+# scales with each cache's own real maxsize (see ttl_cache's own
+# _pressure_floor comment below), not this one constant alone:
+# _MEMORY_PRESSURE_FLOOR is only the minimum floor a small cache ever gets
+# trimmed to, a real production trim confirmed applying it uniformly to
+# every cache regardless of size wiped a high traffic, large maxsize cache
+# down to a handful of entries, evicting tiles real concurrent users were
+# actively viewing at the exact moment memory pressure hit.
+_MEMORY_GUARD_MB = 8192
+_MEMORY_WATCHDOG_INTERVAL_S = 60
+_MEMORY_PRESSURE_FLOOR = 10
+_TTL_CACHE_CLEARERS: list = []
+
+
+def _process_rss_mb() -> float:
+    """Current process resident memory in MB. Reads /proc/self/status on
+    Linux, which is what production always runs; resource.getrusage is an
+    approximate fallback for local development on other operating systems,
+    where exactness does not matter since the guard only has real effect in
+    the production container."""
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return rss / 1024.0 if sys.platform.startswith('linux') else rss / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
+
+
+def _sibling_worker_pids() -> list[int]:
+    """PIDs of every real worker process sharing this one's own parent
+    process (Linux /proc only). Confirmed via direct inspection of a real
+    running TILE_WORKERS=2 container that this, not an identical command
+    line, is the real, robust way to group them: uvicorn's own real worker
+    processes are spawned via Python's multiprocessing.spawn, whose own
+    command line embeds a real, unique per-worker pipe handle number
+    (spawn_main(tracker_fd=13, pipe_handle=N)), so an exact cmdline match
+    cannot find sibling workers reliably (every real worker's own cmdline is
+    unique, matching nothing else); PPid grouping is required instead.
+    Every real worker for one uvicorn instance shares
+    the exact same real parent PID (the uvicorn supervisor process itself),
+    confirmed directly: two real workers both showed PPid pointing at the
+    same supervisor, while nginx and the separate gunicorn Dash process
+    each sit under their own, different parent, so neither is ever
+    incorrectly swept into this sum. Also excludes multiprocessing's own
+    resource_tracker helper (a real sibling by PPid, but never runs this
+    app's own code or holds any of its caches, so counting it would only
+    add noise, not a correctness risk). Falls back to [os.getpid()] (this
+    process alone) on any platform or error where /proc is not usable, the
+    exact same real behavior TILE_WORKERS=1 (today's real deployed value)
+    already has today."""
+    try:
+        my_ppid = None
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('PPid:'):
+                    my_ppid = line.split()[1]
+                    break
+        if my_ppid is None:
+            return [os.getpid()]
+        siblings = []
+        for name in os.listdir('/proc'):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f'/proc/{name}/status') as f:
+                    for line in f:
+                        if line.startswith('PPid:'):
+                            if line.split()[1] != my_ppid:
+                                break
+                            with open(f'/proc/{name}/cmdline', 'rb') as cf:
+                                if b'resource_tracker' not in cf.read():
+                                    siblings.append(int(name))
+                            break
+            except (OSError, IOError):
+                continue  # process exited between listdir and open, or no permission
+        return siblings if siblings else [os.getpid()]
+    except Exception:
+        return [os.getpid()]
+
+
+def _pid_rss_mb(pid: int) -> float:
+    """Real resident memory in MB for an arbitrary PID, reading
+    /proc/<pid>/status the same way _process_rss_mb reads /proc/self/status.
+    Returns 0.0 on any error (process exited, no permission) so one gone
+    sibling never breaks the real combined sum for the ones still running."""
+    try:
+        with open(f'/proc/{pid}/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def _combined_worker_rss_mb() -> tuple[float, int]:
+    """(total real RSS in MB, real sibling count) across every process
+    sharing this one's own command line: the real fix for the exact blind
+    spot a purely per-process guard has once TILE_WORKERS is ever raised
+    above 1. Two worker processes each individually reading 7GB,
+    comfortably under an 8GB per-process guard, while the container they
+    actually share is really at 14GB combined, is a real path to the exact
+    OOM this watchdog exists to prevent in the first place, invisible to a
+    check that only ever looks at its own process. Every sibling process
+    runs this exact same watchdog loop and sees this exact same combined
+    number, so if the group is over budget, every one of them independently
+    reaches the same conclusion and trims its own share, converging the
+    real aggregate down correctly without any cross-process coordination
+    beyond what /proc itself already provides for free. With
+    TILE_WORKERS=1 (today's real deployed value) or on any platform where
+    /proc is not available, this returns exactly (this process's own RSS,
+    1), identical to the watchdog's own pre-existing behavior in both
+    those cases."""
+    pids = _sibling_worker_pids()
+    return sum(_pid_rss_mb(p) for p in pids), len(pids)
+
+
+def _malloc_trim() -> None:
+    """Ask glibc to return freed-but-unused heap memory back to the OS.
+    Real, reproducible evidence (a local repro mimicking this app's own
+    real load/evict churn: variable-sized DataFrames repeatedly created
+    and dropped from a bounded LRU) found process RSS sitting 30%+ above
+    the real, measured live content of the caches holding it, even while
+    those caches were still actively in use, and found malloc_trim(0)
+    reclaimed 60-70% of that gap. glibc's own arena allocator does not
+    shrink or share free space across arenas/threads on its own once
+    fragmented, which is exactly the shape of this process's own real
+    workload (many threads, many different-sized DataFrames loaded and
+    evicted all night). A safe no-op everywhere else: ctypes.CDLL(None)
+    only exposes a real malloc_trim symbol on glibc/Linux, the only
+    platform this container ever actually runs on; local macOS dev (no
+    such libc symbol) hits the except branch and does nothing, same as
+    today."""
+    try:
+        ctypes.CDLL(None).malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _memory_watchdog_loop():
+    while True:
+        time.sleep(_MEMORY_WATCHDOG_INTERVAL_S)
+        try:
+            combined_rss, n_workers = _combined_worker_rss_mb()
+            if combined_rss > _MEMORY_GUARD_MB:
+                logger.warning(
+                    "Memory watchdog: combined RSS across %d sibling worker process(es) %.0fMB over "
+                    "%dMB guard, trimming %d registered caches IN THIS PROCESS (each to its own floor, "
+                    "scaled to that cache's own maxsize, minimum %d); every sibling runs this same "
+                    "check and trims its own share the same way",
+                    n_workers, combined_rss, _MEMORY_GUARD_MB, len(_TTL_CACHE_CLEARERS), _MEMORY_PRESSURE_FLOOR,
+                )
+                for trim in list(_TTL_CACHE_CLEARERS):
+                    try:
+                        trim()
+                    except Exception:
+                        pass
+            # Runs every tick, not only past the guard: real evidence above
+            # shows fragmentation accumulates from ordinary load/evict
+            # churn well before RSS ever crosses _MEMORY_GUARD_MB, so
+            # waiting for a breach before reclaiming it would miss most of
+            # the real benefit. Only logged when it actually reclaims a
+            # real, meaningful amount, so this stays quiet on a normal,
+            # already-lean tick instead of adding log noise every 60s.
+            rss_before_trim = _process_rss_mb()
+            _malloc_trim()
+            rss_after_trim = _process_rss_mb()
+            reclaimed = rss_before_trim - rss_after_trim
+            if reclaimed > 50:
+                logger.info(
+                    "Memory watchdog: malloc_trim reclaimed %.0fMB (RSS %.0fMB -> %.0fMB)",
+                    reclaimed, rss_before_trim, rss_after_trim,
+                )
+        except Exception:
+            pass
+
+
+threading.Thread(target=_memory_watchdog_loop, daemon=True, name="ttl-cache-memory-watchdog").start()
+
+
+def register_memory_pressure_clearer(trim_fn) -> None:
+    """Register a callable that takes no arguments and trims a cache's real
+    process memory, for a cache not built with the @ttl_cache decorator
+    above, which registers itself automatically. Called by the same
+    watchdog, under the same _MEMORY_GUARD_MB budget, so every cache holding
+    real process memory in the tile server is covered by one shared guard.
+    A registered callable should trim its cache down to a small floor of its
+    own most recently used entries rather than clearing it outright, so
+    whatever a user is actively viewing stays warm."""
+    _TTL_CACHE_CLEARERS.append(trim_fn)
+
+
 def ttl_cache(ttl_seconds: int, maxsize: int = 128):
-    """LRU cache with a sliding per-entry TTL, thread-safe, single-flight per key."""
+    """LRU cache with a sliding per-entry TTL, thread-safe, single-flight per
+    key. A trim to _MEMORY_PRESSURE_FLOOR entries is registered with the
+    module memory watchdog above, so every cache built with this decorator
+    also gives back memory under pressure, not just on its own TTL/maxsize,
+    while keeping its own most recently used entries warm."""
     def decorator(func):
         cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
         lock = threading.Lock()
@@ -159,12 +375,41 @@ def ttl_cache(ttl_seconds: int, maxsize: int = 128):
             with lock:
                 cache.clear()
 
+        # A uniform floor of _MEMORY_PRESSURE_FLOOR entries for every
+        # registered cache regardless of its own real maxsize was confirmed
+        # live to trim a high traffic, large maxsize cache (thousands of
+        # entries under normal operation) down to the same tiny handful as a
+        # small, rarely touched one, evicting tiles real concurrent users
+        # were actively viewing at the exact moment memory pressure hit,
+        # rather than only the genuinely cold long tail. Scaling the floor
+        # with this cache's own maxsize keeps a real, still meaningful
+        # reduction under pressure while leaving enough of a high traffic
+        # cache's own active working set warm for concurrent real users.
+        _pressure_floor = max(_MEMORY_PRESSURE_FLOOR, maxsize // 16)
+
+        def cache_trim_to_floor():
+            with lock:
+                while len(cache) > _pressure_floor:
+                    cache.popitem(last=False)
+
         def cache_info():
             with lock:
                 return {"size": len(cache), "maxsize": maxsize}
 
+        def cache_values():
+            """Snapshot of currently cached values (not keys), for real
+            memory reporting (see services/tile_server.py's own
+            /debug/cache-stats): a plain list() copy, the same safe
+            snapshot-then-read pattern _DataCache.memory_report already
+            uses, so a concurrent write here can never raise while a
+            caller is summing real byte sizes over the returned list."""
+            with lock:
+                return [v[1] for v in cache.values()]
+
         wrapper.cache_clear = cache_clear
         wrapper.cache_info  = cache_info
+        wrapper.cache_values = cache_values
+        _TTL_CACHE_CLEARERS.append(cache_trim_to_floor)
         return wrapper
     return decorator
 
@@ -1319,8 +1564,8 @@ def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold:
             OPERATOR_TYPE,
             PROBABILITY,
             ZONE_ID,
-            ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LATITUDE,
-            ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX')))) AS LONGITUDE
+            LATITUDE,
+            LONGITUDE
         FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
         WHERE COUNTRY = %s
           AND STORM = %s

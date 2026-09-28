@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import fcntl
 import gzip
 import io
 import json
@@ -31,6 +32,7 @@ import logging
 import math
 import functools
 import os
+import random
 import tempfile
 import threading
 import time
@@ -40,6 +42,151 @@ from typing import Callable, Optional
 # Tile data and rendered tiles expire after this many seconds so new pipeline
 # output is served without a container restart (matches snowflake_utils TTL).
 _TILE_TTL = 4 * 60 * 60  # 4 hours
+
+# ---------------------------------------------------------------------------
+# Optional local-disk shared cache for _DataCache's mercator entries: lets
+# multiple TILE_WORKERS processes in the SAME container (sharing one kernel
+# and filesystem, confirmed the real topology under both SPCS and this
+# repo's own Azure deployment) avoid redundantly paying the Snowflake+merge
+# cost for a key another worker already computed, without a paid shared
+# cache service. Off by default: MERCATOR_DISK_CACHE_ENABLED unset (or not
+# "true") makes every function below a pure no-op, so existing behavior is
+# byte-for-byte unchanged unless this is explicitly turned on, and turning
+# it back off again (no code change, just the env var) is a complete,
+# immediate revert.
+_DISK_CACHE_ENABLED = os.getenv("MERCATOR_DISK_CACHE_ENABLED", "false").strip().lower() == "true"
+_DISK_CACHE_ROOT = os.getenv("MERCATOR_DISK_CACHE_ROOT", "/tmp/aots_disk_cache/mercator")
+# Deliberately conservative: Azure App Service for Containers caps a custom
+# Linux container's own writable layer at 15GB total, non-expandable, shared
+# with the pulled image itself and nginx's own already-configured 2GB tile
+# cache (max_size=2g in nginx.spcs.conf), a THIRD consumer of that same
+# fixed pool, not a fresh 15GB budget of its own.
+_DISK_CACHE_MAX_MB = int(os.getenv("MERCATOR_DISK_CACHE_MAX_MB", "1024"))
+_DISK_CACHE_EVICT_CHECK_PROBABILITY = 0.05  # checked on a fraction of writes, not every one
+
+
+def _disk_cache_paths(code: str, storm: str, forecast_date: str, variant: tuple) -> tuple[str, str]:
+    """(data_path, lock_path) for one mercator cache key, mirroring
+    _DataCache's own key shape as a filesystem path (rather than inventing a
+    separate naming scheme) so `ls` on the cache root shows exactly which
+    real runs are warm."""
+    variant_str = "_".join(str(v) for v in variant)
+    d = os.path.join(_DISK_CACHE_ROOT, code, storm, forecast_date)
+    return os.path.join(d, f"{variant_str}.parquet"), os.path.join(d, f"{variant_str}.lock")
+
+
+@contextlib.contextmanager
+def _disk_cache_flock(lock_path: str):
+    """Real fcntl.flock mutual exclusion across the TILE_WORKERS processes
+    sharing this container's kernel: a genuine, zero-dependency substitute
+    for a network lock service (Redis SET NX and similar) in this specific
+    topology, where every worker for one tile server instance always runs
+    inside the same container. A second worker racing for the same key
+    blocks here rather than redundantly paying the Snowflake+merge cost,
+    the same real mutual exclusion _DataCache's own in-process _lock_for
+    already gives within one process, just extended across processes via
+    the kernel instead of a GIL-protected Python lock object."""
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _disk_cache_read(path: str, ttl_seconds: int) -> Optional[pd.DataFrame]:
+    """Read a cached DataFrame if present and still within its freshness
+    window (the file's own mtime, set by the atomic rename in
+    _disk_cache_write, as a zero-extra-cost proxy for the same "epoch
+    seconds when loaded" concept _DataCache's own _loaded_at dict tracks in
+    memory). Fails soft on ANY error (missing file, permission error,
+    corrupted/mismatched content): a disk cache problem must fall straight
+    through to the real cold Snowflake path, never raise into a live tile
+    request."""
+    if not _DISK_CACHE_ENABLED:
+        return None
+    try:
+        st = os.stat(path)
+        if time.time() - st.st_mtime >= ttl_seconds:
+            return None
+        return pd.read_parquet(path)
+    except Exception:
+        return None
+
+
+def _disk_cache_write(path: str, df: pd.DataFrame) -> None:
+    """Write via temp file plus atomic os.rename: on a single POSIX
+    filesystem, rename only repoints a directory entry, so a concurrent
+    reader always sees either the old state (nothing, or an older but
+    intact file) or the fully new file, never a half-written one. A crash
+    between the parquet write and the rename leaves only an orphaned
+    .tmp file, cleaned up by _disk_cache_maybe_evict below, never a
+    corrupted file under the real key path. Fails soft: a write failure
+    (disk full, permission error) is logged and otherwise ignored, since
+    the in-memory cache this backs remains correct either way."""
+    if not _DISK_CACHE_ENABLED:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp.{os.getpid()}"
+        df.to_parquet(tmp_path)
+        os.rename(tmp_path, path)
+        _disk_cache_maybe_evict()
+    except Exception as exc:
+        log.debug("Disk cache write failed for %s (falling back to in-memory only): %s", path, exc)
+
+
+def _disk_cache_maybe_evict() -> None:
+    """Opportunistic, low-frequency sweep (a random fraction of writes, not
+    every one, since this walks the whole cache directory) enforcing
+    _DISK_CACHE_MAX_MB: deletes the oldest files by mtime first once the
+    real total exceeds the cap, the same "keep the biggest budget worth of
+    recent stuff, evict the rest" idea nginx's own proxy_cache_path
+    max_size already implements for its own tile cache, just implemented
+    in application code here since no off-the-shelf daemon manages this
+    particular directory. Also sweeps orphaned .tmp files (see
+    _disk_cache_write's own docstring) once they are old enough that they
+    can only be leftovers from a crashed writer, never a real in-flight
+    write."""
+    if random.random() > _DISK_CACHE_EVICT_CHECK_PROBABILITY:
+        return
+    try:
+        entries: list[tuple[str, float, int]] = []
+        total_bytes = 0
+        for root, _dirs, files in os.walk(_DISK_CACHE_ROOT):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    st = os.stat(fpath)
+                except OSError:
+                    continue
+                if ".tmp." in fname:
+                    if time.time() - st.st_mtime > 300:
+                        try:
+                            os.remove(fpath)
+                        except OSError:
+                            pass
+                    continue
+                entries.append((fpath, st.st_mtime, st.st_size))
+                total_bytes += st.st_size
+        budget_bytes = _DISK_CACHE_MAX_MB * 1024 * 1024
+        if total_bytes <= budget_bytes:
+            return
+        entries.sort(key=lambda e: e[1])  # oldest mtime first
+        for fpath, _mtime, size in entries:
+            if total_bytes <= budget_bytes:
+                break
+            try:
+                os.remove(fpath)
+                total_bytes -= size
+            except OSError:
+                pass
+    except Exception as exc:
+        log.debug("Disk cache eviction sweep failed (non-fatal): %s", exc)
 
 # _DataCache size caps (see its own _evict_oldest_if_over), generous enough
 # to hold several countries/storms/dates at once without ever growing
@@ -124,12 +271,42 @@ def _ttl_cache(ttl_seconds: int, maxsize: int = 128):
             with lock:
                 cache.clear()
 
+        # Scaled to this cache's own maxsize, not one uniform tiny floor for
+        # every registered cache regardless of its real size, see
+        # snowflake_utils.py's own ttl_cache/_pressure_floor comment for the
+        # full reasoning: a real production trim confirmed this wiping a
+        # high traffic, large maxsize cache down to a handful of entries,
+        # evicting tiles real concurrent users were actively viewing.
+        from components.data.snowflake_utils import _MEMORY_PRESSURE_FLOOR
+        _pressure_floor = max(_MEMORY_PRESSURE_FLOOR, maxsize // 16)
+
+        def cache_trim_to_floor():
+            with lock:
+                while len(cache) > _pressure_floor:
+                    cache.popitem(last=False)
+
         def cache_info():
             with lock:
                 return {"size": len(cache), "maxsize": maxsize}
 
+        def cache_values():
+            """Snapshot of currently cached values (not keys/expiry), for
+            real memory reporting (see /debug/cache-stats): a plain list()
+            copy under the same lock every other access already uses, so a
+            concurrent write can never raise while a caller sums real byte
+            sizes over the returned list. Mirrors snowflake_utils.py's own
+            ttl_cache.cache_values, added for the same reason."""
+            with lock:
+                return [v[1] for v in cache.values()]
+
         wrapper.cache_clear = cache_clear
         wrapper.cache_info  = cache_info
+        wrapper.cache_values = cache_values
+        try:
+            from components.data.snowflake_utils import register_memory_pressure_clearer
+            register_memory_pressure_clearer(cache_trim_to_floor)
+        except Exception:
+            pass
         return wrapper
     return decorator
 
@@ -387,16 +564,19 @@ def _quadkey_like_pattern(z: int, x: int, y: int) -> str:
 
 # (country, zoom_level) -> (base_df_ref, lats, lons). A real bounded LRU
 # (OrderedDict, not a plain dict): get_base_tiles() itself evicts by COUNT
-# once more than maxsize=32 distinct (country, zoom_level) keys have EVER
-# been queried in the process's lifetime, but that eviction is invisible to
-# a separate, uncoupled plain dict here, i.e. a bound on one cache's
-# concurrently-held entries does not bound another cache's cumulative
-# distinct-key count over the life of a long-running SPCS process. Without
-# its own real eviction, this dict would grow forever as new countries get
-# onboarded (already 29 of the 32 as of this writing), each entry holding a
-# strong reference to a full base-tiles GeoDataFrame (hundreds of MB for a
-# large country like Mexico) that get_base_tiles() itself has long since
-# forgotten. Capped at the SAME maxsize as get_base_tiles() for consistency.
+# once more than its own maxsize distinct (country, zoom_level) keys have
+# EVER been queried in the process's lifetime, but that eviction is
+# invisible to a separate, uncoupled plain dict here, i.e. a bound on one
+# cache's entries held concurrently does not bound another cache's
+# cumulative distinct key count over the life of a long running SPCS
+# process. Without its own real eviction, this dict would grow forever as
+# new countries get onboarded, each entry holding a strong reference to a
+# full base tile GeoDataFrame (hundreds of MB for a large country like
+# Mexico) that get_base_tiles() itself has long since forgotten. Capped at
+# the SAME maxsize as get_base_tiles() for consistency, and registered with
+# the same memory watchdog covering the whole process (see
+# snowflake_utils.register_memory_pressure_clearer) since it holds the same
+# order of magnitude of memory as get_base_tiles()'s own cache.
 _BASE_TILE_CENTROID_CACHE_MAX = 32
 _BASE_TILE_CENTROID_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
 # Guards ONLY the dict bookkeeping (read/write/move_to_end/len-check/evict)
@@ -627,6 +807,28 @@ def _merge_no_collision(base: pd.DataFrame, right: pd.DataFrame, on: str) -> pd.
     if drop_cols:
         right = right.drop(columns=drop_cols)
     return base.merge(right, on=on, how="left")
+
+
+def _impact_df(rows: list[dict]) -> pd.DataFrame:
+    """Builds a per-threshold impact/vulnerability DataFrame from
+    _run_query's own row-dict list (every SNOWFLAKE-path impact/vuln query
+    in _DataCache's own ensure_mercator/ensure_admin/_ensure_vuln_*_one
+    goes through this, never a bare pd.DataFrame(rows) call), casting
+    TILE_ID to the same Arrow-backed string[pyarrow] dtype
+    _ensure_mercator_base_one/_ensure_admin_base_one's own base frames use.
+
+    Confirmed empirically (not assumed): pandas silently reverts an
+    Arrow-backed column back to plain object dtype the instant it's merged
+    against a plain-object counterpart via .merge(). Every DataFrame
+    merged onto a cached base frame in this class must share this same
+    dtype, or the real memory benefit is discarded right at the point (the
+    cached, actually-served _mercator/_admin entries, not just the
+    short-lived base frames) where it matters most.
+    """
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
+    if "TILE_ID" in df.columns:
+        df["TILE_ID"] = df["TILE_ID"].astype("string[pyarrow]")
+    return df
 
 
 def _add_children_total(df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
@@ -1415,6 +1617,48 @@ def _hazard_variant(hazard: str, wind_threshold: int, gust_threshold: Optional[i
     return ("wind", wind_threshold)
 
 
+# Only two things stay resident in every run scoped _DataCache dict at all
+# times: the app's own pinned demo scenarios, and the _RECENT_RUN_WINDOW most
+# recent distinct forecast_date values currently present, ranked by the run's
+# own forecast_date value (a plain fixed-width YYYYMMDDHHMMSS string, so a
+# plain string comparison already sorts chronologically), not by when it
+# happened to be loaded into this process. A user reopening an old run a
+# moment ago no longer keeps it resident the way the previous recency based
+# floor did; it is evicted on the very next write to any run scoped dict
+# unless it is one of the pinned demos.
+_RECENT_RUN_WINDOW = 6
+
+# Mirrors pages/map_shell_concept.py's own _DEMO_SCENARIOS list. Not imported
+# directly: the Dash app and this tile server are two separate deployable
+# processes sharing one codebase, not one Python process, so this is kept as
+# its own small, explicitly-synced copy rather than a cross-process import.
+# Update this if a scenario is added, removed, or moved in that list.
+#
+# (country, forecast_date) pairs for the two country-scoped demo scenarios
+# (MELISSA/Jamaica, BAVI period/Bangladesh); storm is deliberately not part
+# of the pin, since a demo's own run is uniquely identified by country plus
+# forecast_date regardless of which storm value the row happens to carry.
+_DEMO_SCENARIO_RUN_PINS = {
+    ("JAM", "20251028000000"),
+    ("BGD", "20260702060000"),
+}
+# The BAVI period's own "Global flood hazards" demo scenario has no single
+# country (countries=[], mode="global" in _DEMO_SCENARIOS); it targets the
+# country/storm-independent raw river and precip layers instead (see
+# _PrecipRawCache/_RiverExtentCache below), not this country-keyed set. Two
+# separate formats, not one, and NEITHER is the compact YYYYMMDDHHMMSS
+# _DataCache uses above: _PrecipRawCache keys its _grid by MET_FORECASTS'
+# own real full-timestamp string, "YYYY-MM-DD HH:MM:SS" (see
+# _mat_date_to_rain_date's own docstring for the confirmed real format;
+# ensure_precip_raw treats anything else as a literal forecast_time and
+# passes it straight into a query against a real TIMESTAMP column), while
+# _RiverExtentCache keys its own _grids by a plain "YYYY-MM-DD" date with no
+# time component at all (see _prewarm_raw_caches' own [:10] truncation of a
+# real TIMESTAMP for why), matching GloFAS's real once-daily cadence.
+_DEMO_SCENARIO_RAW_LAYER_PIN = "2026-07-02 06:00:00"  # precip-raw's own format
+_DEMO_SCENARIO_RAW_LAYER_DATE = "2026-07-02"          # river-raw's own format
+
+
 class _DataCache:
     """Bulk-loads from Snowflake; serves from pandas DataFrames.
 
@@ -1503,6 +1747,118 @@ class _DataCache:
         self._key_locks_meta_lock = threading.Lock()
         self._loaded_at: dict[tuple, float] = {}  # key → epoch seconds when loaded
 
+    @staticmethod
+    def _mercator_run_key_of(key: tuple) -> tuple:
+        """(country, storm, forecast_date) for a _mercator/_mercator_sorted/
+        _admin/_admin_geoms key, which always starts with those three
+        elements directly, followed by its own hazard variant suffix."""
+        return (key[0], key[1], key[2])
+
+    @staticmethod
+    def _facility_run_key_of(key: tuple) -> tuple:
+        """(country, storm, forecast_date) for a _facility key, whose own
+        shape is (layer_type, country, storm, forecast_date) followed by its
+        hazard variant suffix, layer_type first rather than country first."""
+        return (key[1], key[2], key[3])
+
+    @staticmethod
+    def _vuln_mercator_run_key_of(key: tuple) -> tuple:
+        """(country, storm, forecast_date) for a _vuln_mercator key, whose
+        own shape is ("mercator_vuln", country, storm, forecast_date)."""
+        return (key[1], key[2], key[3])
+
+    @staticmethod
+    def _vuln_admin_run_key_of(key: tuple) -> tuple:
+        """(country, storm, forecast_date) for a _vuln_admin key, whose own
+        shape is ("admin_vuln", country, admin_level, storm, forecast_date),
+        with an extra admin_level element ahead of storm and forecast_date."""
+        return (key[1], key[3], key[4])
+
+    def trim_under_memory_pressure(self, just_written_run: Optional[tuple] = None) -> None:
+        """Evicts every run from every run scoped dict this cache owns except
+        the app's own pinned demo scenarios (_DEMO_SCENARIO_RUN_PINS), the
+        _RECENT_RUN_WINDOW most recent distinct forecast_date values
+        currently present (ranked by the run's own forecast_date value, not
+        by when it happened to be loaded into this process), and, when given,
+        `just_written_run` (the (country, storm, forecast_date) a caller's own
+        write just landed).
+
+        `just_written_run` matters for correctness, not just freshness: every
+        ensure_* method here returns None and expects its own caller to read
+        the dict right after (e.g. self._mercator[key]); every ensure_*
+        method's own call site passes its own run here so a write for an old,
+        non pinned, non recent run (a user opening an old, non demo storm) is
+        never evicted before that same call's own caller ever gets to read
+        it back, mirroring the same just_written_key protection
+        _evict_oldest_if_over already has for exactly this reason. Such a run
+        still has no durable protection: the very next unrelated write
+        elsewhere in this cache evicts it, since it earns no place in
+        recent_dates and is not a pinned demo, so it is fetched fresh from
+        Snowflake again on its own next access, same as a normal cold miss.
+
+        Called from two places, enforcing the same policy either way: once
+        right after every real write to a run scoped dict (see each
+        ensure_* method's own call site, always passing its own
+        just_written_run), so "only the pinned demos plus the latest few
+        runs stay resident" holds continuously rather than only once memory
+        pressure is already high, and again from the process wide memory
+        watchdog (see snowflake_utils.register_memory_pressure_clearer,
+        with no just_written_run of its own to protect) as a second,
+        reactive pass covering any run that aged out between writes. The
+        country scoped base caches (_mercator_base/_admin_base/_hc_coords)
+        have no run dimension and are left alone; they are already bounded
+        by their own separate caps.
+
+        Each dict is paired with its own key to run key function rather than
+        one function guessing every dict's shape, since _facility's own key
+        shape places layer_type before country while every other run scoped
+        dict places country first.
+
+        Reads from a list snapshot of each dict's keys, taken while holding
+        _key_locks_meta_lock, rather than iterating the live dict directly.
+        A real load (ensure_mercator and similar) writes to these same dicts
+        under its own separate per key lock, not under _key_locks_meta_lock,
+        so iterating a live dict here could raise an error if a concurrent
+        write changed its size mid iteration. Taking a snapshot first avoids
+        that regardless of what a concurrent writer does at the same time."""
+        with self._key_locks_meta_lock:
+            run_keyed_dicts = [
+                (self._mercator, self._mercator_run_key_of),
+                (self._mercator_sorted, self._mercator_run_key_of),
+                (self._admin, self._mercator_run_key_of),
+                (self._admin_geoms, self._mercator_run_key_of),
+                (self._facility, self._facility_run_key_of),
+                (self._vuln_mercator, self._vuln_mercator_run_key_of),
+                (self._vuln_admin, self._vuln_admin_run_key_of),
+            ]
+            present_runs: set[tuple] = set()
+            dict_snapshots: list[list[tuple]] = []
+            for d, run_key_of in run_keyed_dicts:
+                keys_snapshot = list(d.keys())
+                dict_snapshots.append(keys_snapshot)
+                for key in keys_snapshot:
+                    present_runs.add(run_key_of(key))
+            recent_dates = set(
+                sorted({run[2] for run in present_runs}, reverse=True)[:_RECENT_RUN_WINDOW]
+            )
+            protected_runs = {
+                run for run in present_runs
+                if run[2] in recent_dates
+                or (run[0], run[2]) in _DEMO_SCENARIO_RUN_PINS
+                or run == just_written_run
+            }
+            for (d, run_key_of), keys_snapshot in zip(run_keyed_dicts, dict_snapshots):
+                for key in keys_snapshot:
+                    if run_key_of(key) not in protected_runs:
+                        d.pop(key, None)
+                        self._loaded_at.pop(key, None)
+                        # Deliberately NOT self._key_locks.pop(key, None) here,
+                        # see _evict_oldest_if_over's own comment for the real
+                        # race this would cause: this method runs after every
+                        # single write, not just under occasional memory
+                        # pressure, so that race window is wide and frequent
+                        # if a key's lock entry is popped while still held.
+
     def _lock_for(self, key: tuple) -> threading.Lock:
         with self._key_locks_meta_lock:
             lock = self._key_locks.get(key)
@@ -1537,7 +1893,23 @@ class _DataCache:
         # different caches' key SHAPES don't collide, see ensure_admin's
         # own admin_level-suffixed key), so this excludes keys belonging to
         # a different cache entirely.
-        candidates = [k for k in primary if k in self._loaded_at]
+        #
+        # list(primary) snapshots the keys before filtering, rather than a
+        # live `for k in primary` comprehension: this method runs under
+        # only the CALLING key's own per-key lock (see _lock_for), never
+        # under _key_locks_meta_lock, and trim_under_memory_pressure (the
+        # memory watchdog's own eviction, firing on a separate thread
+        # whenever RSS crosses _MEMORY_GUARD_MB, i.e. specifically under
+        # real heavy concurrent load) pops keys from these same dicts
+        # under a DIFFERENT lock. A live comprehension iterating a dict
+        # while another thread pops from it raises `RuntimeError:
+        # dictionary changed size during iteration`; confirmed empirically
+        # reproducible under real concurrent pop/iterate contention. A
+        # snapshot copy (list()/dict(), a single bulk C-level operation)
+        # is not vulnerable to that the way a Python-level comprehension
+        # is, the same reasoning trim_under_memory_pressure/memory_report
+        # already rely on for their own dict snapshots.
+        candidates = [k for k in list(primary) if k in self._loaded_at]
         if not candidates:
             return
         oldest_key = min(candidates, key=lambda k: self._loaded_at[k])
@@ -1546,8 +1918,20 @@ class _DataCache:
         for d in cache_dicts:
             d.pop(oldest_key, None)
         self._loaded_at.pop(oldest_key, None)
-        with self._key_locks_meta_lock:
-            self._key_locks.pop(oldest_key, None)
+        # Deliberately NOT popping self._key_locks[oldest_key] here.
+        # If another thread is mid-load holding this key's own Lock object
+        # (inside `with self._lock_for(key):` in ensure_mercator/ensure_admin/
+        # ensure_facility), removing the dict ENTRY here does not affect that
+        # thread's already-acquired Lock object, but it does mean a THIRD
+        # thread calling _lock_for for the SAME key right after would find
+        # nothing, create a brand new, separate, unlocked Lock, and run
+        # concurrently with the first thread instead of waiting for it,
+        # defeating the entire point of per-key mutual exclusion (a
+        # duplicate Snowflake load, and a real risk of two threads writing
+        # self._mercator[key]/self._mercator_sorted[key] out of step with
+        # each other). A Lock object sitting unused in this dict costs a
+        # few dozen bytes; that is not a real memory concern worth
+        # reintroducing this race to avoid.
 
     # --- base (threshold/storm/hazard-independent) -----------------------
 
@@ -1568,10 +1952,31 @@ class _DataCache:
             log.info("Cache: bulk-loading mercator BASE %s [%s]…", code, IMPACT_DATA_STORE)
             if IMPACT_DATA_STORE == "SNOWFLAKE":
                 df = _run_query_df(_MERCATOR_BASE_SQL, [code, MAT_ZOOM_LEVEL])
+                if "TILE_ID" in df.columns:
+                    # Arrow-backed, not plain object: see _impact_df's own
+                    # docstring for why every DataFrame merged onto this one
+                    # (every impact/vuln query in ensure_mercator's own
+                    # _load_one) must share this same dtype for the real
+                    # memory benefit to survive through to the cached,
+                    # actually-served entry rather than reverting to object
+                    # the instant the first merge runs.
+                    df["TILE_ID"] = df["TILE_ID"].astype("string[pyarrow]")
             else:
                 df = pd.DataFrame(columns=["TILE_ID"])
             if not df.empty:
                 df = pd.concat([df.reset_index(drop=True), _precompute_mercator_bounds(df["TILE_ID"])], axis=1)
+                if "ADMIN_ID" in df.columns:
+                    # A real country's own admin-1 region count is a small
+                    # handful to a few dozen, repeated across every one of
+                    # its z14 tiles (hundreds of thousands for a large
+                    # country), so this column is almost entirely repeated
+                    # values: category stores each distinct ADMIN_ID once
+                    # instead of once per row, real, measured double-digit
+                    # MB savings for a large country, with no change to the
+                    # values callers see (every read site downstream gets
+                    # the same decoded values back, whether via direct
+                    # access, .merge(), or .to_numpy()).
+                    df["ADMIN_ID"] = df["ADMIN_ID"].astype("category")
             else:
                 df = pd.DataFrame(columns=["TILE_ID", "BW", "BS", "BE", "BN"])
             self._mercator_base[base_key] = df
@@ -1600,6 +2005,13 @@ class _DataCache:
             log.info("Cache: bulk-loading admin BASE %s L%s [%s]…", code, admin_level, IMPACT_DATA_STORE)
             if IMPACT_DATA_STORE == "SNOWFLAKE":
                 df = _run_query_df(_ADMIN_BASE_SQL, [code, admin_level])
+                if "TILE_ID" in df.columns:
+                    # Same reasoning as _ensure_mercator_base_one's own
+                    # TILE_ID cast above: every DataFrame merged onto this
+                    # base frame in ensure_admin's own _load_one must share
+                    # this dtype for the memory benefit to survive the
+                    # merge chain.
+                    df["TILE_ID"] = df["TILE_ID"].astype("string[pyarrow]")
             else:
                 df = pd.DataFrame(columns=["TILE_ID"])
             geoms, tile_id_order = [], []
@@ -1613,6 +2025,14 @@ class _DataCache:
                     tile_id_order.append(row["TILE_ID"])
                 except Exception as e:
                     log.debug("Skip admin base geom: %s", e)
+            # GEOJSON is only needed for the parse above: ensure_admin's own
+            # props builder (both the SNOWFLAKE-path reuse_geoms branch and
+            # the file-based fallback) explicitly excludes it from every
+            # per-tile props dict it builds from this cached frame. It is
+            # the dominant column of this frame by far (tens of MB per
+            # country, real GeoJSON polygon strings), so dropping it here
+            # frees that memory with no behavior change anywhere downstream.
+            df = df.drop(columns=["GEOJSON"], errors="ignore")
             tree = STRtree(geoms)
             entry = (df, geoms, tree, tile_id_order)
             self._admin_base[base_key] = entry
@@ -1638,12 +2058,13 @@ class _DataCache:
                 return self._vuln_mercator[vuln_key]
             if IMPACT_DATA_STORE == "SNOWFLAKE":
                 rows = _run_query(_MERCATOR_VULN_ONLY_SQL, [code, MAT_ZOOM_LEVEL, storm, forecast_date])
-                df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
+                df = _impact_df(rows)
             else:
                 df = pd.DataFrame(columns=["TILE_ID"])
             self._vuln_mercator[vuln_key] = df
             self._loaded_at[vuln_key] = time.time()
             self._evict_oldest_if_over(vuln_key, [self._vuln_mercator], _MERCATOR_BASE_CACHE_MAX)
+            self.trim_under_memory_pressure(just_written_run=(code, storm, forecast_date))
             return df
 
     def _ensure_vuln_admin_one(self, code: str, admin_level: int, storm: str, forecast_date: str) -> pd.DataFrame:
@@ -1657,12 +2078,13 @@ class _DataCache:
                 return self._vuln_admin[vuln_key]
             if IMPACT_DATA_STORE == "SNOWFLAKE":
                 rows = _run_query(_ADMIN_VULN_ONLY_SQL, [code, admin_level, storm, forecast_date])
-                df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
+                df = _impact_df(rows)
             else:
                 df = pd.DataFrame(columns=["TILE_ID"])
             self._vuln_admin[vuln_key] = df
             self._loaded_at[vuln_key] = time.time()
             self._evict_oldest_if_over(vuln_key, [self._vuln_admin], _ADMIN_BASE_CACHE_MAX)
+            self.trim_under_memory_pressure(just_written_run=(code, storm, forecast_date))
             return df
 
     # --- mercator --------------------------------------------------------
@@ -1670,61 +2092,97 @@ class _DataCache:
     def ensure_mercator(self, country: str, storm: str, forecast_date: str,
                         wind_threshold: int, hazard: str = "wind",
                         gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
-                        threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> None:
+                        threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> pd.DataFrame:
+        """Returns the DataFrame it just loaded or found fresh, rather than
+        None with callers expected to re-fetch self._mercator[key]
+        separately afterward: trim_under_memory_pressure now runs after
+        every single write to any run scoped dict here (not just under
+        occasional memory pressure), so a separate re-fetch a moment later
+        can race a DIFFERENT thread's own trim call evicting this exact key
+        in between, returning a missing/empty result for data that was just
+        loaded. Returning the object directly, still held under this call's
+        own lock or as its own already-in-hand local variable, removes that
+        window entirely rather than narrowing it."""
         variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
         key = (country, storm, forecast_date) + variant
         if self._is_fresh(key) and key in self._mercator:
-            return
+            return self._mercator[key]
         with self._lock_for(key):
             if self._is_fresh(key) and key in self._mercator:
-                return
+                return self._mercator[key]
             codes = [c.upper() for c in country.split('+') if c.strip()]
 
-            def _load_one(code: str) -> pd.DataFrame:
+            def _load_snowflake(code: str) -> pd.DataFrame:
                 log.info("Cache: bulk-loading mercator %s/%s/%s hazard=%s variant=%s [%s]…",
                          code, storm, forecast_date, hazard, variant, IMPACT_DATA_STORE)
+                base_df = self._ensure_mercator_base_one(code)
+                if base_df.empty:
+                    return base_df
+                merged = base_df
+                if hazard == "gust":
+                    impact_rows = _run_query(_MERCATOR_GUST_IMPACT_ONLY_SQL, [
+                        code, MAT_ZOOM_LEVEL, storm, forecast_date, gust_threshold,
+                    ])
+                    if impact_rows:
+                        merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
+                elif hazard == "river":
+                    impact_rows = _run_query(_MERCATOR_RIVER_IMPACT_ONLY_SQL, [
+                        code, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT,
+                    ])
+                    if impact_rows:
+                        merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
+                elif hazard == "rain":
+                    impact_rows = _run_query(_MERCATOR_PRECIP_IMPACT_ONLY_SQL, [
+                        code, forecast_date, threshold_mm, window_h,
+                    ])
+                    if impact_rows:
+                        merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
+                else:
+                    impact_rows = _run_query(_MERCATOR_IMPACT_ONLY_SQL, [
+                        code, MAT_ZOOM_LEVEL, storm, forecast_date, wind_threshold,
+                    ])
+                    # Threshold-invariant, cached once per (country,
+                    # storm, forecast_date) via _ensure_vuln_mercator_one
+                    # instead of re-queried here on every threshold
+                    # change, see that method's own docstring for the
+                    # measured cost this avoids.
+                    vuln_df = self._ensure_vuln_mercator_one(code, storm, forecast_date)
+                    # CCI (Child Cyclone Index) stays in Snowflake for
+                    # other consumers, but this app no longer queries or
+                    # merges it: no UI path in the current dashboard
+                    # displays it, so the query was pure redundant cost.
+                    if impact_rows:
+                        merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
+                    if not vuln_df.empty:
+                        merged = _merge_no_collision(merged, vuln_df, on="TILE_ID")
+                return merged
+
+            def _load_one(code: str) -> pd.DataFrame:
                 if IMPACT_DATA_STORE == "SNOWFLAKE":
-                    base_df = self._ensure_mercator_base_one(code)
-                    if base_df.empty:
-                        return base_df
-                    merged = base_df
-                    if hazard == "gust":
-                        impact_rows = _run_query(_MERCATOR_GUST_IMPACT_ONLY_SQL, [
-                            code, MAT_ZOOM_LEVEL, storm, forecast_date, gust_threshold,
-                        ])
-                        if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
-                    elif hazard == "river":
-                        impact_rows = _run_query(_MERCATOR_RIVER_IMPACT_ONLY_SQL, [
-                            code, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT,
-                        ])
-                        if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
-                    elif hazard == "rain":
-                        impact_rows = _run_query(_MERCATOR_PRECIP_IMPACT_ONLY_SQL, [
-                            code, forecast_date, threshold_mm, window_h,
-                        ])
-                        if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
-                    else:
-                        impact_rows = _run_query(_MERCATOR_IMPACT_ONLY_SQL, [
-                            code, MAT_ZOOM_LEVEL, storm, forecast_date, wind_threshold,
-                        ])
-                        # Threshold-invariant, cached once per (country,
-                        # storm, forecast_date) via _ensure_vuln_mercator_one
-                        # instead of re-queried here on every threshold
-                        # change, see that method's own docstring for the
-                        # measured cost this avoids.
-                        vuln_df = self._ensure_vuln_mercator_one(code, storm, forecast_date)
-                        # CCI (Child Cyclone Index) stays in Snowflake for
-                        # other consumers, but this app no longer queries or
-                        # merges it: no UI path in the current dashboard
-                        # displays it, so the query was pure redundant cost.
-                        if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
-                        if not vuln_df.empty:
-                            merged = _merge_no_collision(merged, vuln_df, on="TILE_ID")
-                    return merged
+                    if not _DISK_CACHE_ENABLED:
+                        return _load_snowflake(code)
+                    disk_path, lock_path = _disk_cache_paths(code, storm, forecast_date, variant)
+                    cached = _disk_cache_read(disk_path, _TILE_TTL)
+                    if cached is not None:
+                        log.info("Cache: mercator %s/%s/%s hazard=%s variant=%s served from local disk cache",
+                                 code, storm, forecast_date, hazard, variant)
+                        return cached
+                    with _disk_cache_flock(lock_path):
+                        # Re-check: another TILE_WORKERS process may have
+                        # finished writing this exact key while this one was
+                        # waiting for the lock, the whole reason this cache
+                        # exists is to let that second worker skip the real
+                        # Snowflake+merge cost entirely rather than redo it.
+                        cached = _disk_cache_read(disk_path, _TILE_TTL)
+                        if cached is not None:
+                            log.info("Cache: mercator %s/%s/%s hazard=%s variant=%s served from local disk "
+                                     "cache (written by another worker while waiting for the lock)",
+                                     code, storm, forecast_date, hazard, variant)
+                            return cached
+                        merged = _load_snowflake(code)
+                        if not merged.empty:
+                            _disk_cache_write(disk_path, merged)
+                        return merged
                 elif hazard == "wind":
                     rows = _load_mercator_from_files(code, storm, forecast_date, wind_threshold)
                     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
@@ -1761,16 +2219,17 @@ class _DataCache:
                                            if not df.empty and "TILE_ID" in df.columns else (np.array([]), np.array([])))
             self._loaded_at[key] = time.time()
             self._evict_oldest_if_over(key, [self._mercator, self._mercator_sorted], _MERCATOR_CACHE_MAX)
+            self.trim_under_memory_pressure(just_written_run=(country, storm, forecast_date))
+            return df
 
     def query_mercator(self, country: str, storm: str, forecast_date: str,
                        wind_threshold: int, like_pat: str, z: int, hazard: str = "wind",
                        gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
                        threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> list[dict]:
-        self.ensure_mercator(country, storm, forecast_date, wind_threshold, hazard,
-                             gust_threshold, rp_tier, threshold_mm, window_h)
+        df = self.ensure_mercator(country, storm, forecast_date, wind_threshold, hazard,
+                                  gust_threshold, rp_tier, threshold_mm, window_h)
         variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
         key = (country, storm, forecast_date) + variant
-        df = self._mercator.get(key)
         if df is None or df.empty:
             return []
         sub = _filter_by_tile_prefix(df, like_pat, self._mercator_sorted.get(key))
@@ -1781,14 +2240,19 @@ class _DataCache:
     def ensure_admin(self, country: str, storm: str, forecast_date: str,
                      wind_threshold: int, admin_level: int, hazard: str = "wind",
                      gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
-                     threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> None:
+                     threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> Optional[tuple]:
+        """Returns the (geoms, tree, props_list) entry it just loaded or
+        found fresh, same race-elimination reasoning as ensure_mercator's
+        own docstring: a caller re-fetching self._admin_geoms[key]
+        separately afterward can race a different thread's own
+        trim_under_memory_pressure call evicting this exact key first."""
         variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
         key = (country, storm, forecast_date) + variant + (admin_level,)
         if self._is_fresh(key) and key in self._admin_geoms:
-            return
+            return self._admin_geoms[key]
         with self._lock_for(key):
             if self._is_fresh(key) and key in self._admin_geoms:
-                return
+                return self._admin_geoms[key]
             codes = [c.upper() for c in country.split('+') if c.strip()]
 
             def _load_one(code: str) -> tuple:
@@ -1811,19 +2275,19 @@ class _DataCache:
                             code, admin_level, storm, forecast_date, gust_threshold,
                         ])
                         if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                            merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
                     elif hazard == "river":
                         impact_rows = _run_query(_ADMIN_RIVER_IMPACT_ONLY_SQL, [
                             code, admin_level, forecast_date, rp_tier, window_h or _RIVER_WINDOW_DEFAULT,
                         ])
                         if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                            merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
                     elif hazard == "rain":
                         impact_rows = _run_query(_ADMIN_PRECIP_IMPACT_ONLY_SQL, [
                             code, admin_level, forecast_date, threshold_mm, window_h,
                         ])
                         if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                            merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
                     else:
                         impact_rows = _run_query(_ADMIN_IMPACT_ONLY_SQL, [
                             code, admin_level, storm, forecast_date, wind_threshold,
@@ -1839,7 +2303,7 @@ class _DataCache:
                         # reads it. See ensure_mercator's own comment for the
                         # matching tile-level decision.
                         if impact_rows:
-                            merged = _merge_no_collision(merged, pd.DataFrame(impact_rows), on="TILE_ID")
+                            merged = _merge_no_collision(merged, _impact_df(impact_rows), on="TILE_ID")
                         if not vuln_df.empty:
                             merged = _merge_no_collision(merged, vuln_df, on="TILE_ID")
                     return merged, geoms, tree, tile_id_order
@@ -1920,10 +2384,13 @@ class _DataCache:
             else:
                 from shapely.strtree import STRtree
                 tree = STRtree(all_geoms)
-            self._admin_geoms[key] = (all_geoms, tree, all_props)
+            entry = (all_geoms, tree, all_props)
+            self._admin_geoms[key] = entry
             self._loaded_at[key] = time.time()
             self._evict_oldest_if_over(key, [self._admin, self._admin_geoms], _ADMIN_CACHE_MAX)
+            self.trim_under_memory_pressure(just_written_run=(country, storm, forecast_date))
             log.info("  Cache: %d admin regions parsed + indexed", len(all_geoms))
+            return entry
 
     def query_admin(self, country: str, storm: str, forecast_date: str,
                     wind_threshold: int, admin_level: int,
@@ -1932,10 +2399,8 @@ class _DataCache:
                     rp_tier: Optional[str] = None, threshold_mm: Optional[float] = None,
                     window_h: Optional[int] = None) -> list[tuple]:
         """Returns list of (geom, props) for features that intersect the tile bbox."""
-        self.ensure_admin(country, storm, forecast_date, wind_threshold, admin_level, hazard,
-                          gust_threshold, rp_tier, threshold_mm, window_h)
-        variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
-        entry = self._admin_geoms.get((country, storm, forecast_date) + variant + (admin_level,))
+        entry = self.ensure_admin(country, storm, forecast_date, wind_threshold, admin_level, hazard,
+                                  gust_threshold, rp_tier, threshold_mm, window_h)
         if not entry:
             return []
         geoms, tree, props_list = entry
@@ -1977,14 +2442,16 @@ class _DataCache:
     def ensure_facility(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int, hazard: str = "wind",
                         gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
-                        threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> None:
+                        threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> pd.DataFrame:
+        """Returns the DataFrame it just loaded or found fresh, same
+        race-elimination reasoning as ensure_mercator's own docstring."""
         variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
         key = (layer_type, country, storm, forecast_date) + variant
         if self._is_fresh(key) and key in self._facility:
-            return
+            return self._facility[key]
         with self._lock_for(key):
             if self._is_fresh(key) and key in self._facility:
-                return
+                return self._facility[key]
             codes = [c.upper() for c in country.split('+') if c.strip()]
 
             def _load_one(code: str) -> list[dict]:
@@ -2050,20 +2517,161 @@ class _DataCache:
                 columns=["NAME", "PROBABILITY", "LATITUDE", "LONGITUDE"])
             if "PROBABILITY" in df.columns:
                 df["PROBABILITY"] = pd.to_numeric(df["PROBABILITY"], errors="coerce").fillna(0.0)
+            # These are real enum-like columns (a handful of distinct values
+            # repeated across every row of a layer_type, e.g. health's own
+            # FACILITY_TYPE/OPERATOR_TYPE), not free text: category stores
+            # each distinct value once instead of once per row, the same
+            # real memory reasoning as _ensure_mercator_base_one's own
+            # ADMIN_ID column above, with no change to the values any
+            # downstream reader (facility_geojson, .to_dict(), etc.) sees.
+            for _cat_col in ("FACILITY_TYPE", "OPERATOR_TYPE", "SHELTER_TYPE", "CATEGORY",
+                             "WASH_TYPE", "EDUCATION_LEVEL"):
+                if _cat_col in df.columns:
+                    df[_cat_col] = df[_cat_col].astype("category")
             log.info("  Cache: %d %s points (country=%s, hazard=%s)", len(df), layer_type, country, hazard)
             self._facility[key] = df
             self._loaded_at[key] = time.time()
             self._evict_oldest_if_over(key, [self._facility], _FACILITY_CACHE_MAX)
+            self.trim_under_memory_pressure(just_written_run=(country, storm, forecast_date))
+            return df
 
     def get_facility_df(self, layer_type: str, country: str, storm: str,
                         forecast_date: str, wind_threshold: int, hazard: str = "wind",
                         gust_threshold: Optional[int] = None, rp_tier: Optional[str] = None,
                         threshold_mm: Optional[float] = None, window_h: Optional[int] = None) -> "pd.DataFrame":
-        self.ensure_facility(layer_type, country, storm, forecast_date, wind_threshold, hazard,
-                             gust_threshold, rp_tier, threshold_mm, window_h)
-        variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
-        return self._facility.get((layer_type, country, storm, forecast_date) + variant,
-                                  pd.DataFrame())
+        df = self.ensure_facility(layer_type, country, storm, forecast_date, wind_threshold, hazard,
+                                  gust_threshold, rp_tier, threshold_mm, window_h)
+        return df if df is not None else pd.DataFrame()
+
+    def memory_report(self) -> dict:
+        """Real, on-demand breakdown of what this cache actually holds right
+        now, grouped by (country, storm, forecast_date) where that applies,
+        for operational visibility into which real runs/countries are
+        driving resident memory, since the process-wide RSS the memory
+        watchdog and Azure's own MemoryWorkingSet metric report is a single
+        number with no breakdown behind it.
+
+        Read-only, computed fresh on every call rather than cached: this is
+        a rarely hit diagnostic path, not a hot one, so the real cost of
+        walking every cached DataFrame's own memory_usage(deep=True) is
+        acceptable here in a way it would not be on the tile-serving path.
+
+        DataFrame-holding dicts report real bytes via memory_usage(deep=
+        True). Geometry lists (_admin_geoms/_admin_base's own parsed shapely
+        objects, no longer backed by a cached GEOJSON string column, see
+        _ensure_admin_base_one's own comment) have no equally cheap exact
+        byte count: reported via each geometry's own WKB length instead, a
+        real proxy for the underlying coordinate data size, not an exact
+        Python object size, and excludes the STRtree's own separate index
+        memory entirely, so admin's own real total here is an undercount.
+
+        Snapshots each dict's items under _key_locks_meta_lock (matching
+        trim_under_memory_pressure's own snapshot pattern, for the same
+        concurrent-write-during-iteration reason), then does every expensive
+        computation outside the lock so a slow report never blocks a
+        concurrent cache write.
+        """
+        with self._key_locks_meta_lock:
+            snapshots = {
+                "mercator": (dict(self._mercator), self._mercator_run_key_of),
+                "admin": (dict(self._admin), self._mercator_run_key_of),
+                "facility": (dict(self._facility), self._facility_run_key_of),
+                "vuln_mercator": (dict(self._vuln_mercator), self._vuln_mercator_run_key_of),
+                "vuln_admin": (dict(self._vuln_admin), self._vuln_admin_run_key_of),
+            }
+            base_snapshots = {
+                "mercator_base": dict(self._mercator_base),
+                "admin_base": dict(self._admin_base),
+            }
+            admin_geoms_snapshot = dict(self._admin_geoms)
+            hc_coords_snapshot = dict(self._hc_coords)
+            loaded_at_snapshot = dict(self._loaded_at)
+
+        def _age_s(key: tuple) -> Optional[float]:
+            ts = loaded_at_snapshot.get(key)
+            return round(time.time() - ts, 1) if ts is not None else None
+
+        report: dict = {"generated_at": time.time(), "dicts": {}}
+
+        for name, (snap, run_key_of) in snapshots.items():
+            by_run: dict[tuple, dict] = {}
+            total_mb = 0.0
+            for key, val in snap.items():
+                try:
+                    mb = val.memory_usage(deep=True).sum() / (1024 * 1024) if isinstance(val, pd.DataFrame) else 0.0
+                except Exception:
+                    mb = 0.0
+                total_mb += mb
+                run_key = run_key_of(key)
+                entry = by_run.setdefault(run_key, {"mb": 0.0, "keys": 0, "newest_age_s": None})
+                entry["mb"] += mb
+                entry["keys"] += 1
+                age = _age_s(key)
+                if age is not None and (entry["newest_age_s"] is None or age < entry["newest_age_s"]):
+                    entry["newest_age_s"] = age
+            top_runs = sorted(
+                [{"run": list(k), **v} for k, v in by_run.items()],
+                key=lambda r: r["mb"], reverse=True,
+            )[:20]
+            report["dicts"][name] = {
+                "entry_count": len(snap), "total_mb": round(total_mb, 1),
+                "distinct_runs": len(by_run), "top_runs_by_mb": top_runs,
+            }
+
+        for name, snap in base_snapshots.items():
+            by_country: dict[str, dict] = {}
+            total_mb = 0.0
+            for key, val in snap.items():
+                code = key[1]
+                try:
+                    df = val[0] if name == "admin_base" else val
+                    mb = df.memory_usage(deep=True).sum() / (1024 * 1024) if isinstance(df, pd.DataFrame) else 0.0
+                except Exception:
+                    mb = 0.0
+                total_mb += mb
+                entry = by_country.setdefault(code, {"mb": 0.0, "age_s": None})
+                entry["mb"] += mb
+                entry["age_s"] = _age_s(key)
+            top_countries = sorted(
+                [{"country": c, **v} for c, v in by_country.items()],
+                key=lambda r: r["mb"], reverse=True,
+            )[:20]
+            report["dicts"][name] = {
+                "entry_count": len(snap), "total_mb": round(total_mb, 1),
+                "top_countries_by_mb": top_countries,
+            }
+
+        geoms_by_country: dict[str, dict] = {}
+        geoms_total_mb = 0.0
+        for key, (geoms, _tree, _props) in admin_geoms_snapshot.items():
+            code = key[0]
+            try:
+                mb = sum(len(g.wkb) for g in geoms) / (1024 * 1024)
+            except Exception:
+                mb = 0.0
+            geoms_total_mb += mb
+            entry = geoms_by_country.setdefault(code, {"wkb_mb_approx": 0.0, "geom_count": 0})
+            entry["wkb_mb_approx"] += mb
+            entry["geom_count"] += len(geoms)
+        report["dicts"]["admin_geoms_wkb_approx"] = {
+            "entry_count": len(admin_geoms_snapshot),
+            "total_mb_approx": round(geoms_total_mb, 1),
+            "note": "WKB-length proxy, excludes STRtree index memory, real total is higher",
+            "top_countries_by_mb": sorted(
+                [{"country": c, **v} for c, v in geoms_by_country.items()],
+                key=lambda r: r["wkb_mb_approx"], reverse=True,
+            )[:20],
+        }
+
+        hc_total_entries = sum(len(v) for v in hc_coords_snapshot.values())
+        report["dicts"]["hc_coords"] = {
+            "entry_count": len(hc_coords_snapshot), "total_zone_ids": hc_total_entries,
+        }
+
+        report["grand_total_mb_precise_dicts_only"] = round(
+            sum(d.get("total_mb", 0.0) for d in report["dicts"].values() if "total_mb" in d), 1
+        )
+        return report
 
 _cache = _DataCache()
 
@@ -2071,28 +2679,33 @@ _cache = _DataCache()
 # ---------------------------------------------------------------------------
 # Facility SQL: impact tables (with PROBABILITY) and base fallbacks
 #
-# Health-centre coordinates: the *_HC_MAT impact tables carry no plain
-# LATITUDE/LONGITUDE columns (unlike the school/shelter/WASH siblings), only
-# a raw ALL_DATA:geometry blob. A NAME-keyed join onto BASE_HC_MAT (which has
-# plain LATITUDE/LONGITUDE) was tried as a perf optimization but reverted:
-# NAME is not a reliable key: a large share of health-centre NAMEs (roughly
-# a fifth to two-fifths of rows, country-dependent, e.g. JPN) are shared by
-# multiple facilities at genuinely different coordinates, so a NAME-only join
-# silently collapses distinct facilities onto one arbitrary shared location.
+# Health-centre coordinates: the *_HC_MAT impact tables carry plain
+# LATITUDE/LONGITUDE columns, populated once at refresh time in Snowflake
+# via ST_Y/ST_X(ST_CENTROID(...)) against ALL_DATA:geometry, so no query
+# here needs to decode that geometry blob live. A NAME-keyed join onto
+# BASE_HC_MAT (which also has plain LATITUDE/LONGITUDE) is NOT a safe
+# alternative: NAME is not a reliable key. A large share of health-centre
+# NAMEs (roughly a fifth to two-fifths of rows, country-dependent, e.g.
+# JPN) are shared by multiple facilities at genuinely different
+# coordinates, so a NAME-only join would silently collapse distinct
+# facilities onto one arbitrary shared location.
 #
 # ZONE_ID, present on every *_HC_MAT table (HC_IMPACT_MAT/HC_GUST_MAT/
 # HC_PRECIP_MAT), is a stable, collision-free per-facility identifier: the
-# derived (ROUND(lat,6), ROUND(lon,6)) per ZONE_ID is stable across every
-# storm/forecast_date/threshold combination and even across the separate
-# wind/gust tables. So instead of every threshold-scoped query computing
-# ST_Y/ST_X(ST_CENTROID(...)) per row (below, dropped from these three),
-# coordinates are resolved once per (hazard, country, storm, forecast_date)
-# via _ensure_hc_coords_one's own ZONE_ID-keyed GROUP BY query (see
-# _HC_COORDS_SQL) and cached with the same long _BASE_DATA_TTL as the
-# mercator/admin base caches, then merged onto each lean per-threshold row
-# in ensure_facility's _load_one. River's own HC_RIVER_MAT
-# (_FACILITY_RIVER_SQL below) already does its own self-contained ZONE_ID
-# GROUP BY per query and is untouched by this. It doesn't need
+# (LATITUDE, LONGITUDE) per ZONE_ID is stable across every storm/
+# forecast_date/threshold combination and even across the separate wind/gust
+# tables. Coordinates are still resolved once per (hazard, country, storm,
+# forecast_date) via _ensure_hc_coords_one's own ZONE_ID-keyed GROUP BY query
+# (see _HC_COORDS_SQL, now a plain MAX(LATITUDE)/MAX(LONGITUDE) aggregation,
+# no geometry decoding left in it either) and cached with the same long
+# _BASE_DATA_TTL as the mercator/admin base caches, then merged onto each
+# lean per-threshold row in ensure_facility's _load_one, rather than
+# selecting LATITUDE/LONGITUDE directly in every threshold-scoped query;
+# this consolidation is no longer required for correctness now that the
+# column read itself is cheap, but removing it is a separate, untested
+# simplification left for later rather than folded into this fix. River's
+# own HC_RIVER_MAT (_FACILITY_RIVER_SQL below) already does its own
+# self-contained ZONE_ID GROUP BY per query and is untouched by this. It doesn't need
 # cross-query caching since it has no separate base/impact split.
 # ---------------------------------------------------------------------------
 
@@ -2177,19 +2790,13 @@ _FACILITY_RIVER_SQL: dict[str, str] = {
         GROUP BY ZONE_ID
     """,
     "health": """
-        SELECT ZONE_ID, NAME, FACILITY_TYPE, OPERATOR_TYPE, PROBABILITY,
-               ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LATITUDE,
-               ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(GEOM_STR, 'HEX')))) AS LONGITUDE
-        FROM (
-            SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(HEALTH_AMENITY_TYPE) AS FACILITY_TYPE,
-                   MAX(OPERATOR_TYPE) AS OPERATOR_TYPE,
-                   MAX(PROBABILITY) AS PROBABILITY,
-                   MAX(ALL_DATA:geometry::STRING) AS GEOM_STR
-            FROM AOTS.TC_ECMWF.HC_RIVER_MAT
-            WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
-              AND ALL_DATA:geometry::STRING IS NOT NULL
-            GROUP BY ZONE_ID
-        )
+        SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(HEALTH_AMENITY_TYPE) AS FACILITY_TYPE,
+               MAX(OPERATOR_TYPE) AS OPERATOR_TYPE, MAX(PROBABILITY) AS PROBABILITY,
+               MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
+        FROM AOTS.TC_ECMWF.HC_RIVER_MAT
+        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+        GROUP BY ZONE_ID
     """,
     "shelters": """
         SELECT ZONE_ID, MAX(NAME) AS NAME, MAX(SHELTER_TYPE) AS SHELTER_TYPE, MAX(CATEGORY) AS CATEGORY,
@@ -2247,30 +2854,24 @@ _FACILITY_PRECIP_SQL: dict[str, str] = {
 # , see comment above) per-threshold-row duplication.
 _HC_COORDS_SQL: dict[str, str] = {
     "wind": """
-        SELECT ZONE_ID,
-               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
-               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        SELECT ZONE_ID, MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
-          AND ALL_DATA:geometry::STRING IS NOT NULL
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
     "gust": """
-        SELECT ZONE_ID,
-               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
-               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        SELECT ZONE_ID, MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.HC_GUST_MAT
         WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
-          AND ALL_DATA:geometry::STRING IS NOT NULL
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
     "rain": """
-        SELECT ZONE_ID,
-               MAX(ST_Y(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LATITUDE,
-               MAX(ST_X(ST_CENTROID(TO_GEOGRAPHY(TRY_TO_BINARY(ALL_DATA:geometry::STRING, 'HEX'))))) AS LONGITUDE
+        SELECT ZONE_ID, MAX(LATITUDE) AS LATITUDE, MAX(LONGITUDE) AS LONGITUDE
         FROM AOTS.TC_ECMWF.HC_PRECIP_MAT
         WHERE COUNTRY = %s AND FORECAST_TIME = %s
-          AND ALL_DATA:geometry::STRING IS NOT NULL
+          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
         GROUP BY ZONE_ID
     """,
 }
@@ -2313,6 +2914,27 @@ _FACILITY_BASE_COLORS: dict[str, str] = {
 
 _SKIP_COLS_MERCATOR = frozenset(("TILE_ID", "BW", "BS", "BE", "BN"))
 
+# A single low zoom tile for a large country can match tens of thousands of
+# individual z14 grid cells at once (a large country's whole z14 grid is
+# spread across only a handful of low zoom tiles, so each one inherits a
+# large share of the country's total row count). Building an individual box
+# geometry and property dict for every one of those rows, then encoding all
+# of them into one vector tile, is real, unbounded, purely single threaded
+# Python work: since this tile server runs as a single worker process so
+# every request can share the same in memory cache, one such request can
+# block every other request, including health checks, for as long as it
+# takes to finish. Capping the row count actually processed keeps every
+# request bounded to a safe, predictable amount of work regardless of how
+# large the underlying country is. The cap is applied by taking an evenly
+# spaced stride through the already spatially sorted candidate rows (see
+# _build_sorted_tile_index) rather than an arbitrary prefix, so the rendered
+# subset still spans the whole tile roughly evenly rather than silently
+# leaving one whole side of it blank; a zoomed out overview at this scale
+# already cannot show every individual small cell distinctly, and a real
+# user making a granular decision zooms in, where the real candidate count
+# per tile drops well under this cap on its own and every row still renders.
+_MERCATOR_TILE_FEATURE_CAP = 2500
+
 
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=8192)
 def _fetch_mercator_tile(
@@ -2334,6 +2956,12 @@ def _fetch_mercator_tile(
                                  hazard, gust_threshold, rp_tier, threshold_mm, window_h)
     if not rows:
         return b""
+    if len(rows) > _MERCATOR_TILE_FEATURE_CAP:
+        stride = math.ceil(len(rows) / _MERCATOR_TILE_FEATURE_CAP)
+        log.warning("Mercator tile %s/%s/%s z=%s/%s/%s: %d candidate rows exceeds cap %d, "
+                    "sampling every %dth row", country, storm, forecast_date, z, x, y,
+                    len(rows), _MERCATOR_TILE_FEATURE_CAP, stride)
+        rows = rows[::stride]
 
     tile_w, tile_s, tile_e, tile_n = _tile_bounds(z, x, y)
 
@@ -2365,6 +2993,24 @@ def _fetch_mercator_tile(
     return gzip.compress(raw, compresslevel=6)
 
 
+# An admin region's own recorded boundary can carry many thousands of
+# vertices (a real national or state level coastline/border at full survey
+# detail), and a low zoom tile's own bounding box is large enough that
+# several such regions can be genuine candidates at once. Clipping and
+# reprojecting a handful of full detail, many thousand vertex polygons on
+# every single request this way is real, unbounded per request work,
+# unrelated to how many DISTINCT regions are involved (admin_level=1 rarely
+# exceeds a few dozen regions even for a large country), driven entirely by
+# how many vertices each one carries. Simplifying first, only below this
+# zoom and only by this tolerance, trades a small, deliberate amount of
+# boundary precision for a bounded, predictable clip cost; an overview at
+# this scale cannot visually distinguish that level of boundary detail
+# anyway, and a real user zooming in past this threshold for a granular
+# decision always sees the full recorded boundary, unsimplified.
+_ADMIN_SIMPLIFY_MAX_ZOOM = 7
+_ADMIN_SIMPLIFY_TOLERANCE_DEG = 0.01
+
+
 @_ttl_cache(ttl_seconds=_TILE_TTL, maxsize=2048)
 def _fetch_admin_tile(
     country: str,
@@ -2387,6 +3033,9 @@ def _fetch_admin_tile(
                                    hazard, gust_threshold, rp_tier, threshold_mm, window_h)
     if not candidates:
         return b""
+    if z <= _ADMIN_SIMPLIFY_MAX_ZOOM:
+        candidates = [(geom.simplify(_ADMIN_SIMPLIFY_TOLERANCE_DEG, preserve_topology=True), props)
+                      for geom, props in candidates]
 
     # Clip in WGS84, then project to Web Mercator for PBF encoding so MapLibre
     # (which uses Mercator internally) renders polygons without lat distortion.
@@ -3034,7 +3683,17 @@ class _TileAdminMapCache:
     def _evict_oldest_if_over(self, just_written_key: tuple) -> None:
         if len(self._maps) <= _TILE_ADMIN_MAP_CACHE_MAX:
             return
-        candidates = [k for k in self._maps if k in self._loaded_at]
+        # list(self._maps) snapshots the keys before filtering, not a live
+        # `for k in self._maps` comprehension: this class uses a per-key
+        # lock (see its own class docstring), never one instance-wide lock,
+        # so two concurrent ensure() calls for two DIFFERENT countries can
+        # each reach this same eviction path at once, one popping from
+        # self._maps while the other is still iterating it. A live
+        # comprehension iterating a dict while another thread pops from it
+        # raises `RuntimeError: dictionary changed size during iteration`;
+        # same real, empirically confirmed failure mode _DataCache's own
+        # _evict_oldest_if_over already guards against this same way.
+        candidates = [k for k in list(self._maps) if k in self._loaded_at]
         if not candidates:
             return
         oldest = min(candidates, key=lambda k: self._loaded_at[k])
@@ -3042,8 +3701,10 @@ class _TileAdminMapCache:
             return
         self._maps.pop(oldest, None)
         self._loaded_at.pop(oldest, None)
-        with self._key_locks_meta_lock:
-            self._key_locks.pop(oldest, None)
+        # Deliberately NOT popping self._key_locks[oldest] here, see
+        # _DataCache._evict_oldest_if_over's own comment for the real lock-
+        # eviction race this caused elsewhere in this file, fixed the same
+        # way here for the identical reason.
 
     def ensure(self, code: str, admin_level: int) -> dict:
         """Returns the mapping entry for ONE country code:
@@ -3510,12 +4171,21 @@ _FIXED_SCALE_COLS = {
 }
 
 
-def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
+def _get_minmax(key: tuple, col: str, df: Optional[pd.DataFrame] = None) -> tuple[float, float] | None:
     """Return (min_val, max_val) for a column from the cached DataFrame.
 
     Respects palette fixed_max (e.g. probability=1.0). For linear palettes with
     a fixed ceiling, min is anchored at 0. For log palettes, min is the smallest
     positive value in the data.
+
+    `df`: pass the caller's own already-loaded DataFrame (e.g. ensure_mercator's
+    own return value) to use directly on a cache miss, instead of this function
+    doing its own separate self._cache._mercator.get(key) re-fetch, the same
+    real eviction race ensure_mercator's own docstring explains, just one call
+    downstream: a concurrent trim_under_memory_pressure call elsewhere could
+    evict this exact key in the gap between the caller's own load and this
+    re-fetch, degrading (single-hazard raster path) to a blank rendered tile.
+    Falls back to the old re-fetch when the caller doesn't have a df in hand.
     """
     cache_key = (key, col)
     cached = _minmax_cache.get(cache_key)
@@ -3525,7 +4195,8 @@ def _get_minmax(key: tuple, col: str) -> tuple[float, float] | None:
         cached = _minmax_cache.get(cache_key)
         if cached and (time.time() - cached[2]) < _TILE_TTL:
             return (cached[0], cached[1])
-        df = _cache._mercator.get(key)
+        if df is None:
+            df = _cache._mercator.get(key)
         if df is None or df.empty or col not in df.columns:
             return None
         spec = _RASTER_PALETTES.get(col, {})
@@ -3722,9 +4393,11 @@ def _fetch_raster_tile(
 
     variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
     key = (country, storm, forecast_date) + variant
-    _cache.ensure_mercator(country, storm, forecast_date, wind_threshold, hazard,
-                           gust_threshold, rp_tier, threshold_mm, window_h)
-    df = _cache._mercator.get(key)
+    # Uses ensure_mercator's own returned DataFrame directly rather than a
+    # separate self._mercator.get(key) re-fetch afterward: see that
+    # method's own docstring for the real eviction race this closes.
+    df = _cache.ensure_mercator(country, storm, forecast_date, wind_threshold, hazard,
+                                gust_threshold, rp_tier, threshold_mm, window_h)
     if df is None or df.empty or prop not in df.columns:
         return None
 
@@ -3744,8 +4417,11 @@ def _fetch_raster_tile(
     if sub.empty:
         return None
 
-    # Min/max for color scaling (computed once, cached).
-    minmax = _get_minmax(key, prop)
+    # Min/max for color scaling (computed once, cached). Passes the df this
+    # function already has in hand rather than letting _get_minmax do its
+    # own separate re-fetch on a cache miss; see that function's own
+    # docstring for the eviction race this closes.
+    minmax = _get_minmax(key, prop, df=df)
     if minmax is None:
         return None
     min_val, max_val = minmax
@@ -4051,12 +4727,21 @@ def _fetch_combined_raster_tile(
 
     def _ensure_one(item: tuple[str, dict]):
         hz, p = item
-        _cache.ensure_mercator(country, storm, p["forecast_date"], p["wind_threshold"], hz,
-                               p["gust_threshold"], p["rp_tier"], p["threshold_mm"], p["window_h"])
+        # Uses ensure_mercator's own returned DataFrame directly rather
+        # than a separate self._mercator.get(key) re-fetch afterward: see
+        # that method's own docstring for the real eviction race this
+        # closes. Especially relevant here, not just in isolation: with
+        # multiple hazards loading concurrently via the shared executor
+        # below, one hazard's own trim_under_memory_pressure call could
+        # otherwise evict a DIFFERENT hazard's just-written key in the
+        # gap before this closure's own re-fetch ran, silently dropping
+        # that hazard from the union with no error.
+        df = _cache.ensure_mercator(country, storm, p["forecast_date"], p["wind_threshold"], hz,
+                                    p["gust_threshold"], p["rp_tier"], p["threshold_mm"], p["window_h"])
         variant = _hazard_variant(hz, p["wind_threshold"], p["gust_threshold"],
                                     p["rp_tier"], p["threshold_mm"], p["window_h"])
         key = (country, storm, p["forecast_date"]) + variant
-        return hz, _cache._mercator.get(key), key
+        return hz, df, key
 
     # Independent per-hazard Snowflake round-trips (same reasoning as
     # ensure_mercator's own multi-country fan-out above): safe to run
@@ -4203,7 +4888,8 @@ def _fetch_combined_raster_tile(
             # itself uses for a single hazard, so this endpoint is
             # pixel-consistent with the single-hazard one
             # whenever it's ever hit with just one active hazard.
-            minmax = _get_minmax(hazard_keys[used_hazard_names[0]], prop)
+            minmax = _get_minmax(hazard_keys[used_hazard_names[0]], prop,
+                                 df=hazard_dfs.get(used_hazard_names[0]))
         else:
             # Scaling is against the RAW column's own min/max (raw_col,
             # e.g. POPULATION not E_POPULATION), not each hazard's own
@@ -4226,7 +4912,7 @@ def _fetch_combined_raster_tile(
             # a way that breaks monotonicity.
             minmax = None
             for hz in used_hazard_names:
-                minmax = _get_minmax(hazard_keys[hz], raw_col)
+                minmax = _get_minmax(hazard_keys[hz], raw_col, df=hazard_dfs.get(hz))
                 if minmax is not None:
                     break
         if minmax is not None:
@@ -4598,7 +5284,11 @@ def _fetch_admin_combined_tile(
                 # Every hazard's admin rows come from the SAME cached base
                 # geometry set (_ensure_admin_base_one), so the polygon is
                 # identical whichever hazard supplied it: take the first.
-                geom_by_id[tid] = geom
+                # Simplified below this zoom for the same bounded clip cost
+                # reasoning as _fetch_admin_tile's own _ADMIN_SIMPLIFY_MAX_
+                # ZOOM/_ADMIN_SIMPLIFY_TOLERANCE_DEG above.
+                geom_by_id[tid] = (geom.simplify(_ADMIN_SIMPLIFY_TOLERANCE_DEG, preserve_topology=True)
+                                   if z <= _ADMIN_SIMPLIFY_MAX_ZOOM else geom)
             slot = merged.setdefault(tid, {})
             hz_prob = props.get("PROBABILITY")
             if hz_prob is not None and not (isinstance(hz_prob, float) and pd.isna(hz_prob)):
@@ -4913,17 +5603,23 @@ _PRECIP_RAW_BY_TIME_SQL = """
 """
 
 # Rolling prewarm window (see _prewarm_raw_caches's own comment): covers the
-# real latest 3 DAYS, not just the single latest cycle. Real cadence,
-# confirmed live against AOTS.TC_ECMWF.MET_FORECASTS (distinct FORECAST_TIME
-# values genuinely land on 00/06/12/18Z, every 6h, no gaps observed) is
-# 6-hourly, so 3 days = 12 distinct cycles, not 3, unlike river-raw below,
-# whose own real cadence is once-daily (see _LATEST_3_RIVER_EXTENT_SQL's own
-# comment), where 3 cycles already IS 3 days. Do not assume the two hazards
-# share one window size; re-verify against real data before changing either.
+# real latest _RECENT_RUN_WINDOW cycles, matching the same "only the pinned
+# demos plus the latest few runs stay resident" policy _DataCache's own
+# trim_under_memory_pressure enforces for mercator/admin/facility/vuln, kept
+# here as its own copy (not imported) since precip-raw's cache class predates
+# and is otherwise independent of _DataCache. Real cadence, confirmed live
+# against AOTS.TC_ECMWF.MET_FORECASTS (distinct FORECAST_TIME values
+# genuinely land on 00/06/12/18Z, every 6h, no gaps observed) is 6-hourly, so
+# 6 cycles covers the real latest 36 hours, unlike river-raw below, whose own
+# real cadence is once-daily (see _LATEST_RIVER_EXTENT_SQL's own comment) and
+# is deliberately given its own, smaller cycle count rather than reusing this
+# same number, since applying it unchanged there would GROW river-raw's
+# window instead of shrinking it. Do not assume the two hazards share one
+# window size; re-verify against real data before changing either.
 # DISTINCT matters here: MET_FORECASTS has many rows per FORECAST_TIME (one
 # per param/tile), so a plain ORDER BY ... LIMIT N without it could return N
 # rows that all share the same forecast_time instead of N different cycles.
-_PRECIP_RAW_PREWARM_CYCLES = 12
+_PRECIP_RAW_PREWARM_CYCLES = _RECENT_RUN_WINDOW
 _PRECIP_RAW_PREWARM_SQL = f"""
     SELECT DISTINCT FORECAST_TIME, STAGE_PATH
     FROM AOTS.TC_ECMWF.MET_FORECASTS
@@ -4957,15 +5653,15 @@ class _PrecipRawCache:
     default), that's ~17 small (n_lat, n_lon) float32 grids (~2.6MB each ->
     ~45MB per forecast_time) versus retaining 4 full (51, n_lat, n_lon)
     per-member arrays (~133MB EACH -> ~530MB per forecast_time). At the
-    current _PRECIP_RAW_PREWARM_CYCLES=12 (3-day, real 6-hourly-cadence
-    window, see _PRECIP_RAW_PREWARM_SQL's own comment), the chosen
-    precompute design's real steady-state cost is ~45MB x 12 =~ 540MB; the
-    rejected retain-per-member alternative would instead be ~530MB x 12 =~
-    6.4GB, an even stronger case for precomputing at this wider window
-    than the ~135MB-vs-~1.6GB comparison that held at the original 3-cycle
-    window. Precomputing is far cheaper both in steady-state memory and in
-    per-request compute (a real request is now a plain dict lookup, not a
-    comparison+reduction over a retained (51, H, W) array).
+    current _PRECIP_RAW_PREWARM_CYCLES (real 6-hourly-cadence window, see
+    _PRECIP_RAW_PREWARM_SQL's own comment), the chosen precompute design's
+    real steady-state cost is ~45MB x _PRECIP_RAW_PREWARM_CYCLES; the
+    rejected retain-per-member alternative would instead be ~530MB x
+    _PRECIP_RAW_PREWARM_CYCLES, an even stronger case for precomputing
+    regardless of the exact window size. Precomputing is far cheaper both in
+    steady-state memory and in per-request compute (a real request is now a
+    plain dict lookup, not a comparison+reduction over a retained (51, H, W)
+    array).
 
     TTL: _PRECIP_RAW_TTL (4h), not _TILE_TTL (see module comment above).
     Thread-safe via double-checked locking, same pattern as _DataCache.
@@ -5813,19 +6509,22 @@ def _river_extent_param(rp_tier: str) -> str:
 # RP-tier slider is a frequently-used control, without prewarming, switching
 # to any other tier would pay a full cold Parquet download+scan every time.
 #
-# Deliberately still LIMIT 3, NOT widened to match precip-raw's 12: real
+# Deliberately its OWN, smaller cycle count, NOT _RECENT_RUN_WINDOW (6): real
 # cadence, confirmed live against AOTS.TC_ECMWF.RIVER_FORECASTS (distinct
 # FORECAST_TIME values all land on 00:00, one per calendar day, no intraday
-# cycles observed), is once-daily (GloFAS), not 6-hourly like precip. 3
-# distinct cycles here already covers the real latest 3 days; blindly
-# bumping this to 12 would warm 12 days of river-raw data, well beyond the
-# "3 days" this window is meant to cover, for zero benefit.
-_LATEST_3_RIVER_EXTENT_SQL = """
+# cycles observed), is once-daily (GloFAS), not 6-hourly like precip, so
+# applying the same "6" here would mean 6 DAYS of history, growing this
+# window instead of shrinking it, the opposite of why every other run scoped
+# cache in this file was tightened. Sized instead to cover roughly the same
+# real time span _PRECIP_RAW_PREWARM_CYCLES now covers (_RECENT_RUN_WINDOW
+# cycles x 6h = 36h for precip), rounded up to whole once-daily cycles.
+_RIVER_EXTENT_PREWARM_CYCLES = 2
+_LATEST_RIVER_EXTENT_SQL = f"""
     SELECT DISTINCT FORECAST_TIME, STAGE_PATH
     FROM AOTS.TC_ECMWF.RIVER_FORECASTS
     WHERE PARAM = %s
     ORDER BY FORECAST_TIME DESC
-    LIMIT 3
+    LIMIT {_RIVER_EXTENT_PREWARM_CYCLES}
 """
 
 # Sequential cyan->navy ramp for the PROBABILITY variant (real per-cell
@@ -6599,20 +7298,26 @@ def _prewarm_raw_caches() -> None:
     logged and swallowed so a warm-up failure (e.g. Snowflake hiccup) never
     crashes this thread or blocks the server.
 
-    "3 days" is NOT the same cycle-count for both hazards, since their real
+    The cycle count is NOT the same for both hazards, since their real
     upstream cadences differ (confirmed live against Snowflake, see
-    _PRECIP_RAW_PREWARM_SQL's and _LATEST_3_RIVER_EXTENT_SQL's own
-    comments): precip-raw is genuinely 6-hourly, so 3 days =
-    _PRECIP_RAW_PREWARM_CYCLES=12 distinct cycles; river-raw (GloFAS) is
-    genuinely once-daily, so 3 days is still just 3 distinct cycles. Keeps
-    these windows warm rather than only the single latest cycle, so a user
-    looking at yesterday's or a few-days-old real data (a completely normal
-    thing to do) does not pay a full cold ~1.2GB Zarr / real Parquet
-    download. Each cycle re-resolves the real latest-window set from
-    Snowflake (_PRECIP_RAW_PREWARM_SQL/_LATEST_3_RIVER_EXTENT_SQL) and
-    evicts any previously-warmed entry that has since aged out of that
-    window, so the process doesn't grow unbounded: each precip-raw grid
-    alone can be sized in the hundreds of MB once decoded.
+    _PRECIP_RAW_PREWARM_SQL's and _LATEST_RIVER_EXTENT_SQL's own comments):
+    precip-raw is genuinely 6-hourly, so _PRECIP_RAW_PREWARM_CYCLES distinct
+    cycles covers that many x 6h of real recency; river-raw (GloFAS) is
+    genuinely once-daily, so it gets its own, separately sized
+    _RIVER_EXTENT_PREWARM_CYCLES rather than reusing the same number (see
+    that constant's own comment). Both windows also always include the
+    app's own pinned demo scenario raw-layer date (_DEMO_SCENARIO_RAW_LAYER_
+    PIN/_DEMO_SCENARIO_RAW_LAYER_DATE), regardless of real recency, so a
+    demo stays servable without a cold reload even once it ages out of the
+    real recent window. Keeps these windows warm rather than only the single
+    latest cycle, so a user looking at yesterday's or a few-days-old real
+    data (a completely normal thing to do) does not pay a full cold ~1.2GB
+    Zarr / real Parquet download. Each cycle re-resolves the real
+    latest-window set from Snowflake (_PRECIP_RAW_PREWARM_SQL/
+    _LATEST_RIVER_EXTENT_SQL) and evicts any previously-warmed entry that
+    has since aged out of that window (and is not the pinned demo date), so
+    the process doesn't grow unbounded: each precip-raw grid alone can be
+    sized in the hundreds of MB once decoded.
 
     River-raw warms all 6 return-period tiers (rp2/rp5/rp10/rp20/rp50/
     rp100), not just the default rp10, since the RP-tier slider is an
@@ -6636,6 +7341,7 @@ def _prewarm_raw_caches() -> None:
         try:
             rows = _run_query(_PRECIP_RAW_PREWARM_SQL, [])
             latest_times = {str(r["FORECAST_TIME"]) for r in rows}
+            latest_times.add(_DEMO_SCENARIO_RAW_LAYER_PIN)
         except Exception as e:
             log.error("Prewarm: could not resolve latest-%d precip-raw times: %s", _PRECIP_RAW_PREWARM_CYCLES, e)
             latest_times = None
@@ -6682,14 +7388,15 @@ def _prewarm_raw_caches() -> None:
                     log.info("Prewarm: evicted %d stale precip-raw grid(s) outside the latest-%d window: %s",
                               len(stale), _PRECIP_RAW_PREWARM_CYCLES, sorted(stale))
 
-        # River-raw: one latest-3 resolution PER rp_tier, each tier is its
-        # own distinct Parquet file/forecast_time set (rp2's own file, in
-        # particular, has FAR more raw rows than rp10's, not just a smaller
-        # copy of it), so each needs its own query and its own eviction
-        # pass keyed to (forecast_time, that_tier) only.
+        # River-raw: one latest-N resolution PER rp_tier (N=
+        # _RIVER_EXTENT_PREWARM_CYCLES), each tier is its own distinct
+        # Parquet file/forecast_time set (rp2's own file, in particular, has
+        # FAR more raw rows than rp10's, not just a smaller copy of it), so
+        # each needs its own query and its own eviction pass keyed to
+        # (forecast_time, that_tier) only.
         for rp_tier in _RIVER_EXTENT_RP_TIERS:
             try:
-                rows = _run_query(_LATEST_3_RIVER_EXTENT_SQL, [_river_extent_param(rp_tier)])
+                rows = _run_query(_LATEST_RIVER_EXTENT_SQL, [_river_extent_param(rp_tier)])
                 # [:10]: same TIMESTAMP-vs-DATE normalization as
                 # _RiverExtentCache._resolve_latest's own comment, so this
                 # set matches the plain "YYYY-MM-DD" keys ensure_river_extent
@@ -6698,8 +7405,10 @@ def _prewarm_raw_caches() -> None:
                 # never match, defeating both the prewarm-hit check and the
                 # stale-eviction diff below.
                 latest_times = {str(r["FORECAST_TIME"])[:10] for r in rows}
+                latest_times.add(_DEMO_SCENARIO_RAW_LAYER_DATE)
             except Exception as e:
-                log.error("Prewarm: could not resolve latest-3 river-raw/%s times: %s", rp_tier, e)
+                log.error("Prewarm: could not resolve latest-%d river-raw/%s times: %s",
+                          _RIVER_EXTENT_PREWARM_CYCLES, rp_tier, e)
                 continue
             if not latest_times:
                 log.info("Prewarm: river-raw/%s, no data currently available to warm", rp_tier)
@@ -6749,8 +7458,8 @@ def _prewarm_raw_caches() -> None:
                 log.error("Prewarm: river-raw/%s stale-eviction pass failed: %s", rp_tier, e)
                 stale = set()
             if stale:
-                log.info("Prewarm: evicted %d stale river-raw/%s grid(s) outside the latest-3 window: %s",
-                          len(stale), rp_tier, sorted(k[0] for k in stale))
+                log.info("Prewarm: evicted %d stale river-raw/%s grid(s) outside the latest-%d window: %s",
+                          len(stale), rp_tier, _RIVER_EXTENT_PREWARM_CYCLES, sorted(k[0] for k in stale))
         time.sleep(_PREWARM_INTERVAL_SECONDS)
 
 
@@ -6764,6 +7473,17 @@ async def _lifespan(app: FastAPI):
     log.info("Prewarm: starting background warm-up thread for precip-raw/river-raw (interval=%ss)",
               _PREWARM_INTERVAL_SECONDS)
     threading.Thread(target=_prewarm_raw_caches, daemon=True, name="raw-cache-prewarm").start()
+
+    def _trim_base_tile_centroid_cache() -> None:
+        from components.data.snowflake_utils import _MEMORY_PRESSURE_FLOOR
+        with _BASE_TILE_CENTROID_CACHE_LOCK:
+            while len(_BASE_TILE_CENTROID_CACHE) > _MEMORY_PRESSURE_FLOOR:
+                _BASE_TILE_CENTROID_CACHE.popitem(last=False)
+
+    from components.data.snowflake_utils import register_memory_pressure_clearer
+    register_memory_pressure_clearer(_trim_base_tile_centroid_cache)
+    register_memory_pressure_clearer(_cache.trim_under_memory_pressure)
+
     yield
 
 
@@ -6789,6 +7509,102 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@_ttl_cache(ttl_seconds=10, maxsize=1)
+def _cache_stats_report() -> dict:
+    """Real breakdown of what _cache actually holds right now (per dict,
+    per country/run), for operational visibility into what's driving
+    resident memory, rather than only the single aggregate RSS number the
+    memory watchdog logs and Azure's own MemoryWorkingSet metric report.
+    See _DataCache.memory_report's own docstring for what each field means
+    and its real precision limits.
+
+    Also covers _PrecipRawCache/_RiverExtentCache (the global raw river/
+    precip layers, documented elsewhere at up to ~1.2GB+ per cold load) and
+    snowflake_utils.py's own get_base_tiles/get_base_admin/get_track_impacts
+    (ttl_cache-wrapped GeoDataFrame caches, real, resident in THIS same
+    process since tile_server.py itself imports and calls them, e.g.
+    combined_member_impacts' own use of get_base_tiles). Even with all of
+    these included, this is still not the FULL picture (Python/library/
+    gunicorn baseline footprint isn't a cache and has no size to report),
+    so cross-check against the process's own actual RSS (below) to see how
+    much of it this report accounts for.
+
+    A real 10 second TTL cache, not computed fresh on every call: this walks
+    every cached DataFrame's own memory_usage(deep=True), real, genuine CPU
+    work (GIL-held, same as every other sync route in this single-worker
+    process) that scales with how many large countries/storms are currently
+    cached, up to ~288 DataFrames in a real busy multi-storm worst case.
+    Cheap for a single occasional check, but repeated polling during the
+    exact load spike this endpoint exists to help diagnose would otherwise
+    add real, avoidable GIL-bound cost on top of the very contention it is
+    meant to help someone understand.
+    """
+    from components.data.snowflake_utils import (
+        _process_rss_mb, _MEMORY_GUARD_MB, get_base_tiles, get_base_admin, get_track_impacts,
+    )
+    report = _cache.memory_report()
+
+    # Precip raw: each forecast_time entry's "grids"/"prob_grids" are dicts
+    # of real numpy arrays (the actual global raster data), not DataFrames.
+    with _precip_cache._key_locks_meta_lock:
+        precip_snapshot = dict(_precip_cache._grid)
+    precip_total_mb = 0.0
+    precip_by_time = []
+    for ft, entry in precip_snapshot.items():
+        try:
+            mb = sum(a.nbytes for a in entry.get("grids", {}).values()) / (1024 * 1024)
+            mb += sum(a.nbytes for a in entry.get("prob_grids", {}).values()) / (1024 * 1024)
+        except Exception:
+            mb = 0.0
+        precip_total_mb += mb
+        precip_by_time.append({"forecast_time": ft, "mb": round(mb, 1)})
+    report["dicts"]["precip_raw_cache"] = {
+        "entry_count": len(precip_snapshot), "total_mb": round(precip_total_mb, 1),
+        "by_forecast_time": sorted(precip_by_time, key=lambda r: r["mb"], reverse=True),
+    }
+
+    # River extent: each entry's real weight is its own "df" DataFrame.
+    with _river_extent_cache._key_locks_meta_lock:
+        river_snapshot = dict(_river_extent_cache._grids)
+    river_total_mb = 0.0
+    river_by_key = []
+    for key, entry in river_snapshot.items():
+        try:
+            df = entry.get("df")
+            mb = df.memory_usage(deep=True).sum() / (1024 * 1024) if isinstance(df, pd.DataFrame) else 0.0
+        except Exception:
+            mb = 0.0
+        river_total_mb += mb
+        river_by_key.append({"key": list(key) if isinstance(key, tuple) else key, "mb": round(mb, 1)})
+    report["dicts"]["river_extent_cache"] = {
+        "entry_count": len(river_snapshot), "total_mb": round(river_total_mb, 1),
+        "by_key": sorted(river_by_key, key=lambda r: r["mb"], reverse=True),
+    }
+
+    # snowflake_utils.py's own base-layer GeoDataFrame caches: real, resident
+    # in this same process, not previously reported anywhere.
+    for name, fn in (("get_base_tiles", get_base_tiles), ("get_base_admin", get_base_admin),
+                      ("get_track_impacts", get_track_impacts)):
+        try:
+            values = fn.cache_values()
+            mb = sum(v.memory_usage(deep=True).sum() for v in values if isinstance(v, pd.DataFrame)) / (1024 * 1024)
+        except Exception:
+            values, mb = [], 0.0
+        report["dicts"][name] = {"entry_count": len(values), "total_mb": round(mb, 1)}
+
+    report["grand_total_mb_precise_dicts_only"] = round(
+        sum(d.get("total_mb", 0.0) for d in report["dicts"].values() if "total_mb" in d), 1
+    )
+    report["process_rss_mb"] = round(_process_rss_mb(), 1)
+    report["memory_guard_mb"] = _MEMORY_GUARD_MB
+    return report
+
+
+@app.get("/debug/cache-stats")
+def cache_stats() -> dict:
+    return _cache_stats_report()
 
 
 @app.get("/tiles/mercator/{country}/{storm}/{forecast_date}/{z}/{x}/{y}.pbf", response_class=Response)
@@ -7065,10 +7881,11 @@ def _fetch_tile_stats(
     # this key, so this avoids duplicating it. Falls through to the
     # standalone SQL aggregate only if this fast path itself fails.
     try:
-        _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
-                               gust_threshold, rp_tier, threshold_mm, window_h)
-        variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
-        df = _cache._mercator.get((country.upper(), storm, forecast_date) + variant)
+        # Uses ensure_mercator's own returned DataFrame directly rather
+        # than a separate self._mercator.get(key) re-fetch afterward: see
+        # that method's own docstring for the real eviction race this closes.
+        df = _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
+                                    gust_threshold, rp_tier, threshold_mm, window_h)
         if df is not None:
             return _stats_from_df(df)
     except Exception as e:
@@ -7853,7 +8670,7 @@ def _fetch_one_hazard_facility_rows(layer_type: str, code: str, hazard: str, sto
         # Same ZONE_ID -> coords enrichment ensure_facility's own _load_one
         # does (health's lean wind/gust/rain queries carry no LATITUDE/
         # LONGITUDE of their own), river's own health query already
-        # resolves them directly via ST_CENTROID, untouched here.
+        # selects them directly from the table, untouched here.
         coords = _cache._ensure_hc_coords_one(hazard, code, storm, forecast_date)
         enriched = []
         for row in rows:
@@ -8333,9 +9150,11 @@ def _get_tile_value_for_hazard(country: str, storm: str, forecast_date: str,
     qk = mercantile.quadkey(tile)
     variant = _hazard_variant(hazard, wind_threshold, gust_threshold, rp_tier, threshold_mm, window_h)
     key = (country.upper(), storm, forecast_date) + variant
-    _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
-                          gust_threshold, rp_tier, threshold_mm, window_h)
-    df = _cache._mercator.get(key)
+    # Uses ensure_mercator's own returned DataFrame directly rather than a
+    # separate self._mercator.get(key) re-fetch afterward: see that
+    # method's own docstring for the real eviction race this closes.
+    df = _cache.ensure_mercator(country.upper(), storm, forecast_date, wind_threshold, hazard,
+                                gust_threshold, rp_tier, threshold_mm, window_h)
     if df is None or df.empty:
         return {}
     row = _filter_by_tile_prefix(df, qk, _cache._mercator_sorted.get(key))
@@ -9023,12 +9842,18 @@ def _combined_bitmask_fracs(
 
     def _ensure_one(item: tuple[str, dict]):
         hz, p = item
-        _cache.ensure_mercator(country, storm, p["forecast_date"], p["wind_threshold"], hz,
-                               p["gust_threshold"], p["rp_tier"], p["threshold_mm"], p["window_h"])
-        variant = _hazard_variant(hz, p["wind_threshold"], p["gust_threshold"],
-                                    p["rp_tier"], p["threshold_mm"], p["window_h"])
-        key = (country, storm, p["forecast_date"]) + variant
-        return hz, _cache._mercator.get(key)
+        # Uses ensure_mercator's own returned DataFrame directly rather
+        # than a separate self._mercator.get(key) re-fetch afterward: see
+        # that method's own docstring for the real eviction race this
+        # closes. This was the confirmed root cause of a real live bug -
+        # deselecting Rain/River (leaving only Wind active) made every
+        # Impact Summary number collapse to 0: with only one hazard
+        # active, losing that single hazard's df to this exact race
+        # emptied hazard_dfs entirely below, rather than just being one of
+        # several still-contributing hazards.
+        df = _cache.ensure_mercator(country, storm, p["forecast_date"], p["wind_threshold"], hz,
+                                    p["gust_threshold"], p["rp_tier"], p["threshold_mm"], p["window_h"])
+        return hz, df
 
     results = (list(_SHARED_EXECUTOR.map(_ensure_one, active)) if len(active) > 1
                else [_ensure_one(item) for item in active])

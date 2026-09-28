@@ -5,6 +5,7 @@ a MapLibre/Leaflet dual-layer map for base-layer rendering, zoom/pan, and
 basemap switching, plus its own independently-built topbar/footer
 (_topbar(), _compact_footer()) rather than a shared header/AppShell module.
 """
+import functools
 import hashlib
 import json
 import logging
@@ -58,6 +59,35 @@ from components.data.snowflake_utils import (
 from components.data.data_store_utils import get_data_store, get_impact_data
 
 logger = logging.getLogger(__name__)
+
+# Threshold above which a callback invocation logs its own duration. Real
+# page load stalls do not always have a clear single attributed cause; a
+# callback that occasionally takes long enough to matter here logs plainly
+# when it happens, real evidence for the next investigation instead of
+# another guess.
+_SLOW_CALLBACK_LOG_THRESHOLD_S = 3.0
+
+
+def _log_if_slow(name):
+    """Decorator, applied above an existing @callback, that logs a
+    callback's own real wall clock duration whenever it exceeds
+    _SLOW_CALLBACK_LOG_THRESHOLD_S. Wraps the function transparently via
+    functools.wraps, so Dash's own callback registration still sees the
+    original name and signature; never changes the return value, argument
+    handling or control flow of the wrapped function itself."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            t0 = time.time()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                dt = time.time() - t0
+                if dt >= _SLOW_CALLBACK_LOG_THRESHOLD_S:
+                    logger.warning("Slow callback %s took %.2fs", name, dt)
+        return wrapper
+    return decorator
+
 
 dash.register_page(__name__, path="/", name="Ahead of the Storm")
 
@@ -7992,18 +8022,31 @@ def _river_grid_totals_excl_rain(metric, scope, countries, date, run, rain_idx, 
         river_ft, rain_ft = _country_river_rain_forecast_dates(country, date, run)
         if not code or not river_ft or not rain_ft:
             return None
-        try:
-            resp = requests.get(
-                f"{config.TILE_SERVER_URL}/impact/river-grid-excl-rain/{code}/NONE",
-                params={"river_forecast_date": river_ft, "rain_forecast_date": rain_ft,
-                         "threshold_mm": rain_mm, "window_h": int(rain_window), "cells": cells_json},
-                timeout=_MEMBER_IMPACT_HTTP_TIMEOUT,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.warning("Could not load river grid (excl rain) for %s: %s", country, e)
-            return None
+        # One retry after a short pause: the tile server is a separate
+        # process that restarts periodically under real memory pressure
+        # (see this app's own known sustained-memory issue), and a request
+        # landing in the few seconds it's down would otherwise render this
+        # whole grid as a permanent "no real data" card until the user
+        # manually reopens it, even though the underlying data is fine.
+        # Bounded to one retry, not a loop, so a genuinely unreachable
+        # tile server still fails and gets logged, same as before.
+        last_exc = None
+        for attempt in range(2):
+            try:
+                resp = requests.get(
+                    f"{config.TILE_SERVER_URL}/impact/river-grid-excl-rain/{code}/NONE",
+                    params={"river_forecast_date": river_ft, "rain_forecast_date": rain_ft,
+                             "threshold_mm": rain_mm, "window_h": int(rain_window), "cells": cells_json},
+                    timeout=_MEMBER_IMPACT_HTTP_TIMEOUT,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                last_exc = e
+                if attempt == 0:
+                    time.sleep(2)
+        logger.warning("Could not load river grid (excl rain) for %s: %s", country, last_exc)
+        return None
 
     per_country = list(get_query_executor().map(_fetch, resolved_countries))
     per_country = [r for r in per_country if r is not None]
@@ -8077,18 +8120,26 @@ def _rain_grid_totals_excl_river(metric, scope, countries, date, run, river_idx,
         river_ft, rain_ft = _country_river_rain_forecast_dates(country, date, run, rp_tier=river_tier)
         if not code or not river_ft or not rain_ft:
             return None
-        try:
-            resp = requests.get(
-                f"{config.TILE_SERVER_URL}/impact/rain-grid-excl-river/{code}/NONE",
-                params={"river_forecast_date": river_ft, "rp_tier": river_tier, "river_window": river_window_resolved,
-                         "rain_forecast_date": rain_ft, "cells": cells_json},
-                timeout=_MEMBER_IMPACT_HTTP_TIMEOUT,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.warning("Could not load rain grid (excl river) for %s: %s", country, e)
-            return None
+        # One retry after a short pause, same "don't let a transient tile
+        # server restart render a permanent no-data card" reasoning as
+        # _river_grid_totals_excl_rain's own _fetch above.
+        last_exc = None
+        for attempt in range(2):
+            try:
+                resp = requests.get(
+                    f"{config.TILE_SERVER_URL}/impact/rain-grid-excl-river/{code}/NONE",
+                    params={"river_forecast_date": river_ft, "rp_tier": river_tier, "river_window": river_window_resolved,
+                             "rain_forecast_date": rain_ft, "cells": cells_json},
+                    timeout=_MEMBER_IMPACT_HTTP_TIMEOUT,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                last_exc = e
+                if attempt == 0:
+                    time.sleep(2)
+        logger.warning("Could not load rain grid (excl river) for %s: %s", country, last_exc)
+        return None
 
     per_country = list(get_query_executor().map(_fetch, resolved_countries))
     per_country = [r for r in per_country if r is not None]
@@ -10815,6 +10866,7 @@ clientside_callback(
     Input("topbar-time", "value"),
     Input("ms-clicked-storm-store", "data"),
 )
+@_log_if_slow("_switch_mode_content")
 def _switch_mode_content(mode, countries, date, run, clicked_storm):
     # selected-country-store must be an Input, not State, picking a
     # different/additional country while ALREADY in zoom mode doesn't
@@ -10984,6 +11036,7 @@ def _toggle_threshold_preview(_n, current_style, current_children):
     Input("topbar-time", "value"),
     State("exposure-view-as", "value"),
 )
+@_log_if_slow("_update_view_as")
 def _update_view_as(prop, countries, date, run, current_view_as):
     # Enabled for
     # the five properties it has real data for (population/children/infant/
@@ -12079,7 +12132,6 @@ _HAZARD_CHECKBOX_TRIGGER_PROPS = {
     "ms-rain-on.checked", "ms-surge-on.checked",
 }
 
-
 @callback(
     Output("impact-body", "children"),
     Output("impact-subtitle", "children"),
@@ -12107,6 +12159,7 @@ _HAZARD_CHECKBOX_TRIGGER_PROPS = {
     State("ms-river-slider", "value"),
     State("ms-rain-slider", "value"),
 )
+@_log_if_slow("_update_impact_summary")
 def _update_impact_summary(countries, influencing_factor, aggregation, wind_on, gust_on, river_on, rain_on, surge_on,
                              date, run, rain_window, river_window, _debounce_tick, wind_idx, gust_idx, river_idx, rain_idx):
     # Scoped to whichever hazards are toggled on (sidebar checkboxes/
@@ -14958,16 +15011,31 @@ clientside_callback(
         var RAIN_MM_BY_WINDOW = {json.dumps(_RAIN_MM_BY_WINDOW)};
         var windThreshold = tileConfig.wind_threshold;
 
+        // Every threshold value for every visible hazard fires its own
+        // /preload/ call, and each one already fans out into several
+        // concurrent loads on the tile server's own side (see that
+        // endpoint's own docstring), so firing all of them in the same
+        // instant turns one hazard toggle into a real burst of simultaneous
+        // server side work. Spacing each call out over a short, fixed
+        // interval keeps the same full set of values warm within a couple
+        // of seconds while never asking the server to start more than a
+        // handful of these at once.
+        var fireIndex = 0;
+        var FIRE_STAGGER_MS = 120;
         function fire(country, storm, forecastDate, params) {{
             if (!country || !storm || !forecastDate) return;
-            var qs = new URLSearchParams(params).toString();
-            var url = base + '/preload/' + encodeURIComponent(country) + '/'
-                + encodeURIComponent(storm) + '/' + encodeURIComponent(forecastDate) + '?' + qs;
-            fetch(url).then(function(resp) {{
-                if (!resp.ok) console.warn('[AoTS] preload failed (' + resp.status + '):', url);
-            }}).catch(function(e) {{
-                console.warn('[AoTS] preload error:', url, e);
-            }});
+            var delay = fireIndex * FIRE_STAGGER_MS;
+            fireIndex += 1;
+            setTimeout(function() {{
+                var qs = new URLSearchParams(params).toString();
+                var url = base + '/preload/' + encodeURIComponent(country) + '/'
+                    + encodeURIComponent(storm) + '/' + encodeURIComponent(forecastDate) + '?' + qs;
+                fetch(url).then(function(resp) {{
+                    if (!resp.ok) console.warn('[AoTS] preload failed (' + resp.status + '):', url);
+                }}).catch(function(e) {{
+                    console.warn('[AoTS] preload error:', url, e);
+                }});
+            }}, delay);
         }}
 
         if (tileConfig.wind_visible) {{
@@ -15067,31 +15135,85 @@ def _prewarm_urlopen_with_retry(url, timeout=15, max_attempts=6, initial_delay=2
     raise last_exc
 
 
-def _prewarm_demo_scenario_tile_cache() -> None:
-    """Background, best-effort warm-up of the tile server's per-country
-    pandas DataCache (services/tile_server.py's own /preload/ endpoint) for
-    every REAL country affected by each _DEMO_SCENARIOS entry's storm.
-    Fire-and-forget: runs in its own daemon thread so it never delays Dash
-    startup/readiness, and every failure is logged and swallowed, a
-    Snowflake hiccup here must never crash the app, same convention as
-    tile_server.py's own _prewarm_raw_caches.
+# Same cadence as services/tile_server.py's own _PREWARM_INTERVAL_SECONDS,
+# not importable across the process boundary (this Dash app and the tile
+# server run as separate processes/services), so redefined here as its own
+# constant rather than sharing one.
+_RECENT_PREWARM_INTERVAL_SECONDS = 60 * 60
+# A single real forecast cycle can carry several concurrent real storms at
+# once, so this many recent CYCLES can resolve to well more than this many
+# individual country/storm/date combinations. See services/tile_server.py's
+# own _DATA_CACHE_RUN_FLOOR for how large the tile server's own protected
+# floor needs to be to hold them all.
+_RECENT_PREWARM_CYCLE_COUNT = 10
+# Wind stays warm for the full _RECENT_PREWARM_CYCLE_COUNT above, the real
+# guarantee this whole rolling prewarm exists to provide. Gust is warmed for
+# only the most recent slice of that same window instead of all of it: real
+# measured Snowflake query volume scales directly with how many distinct
+# country, storm, date and hazard combinations this loop covers, and gust
+# already gets a reduced real processing cadence elsewhere in this project
+# for the same reason, being the less critical of the two wind family
+# hazards. An older cycle's gust view still resolves correctly on a real
+# user's own first click, it simply is not proactively kept warm the same
+# way its own wind view already is.
+_RECENT_PREWARM_GUST_CYCLE_COUNT = 3
+# Every _DEMO_SCENARIOS date is a fixed, historical forecast cycle whose
+# underlying Snowflake data never changes once it exists, unlike the real,
+# rolling recent cycles _prewarm_recent_tile_cache_once covers. Re running
+# the exact same queries on the shorter, hourly cadence above would only add
+# load without ever refreshing anything meaningfully new, so the shared
+# prewarm scheduler loop only runs this tier on its own, much longer, once a
+# day cadence instead.
+_DEMO_PREWARM_INTERVAL_SECONDS = 24 * 60 * 60
+# Each /preload/ call returns immediately (it only starts a background
+# thread server side) and itself fans out into six concurrent loads
+# (ensure_mercator, ensure_admin, four ensure_facility layer types) against
+# a small, fixed size worker pool on the tile server (see that server's own
+# _PRELOAD_EXECUTOR). Issuing every country, storm, date and hazard
+# combination back to back with no delay between them queues far more of
+# that work at once than the tile server's own memory watchdog can trim in
+# time, since the watchdog only checks once a minute while a burst of large
+# countries can finish loading well within that window. A small delay
+# between each combination spreads the same total prewarm work out over
+# real time instead of trying to do it all within the first few seconds
+# after every process start, keeping peak memory well behaved without
+# reducing how much ends up warm by the end of a full pass.
+_PREWARM_COMBO_DELAY_SECONDS = 5
 
-    Must NOT only warm _DEMO_SCENARIOS'
-    own hand-listed single "countries" entry (e.g. just Jamaica for
-    MELISSA), a multi-country storm's real affected countries (e.g.
-    MELISSA also genuinely impacts Cuba/Nicaragua/Turks and Caicos Islands,
-    all selectable together via the Global-mode Active Storms row click,
-    same as _resolve_storms_for_date's own docstring describes) need
-    warming too, or selecting the whole storm, not just its one demo-listed
-    country, would still pay the full cold-cache tax for every country
-    beyond the first. _resolve_storms_for_date already resolves the real, complete
-    country list for whatever storm is real on this date; using ITS list
-    here instead of _DEMO_SCENARIOS' own hint keeps this correct even if a
-    future demo scenario's storm's real footprint changes."""
+
+def _prewarm_demo_scenario_tile_cache_once() -> None:
+    """Best effort, single pass warm up of the tile server's per country
+    pandas DataCache (services/tile_server.py's own /preload/ endpoint),
+    covering both wind and gust hazard, for every real country affected by
+    each _DEMO_SCENARIOS entry's storm. Invoked by the shared prewarm
+    scheduler loop below on its daily tier cadence, not on its own timer:
+    the tile server's own memory watchdog protects only its most recently
+    loaded runs from eviction under memory pressure (see services/
+    tile_server.py's own _DATA_CACHE_RUN_FLOOR), so a single pass that never
+    repeated would eventually age out of that protection as other, newer
+    runs get loaded, silently going cold again hours into the same
+    process's life; repeating it once a day keeps it protected. Every
+    failure is logged and swallowed; a Snowflake hiccup here must never
+    crash the app, same convention as tile_server.py's own
+    _prewarm_raw_caches.
+
+    Must not only warm _DEMO_SCENARIOS' own hand listed single "countries"
+    entry (e.g. just Jamaica for MELISSA); a storm with several real
+    affected countries (e.g. MELISSA also genuinely impacts Cuba, Nicaragua
+    and the Turks and Caicos Islands, all selectable together via the
+    Global mode Active Storms row click, same as _resolve_storms_for_date's
+    own docstring describes) needs warming too, or selecting the whole
+    storm, not just its one demo listed country, would still pay the full
+    cold cache tax for every country beyond the first. _resolve_storms_for_
+    date already resolves the real, complete country list for whatever
+    storm is real on this date; using its list here instead of
+    _DEMO_SCENARIOS' own hint keeps this correct even if a future demo
+    scenario's storm's real footprint changes."""
     base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
     if not base:
         return
     wind_kt = _resolve_wind_kt(None)
+    gust_kt = _resolve_gust_kt(None)
     seen_dates = set()
     for scenario in _DEMO_SCENARIOS:
         date_key = (scenario["date"], scenario["time"])
@@ -15105,96 +15227,101 @@ def _prewarm_demo_scenario_tile_cache() -> None:
             continue
         for storm in storms:
             for country_name in storm["countries"]:
-                try:
-                    code = _NAME_TO_CODE.get(country_name)
-                    if not code:
-                        continue
-                    url = (f"{base}/preload/{urllib.parse.quote(code)}/{urllib.parse.quote(storm['name'])}"
-                           f"/{urllib.parse.quote(storm['mat_forecast_date'])}?wind_threshold={wind_kt}")
-                    _prewarm_urlopen_with_retry(url)
-                    logger.info("Prewarm: demo scenario %s/%s tile cache warm-up requested",
-                                country_name, storm["name"])
-                except Exception as e:
-                    logger.warning("Prewarm: demo scenario %s/%s tile cache warm-up failed: %s",
-                                    country_name, storm["name"], e)
+                code = _NAME_TO_CODE.get(country_name)
+                if not code:
+                    continue
+                for hazard, threshold_param in (("wind", wind_kt), ("gust", gust_kt)):
+                    try:
+                        url = (f"{base}/preload/{urllib.parse.quote(code)}/{urllib.parse.quote(storm['name'])}"
+                               f"/{urllib.parse.quote(storm['mat_forecast_date'])}"
+                               f"?wind_threshold={wind_kt}&hazard={hazard}&gust_threshold={threshold_param}")
+                        _prewarm_urlopen_with_retry(url)
+                        logger.info("Prewarm: demo scenario %s/%s/%s tile cache warm-up requested",
+                                    country_name, storm["name"], hazard)
+                    except Exception as e:
+                        logger.warning("Prewarm: demo scenario %s/%s/%s tile cache warm-up failed: %s",
+                                        country_name, storm["name"], hazard, e)
+                    time.sleep(_PREWARM_COMBO_DELAY_SECONDS)
 
 
-threading.Thread(target=_prewarm_demo_scenario_tile_cache, daemon=True, name="demo-scenario-prewarm").start()
+def _prewarm_recent_tile_cache_once() -> None:
+    """Single pass warm up of the tile server's per country pandas
+    DataCache, for the real latest _RECENT_PREWARM_CYCLE_COUNT distinct
+    forecast dates (get_recent_forecast_dates). Invoked by the shared
+    prewarm scheduler loop below every _RECENT_PREWARM_INTERVAL_SECONDS,
+    so recent activity is also warm for loading, in addition to the demo
+    scenarios. Wind is warmed across the
+    full cycle count; gust is warmed only for the most recent
+    _RECENT_PREWARM_GUST_CYCLE_COUNT of those same dates, see that
+    constant's own comment for why.
 
-
-# Same cadence as services/tile_server.py's own _PREWARM_INTERVAL_SECONDS,
-# not importable across the process boundary (this Dash app and the tile
-# server run as separate processes/services), so redefined here as its own
-# constant rather than sharing one.
-_RECENT_PREWARM_INTERVAL_SECONDS = 60 * 60
-
-
-def _prewarm_recent_tile_cache() -> None:
-    """Background, ROLLING warm-up of the tile server's per-country pandas
-    DataCache for the REAL latest 3 distinct forecast dates (get_recent_
-    forecast_dates), re-run every _RECENT_PREWARM_INTERVAL_SECONDS, so the
-    most recent 3 days are also warm for loading, in addition to the demo
-    scenarios.
-
-    _prewarm_demo_scenario_tile_cache above only warms the app's own fixed
-    _DEMO_SCENARIOS presets (MELISSA/28 Oct 2025, BAVI period/2 Jul 2026),
-    a real, currently-active storm a user actually clicks on (e.g. DOLPHIN
-    today) is neither of those, so it still paid the full cold-cache tax on
-    first click. This is a genuinely ROLLING prewarm (unlike the demo one,
-    a one-shot at startup) since "the latest 3 days" is a moving target,
-    mirrors tile_server.py's own _prewarm_raw_caches rolling-window pattern,
-    just for the per-country wind/gust tile cache instead of the global raw
-    river/precip rasters. No explicit eviction of aged-out dates: unlike
-    the raw layer's own dense global grids, this per-country DataCache
-    entry is small and _DataCache itself has no size bound to protect (see
-    that class's own docstring), stale entries simply stop being re-warmed
-    and age out via _TILE_TTL (15 min) the next time nobody's actively
-    using them, same as the demo scenario entries already do.
+    A real, actively ongoing storm a user actually clicks on is not one of
+    the fixed _DEMO_SCENARIOS presets, so without this it still pays the
+    full cold cache tax on first click. This is a genuinely rolling prewarm
+    since "the latest N cycles" is a moving target, mirroring
+    tile_server.py's own _prewarm_raw_caches rolling window pattern, just
+    for the per country wind and gust tile cache instead of the global raw
+    river and precip rasters. The tile server's own memory watchdog protects
+    its most recently loaded runs from eviction under memory pressure (see
+    services/tile_server.py's own _DATA_CACHE_RUN_FLOOR), so warming the
+    same real recent runs here again on every tick keeps them at the front
+    of that protection, not just relying on _TILE_TTL (4 hours) freshness
+    alone.
     """
     base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
     if not base:
         return
     wind_kt = _resolve_wind_kt(None)
-    while True:
+    gust_kt = _resolve_gust_kt(None)
+    try:
+        recent = get_recent_forecast_dates(_RECENT_PREWARM_CYCLE_COUNT)
+    except Exception as e:
+        logger.warning("Prewarm: could not resolve recent forecast dates: %s", e)
+        recent = []
+    # get_recent_forecast_dates's own contract returns newest first, so
+    # the first _RECENT_PREWARM_GUST_CYCLE_COUNT entries are always the
+    # most recent ones, matching this constant's own intent.
+    gust_cutoff_dates = {d for d, _ in recent[:_RECENT_PREWARM_GUST_CYCLE_COUNT]}
+    for date_str, run_str in recent:
         try:
-            recent = get_recent_forecast_dates(3)
+            storms = _resolve_storms_for_date(date_str, run_str)
         except Exception as e:
-            logger.warning("Prewarm: could not resolve recent forecast dates: %s", e)
-            recent = []
-        for date_str, run_str in recent:
-            try:
-                storms = _resolve_storms_for_date(date_str, run_str)
-            except Exception as e:
-                logger.warning("Prewarm: could not resolve storms for recent date %s: %s", date_str, e)
-                continue
-            for storm in storms:
-                for country_name in storm["countries"]:
+            logger.warning("Prewarm: could not resolve storms for recent date %s: %s", date_str, e)
+            continue
+        hazards_this_date = (("wind", wind_kt), ("gust", gust_kt)) if date_str in gust_cutoff_dates \
+            else (("wind", wind_kt),)
+        for storm in storms:
+            for country_name in storm["countries"]:
+                code = _NAME_TO_CODE.get(country_name)
+                if not code:
+                    continue
+                for hazard, threshold_param in hazards_this_date:
                     try:
-                        code = _NAME_TO_CODE.get(country_name)
-                        if not code:
-                            continue
                         url = (f"{base}/preload/{urllib.parse.quote(code)}/{urllib.parse.quote(storm['name'])}"
-                               f"/{urllib.parse.quote(storm['mat_forecast_date'])}?wind_threshold={wind_kt}")
+                               f"/{urllib.parse.quote(storm['mat_forecast_date'])}"
+                               f"?wind_threshold={wind_kt}&hazard={hazard}&gust_threshold={threshold_param}")
                         _prewarm_urlopen_with_retry(url)
-                        logger.info("Prewarm: recent-date %s/%s/%s tile cache warm-up requested",
-                                     date_str, country_name, storm["name"])
+                        logger.info("Prewarm: recent-date %s/%s/%s/%s tile cache warm-up requested",
+                                     date_str, country_name, storm["name"], hazard)
                     except Exception as e:
-                        logger.warning("Prewarm: recent-date %s/%s/%s tile cache warm-up failed: %s",
-                                        date_str, country_name, storm["name"], e)
-        time.sleep(_RECENT_PREWARM_INTERVAL_SECONDS)
-
-
-threading.Thread(target=_prewarm_recent_tile_cache, daemon=True, name="recent-date-tile-prewarm").start()
+                        logger.warning("Prewarm: recent-date %s/%s/%s/%s tile cache warm-up failed: %s",
+                                        date_str, country_name, storm["name"], hazard, e)
+                    time.sleep(_PREWARM_COMBO_DELAY_SECONDS)
 
 
 def _prewarm_demo_scenario_raw_layers() -> None:
-    """Background, best-effort warm-up of the GLOBAL raw river-extent/
+    """Best-effort, single pass warm-up of the GLOBAL raw river-extent/
     precip-rate rasters (services/tile_server.py's own /preload/river-raw/
     and /preload/precip-raw/ endpoints, see _build_global_raw_config's own
     header comment for why these are a completely separate system from the
-    per-country tile cache _prewarm_demo_scenario_tile_cache above warms)
+    per-country tile cache _prewarm_demo_scenario_tile_cache_once above warms)
     for each _DEMO_SCENARIOS date, across every real topbar run value
     (_RUN_VALUES), not just the one run each scenario happens to default to.
+    Invoked exactly once, on the shared prewarm scheduler loop's very first
+    wake, never again: unlike the rolling tiers above, _DEMO_SCENARIOS'
+    underlying Snowflake data never changes once it exists, so repeating
+    this on any cadence would only add load without refreshing anything
+    real.
 
     The BAVI-period demo scenario's real Rainfall
     data only exists on the 06Z run for its date (its own default run, for
@@ -15250,6 +15377,85 @@ def _prewarm_demo_scenario_raw_layers() -> None:
                 logger.warning("Prewarm: demo scenario river-raw %s warm-up failed: %s", forecast_time, e)
 
 
+def _prewarm_current_cycle_raw_layers_once() -> None:
+    """Single pass warm up of the GLOBAL raw river extent and precip rate
+    rasters (see _prewarm_demo_scenario_raw_layers above for the full
+    endpoint and cache background) for the real current default forecast
+    cycle, the exact date and run a fresh page load itself defaults to
+    (_resolve_default_forecast_date_run), re resolved fresh on every call
+    rather than reused from a value fixed at process start, since the real
+    current cycle moves forward every few hours as new forecasts land.
+    Invoked by the shared prewarm scheduler loop below every
+    _RECENT_PREWARM_INTERVAL_SECONDS.
+
+    _prewarm_demo_scenario_raw_layers only ever covers a small, fixed list
+    of historical dates; without this, the real current cycle a fresh
+    visitor actually lands on has never been warmed by anything, so every
+    single such visitor pays the same real Zarr cold download cost on the
+    tile server's own small, deliberately bounded raw layer worker pool
+    (see that pool's own _RAW_LAYER_MAX_QUEUED comment in tile_server.py
+    for why it is kept small and fails fast rather than queuing without
+    bound), several of them landing at once past that bound and getting a
+    fast rejection instead of a real tile. Warming this cycle once here in
+    the background means later real visitors within the same forecast
+    cycle find it already cached instead of every one of them separately
+    contending for those same few workers."""
+    base = "" if config.SPCS_RUN else config.TILE_SERVER_URL
+    if not base:
+        return
+    try:
+        date_str, run_str = _resolve_default_forecast_date_run()
+    except Exception as e:
+        logger.warning("Prewarm: could not resolve current cycle date/run: %s", e)
+        return
+    try:
+        resolved = get_precip_forecast_time_near(date_str, run_str)
+        forecast_time = resolved[0] if resolved else None
+        if forecast_time:
+            url = f"{base}/preload/precip-raw/{urllib.parse.quote(forecast_time)}"
+            _prewarm_urlopen_with_retry(url)
+            logger.info("Prewarm: current cycle precip-raw %s warm-up requested", forecast_time)
+    except Exception as e:
+        logger.warning("Prewarm: current cycle precip-raw warm-up failed: %s", e)
+    try:
+        resolved = get_river_extent_forecast_time_for_date(date_str)
+        forecast_time = resolved[0] if resolved else None
+        if forecast_time:
+            url = f"{base}/preload/river-raw/{urllib.parse.quote(forecast_time)}"
+            _prewarm_urlopen_with_retry(url)
+            logger.info("Prewarm: current cycle river-raw %s warm-up requested", forecast_time)
+    except Exception as e:
+        logger.warning("Prewarm: current cycle river-raw warm-up failed: %s", e)
+
+
+# Deliberately independent, separately timed threads per tier rather than
+# one consolidated scheduler firing every tier back to back in a single
+# window: concentrating every tier's own memory footprint into one
+# contiguous window instead of spreading it across separately timed wakes
+# risks correlated memory-pressure spikes that a single shared scheduler
+# would make worse, not better, even though it would also cut warehouse
+# resume/suspend churn. Each `_once` function's own body is independent.
+def _prewarm_recent_tile_cache_loop() -> None:
+    while True:
+        _prewarm_recent_tile_cache_once()
+        time.sleep(_RECENT_PREWARM_INTERVAL_SECONDS)
+
+
+def _prewarm_current_cycle_raw_layers_loop() -> None:
+    while True:
+        _prewarm_current_cycle_raw_layers_once()
+        time.sleep(_RECENT_PREWARM_INTERVAL_SECONDS)
+
+
+def _prewarm_demo_scenario_tile_cache_loop() -> None:
+    while True:
+        _prewarm_demo_scenario_tile_cache_once()
+        time.sleep(_DEMO_PREWARM_INTERVAL_SECONDS)
+
+
+threading.Thread(target=_prewarm_recent_tile_cache_loop, daemon=True, name="recent-date-tile-prewarm").start()
+threading.Thread(target=_prewarm_current_cycle_raw_layers_loop, daemon=True, name="current-cycle-raw-prewarm").start()
+threading.Thread(target=_prewarm_demo_scenario_tile_cache_loop, daemon=True, name="demo-scenario-prewarm").start()
 threading.Thread(target=_prewarm_demo_scenario_raw_layers, daemon=True, name="demo-scenario-raw-prewarm").start()
 
 
