@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     libgl1 \
+    libjemalloc2 \
     nginx \
     && rm -rf /var/lib/apt/lists/*
 

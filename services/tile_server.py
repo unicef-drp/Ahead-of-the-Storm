@@ -188,12 +188,23 @@ def _disk_cache_maybe_evict() -> None:
     except Exception as exc:
         log.debug("Disk cache eviction sweep failed (non-fatal): %s", exc)
 
-# _DataCache size caps (see its own _evict_oldest_if_over), generous enough
-# to hold several countries/storms/dates at once without ever growing
-# unbounded across a long-running session. Facility entries (points, not a
-# full tile grid) are cheaper per-key than mercator/admin, hence the higher
-# cap.
+# _DataCache size caps (see its own _evict_oldest_if_over): entry-count
+# limits, not byte budgets. A byte-budget policy would track real memory
+# more precisely, but it also claims more headroom under normal
+# conditions, leaving less margin for a genuine concurrent spike, the
+# opposite of what a memory-safety mechanism should do. A large country's
+# own mercator entry runs 80-95MB (E_* columns), so these caps bound this
+# cache to roughly a few GB worst case, not an unbounded amount.
 #
+# Reversible via CACHE_MAX_ENTRIES_OVERRIDE (Azure App Setting + restart,
+# no redeploy needed): unset/invalid falls back to the given default.
+def _cache_max_override(default: int) -> int:
+    raw = os.getenv("CACHE_MAX_ENTRIES_OVERRIDE", "")
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
 # This is ONE global LRU pool shared across every (country, storm,
 # forecast_date) + hazard-variant key, regardless of hazard. River's variant
 # space is up to 24 (6 rp_tier x 4 window_h values, see _hazard_variant's
@@ -201,13 +212,11 @@ def _disk_cache_maybe_evict() -> None:
 # large share of the cache, evicting other hazards' or other countries'
 # warm entries. Facility's key additionally splits by layer_type (schools/
 # health/shelters/wash), so River's footprint there is up to 4x24=96
-# entries. Caps are sized to comfortably hold River's full variant space
-# for at least one country plus headroom for a few more (still bounded, not
-# unbounded: each entry is a DataFrame, a few MB at most for a single
-# country's tile grid, so this remains a modest, deliberate memory budget,
-# not a leak).
-_MERCATOR_CACHE_MAX = 64
-_ADMIN_CACHE_MAX = 64
+# entries. 64 comfortably covers River's own variant space for one country
+# plus headroom, within the current 32GB container's real memory budget
+# (see _MEMORY_GUARD_MB in components/data/snowflake_utils.py).
+_MERCATOR_CACHE_MAX = _cache_max_override(64)
+_ADMIN_CACHE_MAX = _cache_max_override(64)
 _FACILITY_CACHE_MAX = 128
 
 
@@ -386,6 +395,14 @@ _thread_local = threading.local()
 _CONN_HEALTH_CHECK_INTERVAL = 300  # seconds (matches snowflake_utils.py)
 
 
+# A request-handling thread's own synchronous cur.execute() has no bound on
+# how long it can block without this: a single stuck/queued query server side
+# (e.g. blocked behind a concurrent MAT-table rebuild lock) otherwise hangs
+# that one endpoint indefinitely while the rest of the app stays healthy,
+# rather than surfacing as a fast, visible error.
+_STATEMENT_TIMEOUT_SECONDS = 45
+
+
 def _connect() -> snowflake.connector.SnowflakeConnection:
     log.info("Opening new Snowflake connection (SPCS=%s)…", SPCS_RUN)
     if SPCS_RUN:
@@ -413,6 +430,9 @@ def _connect() -> snowflake.connector.SnowflakeConnection:
         )
     if SNOWFLAKE_ROLE:
         kwargs["role"] = SNOWFLAKE_ROLE
+    kwargs["login_timeout"] = 30
+    kwargs["network_timeout"] = _STATEMENT_TIMEOUT_SECONDS + 15
+    kwargs["session_parameters"] = {"STATEMENT_TIMEOUT_IN_SECONDS": _STATEMENT_TIMEOUT_SECONDS}
     conn = snowflake.connector.connect(**kwargs)
     # The Snowflake connector sometimes ignores the warehouse param in the
     # connection string (confirmed under both SPCS OAuth and plain PAT/
@@ -809,6 +829,20 @@ def _merge_no_collision(base: pd.DataFrame, right: pd.DataFrame, on: str) -> pd.
     return base.merge(right, on=on, how="left")
 
 
+# Gated behind an env var, default on, specifically so it can be flipped
+# off via an Azure App Setting + restart alone, no code redeploy needed,
+# if it turns out to regress correctness or not meaningfully help real
+# memory pressure. Downcasts float64 impact/probability columns to
+# float32: this domain never needs more than roughly 7 significant
+# decimal digits of precision (population/facility counts in the
+# thousands-to-millions range, probabilities in [0, 1]), and every
+# displayed count is already math.ceil'd at final display time regardless
+# (see this repo's own ceil-not-round convention), so the tiny float32
+# rounding error at intermediate summation is not a real correctness
+# concern the way it would be for, say, financial figures.
+_DF_COMPRESSION_ENABLED = os.getenv("DF_COMPRESSION_ENABLED", "true").lower() == "true"
+
+
 def _impact_df(rows: list[dict]) -> pd.DataFrame:
     """Builds a per-threshold impact/vulnerability DataFrame from
     _run_query's own row-dict list (every SNOWFLAKE-path impact/vuln query
@@ -824,10 +858,19 @@ def _impact_df(rows: list[dict]) -> pd.DataFrame:
     dtype, or the real memory benefit is discarded right at the point (the
     cached, actually-served _mercator/_admin entries, not just the
     short-lived base frames) where it matters most.
+
+    When _DF_COMPRESSION_ENABLED, every real float64 column (impact/
+    probability values from Snowflake) is also downcast to float32 here,
+    at the same single choke point, halving that column's own real memory
+    footprint. TILE_ID/int/bool/string columns are left untouched.
     """
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["TILE_ID"])
     if "TILE_ID" in df.columns:
         df["TILE_ID"] = df["TILE_ID"].astype("string[pyarrow]")
+    if _DF_COMPRESSION_ENABLED:
+        float_cols = df.select_dtypes(include=["float64"]).columns
+        if len(float_cols) > 0:
+            df[float_cols] = df[float_cols].astype("float32")
     return df
 
 
@@ -1626,6 +1669,16 @@ def _hazard_variant(hazard: str, wind_threshold: int, gust_threshold: Optional[i
 # moment ago no longer keeps it resident the way the previous recency based
 # floor did; it is evicted on the very next write to any run scoped dict
 # unless it is one of the pinned demos.
+#
+# This value is a direct real tradeoff, not a free win: a larger window
+# means more distinct country/storm/hazard/date diversity resident at once,
+# and the documented allocator-fragmentation baseline in this process scales
+# with that diversity, not simple uptime, so raising this number is a real
+# memory-pressure cost, not just a UX nicety. entrypoint.sh's jemalloc
+# preload is the current allocator-level mitigation for that same
+# fragmentation, independent of this number; keep both levers' own real
+# effect separable when tuning either one, rather than changing both at
+# once and losing the ability to tell which one actually mattered.
 _RECENT_RUN_WINDOW = 6
 
 # Mirrors pages/map_shell_concept.py's own _DEMO_SCENARIOS list. Not imported
@@ -7480,8 +7533,24 @@ async def _lifespan(app: FastAPI):
             while len(_BASE_TILE_CENTROID_CACHE) > _MEMORY_PRESSURE_FLOOR:
                 _BASE_TILE_CENTROID_CACHE.popitem(last=False)
 
+    def _trim_minmax_cache() -> None:
+        # _get_minmax's own (key, col) entries were never registered with the
+        # watchdog and were never actively removed on their own, just
+        # overwritten on next read if stale; an entry for a (key, col)
+        # combination that is never read again after going stale sits in
+        # this dict forever. Over many real hours touching a wide diversity
+        # of country/storm/hazard/date/column combinations, this accumulates
+        # without bound, unlike every other cache in this file. Only expired
+        # entries are dropped here, never a fresh one still inside _TILE_TTL.
+        now = time.time()
+        with _minmax_lock:
+            expired = [k for k, v in _minmax_cache.items() if (now - v[2]) >= _TILE_TTL]
+            for k in expired:
+                _minmax_cache.pop(k, None)
+
     from components.data.snowflake_utils import register_memory_pressure_clearer
     register_memory_pressure_clearer(_trim_base_tile_centroid_cache)
+    register_memory_pressure_clearer(_trim_minmax_cache)
     register_memory_pressure_clearer(_cache.trim_under_memory_pressure)
 
     yield

@@ -95,25 +95,12 @@ _IMPACT_TTL  = 4 * 60 * 60  # 4h: impact queries for one already-known (country,
 _BASE_TTL    = 60 * 60   # 60 min: base layers (schools/HCs/tiles; change only on re-init)
 
 
-# Real container memory limit is 14GB (Azure P3v2), shared with nginx and
-# the gunicorn Dash workers in the same container, so the tile server
-# process itself needs to stay well under that on its own. Every function
-# decorated with @ttl_cache registers a trim callable here; a background
-# watchdog trims all of them once resident memory crosses this budget,
-# releasing memory back to the process voluntarily instead of relying on
-# the OOM killer, which takes the whole container down and loses every
-# request already being processed while Azure restarts it. A trim keeps
-# each cache's own most recently used entries down to a floor rather than
-# clearing it outright, so whatever a user is actively viewing stays warm
-# and fast even while the process is under memory pressure. That floor
-# scales with each cache's own real maxsize (see ttl_cache's own
-# _pressure_floor comment below), not this one constant alone:
-# _MEMORY_PRESSURE_FLOOR is only the minimum floor a small cache ever gets
-# trimmed to, a real production trim confirmed applying it uniformly to
-# every cache regardless of size wiped a high traffic, large maxsize cache
-# down to a handful of entries, evicting tiles real concurrent users were
-# actively viewing at the exact moment memory pressure hit.
-_MEMORY_GUARD_MB = 8192
+# Combined RSS threshold, across sibling tile-server workers, above which
+# the memory watchdog trims every registered @ttl_cache cache back to a
+# floor (see _memory_watchdog_loop). Real container is 32GB (Azure
+# P2mv3); Azure's own platform overhead leaves roughly 29GB usable, and
+# 20480 reserves the rest for the separate Dash process, nginx, and the OS.
+_MEMORY_GUARD_MB = 20480
 _MEMORY_WATCHDOG_INTERVAL_S = 60
 _MEMORY_PRESSURE_FLOOR = 10
 _TTL_CACHE_CLEARERS: list = []
@@ -230,23 +217,38 @@ def _combined_worker_rss_mb() -> tuple[float, int]:
 
 
 def _malloc_trim() -> None:
-    """Ask glibc to return freed-but-unused heap memory back to the OS.
-    Real, reproducible evidence (a local repro mimicking this app's own
-    real load/evict churn: variable-sized DataFrames repeatedly created
-    and dropped from a bounded LRU) found process RSS sitting 30%+ above
-    the real, measured live content of the caches holding it, even while
-    those caches were still actively in use, and found malloc_trim(0)
-    reclaimed 60-70% of that gap. glibc's own arena allocator does not
-    shrink or share free space across arenas/threads on its own once
-    fragmented, which is exactly the shape of this process's own real
+    """Ask the process's own active allocator to return freed-but-unused
+    heap memory back to the OS. Real, reproducible evidence (a local repro
+    mimicking this app's own real load/evict churn: variable-sized
+    DataFrames repeatedly created and dropped from a bounded LRU) found
+    process RSS sitting well above the real, measured live content of the
+    caches holding it, even while those caches were still actively in use.
+    Neither allocator shares free space across arenas/threads on its own
+    once fragmented, which is exactly the shape of this process's own real
     workload (many threads, many different-sized DataFrames loaded and
-    evicted all night). A safe no-op everywhere else: ctypes.CDLL(None)
-    only exposes a real malloc_trim symbol on glibc/Linux, the only
-    platform this container ever actually runs on; local macOS dev (no
-    such libc symbol) hits the except branch and does nothing, same as
-    today."""
+    evicted continuously).
+
+    entrypoint.sh preloads jemalloc via LD_PRELOAD when it is present in the
+    image, a real, causally-tested reduction in that same fragmentation, and
+    glibc's own malloc_trim symbol is a confirmed real no-op once jemalloc is
+    active (it reclaimed 0MB in a real causal test against the same code):
+    calling the wrong one silently does nothing rather than erroring, so
+    this checks for jemalloc's own mallctl symbol first and only falls back
+    to malloc_trim when it is absent, rather than always calling malloc_trim
+    regardless of which allocator is actually active. `arena.4096.purge` is
+    jemalloc's own documented MALLCTL_ARENAS_ALL sentinel, purging every
+    arena at once. A safe no-op on any platform/build where neither symbol
+    resolves, e.g. local macOS dev, which hits the except branch and does
+    nothing."""
     try:
-        ctypes.CDLL(None).malloc_trim(0)
+        libc = ctypes.CDLL(None)
+        if hasattr(libc, 'mallctl'):
+            libc.mallctl.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_void_p, ctypes.c_size_t]
+            libc.mallctl.restype = ctypes.c_int
+            libc.mallctl(b"arena.4096.purge", None, None, None, 0)
+        else:
+            libc.malloc_trim(0)
     except Exception:
         pass
 
@@ -304,12 +306,24 @@ def register_memory_pressure_clearer(trim_fn) -> None:
     _TTL_CACHE_CLEARERS.append(trim_fn)
 
 
-def ttl_cache(ttl_seconds: int, maxsize: int = 128):
+def ttl_cache(ttl_seconds: int, maxsize: int = 128, cache_none: bool = True):
     """LRU cache with a sliding per-entry TTL, thread-safe, single-flight per
     key. A trim to _MEMORY_PRESSURE_FLOOR entries is registered with the
     module memory watchdog above, so every cache built with this decorator
     also gives back memory under pressure, not just on its own TTL/maxsize,
-    while keeping its own most recently used entries warm."""
+    while keeping its own most recently used entries warm.
+
+    `cache_none`: True (default, matches every existing caller's real
+    behavior) caches a `None` return the same as any other value, for the
+    full `ttl_seconds`. Pass False for a wrapped function whose own `None`
+    return specifically means "this one call failed to resolve real data"
+    rather than "this is a genuine, trustworthy result" (a real successful
+    call that resolves to an all-zero dict, for example, is still truthy
+    and still gets cached normally either way, only a bare `None` is
+    treated differently): a single transient failure no longer gets
+    frozen into a real answer for every other caller hitting the exact
+    same key for the rest of that TTL window, self-healing on the very
+    next call instead of only once the entry naturally expires."""
     def decorator(func):
         cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
         lock = threading.Lock()
@@ -360,11 +374,12 @@ def ttl_cache(ttl_seconds: int, maxsize: int = 128):
                 # one key must not block lookups/hits for every other key.
                 try:
                     value = func(*args, **kwargs)
-                    with lock:
-                        cache[key] = (now + ttl_seconds, value)
-                        cache.move_to_end(key)
-                        while len(cache) > maxsize:
-                            cache.popitem(last=False)
+                    if cache_none or value is not None:
+                        with lock:
+                            cache[key] = (now + ttl_seconds, value)
+                            cache.move_to_end(key)
+                            while len(cache) > maxsize:
+                                cache.popitem(last=False)
                     return value
                 finally:
                     with lock:
@@ -416,6 +431,13 @@ def ttl_cache(ttl_seconds: int, maxsize: int = 128):
 # Per-thread connection storage: each Gunicorn worker thread gets its own connection
 _thread_local = threading.local()
 _HEALTH_CHECK_INTERVAL = 300  # seconds: recheck liveness at most once every 5 min
+# A request-handling thread's own synchronous cur.execute() has no bound on
+# how long it can block without this: a single stuck/queued query server side
+# (e.g. blocked behind a concurrent MAT-table rebuild lock) otherwise hangs
+# that one callback indefinitely while the rest of the app stays healthy,
+# rather than surfacing as a fast, visible error. services/tile_server.py's
+# own _connect() carries the same fix for the tile sidecar's connections.
+_STATEMENT_TIMEOUT_SECONDS = 60
 
 # ---------------------------------------------------------------------------
 # Shared query executor
@@ -561,7 +583,10 @@ def get_snowflake_connection():
                 'warehouse': config.SNOWFLAKE_WAREHOUSE,
                 'database': config.SNOWFLAKE_DATABASE,
                 'schema': config.SNOWFLAKE_SCHEMA,
-                'client_session_keep_alive': True
+                'client_session_keep_alive': True,
+                'login_timeout': 30,
+                'network_timeout': _STATEMENT_TIMEOUT_SECONDS + 15,
+                'session_parameters': {'STATEMENT_TIMEOUT_IN_SECONDS': _STATEMENT_TIMEOUT_SECONDS},
             }
             if first_connect:
                 logger.info("Loaded OAuth token from %s", config.SPCS_TOKEN_PATH)
@@ -577,7 +602,10 @@ def get_snowflake_connection():
             'password': config.SNOWFLAKE_PASSWORD,
             'warehouse': config.SNOWFLAKE_WAREHOUSE,
             'database': config.SNOWFLAKE_DATABASE,
-            'schema': config.SNOWFLAKE_SCHEMA
+            'schema': config.SNOWFLAKE_SCHEMA,
+            'login_timeout': 30,
+            'network_timeout': _STATEMENT_TIMEOUT_SECONDS + 15,
+            'session_parameters': {'STATEMENT_TIMEOUT_IN_SECONDS': _STATEMENT_TIMEOUT_SECONDS},
         }
 
     try:

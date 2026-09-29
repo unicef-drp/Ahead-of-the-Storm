@@ -47,6 +47,58 @@ function _aotsApplySourceTiles(map, sourceId, url, addOptions) {
         map.addSource(sourceId, Object.assign({ tiles: [url] }, addOptions));
     }
     window._aotsLastTileUrl[sourceId] = url;
+    // A real config-driven URL change supersedes any retry budget a stale
+    // failing URL was using (see _aotsScheduleRawTileRetry below): each
+    // genuinely new load gets its own fresh attempt count rather than
+    // inheriting exhaustion from whatever was showing before.
+    window._aotsRawRetryAttempts = window._aotsRawRetryAttempts || {};
+    window._aotsRawRetryAttempts[sourceId] = 0;
+}
+
+// The two GLOBAL raw layers (precip-raw/river-raw) can return a real,
+// expected, self-resolving "busy loading a new forecast cycle" 503 with a
+// Retry-After header while a new cycle's source file is still downloading
+// server-side (see _PrecipRawCache.ensure_precip_raw/_RiverExtentCache in
+// services/tile_server.py). MapLibre GL's own raster tile loader has no
+// built-in retry for a failed tile: once a tile 503s, it stays blank
+// permanently, with no automatic re-fetch once the server-side load
+// finishes moments later, so the whole layer can appear stuck even though
+// the real data becomes available shortly after.
+//
+// Scoped to ONLY these two sources (matched by sourceId, not a blanket
+// retry-on-error for every tile source in the app): the country-scoped
+// hazard/admin tile endpoints have their own different failure semantics
+// (a 5xx there more often means a real backend problem, not an expected,
+// transient "still loading a brand-new global cycle" state), so silently
+// retrying those the same way could mask a real, worth-surfacing failure.
+var _AOTS_RAW_RETRY_SOURCE_IDS = { 'aots-precip-raw-source': true, 'aots-river-raw-source': true };
+var _AOTS_RAW_RETRY_MAX_ATTEMPTS = 5;
+var _AOTS_RAW_RETRY_BASE_DELAY_MS = 2500;  // matches the server's own Retry-After: 2 hint, plus buffer
+
+function _aotsScheduleRawTileRetry(map, sourceId) {
+    window._aotsRawRetryScheduled = window._aotsRawRetryScheduled || {};
+    window._aotsRawRetryAttempts = window._aotsRawRetryAttempts || {};
+    if (window._aotsRawRetryScheduled[sourceId]) return;  // one pending retry per source at a time
+    var attempt = (window._aotsRawRetryAttempts[sourceId] || 0) + 1;
+    if (attempt > _AOTS_RAW_RETRY_MAX_ATTEMPTS) return;  // give up: avoids retrying forever on a genuinely permanent failure
+    window._aotsRawRetryAttempts[sourceId] = attempt;
+    window._aotsRawRetryScheduled[sourceId] = true;
+    var urlAtScheduleTime = window._aotsLastTileUrl[sourceId];
+    setTimeout(function () {
+        window._aotsRawRetryScheduled[sourceId] = false;
+        // A real config change (new window/threshold/checkbox toggle) already
+        // superseded this stale retry; that new load has its own fresh retry
+        // budget from _aotsApplySourceTiles above, so this one is a no-op.
+        if (!urlAtScheduleTime || window._aotsLastTileUrl[sourceId] !== urlAtScheduleTime) return;
+        var src = map.getSource(sourceId);
+        if (!src) return;
+        // MapLibre caches tiles by the source's own URL template, so
+        // re-applying the byte-identical URL would not re-request anything
+        // already marked failed; a cache-busting query param forces a real
+        // re-fetch of exactly the tiles currently in view.
+        var bustedUrl = urlAtScheduleTime + (urlAtScheduleTime.indexOf('?') === -1 ? '?' : '&') + '_retry=' + Date.now();
+        src.setTiles([bustedUrl]);
+    }, _AOTS_RAW_RETRY_BASE_DELAY_MS * Math.min(attempt, 3));
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +168,24 @@ window._aots_maplibre = new maplibregl.Map({
     window._aots_maplibre.on('idle', function () {
         window._aots_map_tiles_loading = false;
         if (window._aots_checkLoadingIndicator) window._aots_checkLoadingIndicator();
+    });
+
+    // See _aotsScheduleRawTileRetry's own header comment above for the full
+    // "why": precip-raw/river-raw can legitimately 503 with a real
+    // Retry-After while a brand-new forecast cycle is still loading
+    // server-side, and MapLibre never retries a failed tile on its own.
+    // MapLibre's own AJAXError message includes the failing tile's full URL
+    // (confirmed live: "AJAXError: Service Unavailable (503): <url>"), so
+    // matching on sourceId substrings in that message is reliable without
+    // needing a more structured error shape MapLibre GL doesn't expose here.
+    window._aots_maplibre.on('error', function (e) {
+        var msg = (e && e.error && e.error.message) || '';
+        if (msg.indexOf('503') === -1) return;
+        var sourceId = null;
+        if (msg.indexOf('/precip-raw/') !== -1) sourceId = 'aots-precip-raw-source';
+        else if (msg.indexOf('/river-raw/') !== -1) sourceId = 'aots-river-raw-source';
+        if (!sourceId || !_AOTS_RAW_RETRY_SOURCE_IDS[sourceId]) return;
+        _aotsScheduleRawTileRetry(window._aots_maplibre, sourceId);
     });
 
     window._aots_maplibre_ready = false;
