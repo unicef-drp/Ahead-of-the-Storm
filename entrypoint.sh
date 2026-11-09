@@ -10,7 +10,8 @@
 # snowflake-connector fork-safety issues and lets threads share the LRU cache.
 #
 # nginx provides:
-#   - Tile response caching (5-min TTL, cross-request, survives Dash restarts)
+#   - Tile response caching (4h for 200 responses, matching tile_server _TILE_TTL;
+#     1m for empty 204 tiles; cross-request, survives Dash restarts)
 #   - Single public port (8000) for both Dash and tile endpoints
 #   - proxy_cache_lock: one upstream render per cache miss, no thundering herd
 
@@ -22,7 +23,7 @@ TILE_PORT=${TILE_PORT:-8001}
 
 # ── jemalloc ──────────────────────────────────────────────────────────────────
 # glibc's own arena allocator does not shrink or share free space across
-# arenas/threads once fragmented under this app's real load/evict churn
+# arenas/threads once fragmented under this app's load/evict churn
 # (see components/data/snowflake_utils.py's own _malloc_trim docstring).
 # jemalloc measurably reduces that growth (11-16%). Found via ldconfig
 # rather than a hardcoded path, since the library path differs by

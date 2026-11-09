@@ -36,44 +36,26 @@ export SNOWFLAKE_RO_PASSWORD=''
 ################################################################################
 # These paths point to where pre-processed impact views are stored
 # For local: Use relative or absolute paths
-# (the real production SPCS service spec does not mount a volume at all -- it runs
-# with IMPACT_DATA_STORE=SNOWFLAKE/IMPACT_DATA_SOURCE=SQL, bypassing local paths
-# entirely; Dockerfile's own VOLUME declaration is /DataStore, capitalized, unused
-# by the live deployment)
+# (the production SPCS service spec does not mount a volume at all: it runs
+# with IMPACT_DATA_STORE=SNOWFLAKE, bypassing local paths entirely; the
+# Dockerfile's VOLUME declaration is /DataStore, capitalized, and unused)
 export ROOT_DATA_DIR="geodb"
 export VIEWS_DIR="aos_views"
-export RESULTS_DIR="results"
-export REPORT_TEMPLATE_FILE="impact-report-template.html"
 
 ################################################################################
 # REQUIRED: Impact Data Storage
 ################################################################################
-# Controls where pre-processed impact views are read from
+# Selects how the tile server loads impact data
 # Options:
-#   - 'LOCAL': Local filesystem (default)
-#     * For local development: Uses local filesystem
-#     * Real production SPCS deployment uses SNOWFLAKE instead (see IMPACT_DATA_SOURCE below),
-#       not a mounted volume
-#   - 'BLOB': Azure Blob Storage (read-only, this app only reads data)
-#   - 'SNOWFLAKE': Snowflake internal stage (read-only, this app only reads data)
-# Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
+#   - 'LOCAL': Read the *_views/ files from the local filesystem (default)
+#     * For local development
+#     * Real production SPCS deployment uses SNOWFLAKE instead, not a mounted volume
+#   - 'BLOB': Read the *_views/ files from Azure Blob Storage (read-only)
+#   - 'SNOWFLAKE': Query the *_MAT tables in Snowflake directly (no file downloads)
+# Raw global river and precip files are read from the Snowflake stage or Blob.
 export IMPACT_DATA_STORE='LOCAL'
 #export IMPACT_DATA_STORE='BLOB'
 #export IMPACT_DATA_STORE='SNOWFLAKE'
-
-################################################################################
-# IMPACT_DATA_SOURCE: HOW impact data is loaded (independent of IMPACT_DATA_STORE)
-################################################################################
-# Controls whether impact data is loaded from files (STAGE) or MAT tables (SQL).
-#   - 'STAGE': Download pre-processed Parquet/CSV files from IMPACT_DATA_STORE (default)
-#   - 'SQL':   Query *_MAT tables directly in Snowflake (faster, no file downloads)
-#
-# IMPORTANT: IMPACT_DATA_SOURCE=SQL connects directly to Snowflake MAT tables and
-# bypasses the file store entirely. It works with ANY IMPACT_DATA_STORE setting
-# (LOCAL, BLOB, or SNOWFLAKE) as long as Snowflake credentials are configured —
-# which the app always requires anyway for TC_TRACKS and PIPELINE_COUNTRIES.
-#export IMPACT_DATA_SOURCE='STAGE'
-export IMPACT_DATA_SOURCE='SQL'
 
 ################################################################################
 # OPTIONAL: Azure Blob Storage (only if IMPACT_DATA_STORE='BLOB')
@@ -86,8 +68,8 @@ export ADLS_CONTAINER_NAME=""
 ################################################################################
 # OPTIONAL: Snowflake Stage (only if IMPACT_DATA_STORE='SNOWFLAKE')
 ################################################################################
-# Required only if using Snowflake stage for impact views
-# This is the name of the Snowflake internal stage where impact views are stored
+# Required only if using Snowflake stage for the raw river/precip files
+# This is the name of the Snowflake internal stage where the raw river/precip files are stored
 # Note: Snowflake stages use standard password authentication (SPCS_RUN=false)
 export SNOWFLAKE_STAGE_NAME=""
 
@@ -105,7 +87,17 @@ export MAPBOX_ACCESS_TOKEN=""
 #   Set explicitly only if the tile server runs on a different host.
 export TILE_SERVER_URL=""
 # BEHIND_REVERSE_PROXY: set true when nginx fronts both Dash and the tile server on the
-# same host (SPCS or Azure) -- the browser is then sent an empty TILE_SERVER_URL and
+# same host (SPCS or Azure): the browser is then sent an empty TILE_SERVER_URL and
 # resolves tile/geojson requests against window.location.origin instead.
 export BEHIND_REVERSE_PROXY='false'
 
+
+################################################################################
+# OPTIONAL: River flood-extent source (tile server, global river-raw layer)
+################################################################################
+# auto (default): read the compact GloFAS "bymask" Parquet when it exists in Blob for the
+#   requested date and return period, otherwise the by-member Parquet.
+# bymask: require the compact file (a missing one is an error).
+# bymember: never read the compact file (a cycle that has only the compact file is an error).
+# A cycle that has only the compact file is an error in every mode if that file cannot be read.
+export RIVER_EXTENT_SOURCE='auto'

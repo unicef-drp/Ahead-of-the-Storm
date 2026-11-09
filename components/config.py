@@ -17,7 +17,6 @@ Usage:
 """
 
 import os
-import math
 from dotenv import load_dotenv
 
 # Load environment variables from the project root
@@ -32,8 +31,8 @@ class Config:
     # (a read-only service account, e.g. AOTS_AZURE_SERVICE) in place of the
     # normal SNOWFLAKE_USER/SNOWFLAKE_PASSWORD, used for locally sanity-checking
     # a read-only credential before it's used in a real deployment, without
-    # touching the primary credentials. Unset/false: behaves exactly as
-    # before, only SNOWFLAKE_USER/SNOWFLAKE_PASSWORD are read.
+    # touching the primary credentials. Unset/false: only
+    # SNOWFLAKE_USER/SNOWFLAKE_PASSWORD are read.
     SNOWFLAKE_ACCOUNT = os.getenv('SNOWFLAKE_ACCOUNT')
     _USE_RO = os.getenv('SNOWFLAKE_USE_RO', 'false').lower() == 'true'
     SNOWFLAKE_USER = os.getenv('SNOWFLAKE_RO_USER') if _USE_RO else os.getenv('SNOWFLAKE_USER')
@@ -49,26 +48,22 @@ class Config:
     SNOWFLAKE_PORT = os.getenv('SNOWFLAKE_PORT')
     
     # Impact Data Storage Configuration
-    # Controls where pre-processed impact views are stored (LOCAL, BLOB, or SNOWFLAKE)
-    # Note: Snowflake can be used for BOTH raw hurricane forecast data (tables) AND impact views (stages)
+    # IMPACT_DATA_STORE selects how the tile server loads impact data: SNOWFLAKE
+    # queries the *_MAT tables, LOCAL and BLOB read the *_views/ files from the
+    # local filesystem or Azure Blob. Raw global river and precip files are read
+    # from the Snowflake stage or Blob.
     # ADLS variables are read directly by giga-spatial's ADLSDataStore
     ADLS_ACCOUNT_URL = os.getenv('ADLS_ACCOUNT_URL')
     ADLS_SAS_TOKEN = os.getenv('ADLS_SAS_TOKEN')
     ADLS_CONTAINER_NAME = os.getenv('ADLS_CONTAINER_NAME')
-    # Snowflake stage name for impact views (only needed if IMPACT_DATA_STORE='SNOWFLAKE')
+    # Snowflake stage name holding the raw river/precip files (only needed if IMPACT_DATA_STORE='SNOWFLAKE')
     SNOWFLAKE_STAGE_NAME = os.getenv('SNOWFLAKE_STAGE_NAME')
     IMPACT_DATA_STORE = os.getenv('IMPACT_DATA_STORE', 'LOCAL')
-    # Controls how impact data is loaded: 'STAGE' (file download) or 'SQL' (direct MAT table query)
-    IMPACT_DATA_SOURCE = os.getenv('IMPACT_DATA_SOURCE', 'STAGE')
     
     # Application Configuration
-    RESULTS_DIR = os.getenv('RESULTS_DIR', 'results')
     VIEWS_DIR = os.getenv('VIEWS_DIR')
     ROOT_DATA_DIR = os.getenv('ROOT_DATA_DIR')
     
-    # Mapbox Configuration
-    MAPBOX_ACCESS_TOKEN = os.getenv('MAPBOX_ACCESS_TOKEN')
-
     # Tile sidecar URL (FastAPI server serving raster/vector tiles, stats, and preload endpoints)
     TILE_SERVER_URL = os.getenv('TILE_SERVER_URL', 'http://localhost:8001')
 
@@ -84,12 +79,6 @@ class Config:
     # not on SPCS_RUN (see map_shell_concept.py).
     BEHIND_REVERSE_PROXY = os.getenv('BEHIND_REVERSE_PROXY', 'false').lower() == 'true'
 
-    CCI_COL = 'cci_children'
-    E_CCI_COL = 'E_cci_children'
-    
-    CHANGES_POP = [(100,500),(500,1000),(1000,math.inf)]
-    CHANGES_FACILITIES = [(3,10),(10,20),(20,math.inf)]
-    
     @classmethod
     def validate_snowflake_config(cls):
         """Validate that all required Snowflake configuration is present"""
@@ -126,25 +115,6 @@ class Config:
         missing = [var for var in required_vars if not getattr(cls, var)]
         if missing:
             raise ValueError(f"Missing Snowflake environment variables: {', '.join(missing)}")
-    
-    @classmethod
-    def validate_azure_config(cls):
-        """Validate that all required Azure configuration is present"""
-        if cls.IMPACT_DATA_STORE == 'BLOB':
-            required_vars = ['ADLS_ACCOUNT_URL', 'ADLS_SAS_TOKEN', 'ADLS_CONTAINER_NAME']
-            missing = [var for var in required_vars if not getattr(cls, var)]
-            if missing:
-                raise ValueError(f"Missing Azure environment variables: {', '.join(missing)}")
-    
-    @classmethod
-    def validate_snowflake_stage_config(cls):
-        """Validate that all required Snowflake stage configuration is present"""
-        if cls.IMPACT_DATA_STORE == 'SNOWFLAKE':
-            # Validate Snowflake connection config first
-            cls.validate_snowflake_config()
-            # Then validate stage name
-            if not cls.SNOWFLAKE_STAGE_NAME:
-                raise ValueError("SNOWFLAKE_STAGE_NAME is required when IMPACT_DATA_STORE='SNOWFLAKE'")
 
 # Create a global config instance
 config = Config()

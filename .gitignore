@@ -61,3 +61,7 @@ snowflake_spcs/
 .perf_scratch_test/
 .perf_prototype_spike/
 dev.sh
+
+
+tests/
+experiments/

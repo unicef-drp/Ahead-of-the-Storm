@@ -7,17 +7,18 @@ geopandas>=0.13.0
 shapely>=2.0.0
 mercantile>=1.2.1
 pyproj>=3.4.0
-matplotlib>=3.7.0
-contextily>=1.4.0
+
+# Raster tile rendering (services/tile_server.py)
+pillow>=10.0.0
 
 # For Snowflake
-snowflake-connector-python[pandas]>=3.10.0
+snowflake-connector-python[pandas]>=3.10.0,<5
 
 # Zarr (reads raw global precip/river forecast arrays from Snowflake stage)
 zarr>=3.1
 
-# Parquet (reads the raw global river flood-extent per-member array from
-# Snowflake stage, row-group-by-row-group: see services/tile_server.py's
+# Parquet (reads the raw global river flood-extent Parquet, by-member or
+# compact bymask, from Snowflake stage, row-group-by-row-group: see services/tile_server.py's
 # _RiverExtentCache)
 pyarrow>=14.0.0
 
@@ -42,4 +43,4 @@ python-dotenv>=1.0.0
 azure-storage-blob>=12.0.0
 
 # GigaSpatial platform integration
-giga-spatial[all]>=0.9.4
+giga-spatial[all]>=0.9.4,<0.10

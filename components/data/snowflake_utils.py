@@ -20,7 +20,6 @@ import time
 import threading
 import functools
 from collections import OrderedDict
-from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import geopandas as gpd
@@ -55,7 +54,7 @@ HAZARD_SOURCE_GLOFAS = "glofas"
 # Time-bounded expiry so the Dash app automatically serves fresh Snowflake
 # data without a container restart.
 #
-# Sliding PER-ENTRY TTL, thread-safe LRU. Each entry expires ttl_seconds
+# Fixed PER-ENTRY TTL, thread-safe LRU. Each entry expires ttl_seconds
 # after IT was individually cached (not on a shared int(time.time() //
 # ttl_seconds) bucket boundary), so misses spread out over time instead of
 # every entry across every function decorated with this cache expiring at
@@ -74,21 +73,16 @@ HAZARD_SOURCE_GLOFAS = "glofas"
 # unbounded: it only ever holds keys with a computation genuinely in flight.
 
 _META_TTL    = 30 * 60   # 30 min: storm list, forecast times, kept in sync with metadata-refresh-interval/
-                         # ms-metadata-refresh-interval's own poll cadence (layouts/panels.py,
-                         # pages/map_shell_concept.py) -- was 15 min, halved for real per-open-tab query
-                         # cost, still well inside real new-storm/new-cycle appearance timescales (hours,
-                         # not minutes). Kept short deliberately: this is what governs how quickly a
+                         # ms-metadata-refresh-interval's own poll cadence (pages/map_shell_concept.py);
+                         # 30 min keeps per-open-tab query cost low and is still well inside real
+                         # new-storm/new-cycle appearance timescales (hours, not minutes). Kept short deliberately: this is what governs how quickly a
                          # genuinely NEW cycle/storm becomes visible at all, unlike _IMPACT_TTL below.
 _IMPACT_TTL  = 4 * 60 * 60  # 4h: impact queries for one already-known (country, storm, forecast_date,
-                         # threshold, ...) combination. Was 15 min, which forced a real, user-visible
-                         # cold Snowflake re-fetch every 15 min for the SAME still-current, actively-
-                         # viewed cycle. Confirmed real cause of intermittent "feels slow" reports
-                         # (2026-09-22 investigation): the cache key is pinned to a specific forecast
-                         # cycle already, so a completed cycle's real data does not change on its own;
-                         # the only real reason to see fresher data sooner is a rare, manual backfill
-                         # correcting an already-cached cycle, which now
-                         # needs either this TTL to lapse or a container restart to surface, not routine
-                         # per-viewer traffic. 4h keeps a real cycle "warm" for essentially its entire
+                         # threshold, ...) combination. The cache key is pinned to a specific forecast
+                         # cycle, so a completed cycle's real data does not change on its own; the
+                         # only reason to see fresher data sooner is a rare, manual backfill correcting
+                         # an already-cached cycle, which needs either this TTL to lapse or a container
+                         # restart to surface. 4h keeps a cycle "warm" for essentially its entire
                          # practical lifetime (new cycles land ~every 6h) while still self-healing a
                          # rare backfill within a few hours without needing a restart. See services/
                          # tile_server.py's matching _TILE_TTL, deliberately kept in sync with this one.
@@ -129,9 +123,8 @@ def _process_rss_mb() -> float:
 
 def _sibling_worker_pids() -> list[int]:
     """PIDs of every real worker process sharing this one's own parent
-    process (Linux /proc only). Confirmed via direct inspection of a real
-    running TILE_WORKERS=2 container that this, not an identical command
-    line, is the real, robust way to group them: uvicorn's own real worker
+    process (Linux /proc only). Grouping by parent PID, not by an identical
+    command line, is the robust way to group them: uvicorn's own real worker
     processes are spawned via Python's multiprocessing.spawn, whose own
     command line embeds a real, unique per-worker pipe handle number
     (spawn_main(tracker_fd=13, pipe_handle=N)), so an exact cmdline match
@@ -139,8 +132,7 @@ def _sibling_worker_pids() -> list[int]:
     unique, matching nothing else); PPid grouping is required instead.
     Every real worker for one uvicorn instance shares
     the exact same real parent PID (the uvicorn supervisor process itself),
-    confirmed directly: two real workers both showed PPid pointing at the
-    same supervisor, while nginx and the separate gunicorn Dash process
+    while nginx and the separate gunicorn Dash process
     each sit under their own, different parent, so neither is ever
     incorrectly swept into this sum. Also excludes multiprocessing's own
     resource_tracker helper (a real sibling by PPid, but never runs this
@@ -198,11 +190,10 @@ def _combined_worker_rss_mb() -> tuple[float, int]:
     """(total real RSS in MB, real sibling count) across every process
     sharing this one's own command line: the real fix for the exact blind
     spot a purely per-process guard has once TILE_WORKERS is ever raised
-    above 1. Two worker processes each individually reading 7GB,
-    comfortably under an 8GB per-process guard, while the container they
-    actually share is really at 14GB combined, is a real path to the exact
-    OOM this watchdog exists to prevent in the first place, invisible to a
-    check that only ever looks at its own process. Every sibling process
+    above 1. Two worker processes each individually under the
+    per-process guard while their combined RSS is over it is a real path to
+    the exact OOM this watchdog exists to prevent in the first place,
+    invisible to a check that only ever looks at its own process. Every sibling process
     runs this exact same watchdog loop and sees this exact same combined
     number, so if the group is over budget, every one of them independently
     reaches the same conclusion and trims its own share, converging the
@@ -210,29 +201,24 @@ def _combined_worker_rss_mb() -> tuple[float, int]:
     beyond what /proc itself already provides for free. With
     TILE_WORKERS=1 (today's real deployed value) or on any platform where
     /proc is not available, this returns exactly (this process's own RSS,
-    1), identical to the watchdog's own pre-existing behavior in both
-    those cases."""
+    1), the same as a purely per-process check in both those cases."""
     pids = _sibling_worker_pids()
     return sum(_pid_rss_mb(p) for p in pids), len(pids)
 
 
 def _malloc_trim() -> None:
     """Ask the process's own active allocator to return freed-but-unused
-    heap memory back to the OS. Real, reproducible evidence (a local repro
-    mimicking this app's own real load/evict churn: variable-sized
-    DataFrames repeatedly created and dropped from a bounded LRU) found
-    process RSS sitting well above the real, measured live content of the
-    caches holding it, even while those caches were still actively in use.
-    Neither allocator shares free space across arenas/threads on its own
-    once fragmented, which is exactly the shape of this process's own real
-    workload (many threads, many different-sized DataFrames loaded and
-    evicted continuously).
+    heap memory back to the OS. Variable-sized DataFrames repeatedly created
+    and dropped from a bounded LRU leave process RSS well above the live
+    content of the caches holding it, because neither allocator shares free
+    space across arenas/threads on its own once fragmented, which is exactly
+    the shape of this process's workload (many threads, many different-sized
+    DataFrames loaded and evicted continuously).
 
     entrypoint.sh preloads jemalloc via LD_PRELOAD when it is present in the
-    image, a real, causally-tested reduction in that same fragmentation, and
-    glibc's own malloc_trim symbol is a confirmed real no-op once jemalloc is
-    active (it reclaimed 0MB in a real causal test against the same code):
-    calling the wrong one silently does nothing rather than erroring, so
+    image, which reduces that fragmentation, and glibc's own malloc_trim
+    symbol is a no-op once jemalloc is active: calling the wrong one
+    silently does nothing rather than erroring, so
     this checks for jemalloc's own mallctl symbol first and only falls back
     to malloc_trim when it is absent, rather than always calling malloc_trim
     regardless of which allocator is actually active. `arena.4096.purge` is
@@ -307,23 +293,18 @@ def register_memory_pressure_clearer(trim_fn) -> None:
 
 
 def ttl_cache(ttl_seconds: int, maxsize: int = 128, cache_none: bool = True):
-    """LRU cache with a sliding per-entry TTL, thread-safe, single-flight per
+    """LRU cache with a fixed per-entry TTL, thread-safe, single-flight per
     key. A trim to _MEMORY_PRESSURE_FLOOR entries is registered with the
     module memory watchdog above, so every cache built with this decorator
     also gives back memory under pressure, not just on its own TTL/maxsize,
     while keeping its own most recently used entries warm.
 
-    `cache_none`: True (default, matches every existing caller's real
-    behavior) caches a `None` return the same as any other value, for the
-    full `ttl_seconds`. Pass False for a wrapped function whose own `None`
-    return specifically means "this one call failed to resolve real data"
-    rather than "this is a genuine, trustworthy result" (a real successful
-    call that resolves to an all-zero dict, for example, is still truthy
-    and still gets cached normally either way, only a bare `None` is
-    treated differently): a single transient failure no longer gets
-    frozen into a real answer for every other caller hitting the exact
-    same key for the rest of that TTL window, self-healing on the very
-    next call instead of only once the entry naturally expires."""
+    `cache_none`: True (default) caches a `None` return the same as any other
+    value, for the full `ttl_seconds`. Pass False for a wrapped function whose
+    `None` return means "this call failed to resolve real data": a `None` is
+    then not stored, so the next call retries instead of reusing the failure
+    until the entry expires. Every other value, falsy ones such as 0, {} or
+    [] included, is a real result and is cached."""
     def decorator(func):
         cache: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
         lock = threading.Lock()
@@ -391,8 +372,8 @@ def ttl_cache(ttl_seconds: int, maxsize: int = 128, cache_none: bool = True):
                 cache.clear()
 
         # A uniform floor of _MEMORY_PRESSURE_FLOOR entries for every
-        # registered cache regardless of its own real maxsize was confirmed
-        # live to trim a high traffic, large maxsize cache (thousands of
+        # registered cache regardless of its own real maxsize would trim a
+        # high traffic, large maxsize cache (thousands of
         # entries under normal operation) down to the same tiny handful as a
         # small, rarely touched one, evicting tiles real concurrent users
         # were actively viewing at the exact moment memory pressure hit,
@@ -801,81 +782,38 @@ def get_latest_precip_forecast_time():
 
 
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
-def get_latest_river_raw_forecast_time():
-    """Latest FORECAST_TIME + STAGE_PATH for the raw global river-discharge Zarr.
-
-    NOT to be confused with get_latest_river_forecast_time (per-country, reads
-    MERCATOR_TILE_RIVER_MAT for the pre-processed impact/flood-extent tiles).
-    This one reads RIVER_FORECASTS directly, PARAM='dis24' only: the raw
-    discharge Zarr is a single GLOBAL file per forecast cycle covering the
-    whole world's river network cells, not scoped to any country or storm
-    (mirrors get_latest_precip_forecast_time's own global/no-country
-    convention for the tp Zarr).
-
-    *** LEGACY: services/tile_server.py's "river-raw" raster endpoint
-    (/tiles/raster/river-raw/...) does not use PARAM='dis24' at all; it is
-    keyed by PARAM='extent_rp10_bymember' instead (see
-    get_latest_river_extent_forecast_time below), an RP10-matched
-    flood-extent product rather than raw, unthresholded discharge. This
-    function is kept only because it may still back other callers reading
-    the raw dis24 series directly; it is NOT what the current river-raw map
-    layer is keyed by. ***
-
-    Deliberately excludes the 'extent_rp{N}_bymember' PARAM rows. maxsize=1
-    matches get_latest_precip_forecast_time's own no-argument convention.
-    Returns None (not a fallback date) when no PARAM='dis24' row exists at
-    all, same "don't paper over a real gap" convention as its siblings.
-
-    Returns:
-        tuple[str, str] | None: (forecast_time, stage_path) for the most
-        recent PARAM='dis24' row, or None if no data found.
-    """
-    try:
-        df = _run_query(
-            "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
-            "WHERE PARAM = 'dis24' ORDER BY FORECAST_TIME DESC LIMIT 1"
-        )
-        if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
-            return str(df['FORECAST_TIME'].iloc[0]), str(df['STAGE_PATH'].iloc[0])
-        return None
-    except Exception as e:
-        logger.error("Error getting latest river-raw forecast time: %s", e)
-        return None
-
-
-@ttl_cache(ttl_seconds=_META_TTL, maxsize=1)
 def get_latest_river_extent_forecast_time():
     """Latest FORECAST_TIME + STAGE_PATH for the raw global river
-    flood-extent per-member Parquet (PARAM='extent_rp10_bymember').
+    flood-extent Parquet (PARAM 'extent_rp10_bymember' or the compact
+    'extent_bymask_rp10').
 
-    This is the data source behind services/tile_server.py's current
-    "river-raw" raster layer (/tiles/raster/river-raw/...); it replaces
-    get_latest_river_raw_forecast_time's own PARAM='dis24' raw discharge
-    with GloFAS discharge already matched against the JRC historical
-    flood-extent raster at the RP10 (10-year
-    return period) tier. RP10 is used because it is the only tier confirmed
-    genuinely computed (IS_STANDIN=False); RP2/RP5 are confirmed
-    IS_STANDIN=True placeholder/extrapolated data and are deliberately never
-    queried here.
+    This is the default-tier (rp10) resolver behind services/tile_server.py's
+    "river-raw" raster layer (/tiles/raster/river-raw/...): GloFAS discharge
+    already matched against the JRC historical flood-extent raster. Other
+    return-period tiers resolve through get_river_extent_forecast_time_for_date.
 
-    Unlike PARAM='dis24' (keyed by a full datetime FORECAST_TIME), this data
-    is keyed by a plain DATE (e.g. "2026-07-14"): callers should not assume
-    a time-of-day component is present.
+    A cycle that has only the compact mask file (PARAM='extent_bymask_rp10')
+    resolves the same way; among pointer rows of the same forecast time the
+    per-member row wins, so the returned STAGE_PATH is then the per-member
+    file's. A newer mask-only cycle beats an older per-member cycle.
 
-    Like get_latest_river_raw_forecast_time/get_latest_precip_forecast_time,
-    this is a single GLOBAL file per forecast cycle (no COUNTRY/STORM
-    scoping), so there is no country argument; maxsize=1 matches their same
-    no-argument convention. Returns None (not a fallback date) when no
-    PARAM='extent_rp10_bymember' row exists at all.
+    This data is keyed by a plain DATE (e.g. "2026-07-14"): callers should
+    not assume a time-of-day component is present.
+
+    Like get_latest_precip_forecast_time, this is a single GLOBAL file per
+    forecast cycle (no COUNTRY/STORM scoping), so there is no country
+    argument; maxsize=1 matches the same no-argument convention. Returns None
+    (not a fallback date) when neither pointer row exists at all.
 
     Returns:
         tuple[str, str] | None: (forecast_time, stage_path) for the most
-        recent PARAM='extent_rp10_bymember' row, or None if no data found.
+        recent pointer row, or None if no data found.
     """
     try:
         df = _run_query(
             "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
-            "WHERE PARAM = 'extent_rp10_bymember' ORDER BY FORECAST_TIME DESC LIMIT 1"
+            "WHERE PARAM IN ('extent_rp10_bymember', 'extent_bymask_rp10') "
+            "ORDER BY FORECAST_TIME DESC, IFF(PARAM = 'extent_rp10_bymember', 0, 1) LIMIT 1"
         )
         if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
             # [:10]: RIVER_FORECASTS.FORECAST_TIME is a TIMESTAMP column (a
@@ -887,8 +825,8 @@ def get_latest_river_extent_forecast_time():
             # plain date; without this slice, this function's own callers
             # land under a DIFFERENT cache key than services/tile_server.py's
             # own _resolve_latest() (which normalizes the same way), causing
-            # a real, measured duplicate ~10-30s parquet re-download for the
-            # identical calendar date already warm in memory.
+            # a duplicate ~10-30s parquet re-download for the identical
+            # calendar date already warm in memory.
             return str(df['FORECAST_TIME'].iloc[0])[:10], str(df['STAGE_PATH'].iloc[0])
         return None
     except Exception as e:
@@ -896,25 +834,17 @@ def get_latest_river_extent_forecast_time():
         return None
 
 
-# How far the single closest real PARAM='tp' cycle is allowed to be from the
-# requested topbar date/run before get_precip_forecast_time_near gives up and
-# reports "not available" instead of silently showing a very stale cycle as
-# if it were current. 3 days is generous enough to bridge tp's own irregular
-# cadence (cycles land at varying hours, sometimes days apart) while still
-# refusing a cycle that's clearly unrelated to what was asked for.
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_precip_forecast_time_near(target_date: str, target_time: str = "00", source: str = HAZARD_SOURCE_ECMWF):
     """Real FORECAST_TIME + STAGE_PATH in MET_FORECASTS (PARAM='tp') for the
     EXACT topbar date/run requested, for the raw global precip-rate raster
     layer.
 
-    Despite the function's own name (kept for caller-compatibility -- "near"
-    is now a misnomer left over from an earlier fuzzy-matching design),
-    matching is now EXACT date+time only, per explicit product decision: a
-    real tp cycle either exists for precisely the selected date+run or the
-    layer reports "not available" and gets greyed out/deselected -- no
-    silent substitution of the nearest different cycle, which would show
-    data for a time the user didn't actually select without any indication.
+    Despite the function's name, matching is EXACT date+time only: a real tp
+    cycle either exists for precisely the selected date+run or the layer
+    reports "not available" and gets greyed out/deselected. The nearest
+    different cycle is never substituted, which would show data for a time
+    the user didn't select without any indication.
 
     `source` (see pages/map_shell_concept.py's own _DEFAULT_HAZARD_SOURCES
     comment for the full "why"): ECMWF's own `tp` field is the only source
@@ -958,8 +888,8 @@ def get_precip_forecast_time_near(target_date: str, target_time: str = "00", sou
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_river_extent_forecast_time_for_date(target_date: str, rp_tier: str = "rp10", source: str = HAZARD_SOURCE_GLOFAS):
     """Real FORECAST_TIME + STAGE_PATH in RIVER_FORECASTS
-    (PARAM='extent_{rp_tier}_bymember') for a given topbar date, for the raw
-    global river flood-extent raster layer.
+    (PARAM 'extent_{rp_tier}_bymember' or 'extent_bymask_{rp_tier}') for a
+    given topbar date, for the raw global river flood-extent raster layer.
 
     `source` (see pages/map_shell_concept.py's own _DEFAULT_HAZARD_SOURCES
     comment for the full "why"): GloFAS is the only source implemented
@@ -969,9 +899,8 @@ def get_river_extent_forecast_time_for_date(target_date: str, rp_tier: str = "rp
     gaps should raise loudly" convention. A future second source (e.g.
     Google FloodHub) would add a branch here; note it would very likely
     need its own, DIFFERENT per-member combination methodology too, not
-    just a new table (see the same memory note above: FloodHub is not
-    ECMWF-ensemble-driven, so it would not share Wind/Rain's member
-    identity the way GloFAS does today).
+    just a new table (FloodHub is not ECMWF-ensemble-driven, so it would
+    not share Wind/Rain's member identity the way GloFAS does today).
 
     `rp_tier` (default "rp10", matching the slider's own default) is
     parameterized rather than hardcoded, since a caller may request any
@@ -980,6 +909,11 @@ def get_river_extent_forecast_time_for_date(target_date: str, rp_tier: str = "rp
     for a given date, so in practice every tier resolves to the same
     forecast_time for the same date, but this is parameterized properly
     rather than assuming that always holds.
+
+    A cycle that has only the compact mask file (PARAM='extent_bymask_{rp_tier}')
+    resolves the same way; among pointer rows of the same forecast time the
+    per-member row wins, so the returned STAGE_PATH is then the per-member
+    file's.
 
     Unlike precip's irregular cycle hours (see get_precip_forecast_time_near
     above), extent_rp10_bymember cycles are DAILY only (one cycle per
@@ -997,18 +931,18 @@ def get_river_extent_forecast_time_for_date(target_date: str, rp_tier: str = "rp
         tuple[str, str] | None: (forecast_time, stage_path): forecast_time
         is the EXACT value stored in RIVER_FORECASTS (a plain date string,
         e.g. '2026-07-14', matching get_latest_river_extent_forecast_time's
-        own convention so tile_server.py's exact-match by-time lookup keeps
-        working unchanged) for the real extent_rp10_bymember row matching
-        target_date's calendar day, or None if no such real row exists.
+        own convention so tile_server.py's exact-match by-time lookup works
+        unchanged) for the real pointer row matching target_date's
+        calendar day, or None if no such real row exists.
     """
     if source != HAZARD_SOURCE_GLOFAS:
         raise NotImplementedError(f"get_river_extent_forecast_time_for_date: source={source!r} not implemented (only {HAZARD_SOURCE_GLOFAS!r} exists today)")
     try:
         df = _run_query(
             "SELECT FORECAST_TIME, STAGE_PATH FROM AOTS.TC_ECMWF.RIVER_FORECASTS "
-            "WHERE PARAM = %s AND CAST(FORECAST_TIME AS DATE) = TO_DATE(%s) "
-            "ORDER BY FORECAST_TIME DESC LIMIT 1",
-            params=[f"extent_{rp_tier}_bymember", target_date],
+            "WHERE PARAM IN (%s, %s) AND CAST(FORECAST_TIME AS DATE) = TO_DATE(%s) "
+            "ORDER BY FORECAST_TIME DESC, IFF(PARAM = %s, 0, 1) LIMIT 1",
+            params=[f"extent_{rp_tier}_bymember", f"extent_bymask_{rp_tier}", target_date, f"extent_{rp_tier}_bymember"],
         )
         if not df.empty and pd.notna(df['FORECAST_TIME'].iloc[0]):
             # [:10]: same TIMESTAMP-vs-plain-date normalization as
@@ -1160,7 +1094,7 @@ def get_lat_lons_bulk() -> pd.DataFrame:
     """
     Fetch LATITUDE/LONGITUDE at LEAD_TIME=0 for every storm in TC_TRACKS.
 
-    Single query replaces the N-per-storm loop used at dashboard startup.
+    Single query replaces an N-per-storm loop.
     Cached so repeated calls (e.g. hot-reload) hit memory instead of Snowflake.
 
     Returns:
@@ -1294,16 +1228,14 @@ def get_tracks_for_storm(storm: str, forecast_time: str) -> pd.DataFrame:
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_track_ids_for_date(forecast_time: str) -> list:
     """DISTINCT TRACK_IDs with real TC_TRACKS data at this exact forecast_time
-    ("YYYY-MM-DD HH:MM:SS") -- deliberately queries TC_TRACKS directly with NO
+    ("YYYY-MM-DD HH:MM:SS"), deliberately queries TC_TRACKS directly with NO
     impact-data requirement, unlike get_storms_and_countries_for_date (which
     requires real nonzero MERCATOR_TILE_IMPACT_MAT impact and is correctly
     scoped for the Active Storms alert-worthy list, not "does this storm
     exist"). A storm can have completely real ensemble track data while still
-    being far out at sea with zero measurable country impact yet -- the
+    being far out at sea with zero measurable country impact yet, the
     Global-mode "show every real track" feature needs exactly this
-    track-existence question, matching /legacy's own precedent
-    (load_startup_tracks, pages/dashboard.py:324-397, queries TC_TRACKS
-    directly with no impact join at all).
+    track-existence question.
 
     Returns [] when there's genuinely no real track data at this exact
     timestamp.
@@ -1502,7 +1434,7 @@ def get_storms_and_countries_examined_for_date(forecast_date: str, wind_threshol
     cycle was still genuinely examined, so it belongs in a real "0 people
     at risk worldwide" total, not silently missing from the roster the way
     get_storms_and_countries_for_date's own impact gate would drop it (see
-    that function's own docstring for the full mechanism this fixes).
+    that function's own docstring for the mechanism).
 
     Returns [] only when there's genuinely no real tile data for this date/
     threshold at all, a real "not computed yet" case, distinct from
@@ -1524,257 +1456,46 @@ def get_storms_and_countries_examined_for_date(forecast_date: str, wind_threshol
 # Impact data queries: *_MAT tables
 # ---------------------------------------------------------------------------
 
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_school_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
+_TILE_IN_NEED_COLS = ("E_PEOPLE_IN_NEED", "E_CHILDREN_IN_NEED", "E_INFANT_IN_NEED",
+                      "E_SCHOOL_AGE_IN_NEED", "E_ADOLESCENT_IN_NEED")
+
+
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64, cache_none=False)
+def get_tile_in_need_totals(country: str, storm: str, forecast_date: str, zoom_level: int = 14):
     """
-    Query SCHOOL_IMPACT_MAT for school-level impact data.
+    Country totals of the five people/children-in-need columns, summed
+    directly from MERCATOR_TILE_VULNERABILITY_MAT.
 
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        wind_threshold: Wind speed threshold in knots (e.g. 34)
+    The vulnerability table is keyed by country, storm, forecast date and
+    zoom level only (it does not depend on the wind threshold), and it holds
+    one row for every tile of the country. A join from the threshold's
+    forecast tile table would restrict the sum to the tiles that table
+    stores, which is only the exposed tiles plus one marker row when the
+    forecast table is stored sparsely, so the totals are read here without
+    that join.
 
-    Returns:
-        pandas.DataFrame with columns: SCHOOL_NAME, EDUCATION_LEVEL, PROBABILITY,
-        ZONE_ID, LATITUDE, LONGITUDE, COUNTRY_ISO3_CODE
+    Returns a dict {column: float or None} for the five columns above, where
+    None means the column has no non-NULL value (rendered as N/A by callers)
+    and a number, including 0.0, is a real sum. All five are None when the
+    vulnerability table has no row for the key. Returns None, uncached, when
+    the query itself fails.
     """
     try:
-        query = """
-        SELECT
-            SCHOOL_NAME,
-            EDUCATION_LEVEL,
-            PROBABILITY,
-            ZONE_ID,
-            LATITUDE,
-            LONGITUDE,
-            COUNTRY_ISO3_CODE
-        FROM AOTS.TC_ECMWF.SCHOOL_IMPACT_MAT
+        query = "SELECT " + ", ".join(f"SUM({c}) AS {c}" for c in _TILE_IN_NEED_COLS) + """
+        FROM AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT
         WHERE COUNTRY = %s
           AND STORM = %s
           AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
+          AND ZOOM_LEVEL = %s
         """
-        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        logger.info("Loaded %d school impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
-        return df.copy()
+        df = _run_query(query, params=[country, storm, forecast_date, zoom_level])
+        if df.empty:
+            return {c: None for c in _TILE_IN_NEED_COLS}
+        row = df.iloc[0]
+        return {c: (float(row[c]) if pd.notna(row[c]) else None) for c in _TILE_IN_NEED_COLS}
     except Exception as e:
-        logger.error("Error querying SCHOOL_IMPACT_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_hc_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
-    """
-    Query HC_IMPACT_MAT for health centre impact data.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        wind_threshold: Wind speed threshold in knots (e.g. 34)
-
-    Returns:
-        pandas.DataFrame with columns: NAME, HEALTH_AMENITY_TYPE, AMENITY,
-        OPERATIONAL_STATUS, BEDS, EMERGENCY, ELECTRICITY, OPERATOR_TYPE,
-        PROBABILITY, ZONE_ID
-    """
-    try:
-        query = """
-        SELECT
-            NAME,
-            HEALTH_AMENITY_TYPE,
-            AMENITY,
-            OPERATIONAL_STATUS,
-            BEDS,
-            EMERGENCY,
-            ELECTRICITY,
-            OPERATOR_TYPE,
-            PROBABILITY,
-            ZONE_ID,
-            LATITUDE,
-            LONGITUDE
-        FROM AOTS.TC_ECMWF.HC_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        logger.info("Loaded %d HC impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying HC_IMPACT_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_shelter_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
-    """
-    Query SHELTER_IMPACT_MAT for shelter-level impact data.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        wind_threshold: Wind speed threshold in knots (e.g. 34)
-
-    Returns:
-        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
-    """
-    try:
-        query = """
-        SELECT
-            NAME,
-            SHELTER_TYPE,
-            CATEGORY,
-            PROBABILITY,
-            ZONE_ID,
-            LATITUDE,
-            LONGITUDE
-        FROM AOTS.TC_ECMWF.SHELTER_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        logger.info("Loaded %d shelter impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying SHELTER_IMPACT_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_wash_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> pd.DataFrame:
-    """
-    Query WASH_IMPACT_MAT for WASH facility impact data.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        wind_threshold: Wind speed threshold in knots (e.g. 34)
-
-    Returns:
-        pandas.DataFrame with columns: NAME, TYPE, CATEGORY, PROBABILITY, ZONE_ID, LATITUDE, LONGITUDE
-    """
-    try:
-        query = """
-        SELECT
-            NAME,
-            WASH_TYPE,
-            CATEGORY,
-            PROBABILITY,
-            ZONE_ID,
-            LATITUDE,
-            LONGITUDE
-        FROM AOTS.TC_ECMWF.WASH_IMPACT_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND WIND_THRESHOLD = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold])
-        logger.info("Loaded %d WASH impact rows (%s/%s/%s/%dkt)", len(df), country, storm, forecast_date, wind_threshold)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying WASH_IMPACT_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_tile_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
-    """
-    Query MERCATOR_TILE_IMPACT_MAT for probabilistic tile-level impact data.
-
-    Args:
-        country: Country code (e.g. 'JAM')
-        storm: Storm identifier (e.g. 'BERYL')
-        forecast_date: Forecast date string matching the table (e.g. '2024-07-01 06:00:00')
-        wind_threshold: Wind speed threshold in knots (e.g. 34)
-        zoom_level: Mercator tile zoom level (default 14)
-
-    Returns:
-        pandas.DataFrame with columns: ZONE_ID, ADMIN_ID, PROBABILITY,
-        E_POPULATION, E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_SCHOOL_AGE_POPULATION,
-        E_INFANT_POPULATION, E_NUM_HCS, E_RWI, E_SMOD_CLASS
-    """
-    try:
-        query = """
-        SELECT
-            t.ZONE_ID,
-            t.ADMIN_ID,
-            t.PROBABILITY,
-            t.E_POPULATION,
-            t.E_INFANT_POPULATION,
-            t.E_SCHOOL_AGE_POPULATION,
-            t.E_ADOLESCENT_POPULATION,
-            t.E_BUILT_SURFACE_M2,
-            t.E_NUM_SCHOOLS,
-            t.E_NUM_HCS,
-            t.E_NUM_SHELTERS,
-            t.E_NUM_WASH,
-            t.E_SMOD_CLASS,
-            t.E_RWI,
-            v.E_INFANT_IN_NEED,
-            v.E_SCHOOL_AGE_IN_NEED,
-            v.E_ADOLESCENT_IN_NEED,
-            v.E_CHILDREN_IN_NEED,
-            v.E_PEOPLE_IN_NEED
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_IMPACT_MAT t
-        LEFT JOIN AOTS.TC_ECMWF.MERCATOR_TILE_VULNERABILITY_MAT v
-            ON  v.COUNTRY       = t.COUNTRY
-            AND v.STORM         = t.STORM
-            AND v.FORECAST_DATE = t.FORECAST_DATE
-            AND v.ZOOM_LEVEL    = t.ZOOM_LEVEL
-            AND v.ZONE_ID       = t.ZONE_ID
-        WHERE t.COUNTRY = %s
-          AND t.STORM = %s
-          AND t.FORECAST_DATE = %s
-          AND t.WIND_THRESHOLD = %s
-          AND t.ZOOM_LEVEL = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, wind_threshold, zoom_level])
-        logger.info("Loaded %d tile impact rows (%s/%s/%s/%dkt z=%d)", len(df), country, storm, forecast_date, wind_threshold, zoom_level)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying MERCATOR_TILE_IMPACT_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_gust_tile_impacts(country: str, storm: str, forecast_date: str, gust_threshold: int, zoom_level: int = 14) -> pd.DataFrame:
-    """
-    Real per-tile GUST impact totals: MERCATOR_TILE_GUST_MAT, same shape as
-    get_tile_impacts (wind) above but keyed by GUST_THRESHOLD instead of
-    WIND_THRESHOLD. No vulnerability join: E_PEOPLE_IN_NEED/E_CHILDREN_IN_NEED
-    are computed from wind-ensemble envelope data specifically and don't exist
-    for gust (mirrors services/tile_server.py's own MERCATOR_TILE_GUST_MAT
-    comment on why that join is deliberately omitted there too).
-
-    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION,
-    E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
-    E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH.
-    """
-    try:
-        query = """
-        SELECT
-            ZONE_ID, PROBABILITY, E_POPULATION, E_INFANT_POPULATION,
-            E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
-            E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_GUST_MAT
-        WHERE COUNTRY = %s AND STORM = %s AND FORECAST_DATE = %s
-          AND GUST_THRESHOLD = %s AND ZOOM_LEVEL = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, gust_threshold, zoom_level])
-        logger.info("Loaded %d gust tile impact rows (%s/%s/%s/%dkt z=%d)",
-                    len(df), country, storm, forecast_date, gust_threshold, zoom_level)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying MERCATOR_TILE_GUST_MAT: %s", e)
-        return pd.DataFrame()
+        logger.error("Error querying MERCATOR_TILE_VULNERABILITY_MAT: %s", e)
+        return None
 
 
 # Mirrors services/tile_server.py's own _RIVER_WINDOW_DEFAULT exactly (that
@@ -1788,134 +1509,12 @@ _RIVER_WINDOW_DEFAULT = 168
 
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_river_tile_impacts(country: str, forecast_time: str, rp_tier: str,
-                            window_h: int = _RIVER_WINDOW_DEFAULT) -> pd.DataFrame:
-    """
-    Real per-tile RIVER flood-extent impact totals: MERCATOR_TILE_RIVER_MAT,
-    keyed by COUNTRY + FORECAST_TIME + RP_TIER + STEP_H (not storm-scoped at
-    all, see services/tile_server.py's own _MERCATOR_RIVER_IMPACT_ONLY_SQL
-    comment).
-
-    `window_h`: River's per-country impact numbers carry a STEP_H column
-    meaning a CUMULATIVE window (24/72/120/168h), not a single-day snapshot.
-    Each STEP_H row is already the correct union for that window, so this
-    is a plain `= %s` filter, not a MAX()-across-everything collapse.
-    Defaults to the full forecast horizon (168h) for any caller that
-    doesn't pass a window: see _RIVER_WINDOW_DEFAULT's own comment for why
-    that's an EXACT backward-compat default, not merely an approximation of
-    an unconditional-MAX collapse.
-
-    Returns pandas.DataFrame with columns: ZONE_ID, PROBABILITY, E_POPULATION,
-    E_INFANT_POPULATION, E_SCHOOL_AGE_POPULATION, E_ADOLESCENT_POPULATION,
-    E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH.
-    """
-    try:
-        query = """
-        SELECT
-            ZONE_ID,
-            MAX(PROBABILITY)             AS PROBABILITY,
-            MAX(E_POPULATION)            AS E_POPULATION,
-            MAX(E_INFANT_POPULATION)     AS E_INFANT_POPULATION,
-            MAX(E_SCHOOL_AGE_POPULATION) AS E_SCHOOL_AGE_POPULATION,
-            MAX(E_ADOLESCENT_POPULATION) AS E_ADOLESCENT_POPULATION,
-            MAX(E_NUM_SCHOOLS)           AS E_NUM_SCHOOLS,
-            MAX(E_NUM_HCS)               AS E_NUM_HCS,
-            MAX(E_NUM_SHELTERS)          AS E_NUM_SHELTERS,
-            MAX(E_NUM_WASH)              AS E_NUM_WASH
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s
-        GROUP BY ZONE_ID
-        """
-        df = _run_query(query, params=[country, forecast_time, rp_tier, window_h or _RIVER_WINDOW_DEFAULT])
-        logger.info("Loaded %d river tile impact rows (%s/%s/%s/%sh)", len(df), country, forecast_time, rp_tier, window_h)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying MERCATOR_TILE_RIVER_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_rain_tile_impacts(country: str, forecast_time: str, threshold_mm, window_h) -> pd.DataFrame:
-    """
-    Per-tile RAINFALL impact totals: MERCATOR_TILE_PRECIP_MAT, keyed by
-    COUNTRY + FORECAST_TIME + THRESHOLD_MM + WINDOW_H.
-
-    This table carries a full hazard-conditional E_* breakdown, same shape
-    as wind's own MERCATOR_TILE_IMPACT_MAT (minus the E_*_IN_NEED columns,
-    which come from a separate vulnerability table wind has and precip
-    doesn't: see this file's own module docstring on precip's scope).
-
-    Returns pandas.DataFrame with columns: ZONE_ID, ADMIN_ID, PROBABILITY,
-    E_POPULATION, E_SCHOOL_AGE_POPULATION, E_INFANT_POPULATION,
-    E_ADOLESCENT_POPULATION, E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS,
-    E_NUM_SHELTERS, E_NUM_WASH, E_SMOD_CLASS, E_SMOD_CLASS_L1, E_RWI.
-    """
-    try:
-        query = """
-        SELECT ZONE_ID, ADMIN_ID, PROBABILITY, E_POPULATION,
-               E_SCHOOL_AGE_POPULATION, E_INFANT_POPULATION, E_ADOLESCENT_POPULATION,
-               E_BUILT_SURFACE_M2, E_NUM_SCHOOLS, E_NUM_HCS, E_NUM_SHELTERS, E_NUM_WASH,
-               E_SMOD_CLASS, E_SMOD_CLASS_L1, E_RWI
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT
-        WHERE COUNTRY = %s AND FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s
-        """
-        df = _run_query(query, params=[country, forecast_time, threshold_mm, window_h])
-        logger.info("Loaded %d rain tile impact rows (%s/%s/%smm/%sh)",
-                    len(df), country, forecast_time, threshold_mm, window_h)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying MERCATOR_TILE_PRECIP_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_countries_with_river_impact_at(forecast_time: str, rp_tier: str, window_h: int) -> list:
-    """DISTINCT real countries with MEANINGFUL river-flood impact at this
-    EXACT (forecast_time, rp_tier, window_h), from MERCATOR_TILE_RIVER_MAT
-    itself (the real per-country IMPACT table get_river_tile_impacts/
-    services/tile_server.py's own combined totals actually read from), not
-    RIVER_FORECASTS (the raw ingestion-log table get_river_extent_forecast_
-    time_for_date checks). Those two tables can genuinely disagree: the raw
-    layer can show a forecast cycle has been ingested for a date while the
-    downstream impact MAT hasn't been refreshed to that exact cycle yet, in
-    which case a country's real river exposure would be silently invisible
-    to any caller that only checked the raw layer's own existence.
-
-    Same non-zero-impact HAVING gate as get_storms_and_countries_for_date
-    above: a wide low-probability tile technically exists for many nearby
-    countries even when the real impact there is negligible.
-
-    Powers _global_flood_availability's own Global-scope "which countries
-    have real river data RIGHT NOW, at the exact threshold that will
-    actually be queried"; see that function's own docstring for the two
-    real bugs this closes (a wind/TC-track-only country roster silently
-    excluding flood-only countries, and river_avail/rain_avail checking the
-    wrong table).
-
-    Returns [] (not a crash) when there's genuinely no real, meaningful
-    river impact at this exact combination.
-    """
-    try:
-        df = _run_query(
-            "SELECT COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_RIVER_MAT "
-            "WHERE FORECAST_TIME = %s AND RP_TIER = %s AND STEP_H = %s "
-            "GROUP BY COUNTRY "
-            "HAVING SUM(E_POPULATION) > 0 OR SUM(E_NUM_SCHOOLS) > 0 OR SUM(E_NUM_HCS) > 0",
-            params=[forecast_time, rp_tier, window_h],
-        )
-        return df["COUNTRY"].tolist() if not df.empty else []
-    except Exception as e:
-        logger.warning("get_countries_with_river_impact_at failed for %s/%s/%sh: %s", forecast_time, rp_tier, window_h, e)
-        return []
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_countries_examined_for_river_at(forecast_time: str, rp_tier: str, window_h: int) -> list:
-    """Same country set as get_countries_with_river_impact_at above, but
-    WITHOUT that function's own non-zero-impact HAVING gate: every country
-    with ANY real row in MERCATOR_TILE_RIVER_MAT at this exact
-    (forecast_time, rp_tier, window_h), regardless of whether that
-    country's own real exposure happens to be exactly zero. See
+    """Every country with ANY real row in MERCATOR_TILE_RIVER_MAT at this
+    exact (forecast_time, rp_tier, window_h), regardless of whether that
+    country's own real exposure happens to be exactly zero (no non-zero-impact
+    HAVING gate). The source is the per-country IMPACT table, not
+    RIVER_FORECASTS (the raw ingestion-log table). See
     get_storms_and_countries_examined_for_date's own docstring (the wind
     sibling of this function) for the full "why": a country genuinely
     examined and found to have zero real exposure this cycle still belongs
@@ -1937,32 +1536,11 @@ def get_countries_examined_for_river_at(forecast_time: str, rp_tier: str, window
 
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_countries_with_precip_impact_at(forecast_time: str, threshold_mm, window_h) -> list:
-    """Rain sibling of get_countries_with_river_impact_at above:
-    MERCATOR_TILE_PRECIP_MAT, same real-impact-table-not-raw-ingestion-log
-    reasoning and same non-zero-impact HAVING gate. Returns [] when there's
-    genuinely no real, meaningful rain impact at this exact combination."""
-    try:
-        df = _run_query(
-            "SELECT COUNTRY FROM AOTS.TC_ECMWF.MERCATOR_TILE_PRECIP_MAT "
-            "WHERE FORECAST_TIME = %s AND THRESHOLD_MM = %s AND WINDOW_H = %s "
-            "GROUP BY COUNTRY "
-            "HAVING SUM(E_POPULATION) > 0 OR SUM(E_NUM_SCHOOLS) > 0 OR SUM(E_NUM_HCS) > 0",
-            params=[forecast_time, threshold_mm, window_h],
-        )
-        return df["COUNTRY"].tolist() if not df.empty else []
-    except Exception as e:
-        logger.warning("get_countries_with_precip_impact_at failed for %s/%smm/%sh: %s", forecast_time, threshold_mm, window_h, e)
-        return []
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_countries_examined_for_precip_at(forecast_time: str, threshold_mm, window_h) -> list:
     """Rain sibling of get_countries_examined_for_river_at above: every
     country with ANY real row in MERCATOR_TILE_PRECIP_MAT at this exact
     (forecast_time, threshold_mm, window_h), regardless of that country's
-    own real exposure being exactly zero (unlike get_countries_with_precip_
-    impact_at's own non-zero-impact HAVING gate). Returns [] only when
+    own real exposure being exactly zero. Returns [] only when
     there's genuinely no real precip tile data at all for this
     combination."""
     try:
@@ -1989,7 +1567,7 @@ _TOTALS_RIVER_RP_TIERS = ["rp2", "rp5", "rp10", "rp20", "rp50", "rp100"]
 # Duplicated from map_shell_concept.py's own _RIVER_EXTENT_STEP_HOURS, same
 # reason as the tier lists above (import-graph ordering); keep in sync.
 # River's own STEP_H column is the same "cumulative lead-time window"
-# concept as rain's WINDOW_H (see _RIVER_WINDOW_DEFAULT's own comment) --
+# concept as rain's WINDOW_H (see _RIVER_WINDOW_DEFAULT's own comment),
 # these are the same 4 canonical windows the ms-river-window control offers.
 _TOTALS_RIVER_WINDOWS = [24, 72, 120, 168]
 # Duplicated from map_shell_concept.py's own _RAIN_MM_BY_WINDOW, same reason
@@ -2012,66 +1590,97 @@ def _zero_precip_impact_totals() -> dict:
 
 
 def _row_to_precip_impact_totals(row) -> dict:
-    # math.ceil, NOT int() -- int() truncates toward zero (308.41 -> 308),
-    # a real violation of this project's own hard "always
+    # math.ceil, NOT int(), int() truncates toward zero (308.41 -> 308),
+    # a violation of this project's hard "always
     # round UP, never round()/truncate" convention for displayed counts
-    # (see callbacks/metrics.py's own format_value() / map_shell_concept.py's
-    # own _format_stat_number() for the reference implementation): a real
-    # Nicaragua Schools-at-Risk cell (120h/Heavy,
-    # true raw value 308.4117735866457) showed "308" in this grid while
+    # (see map_shell_concept.py's own _format_stat_number() for the
+    # reference implementation): a Nicaragua Schools-at-Risk cell (120h/Heavy,
+    # true raw value 308.4117735866457) would show "308" in this grid while
     # the headline total (built via _format_stat_number's own math.ceil)
-    # correctly showed "309" for the SAME real number -- two different
-    # rounding rules applied to one real value, not a data discrepancy.
+    # shows "309" for the SAME real number.
     # This IS the true final-display step for this per-(country, window,
     # threshold) total (SUM(...) GROUP BY already aggregates every real
     # tile in one Snowflake round trip, see the caller's own SQL), so
     # ceiling here once is correct even when a caller later sums this
     # across multiple countries (Global scope): that reproduces the same
-    # "ceil each country, then sum" convention already established
+    # "ceil each country, then sum" convention established
     # elsewhere (see _hazard_contribution_content's own real_estimate
-    # comment), not a repeat of that same sum-vs-ceil-order bug.
+    # comment).
     return {col: (math.ceil(row[col]) if pd.notna(row[col]) else None) for col in _TOTALS_PRECIP_IMPACT_COLS}
 
 
-# RIVER_MAT/PRECIP_MAT variants of the 3 point-facility tables (School is
+# BASE_* facility table behind each of the 3 point-facility counts (School is
 # deliberately excluded: its own river/precip per-facility country coverage
 # is broad and consistent with the tile aggregate's, no known gap there).
+# The BASE tables hold every facility of a country; the per-hazard forecast
+# facility tables (HC_RIVER_MAT, HC_PRECIP_MAT, ...) hold only the facilities
+# a forecast actually reaches, so only the BASE tables can say whether a
+# country has facility records at all.
+#
+# A count is also unbacked when the hazard layer itself has no tile rows for
+# the country (the layer does not cover it), whatever facility records exist,
+# so the hazard's tile table is checked as well.
 _RIVER_PRECIP_FACILITY_TABLES = {
-    "E_NUM_HCS":      ("HC_RIVER_MAT", "HC_PRECIP_MAT"),
-    "E_NUM_SHELTERS": ("SHELTER_RIVER_MAT", "SHELTER_PRECIP_MAT"),
-    "E_NUM_WASH":     ("WASH_RIVER_MAT", "WASH_PRECIP_MAT"),
+    "E_NUM_HCS":      "BASE_HC_MAT",
+    "E_NUM_SHELTERS": "BASE_SHELTER_MAT",
+    "E_NUM_WASH":     "BASE_WASH_MAT",
+}
+
+_RIVER_PRECIP_LAYER_TABLES = {
+    "river":  "MERCATOR_TILE_RIVER_MAT",
+    "precip": "MERCATOR_TILE_PRECIP_MAT",
 }
 
 
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=256)
-def _river_precip_facility_has_data(hazard: str, facility_col: str, country: str, forecast_time: str) -> bool:
+@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=256, cache_none=False)
+def _river_precip_facility_has_data_cached(hazard: str, facility_col: str, country: str):
     """
-    True only if the REAL per-facility-point table (e.g. HC_RIVER_MAT) has at
-    least one row for this exact country + cycle. Needed because
-    MERCATOR_TILE_RIVER_MAT/PRECIP_MAT's own E_NUM_HCS/E_NUM_SHELTERS/
-    E_NUM_WASH are a separate, density/raster-based exposure estimate that
-    can be real and nonzero for a country even when the actual per-facility
-    table has zero rows there. Real example: Sierra Leone river,
-    E_NUM_HCS sums to a real nonzero fraction, ceil'd to a displayed "1",
-    while HC_RIVER_MAT has zero SLE rows at any date; also Nicaragua's WASH
-    specifically, same cycle, while its own HC/Shelter both have real
-    current data. The two pipelines have inconsistent, in some
-    cases per-(country, facility type) rather than per-country, coverage.
-    This check exists so the displayed count is never shown without a real
-    facility record backing it, regardless of what causes a given gap or
-    whether/when it closes.
+    Cached core of _river_precip_facility_has_data. The answer depends only
+    on the hazard, the facility type and the country (a country either has
+    facility records and hazard tile rows or it does not), so the cycle is
+    not part of the cache key. Returns True or False for a completed check, and None when the
+    check itself failed; ttl_cache(cache_none=False) does not store None, so
+    a failure is retried by the next caller instead of being served for the
+    whole TTL.
     """
     if hazard not in ("river", "precip"):
         return True
-    table = _RIVER_PRECIP_FACILITY_TABLES[facility_col][0 if hazard == "river" else 1]
+    table = _RIVER_PRECIP_FACILITY_TABLES[facility_col]
     try:
-        df = _run_query(f"SELECT 1 FROM AOTS.TC_ECMWF.{table} WHERE COUNTRY = %s AND FORECAST_TIME = %s LIMIT 1",
-                         params=[country, forecast_time])
+        extra = " AND AMENITY IN ('hospital', 'clinic', 'doctors')" if table == "BASE_HC_MAT" else ""
+        df = _run_query(f"SELECT 1 FROM AOTS.TC_ECMWF.{table} WHERE COUNTRY = %s{extra} LIMIT 1",
+                         params=[country])
+        if df.empty:
+            return False
+        layer = _RIVER_PRECIP_LAYER_TABLES[hazard]
+        df = _run_query(f"SELECT 1 FROM AOTS.TC_ECMWF.{layer} WHERE COUNTRY = %s LIMIT 1", params=[country])
         return not df.empty
     except Exception as e:
-        logger.warning("_river_precip_facility_has_data failed for %s/%s/%s/%s: %s", hazard, facility_col, country, forecast_time, e)
-        # Fail closed: an unconfirmed check must not let an unbacked count through.
-        return False
+        logger.warning("_river_precip_facility_has_data failed for %s/%s/%s: %s", hazard, facility_col, country, e)
+        return None
+
+
+def _river_precip_facility_has_data(hazard: str, facility_col: str, country: str, forecast_time: str) -> bool:
+    """
+    True only if the REAL facility table for this facility type (e.g.
+    BASE_HC_MAT) has at least one record for this country and the hazard's
+    tile table (MERCATOR_TILE_RIVER_MAT/PRECIP_MAT) has at least one row for
+    it, so the layer covers the country. Needed because
+    MERCATOR_TILE_RIVER_MAT/PRECIP_MAT's own E_NUM_HCS/E_NUM_SHELTERS/
+    E_NUM_WASH are a separate, density/raster-based exposure estimate that
+    can be real and nonzero for a country even when no actual facility
+    record exists there. The coverage can differ per (country, facility
+    type) rather than per country. This check exists so the displayed count
+    is never shown without a real facility record backing it, regardless of
+    what causes a given gap or whether/when it closes. Health sites count
+    only for the types the analysis scores (hospitals, clinics, doctors).
+
+    The answer does not depend on the forecast cycle; `forecast_time` is
+    accepted so the callers keep one signature and is not part of the cache
+    key. A failed check fails closed (False) and is not cached: an
+    unconfirmed check must not let an unbacked count through.
+    """
+    return bool(_river_precip_facility_has_data_cached(hazard, facility_col, country))
 
 
 def _null_unbacked_river_precip_facilities(totals: dict, hazard: str, country: str, forecast_time: str) -> dict:
@@ -2117,14 +1726,11 @@ def _row_to_impact_totals(row) -> dict:
     # throughout this file; only a threshold with genuinely zero matching
     # rows gets filled with real 0s, by _zero_impact_totals above.
     #
-    # math.ceil, NOT int() -- same real truncation bug fixed in
-    # _row_to_precip_impact_totals above, applies equally to wind/gust/
-    # river's own totals (this function is their shared row-to-dict step),
-    # see that function's own comment for the full "why" (a real
-    # headline-vs-grid single-unit mismatch, e.g. 309 vs
-    # 308 real schools, traced to int() truncating a real 308.41 down
-    # instead of ceiling it up like every other displayed count in this
-    # project).
+    # math.ceil, NOT int(), same reasoning as _row_to_precip_impact_totals
+    # above, applies equally to wind/gust/river's own totals (this function
+    # is their shared row-to-dict step), see that function's own comment for
+    # the full "why" (int() would truncate a real 308.41 down to 308 instead
+    # of ceiling it up like every other displayed count in this project).
     return {col: (math.ceil(row[col]) if pd.notna(row[col]) else None) for col in _TOTALS_IMPACT_COLS}
 
 
@@ -2133,11 +1739,10 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
                                           river_window: int = _RIVER_WINDOW_DEFAULT,
                                           date: str = None, run: str = None) -> dict:
     """
-    One-round-trip-per-hazard replacement for fanning out get_tile_impacts/
-    get_gust_tile_impacts/get_river_tile_impacts across every threshold tier
-    just to sum them (the old pattern behind the Hazard Contribution popup's
-    per-tier curve: 8 full per-tile fetches for wind alone, 472,848 rows
-    transferred where a GROUP BY aggregate returns 8). Each hazard here is
+    One-round-trip-per-hazard totals across every threshold tier, for the
+    Hazard Contribution popup's per-tier curve (a GROUP BY aggregate returns
+    8 rows for wind where fanning out full per-tile fetches would transfer
+    472,848). Each hazard here is
     SUM(...) GROUP BY <threshold column> in a single statement covering every
     tier at once, cached on (country, storm, forecast_date) only, so every
     slider position after the first is a cache hit, not a new query.
@@ -2154,12 +1759,11 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     {"E_POPULATION": int|None, "E_INFANT_POPULATION": int|None,
     "E_SCHOOL_AGE_POPULATION": int|None, "E_ADOLESCENT_POPULATION": int|None,
     "E_NUM_SCHOOLS": int|None, "E_NUM_HCS": int|None, "E_NUM_SHELTERS": int|None,
-    "E_NUM_WASH": int|None} (precip's own section used to be documented
-    here as carrying only E_POPULATION -- that was wrong, confirmed live:
-    _TOTALS_PRECIP_IMPACT_COLS is `_TOTALS_IMPACT_COLS` again, the SAME
-    full 8-column set, and MERCATOR_TILE_PRECIP_MAT genuinely has real
-    non-null age-band/facility data, e.g. Nicaragua's real 72h/45mm cell:
-    47.2 real shelters, 966 real schools, 36,605 real infants). None only
+    "E_NUM_WASH": int|None} (precip's own section carries the same full
+    8-column set: _TOTALS_PRECIP_IMPACT_COLS is `_TOTALS_IMPACT_COLS`, and
+    MERCATOR_TILE_PRECIP_MAT has real non-null age-band/facility data, e.g.
+    Nicaragua's real 72h/45mm cell: 47.2 real shelters, 966 real schools,
+    36,605 real infants). None only
     when that column is genuinely all-NULL for this country (a real
     dataset gap), 0 when the threshold tier simply has no matching rows
     (a real, confirmed-zero exposure at that tier).
@@ -2167,16 +1771,14 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     `river_window`: only controls which single window `result["river"]`
     (the flat, backward-compatible {rp_tier: {...}} shape existing callers
     like _hazard_curve_totals's 1D per-tier curve already expect) reflects
-    -- default the full 168h horizon, see get_river_tile_impacts's own
-    docstring for the underlying STEP_H semantics. `result["river_by_window"]`
-    is genuinely 2D (RP_TIER x STEP_H, 24/72/120/168h) regardless of what
-    `river_window` is set to, fetched from the SAME one query as "river"
-    above (no second round trip) -- this used to be flattened away here
-    ("expanding to a full 2D curve picker would be a separate UI feature"),
-    even though River's real MERCATOR_TILE_RIVER_MAT data always has this
-    second STEP_H dimension per tile, the same way rain's WINDOW_H does; the
-    flattening was a UI scoping gap, not a real 1D data shape, see
-    _river_curve_totals's own docstring in map_shell_concept.py.
+    by default the full 168h horizon; STEP_H is a CUMULATIVE window
+    (24/72/120/168h), so each STEP_H row is already the correct union for
+    that window. `result["river_by_window"]` is genuinely 2D (RP_TIER x
+    STEP_H, 24/72/120/168h) regardless of what `river_window` is set to,
+    fetched from the SAME one query as "river" above (no second round trip),
+    since River's real MERCATOR_TILE_RIVER_MAT data has a STEP_H dimension
+    per tile, the same way rain's WINDOW_H does, see _river_curve_totals's
+    own docstring in map_shell_concept.py.
 
     Every canonical threshold in _TOTALS_WIND_THRESHOLDS_KT/
     _TOTALS_GUST_THRESHOLDS_KT/_TOTALS_RIVER_RP_TIERS/
@@ -2187,8 +1789,8 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     really means "real zero". Precip's own window keys ("6"/"24"/"72"/"120")
     are always all four, same convention one level up.
 
-    River and precip are NOT storm-scoped (see get_river_tile_impacts's/
-    get_rain_tile_impacts's own docstrings), so `storm`/`forecast_date` are
+    River and precip are NOT storm-scoped (MERCATOR_TILE_RIVER_MAT/
+    MERCATOR_TILE_PRECIP_MAT are keyed by country and forecast time), so `storm`/`forecast_date` are
     ignored for those two sections (`forecast_date` is wind's own MAT cycle
     string, and can genuinely differ from river's/precip's, since GloFAS and
     ECMWF precip are ingested on independent schedules from wind).
@@ -2202,28 +1804,23 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     When a real cycle exists at exactly that date/run, that SAME cycle's
     real data is used; when none does, the section is left empty ({}), the
     SAME honest "real dataset gap" result as a country with no river/precip
-    data at all -- deliberately NEVER a silent substitution of some OTHER
+    data at all, deliberately NEVER a silent substitution of some OTHER
     (e.g. absolute latest) cycle, matching get_precip_forecast_time_near's
     own "no silent substitution... which would show data for a time the
     user didn't actually select without any indication" rule.
 
-    When `date` is omitted (real callers should always pass it; kept
-    optional only for backward compatibility with anything not yet
-    threading it through), river/precip fall back to their own OLD
-    behavior: get_latest_river_forecast_time(country)/
+    When `date` is omitted (real callers should always pass it), river/precip
+    fall back to get_latest_river_forecast_time(country)/
     get_latest_rain_forecast_time(country), i.e. the country's absolute
-    latest ingested cycle regardless of what's actually selected. This was
-    a bug when it was the only behavior: a caller resolving `value` for the
-    user's SELECTED date/run while this function's own precip/river
-    section silently used a DIFFERENT (and possibly still mid-processing,
-    e.g. a newest cycle whose 120h window hadn't been computed yet) cycle
-    -- headline and grid/curve numbers built from two different real
-    snapshots, looking internally contradictory (a "Total" matching no
+    latest ingested cycle regardless of what's actually selected. That
+    differs from the user's SELECTED date/run (and the newest cycle may
+    still be mid-processing, e.g. its 120h window not yet computed), so
+    headline and grid/curve numbers built from two different real
+    snapshots could look internally contradictory (a "Total" matching no
     cell in the grid at all, or a longer accumulation window showing LESS
-    real data than a shorter one purely because the longer window's
-    portion of that specific incomplete cycle hadn't finished writing).
+    real data than a shorter one).
     The "river"/"precip" keys are {} (not zero-filled) when the country has
-    no river/precip data of any kind (or, now, no real cycle at the
+    no river/precip data of any kind (or no real cycle at the
     requested date/run), a real dataset gap, not a per-tier zero.
 
     Precip's own data is genuinely 2D (threshold_mm x window_h, see
@@ -2232,7 +1829,7 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
     grid is fetched in ONE query (GROUP BY WINDOW_H, THRESHOLD_MM), same
     "one round trip regardless of which tier the user currently has
     selected" design as wind/gust/river's own full-tier fetch, needed here
-    specifically because the dashboard's own Rainfall heatmap
+    specifically because the app's Rainfall heatmap
     (_rain_threshold_grid) shows all 4 windows at once, not just the
     currently selected one.
     """
@@ -2288,21 +1885,16 @@ def get_tile_impact_totals_by_threshold(country: str, storm: str, forecast_date:
         else:
             river_forecast_time = get_latest_river_forecast_time(country)
         if river_forecast_time is not None:
-            # Now genuinely 2D (RP_TIER x STEP_H), same "whole grid in one
+            # Genuinely 2D (RP_TIER x STEP_H), same "whole grid in one
             # round trip" design as precip's own WINDOW_H x THRESHOLD_MM
-            # query above -- this used to filter to a single caller-given
-            # `river_window` and stay a flat {rp_tier: {...}} shape (see
-            # _river_curve_totals's own docstring in map_shell_concept.py
-            # for the "why" this was expanded: River's real data always had
-            # this second STEP_H dimension, per-tile, the same way rain's
-            # WINDOW_H does, it just wasn't being swept into a grid the UI
-            # could show, exactly the gap Rainfall's own 2D table doesn't
-            # have). `result["river"]` below is kept as the SAME single-
-            # window slice existing callers (_hazard_curve_totals's 1D
-            # per-tier curve) already expect, sliced out of this one query
-            # rather than a second one, `result["river_by_window"]` is the
-            # new full grid, precip's own {window: {mm: {...}}} shape,
-            # mirrored for river as {window: {rp_tier: {...}}}.
+            # query above (see _river_curve_totals's own docstring in
+            # map_shell_concept.py): River's real data has a STEP_H
+            # dimension per tile, the same way rain's WINDOW_H does.
+            # `result["river"]` below is the single-window slice
+            # (_hazard_curve_totals's 1D per-tier curve) sliced out of this
+            # one query, `result["river_by_window"]` is the full grid,
+            # mirroring precip's {window: {mm: {...}}} shape for river as
+            # {window: {rp_tier: {...}}}.
             river_df = _run_query(
                 """
                 WITH per_zone_max AS (
@@ -2507,63 +2099,11 @@ def get_admin_precip_impacts(country: str, forecast_time: str, threshold_mm: flo
 
 
 @ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_tile_cci(country: str, storm: str, forecast_date: str, zoom_level: int = 14) -> pd.DataFrame:
-    """
-    Query MERCATOR_TILE_CCI_MAT for tile-level CCI data.
-    Returns only zone_id + the two display columns to avoid merge conflicts.
-    """
-    try:
-        query = """
-        SELECT ZONE_ID, CCI_CHILDREN, E_CCI_CHILDREN
-        FROM AOTS.TC_ECMWF.MERCATOR_TILE_CCI_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND ZOOM_LEVEL = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, zoom_level])
-        df.columns = [c.lower() for c in df.columns]   # zone_id, cci_children, E_cci_children
-        # Normalise E_ prefix (E_cci_children stays as-is after lower)
-        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
-        logger.info("Loaded %d tile CCI rows (%s/%s/%s z=%d)", len(df), country, storm, forecast_date, zoom_level)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying MERCATOR_TILE_CCI_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
-def get_admin_cci(country: str, storm: str, forecast_date: str, admin_level: int = 1) -> pd.DataFrame:
-    """
-    Query ADMIN_ALL_CCI_MAT for admin-level CCI data.
-    Returns only tile_id + the two display columns to avoid merge conflicts.
-    """
-    try:
-        query = """
-        SELECT TILE_ID, CCI_CHILDREN, E_CCI_CHILDREN
-        FROM AOTS.TC_ECMWF.ADMIN_ALL_CCI_MAT
-        WHERE COUNTRY = %s
-          AND STORM = %s
-          AND FORECAST_DATE = %s
-          AND ADMIN_LEVEL = %s
-        """
-        df = _run_query(query, params=[country, storm, forecast_date, admin_level])
-        df.columns = [c.lower() for c in df.columns]   # tile_id, cci_children, e_cci_children
-        df = df.rename(columns={'e_cci_children': 'E_cci_children'})
-        logger.info("Loaded %d admin CCI rows (%s/%s/%s L%d)", len(df), country, storm, forecast_date, admin_level)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying ADMIN_ALL_CCI_MAT: %s", e)
-        return pd.DataFrame()
-
-
-
-@ttl_cache(ttl_seconds=_IMPACT_TTL, maxsize=64)
 def get_track_impacts(country: str, storm: str, forecast_date: str, wind_threshold: int) -> gpd.GeoDataFrame:
     """
-    Query TRACK_MAT and return a GeoDataFrame matching the structure of track_views parquet files.
+    Query TRACK_MAT and return a GeoDataFrame of per-member severity columns and envelope geometry.
 
-    One row per ensemble member (ZONE_ID = member number 1–51), with severity columns
+    One row per ensemble member (ZONE_ID = member number 1 to 51), with severity columns
     and the wind-envelope geometry in EPSG:4326.
 
     Args:
@@ -2573,7 +2113,7 @@ def get_track_impacts(country: str, storm: str, forecast_date: str, wind_thresho
         wind_threshold: Wind threshold in knots (e.g. 50)
 
     Returns:
-        geopandas.GeoDataFrame with columns matching track_views parquet files
+        geopandas.GeoDataFrame with per-member severity columns and geometry
     """
     try:
         from shapely import wkb as shapely_wkb
@@ -2789,10 +2329,10 @@ def get_river_tile_bitmask(country: str, forecast_time: str, rp_tier: str, step_
 
     Replaces services/tile_server.py's own live _RiverExtentCache decode
     of the raw global GloFAS extent_rp{N}_bymember Parquet (a real,
-    measured multi-minute cold-cache cost per (forecast_time, rp_tier),
+    multi-minute cold-cache cost per (forecast_time, rp_tier),
     see 17_river_rain_bitmask_mat_tables.sql in the internal data pipeline for
     the full "why" this table exists) with a plain, fast indexed SELECT
-    against an already-materialized MAT table -- this is a
+    against an already-materialized MAT table, this is a
     performance-only change, the underlying per-member methodology
     _RiverExtentCache already used is unchanged, just moved upstream into
     the pipeline instead of decoded live on every cold request.
@@ -2802,14 +2342,14 @@ def get_river_tile_bitmask(country: str, forecast_time: str, rp_tier: str, step_
     own key shape in components/data/snowflake_utils.py's sibling river
     query functions): no `storm`/`wind_threshold`-equivalent params here.
     `forecast_time` IS the mat_forecast_date convention (YYYYMMDDHHMMSS),
-    same as get_wind_tile_bitmask's own `forecast_date` -- DATAPIPELINE
+    same as get_wind_tile_bitmask's own `forecast_date`, DATAPIPELINE
     writes TILE_RIVER_BITMASK_MAT's own FORECAST_TIME column from its own
     `forecast_time_str` (`forecast_time.strftime('%Y%m%d%H%M%S')`, see
     run_river_flood_analysis in that repo's main_pipeline.py), the SAME
     mat-format string services/tile_server.py's own hazard_params already
     carries as `p['forecast_date']` (NOT the raw plain-date
     RIVER_FORECASTS.FORECAST_TIME/get_latest_river_forecast_time format
-    _river_extent_cache.ensure_river_extent() needs -- this table needs no
+    _river_extent_cache.ensure_river_extent() needs, this table needs no
     _mat_date_to_river_date() conversion at all, simpler than the live
     decode path it replaces). `rp_tier` is one of
     'rp2'/'rp5'/'rp10'/'rp20'/'rp50'/'rp100', `step_h` is one of the real
@@ -2892,7 +2432,6 @@ def get_rain_tile_bitmask(country: str, forecast_time: str, threshold_mm: float,
 # These functions query country-static MAT tables created in
 # 02_setup_base_layer_tables.sql. They enable tile and facility layers to be
 # displayed immediately on country selection, before any storm is loaded.
-# Only used when IMPACT_DATA_SOURCE=SQL.
 # =============================================================================
 
 @ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
@@ -2958,12 +2497,11 @@ def get_base_tiles(country: str, zoom_level: int = 14) -> gpd.GeoDataFrame:
 @ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
 def get_data_availability(country: str, zoom_level: int = 14) -> dict:
     """
-    One-round-trip aggregate replacement for the Data Availability panel's
-    old pattern of calling get_base_tiles(country): a full row pull (PHL:
-    59,106 rows x 16 cols) plus a Python loop reconstructing quadkey geometry
-    per row, just to compute 4 facility sums and 8 non-null checks. This
-    does the exact same SUM/COUNT math in one Snowflake aggregate query
-    instead, with no geometry involved at all.
+    One-round-trip aggregate for the Data Availability panel: computes the 4
+    facility sums and 8 non-null checks with SUM/COUNT in one Snowflake
+    aggregate query, with no geometry involved (a get_base_tiles(country)
+    row pull would be PHL: 59,106 rows x 16 cols plus a Python loop
+    reconstructing quadkey geometry per row).
 
     Same return shape as pages/map_shell_concept.py's own
     _get_data_availability_real(country) builds from get_base_tiles today:
@@ -3089,114 +2627,6 @@ def get_country_totals(country: str) -> dict:
     a fresh copy so callers cannot corrupt the cache.
     """
     return dict(_get_country_totals_cached(country))
-
-
-@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
-def get_base_schools(country: str) -> pd.DataFrame:
-    """Query BASE_SCHOOL_MAT: all school locations for a country (no storm required)."""
-    try:
-        t0 = time.time()
-        query = """
-        SELECT
-            SCHOOL_ID_GIGA  AS school_id_giga,
-            SCHOOL_NAME     AS school_name,
-            EDUCATION_LEVEL AS education_level,
-            LATITUDE        AS latitude,
-            LONGITUDE       AS longitude,
-            COUNTRY_ISO3_CODE AS country_iso3_code
-        FROM AOTS.TC_ECMWF.BASE_SCHOOL_MAT
-        WHERE COUNTRY = %s
-          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        """
-        df = _run_query(query, params=[country])
-        df.columns = [c.lower() for c in df.columns]
-        logger.info("Base schools %s: %d rows in %.1fs", country, len(df), time.time() - t0)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying BASE_SCHOOL_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
-def get_base_hcs(country: str) -> pd.DataFrame:
-    """Query BASE_HC_MAT: all health centre locations for a country (no storm required)."""
-    try:
-        t0 = time.time()
-        query = """
-        SELECT
-            NAME                AS name,
-            HEALTH_AMENITY_TYPE AS health_amenity_type,
-            AMENITY             AS amenity,
-            OPERATIONAL_STATUS  AS operational_status,
-            BEDS                AS beds,
-            EMERGENCY           AS emergency,
-            ELECTRICITY         AS electricity,
-            OPERATOR_TYPE       AS operator_type,
-            LATITUDE            AS latitude,
-            LONGITUDE           AS longitude
-        FROM AOTS.TC_ECMWF.BASE_HC_MAT
-        WHERE COUNTRY = %s
-          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        """
-        df = _run_query(query, params=[country])
-        df.columns = [c.lower() for c in df.columns]
-        logger.info("Base HCs %s: %d rows in %.1fs", country, len(df), time.time() - t0)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying BASE_HC_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
-def get_base_shelters(country: str) -> pd.DataFrame:
-    """Query BASE_SHELTER_MAT: all shelter locations for a country (no storm required)."""
-    try:
-        t0 = time.time()
-        query = """
-        SELECT
-            NAME         AS name,
-            NAME_EN      AS name_en,
-            SHELTER_TYPE AS shelter_type,
-            CATEGORY     AS category,
-            LATITUDE     AS latitude,
-            LONGITUDE    AS longitude
-        FROM AOTS.TC_ECMWF.BASE_SHELTER_MAT
-        WHERE COUNTRY = %s
-          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        """
-        df = _run_query(query, params=[country])
-        df.columns = [c.lower() for c in df.columns]
-        logger.info("Base shelters %s: %d rows in %.1fs", country, len(df), time.time() - t0)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying BASE_SHELTER_MAT: %s", e)
-        return pd.DataFrame()
-
-
-@ttl_cache(ttl_seconds=_BASE_TTL, maxsize=32)
-def get_base_wash(country: str) -> pd.DataFrame:
-    """Query BASE_WASH_MAT: all WASH facility locations for a country (no storm required)."""
-    try:
-        t0 = time.time()
-        query = """
-        SELECT
-            NAME      AS name,
-            NAME_EN   AS name_en,
-            WASH_TYPE AS wash_type,
-            CATEGORY  AS category,
-            LATITUDE  AS latitude,
-            LONGITUDE AS longitude
-        FROM AOTS.TC_ECMWF.BASE_WASH_MAT
-        WHERE COUNTRY = %s
-          AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
-        """
-        df = _run_query(query, params=[country])
-        df.columns = [c.lower() for c in df.columns]
-        logger.info("Base WASH %s: %d rows in %.1fs", country, len(df), time.time() - t0)
-        return df.copy()
-    except Exception as e:
-        logger.error("Error querying BASE_WASH_MAT: %s", e)
-        return pd.DataFrame()
 
 
 _FACILITY_SOURCE_TABLE = {"schools": "BASE_SCHOOL_MAT", "health": "BASE_HC_MAT",
@@ -3355,7 +2785,7 @@ def get_alert_emails_for_storm(track_id: str, forecast_time: str = None):
     COUNTRY_CODE) is NOT actually enforced by Snowflake (PK/UNIQUE
     constraints there are informational only, never enforced), so more than
     one row can genuinely exist for the same key, e.g. repeated
-    test-harness sends over time for the same storm/country/forecast_time.
+    sends over time for the same storm/country/forecast_time.
     QUALIFY + ROW_NUMBER keeps only the single most-recently-sent row per
     (track_id, forecast_time, country_code), so a storm/country pair is
     never listed more than once for the same forecast cycle.
@@ -3419,7 +2849,7 @@ def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
 # ---------------------------------------------------------------------------
 # Real, already-sent Warning emails (AOTS.TC_ECMWF.WATCH_SENT_LOG): the same
 # "view past emails" feature as the Alert functions above, one grain
-# narrower -- WATCH_SENT_LOG is (TRACK_ID, FORECAST_DATE), one shared email
+# narrower, WATCH_SENT_LOG is (TRACK_ID, FORECAST_DATE), one shared email
 # per storm run covering every affected country in a single send (see
 # SEND_WARNING's own COUNTRIES column), not one row per country the way
 # ALERT_SENT_LOG is. So there is no country_code param anywhere below: a
@@ -3427,7 +2857,7 @@ def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
 # per country. FORECAST_DATE itself is a real VARCHAR in 'YYYYMMDDHH24MISS'
 # form (matching MERCATOR_TILE_IMPACT_MAT's own convention, see WATCH_
 # SENT_LOG's own CREATE TABLE comment in the internal data pipeline), not a
-# TIMESTAMP_NTZ like ALERT_SENT_LOG.FORECAST_TIME -- callers still pass the
+# TIMESTAMP_NTZ like ALERT_SENT_LOG.FORECAST_TIME, callers still pass the
 # same "YYYY-MM-DD HH:MM:SS" string the Alert functions take (the topbar's
 # own resolved forecast_time), converted to that format inside the query via
 # TO_CHAR(TO_TIMESTAMP_NTZ(%s), 'YYYYMMDDHH24MISS') so every call site stays
@@ -3437,7 +2867,7 @@ def get_alert_email_body(track_id: str, forecast_time: str, country_code: str):
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_storms_with_warning_emails_at(forecast_time: str) -> set:
     """Real set of TRACK_ID values with a warning email at this EXACT
-    forecast_time -- same role as get_storms_with_alert_emails_at, deciding
+    forecast_time, same role as get_storms_with_alert_emails_at, deciding
     whether a storm row's "view warning emails" icon should show at all for
     the currently selected topbar date/time."""
     try:
@@ -3455,7 +2885,7 @@ def get_storms_with_warning_emails_at(forecast_time: str) -> set:
 @ttl_cache(ttl_seconds=_META_TTL, maxsize=64)
 def get_warning_emails_for_storm(track_id: str, forecast_time: str = None):
     """Real list of available warning emails for a storm (WATCH_SENT_LOG),
-    one entry per (track_id, forecast_date) -- unlike get_alert_emails_for_
+    one entry per (track_id, forecast_date), unlike get_alert_emails_for_
     storm, never more than one entry per real forecast cycle, since a
     Warning has exactly one shared email across every affected country, not
     one per country. Returns dicts with TRACK_ID/FORECAST_DATE/
@@ -3487,7 +2917,7 @@ def get_warning_email_body(track_id: str, forecast_date: str):
     """Real EMAIL_BODY HTML for one specific already-sent warning, keyed by
     the real FORECAST_DATE string WATCH_SENT_LOG itself stores
     ('YYYYMMDDHH24MISS', NOT the "YYYY-MM-DD HH:MM:SS" form the other
-    functions in this section take -- callers get this exact value back from
+    functions in this section take, callers get this exact value back from
     get_warning_emails_for_storm's own FORECAST_DATE field, so no
     conversion is needed here, unlike the other two functions above)."""
     try:
@@ -3514,7 +2944,8 @@ def get_recent_forecast_dates(n: int = 3):
 
     Used to keep the per-country tile cache warm for whatever storms are
     ACTUALLY recent, not just the app's fixed demo scenarios: see
-    _prewarm_recent_tile_cache in pages/map_shell_concept.py, which warms
+    _prewarm_recent_tile_cache_once/_prewarm_recent_tile_cache_loop in
+    pages/map_shell_concept.py, which warm
     the most recent days in addition to the demo scenarios."""
     try:
         df = _run_query(
@@ -3592,9 +3023,8 @@ def _wind_ready_at(forecast_time) -> bool:
     (NO_IMPACT_COUNTRIES): i.e. DATAPIPELINE has genuinely finished
     working on this cycle for that country, whatever the real outcome was.
 
-    Gust is deliberately NOT part of this check (previously named
-    _wind_gust_ready_at, requiring MERCATOR_TILE_GUST_MAT too): confirmed
-    gust is optional and independent everywhere in this codebase.
+    Gust is deliberately NOT part of this check: gust is optional and
+    independent everywhere in this codebase.
     `main_pipeline.py`'s own docstring says gust's absence "never affects
     the wind results", gust failures are isolated per-country so they
     never flip a country's own SUCCESS status, and the app itself treats
@@ -3603,48 +3033,38 @@ def _wind_ready_at(forecast_time) -> bool:
     map_shell_concept.py). There is no real feature anywhere that
     silently assumes gust is complete whenever a cycle is shown. Gating
     the app's own DEFAULT LANDING CYCLE on gust was never a deliberate
-    decision (confirmed via git blame: it was inherited mechanically from
-    an earlier implementation that happened to log wind+gust as one
-    bundled SUCCESS row, not a considered requirement) and caused real,
-    permanent false negatives for storms with real usable wind data but
-    no gust data at all (e.g. real historical case: DOLPHIN).
+    decision, and doing so would cause permanent false negatives for storms
+    with real usable wind data but no gust data at all.
 
     Checks TC_PIPELINE_RUN_LOG (a real completion-bookkeeping table,
     genuinely written today by databricks/04_scheduler_windgust.py in the
     DATAPIPELINE repo via log_run_start/log_run_complete), NOT
-    MERCATOR_TILE_IMPACT_MAT row presence: confirmed live and directly, a
+    MERCATOR_TILE_IMPACT_MAT row presence: a
     country whose real impact is genuinely, correctly zero writes NO row
     at all to MERCATOR_TILE_IMPACT_MAT. main_pipeline.py's
     run_complete_impact_analysis() only ever writes output for countries
     it determines are affected, and the MAT table's own refresh path is a
     pure stage-file scan with no placeholder/marker mechanism of any kind,
     making "not yet processed" and "processed, confirmed zero impact"
-    permanently indistinguishable by row presence alone. Confirmed this
-    was not a rare edge case but a common, recurring one (307 real
-    historical (storm, forecast_time) pairs found matching this exact
-    pattern, with real documented stuck-cycle episodes lasting 7.5-24
-    days when every candidate in the lookback window was simultaneously
-    affected), directly causing the app's own default landing cycle to
-    silently serve stale data with no indication anything was wrong. This
+    permanently indistinguishable by row presence alone. That is a common,
+    recurring case, and relying on row presence would make the app's default
+    landing cycle silently serve stale data. This
     exact per-country TC_PIPELINE_RUN_LOG check (STATUS='SUCCESS' AND
     COUNTRY_CODE in COUNTRIES_PROCESSED or NO_IMPACT_COUNTRIES) already
     exists and is proven correct elsewhere: it's the EXACT SAME "is this
     country's real work already done" definition
     databricks/04_scheduler_windgust.py's own discovery query uses to
     decide what still needs processing, mirrored here, not
-    reinvented, so the pipeline's and the dashboard's definitions of
-    "done" can never silently drift apart again.
+    reinvented, so the pipeline's and the app's definitions of
+    "done" cannot silently drift apart.
 
     Deliberately scoped to TC_ENVELOPES_COMBINED within 100km of an active
-    country (ST_DWITHIN, real meters), tightened from an earlier 1500km
-    prefilter, to match the EXACT real buffer main_pipeline.py's own
-    affected-country determination uses (get_countries_in_range /
-    _python_buffer_check, both real 100km buffers, confirmed directly).
-    The old 1500km prefilter was 15x wider than the pipeline's own real
-    "affected" test, meaning it routinely flagged storms as "needing
-    processing" that the pipeline's own authoritative, tighter test was
-    always going to correctly rule out as unaffected: a real structural
-    amplifier of the zero-impact ambiguity above, independent of it.
+    country (ST_DWITHIN, real meters), to match the EXACT real 100km buffer main_pipeline.py's own
+    affected-country determination uses.
+    A wider prefilter (e.g. 1500km, 15x wider than the pipeline's own real
+    "affected" test) would routinely flag storms as "needing processing"
+    that the pipeline's own authoritative, tighter test correctly rules out
+    as unaffected, amplifying the zero-impact ambiguity above.
     NOT every row in TC_TRACKS: joining TC_TRACKS directly would count
     every tracked storm, including weak/dissipating ones that never get a
     real envelope at all (a normal pattern); such a storm would count as
@@ -3675,15 +3095,11 @@ def _wind_ready_at(forecast_time) -> bool:
                           -- te.FORECAST_TIME (TC_ENVELOPES_COMBINED) is TIMESTAMP_NTZ; rl.FORECAST_TIME
                           -- is TIMESTAMP_TZ. A bare NTZ = TZ comparison implicitly promotes the naive
                           -- side using the SESSION's own TIMEZONE parameter (America/Los_Angeles),
-                          -- not treating it as already-UTC -- confirmed live 2026-09-24: once
-                          -- TC_PIPELINE_RUN_LOG.FORECAST_TIME was fixed to be genuinely UTC-tagged
-                          -- (see pipeline_runlog.py's own fix in the DATAPIPELINE repo), this bare
-                          -- comparison stopped matching ANY row at all, for every storm, not just the
-                          -- one originally found broken: it had only ever "worked" because the write
-                          -- side's OLD bug (also wrongly -07:00-tagged) happened to cancel out this
-                          -- same implicit NTZ promotion. CONVERT_TIMEZONE('UTC', ...) on rl.FORECAST_TIME
-                          -- (a genuinely tz-aware value) is a real, session-independent instant
-                          -- conversion, not an implicit reinterpretation, so this now correctly matches
+                          -- not treating it as already-UTC. TC_PIPELINE_RUN_LOG.FORECAST_TIME is
+                          -- genuinely UTC-tagged (see pipeline_runlog.py in the DATAPIPELINE repo), so
+                          -- a bare comparison would not match. CONVERT_TIMEZONE('UTC', ...) on
+                          -- rl.FORECAST_TIME (a genuinely tz-aware value) is a real, session-independent
+                          -- instant conversion, not an implicit reinterpretation, so this matches
                           -- te.FORECAST_TIME's own naive-but-really-UTC wall-clock value regardless of
                           -- the session's TIMEZONE parameter.
                           AND CONVERT_TIMEZONE('UTC', rl.FORECAST_TIME)::TIMESTAMP_NTZ = te.FORECAST_TIME
@@ -3716,7 +3132,7 @@ def _wind_ready_at(forecast_time) -> bool:
 
 def _ambient_ready_at(source: str, param: str, forecast_time) -> bool:
     """True when AMBIENT_HAZARD_RUN_LOG shows this exact (source, param,
-    forecast_time) as genuinely processed -- the SAME real ground-truth
+    forecast_time) as genuinely processed, the SAME real ground-truth
     bookkeeping table is_ambient_forecast_processed() (DATAPIPELINE's own
     main_pipeline.py) writes to on a real completed precip/river run, not
     a raw-ingestion-log check (see get_default_forecast_cycle's own
@@ -3745,9 +3161,10 @@ def _ambient_ready_at(source: str, param: str, forecast_time) -> bool:
 def get_default_forecast_cycle():
     """Real 'is this cycle actually fully computed' resolution for the
     app's own topbar default landing date/run (_DEFAULT_FORECAST_DATE/
-    _DEFAULT_FORECAST_RUN in pages/map_shell_concept.py), replacing the
-    old MAX(FORECAST_TIME) FROM TC_TRACKS resolution (get_latest_
-    forecast_time_overall), which only reflects raw TRACK ingestion.
+    _DEFAULT_FORECAST_RUN in pages/map_shell_concept.py). Unlike
+    get_latest_forecast_time_overall (MAX(FORECAST_TIME) FROM TC_TRACKS),
+    which only reflects raw TRACK ingestion, this checks that the cycle's
+    impact data is complete.
 
     @ttl_cache, same _META_TTL (30 min) as every other single-value
     "storm list, forecast times" getter in this file: this function is now
@@ -3759,25 +3176,22 @@ def get_default_forecast_cycle():
     several real Snowflake round-trips apiece). With this decorator, the
     first page load in each 30-minute window pays that cost once; every
     other visitor in that window gets the cached result instantly.
-    real, live-confirmed gap: TC-ECMWF-Forecast-Pipeline can publish a new
-    track/raw MET_FORECASTS row hours before DATAPIPELINE's own impact
-    computation for that exact cycle finishes (confirmed live 19 Aug 2026:
-    the 06Z precip cycle was raw-ingested at 08:26 but MERCATOR_TILE_
-    PRECIP_MAT still hadn't caught up by 15:02, over 6.5 hours later,
-    while a currently-running Databricks job was separately still
-    processing a genuinely new storm cycle for over an hour). Landing a
-    user on that kind of half-computed cycle by default shows a
-    confusing/wrong-looking Impact Summary with no explanation.
+
+    The staleness case this guards against: TC-ECMWF-Forecast-Pipeline can
+    publish a new track/raw MET_FORECASTS row hours before DATAPIPELINE's
+    own impact computation for that exact cycle finishes (for example a 06Z
+    precip cycle raw-ingested at 08:26 while MERCATOR_TILE_PRECIP_MAT has
+    not caught up hours later). Landing a user on that kind of half-computed
+    cycle by default shows a confusing/wrong-looking Impact Summary with no
+    explanation.
 
     Walks the most recent real PRECIP cycles (get_recent_precip_forecast_
-    times), newest first, NOT TC_TRACKS: a real change from this
-    function's own original design (confirmed live: TC_TRACKS
-    can go days without a new row whenever no storm is active at all, since
-    it only ever gets a new row when one is, while precip keeps advancing
-    on its own independent schedule the whole time; anchoring the walk on
-    TC_TRACKS meant the app's own default landing cycle silently froze for
-    the ENTIRE quiet period, even though real, fully-computed precip data
-    kept arriving the whole time). Precip anchors this walk because it's the
+    times), newest first, NOT TC_TRACKS, since TC_TRACKS (which can go days without a new row whenever no storm is
+    active at all, since it only gets a new row when one is, while precip
+    keeps advancing on its own independent schedule the whole time;
+    anchoring the walk on TC_TRACKS would freeze the app's default landing
+    cycle for the ENTIRE quiet period, even though real, fully-computed
+    precip data keeps arriving). Precip anchors this walk because it's the
     hazard that reliably advances regardless of storm activity, the same
     real reasoning get_latest_forecast_time_overall() applies to the
     topbar's max-SELECTABLE bound, applied here to the default LANDING
@@ -3791,15 +3205,14 @@ def get_default_forecast_cycle():
         _wind_ready_at's own docstring for the full "why"; vacuously True
         when no storm is active at all at this exact time, so a quiet
         period never blocks on this check, only on a
-        genuinely active-but-still-processing storm, the original
+        genuinely active-but-still-processing storm, the
         half-computed-cycle risk this whole function exists to route
         around).
-    River is deliberately NOT a blocking condition here (a real, explicit
-    design change): GloFAS is once-daily and can legitimately
+    River is deliberately NOT a blocking condition here: GloFAS is once-daily and can legitimately
     lag behind precip's own more frequent cycle by up to ~24h even when
     everything is working correctly, and blocking the whole app's default
-    on river specifically would silently re-stall the same way the old
-    TC_TRACKS anchor did whenever river's own daily cycle hasn't landed yet
+    on river specifically would silently stall the same way a
+    TC_TRACKS anchor would whenever river's own daily cycle hasn't landed yet
     for "today". Instead, river readiness for any given date is exposed
     separately via is_river_outstanding_for_date() below, which the topbar's
     own time picker uses to mark an affected run with an honest "*" +
@@ -3809,11 +3222,11 @@ def get_default_forecast_cycle():
     precip-ready (a genuinely fresh/empty environment, or a real sustained
     precip-pipeline stall): the raw newest precip candidate, same
     "still needs SOME real default rather than never advancing at all"
-    reasoning the original fallback used. Falls back further to the raw
+    reasoning. Falls back further to the raw
     newest TC_TRACKS cycle only if MET_FORECASTS itself has no PARAM='tp'
     rows at all. Every real per-hazard availability is still handled
-    honestly downstream by _global_flood_availability/get_countries_with_*_
-    impact_at (this function only decides the STARTING point, not what
+    honestly downstream by _global_flood_availability/get_countries_examined_for_*_at
+    (this function only decides the STARTING point, not what
     gets shown).
 
     Returns a real pd.Timestamp, or None when both MET_FORECASTS and

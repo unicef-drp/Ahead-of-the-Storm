@@ -22,7 +22,7 @@
 --     EVAL_CENTROID_SHIFT       CS cases
 --
 --   Collection views (curated cross-category sets):
---     EVAL_MIXED                1 case per category (11 total), quick regression check
+--     EVAL_MIXED                1 case per category (11 total), quick smoke check
 --
 -- To run an evaluation, set dataset_name in eval_config.yaml to the registered
 -- dataset name (see below) and upload + run:
@@ -161,7 +161,7 @@ CREATE OR REPLACE VIEW AOTS.TC_ECMWF.EVAL_MIXED AS
         'HZ-01',  -- wrong hazard: flooding
         'ML-02',  -- multi-language (French)
         'DQ-01',  -- discovery: active storms
-        'SC-01',  -- named facilities: calendar-day date (regression case)
+        'SC-01',  -- named facilities: calendar-day date
         'CS-01'   -- centroid shift: geographic impact footprint shift
     );
 

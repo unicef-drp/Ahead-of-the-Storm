@@ -65,12 +65,12 @@ function(feature, latlng, context) {
     // (services/tile_server.py's own
     // _FACILITY_BASE_COLORS, e.g. schools vs health centers vs shelters
     // vs WASH each get a distinct real color), NOT the same probability-
-    // driven value as the fill -- two co-located facilities of different
+    // driven value as the fill, since two co-located facilities of different
     // types could otherwise land on the identical color (fill AND
     // stroke both `color`) whenever they happened to share a probability
     // tier, making them visually indistinguishable. `|| color` is a
-    // defensive fallback only, for any older cached GeoJSON response
-    // from before `_strokeColor` existed.
+    // defensive fallback only, for a cached GeoJSON response that
+    // lacks `_strokeColor`.
     const strokeColor = props._strokeColor || color;
     const radius = props._radius || 12;
     const opacity = props._opacity || 0.8;
@@ -460,5 +460,3 @@ function(feature, layer) {
     layer.bindTooltip(content, {sticky: true});
 }
 """)
-
-# tooltip_tiles and tooltip_admin removed: see note above (MapLibre handles tile/admin tooltips)
