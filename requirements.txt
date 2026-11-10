@@ -14,21 +14,21 @@ pillow>=10.0.0
 # For Snowflake
 snowflake-connector-python[pandas]>=3.10.0,<5
 
-# Zarr (reads raw global precip/river forecast arrays from Snowflake stage)
+# Zarr (reads raw global precip/river forecast arrays from the configured file store)
 zarr>=3.1
 
 # Parquet (reads the raw global river flood-extent Parquet, by-member or
-# compact bymask, from Snowflake stage, row-group-by-row-group: see services/tile_server.py's
+# compact bymask, from the configured file store, row-group-by-row-group: see services/tile_server.py's
 # _RiverExtentCache)
 pyarrow>=14.0.0
 
 # For Dash web app
-dash>=4.4.1
+dash>=4.4.1,<4.5
 plotly>=5.15.0
-dash-mantine-components>=2.7.0
-dash-iconify>=0.1.2
-dash-leaflet>=0.2.0
-dash-extensions>=1.0.0
+dash-mantine-components>=2.7.0,<3
+dash-iconify>=0.1.2,<1
+dash-leaflet>=0.2.0,<2
+dash-extensions>=1.0.0,<3
 
 # Production web server for Azure App Service
 gunicorn>=21.2.0

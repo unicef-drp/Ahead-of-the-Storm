@@ -69,7 +69,7 @@ Blob and otherwise the by-member file, `bymask` requires the compact file, `byme
 never reads it. Both layouts produce the same per-tile result.
 
 > **Note:** The tile server imports `components.*` and needs the repo requirements
-> files (`requirements.txt` locally, `requirements.spcs.txt` in the Docker image)
+> files (`requirements.txt` locally, `requirements.docker.txt` in the Docker image)
 > for `pyarrow`, `zarr` and `giga-spatial`. The `requirements.txt` in this directory
 > adds the packages the main Dash app does not use (`fastapi`, `uvicorn`,
 > `mapbox-vector-tile`) and does not cover the tile server on its own.

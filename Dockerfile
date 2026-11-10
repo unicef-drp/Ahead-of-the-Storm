@@ -33,8 +33,8 @@ WORKDIR /app
 
 # Install Python dependencies first (separate layer, only invalidated when
 # requirements change, not on every code change).
-COPY requirements.spcs.txt .
-RUN pip install --upgrade pip && pip install -r requirements.spcs.txt
+COPY requirements.docker.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.docker.txt
 
 # Copy application code
 COPY . .

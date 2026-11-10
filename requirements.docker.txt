@@ -1,0 +1,56 @@
+# Requirements for the Docker image (Azure App Service and the Snowflake container service).
+# Dash and UI libraries are pinned exactly; everything else is bounded.
+# Omits a direct azure-storage-blob pin: the Blob client used for IMPACT_DATA_STORE=BLOB
+# comes in through giga-spatial[all] below.
+
+# Data processing
+pandas>=2.3.3,<3
+numpy>=1.24.0
+
+# Geospatial processing
+geopandas>=0.13.0
+shapely>=2.0.0
+pyproj>=3.4.0
+mercantile>=1.2.1
+
+# For Snowflake
+snowflake-connector-python[pandas]>=3.10.0,<5
+
+# Zarr (reads raw global precip/river forecast arrays from the configured file store)
+zarr>=3.1
+
+# Parquet (reads the raw global river flood-extent Parquet, by-member or
+# compact bymask, from the configured file store, row-group-by-row-group, see services/tile_server.py's
+# _RiverExtentCache)
+pyarrow>=14.0.0
+
+# For Dash web app. Pinned exactly: a new major release of one of these once left the page blank
+# (dash-mantine-components 3 needs React 19, Dash 4.4 ships React 18). Upgrade them together and
+# check the page renders (docs/azure/smoke_test.py) before deploying.
+dash==4.4.1
+plotly==7.1.0
+dash-mantine-components==2.8.1
+dash-iconify==0.1.2
+dash-leaflet==1.1.3
+dash-extensions==2.0.6
+
+# Production web server
+gunicorn>=21.2.0
+flask>=2.3.0
+flask-compress>=1.14
+brotli>=1.0.9
+
+# Tile server sidecar (FastAPI + raster rendering)
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pillow>=10.0.0
+mapbox-vector-tile>=2.0.0
+requests>=2.31.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# GigaSpatial platform integration
+# [all] required because giga-spatial unconditionally imports GEE handlers at
+# package level regardless of which extras are installed.
+giga-spatial[all]>=0.9.4,<0.10
