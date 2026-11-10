@@ -11,12 +11,13 @@ Key Components:
 - Support for LocalDataStore, ADLSDataStore, and SnowflakeDataStore
 
 Usage:
-    from data_store_utils import get_data_store
+    from components.data.data_store_utils import get_data_store
     data_store = get_data_store()
 """
 
 import logging
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +30,13 @@ class _LazyDataStore:
     (and therefore its `gigaspatial` import, which pulls in geemap/hdx/
     sklearn) until the first attribute access.
 
-    This matters because several callers (e.g. page modules) call
-    `get_data_store()` unconditionally at *module import* time, regardless
-    of `IMPACT_DATA_SOURCE`. Simply moving the `gigaspatial` import inside
-    `get_data_store()` does not, by itself, defer anything for those
-    callers: the import would still run the moment the module-level
-    `get_data_store()` call executes. Wrapping the real store behind this
-    proxy means the import genuinely only happens if/when a `.file_exists(
-    )`/`.read_file()`/`.open()`/etc call is actually made on it, which
-    IMPACT_DATA_SOURCE=SQL callers never do (they either short-circuit past
-    the store entirely, e.g. `IMPACT_DATA_SOURCE == 'SQL' or giga_store.
-    file_exists(...)`, or never reference the store at all).
+    Several callers (e.g. page modules) call `get_data_store()`
+    unconditionally at module import time. Simply moving the `gigaspatial`
+    import inside `get_data_store()` does not, by itself, defer anything for
+    those callers: the import would still run the moment the module-level
+    call executes. Wrapping the real store behind this proxy means the import
+    only happens if a `.file_exists()`/`.read_file()`/`.open()`/etc call is
+    actually made on it.
     """
 
     def __init__(self, factory):
@@ -79,16 +76,20 @@ def get_data_store():
         `_LazyDataStore`, that only imports/constructs the real gigaspatial
         store on first actual use)
     """
-    # GigaSpatial imports pull in geemap/hdx/sklearn and are only needed for the
-    # STAGE file-store path. Deferred via _LazyDataStore so SQL-mode callers
-    # (and any caller that ends up never touching the store) never pay this cost,
-    # even though this factory itself typically runs at module-import time.
+    # GigaSpatial imports pull in geemap/hdx/sklearn and are only needed for
+    # file-store reads. Deferred via _LazyDataStore so any caller that never
+    # touches the store never pays this cost, even though this factory itself
+    # typically runs at module-import time.
     impact_data_store = app_config.IMPACT_DATA_STORE
 
     def _build():
         if impact_data_store == 'BLOB':
             from gigaspatial.core.io.adls_data_store import ADLSDataStore
-            return ADLSDataStore()
+            return ADLSDataStore(
+                container=app_config.ADLS_CONTAINER_NAME,
+                account_url=app_config.ADLS_ACCOUNT_URL,
+                sas_token=app_config.ADLS_SAS_TOKEN,
+            )
         elif impact_data_store == 'SNOWFLAKE':
             try:
                 from gigaspatial.core.io.snowflake_data_store import SnowflakeDataStore
@@ -120,90 +121,150 @@ def get_data_store():
     return _LazyDataStore(_build)
 
 
-def get_impact_data(data_type: str, giga_store, filepath: str, **sql_params):
+# --- Blob-first read, with a Snowflake-stage fallback, for the two global raw
+# --- hazard layers ---
+#
+# New met/ writes (precip tp, river ro) land in Azure Blob storage (mirrored
+# into Snowflake only as the AOTS_ANALYSIS_BLOB EXTERNAL stage), while this
+# app's configured SNOWFLAKE_STAGE_NAME points at the INTERNAL AOTS_ANALYSIS
+# stage. AOTS_ANALYSIS_BLOB is not a mirror of AOTS_ANALYSIS: it is a strict
+# subset that holds only what has been written since each pipeline's cutover.
+# Every recent precip-raw/river-raw forecast cycle therefore exists only in
+# Blob, while older data (geodb/aos_views, eval, project_results, glofas,
+# etc.) lives only in the internal stage. This tries Blob first (the common
+# case for current cycles) and falls back to the internal stage only for
+# older data. Switching SNOWFLAKE_STAGE_NAME globally would break every other
+# read of anything only in the internal stage, so the fallback applies only at
+# the two call sites that need it (services/tile_server.py's precip-raw and
+# river-raw caches), via read_stage_file_with_blob_fallback below.
+#
+# Blob reads go directly to Azure (ADLSDataStore, the same class used for
+# IMPACT_DATA_STORE='BLOB' mode), not through the AOTS_ANALYSIS_BLOB Snowflake
+# stage: Snowflake's GET/PUT file-transfer commands are rejected on any
+# EXTERNAL stage ("091003: GET and PUT commands are not supported with
+# external stage"). Going straight to Blob also involves no warehouse at all.
+_MISSING_PATH_TTL_S = 300
+_missing_paths_lock = threading.Lock()
+_missing_paths: dict[str, float] = {}
+
+_blob_store_lock = threading.Lock()
+_blob_store = None
+
+
+def _get_blob_store():
+    global _blob_store
+    if _blob_store is None:
+        with _blob_store_lock:
+            if _blob_store is None:
+                from gigaspatial.core.io.adls_data_store import ADLSDataStore
+                # Same relative path layout as the Snowflake stage (both are
+                # rooted at "met/...", "geodb/...", etc.); stage_path needs
+                # no transformation between the two.
+                _blob_store = ADLSDataStore(
+                    container=app_config.ADLS_CONTAINER_NAME,
+                    account_url=app_config.ADLS_ACCOUNT_URL,
+                    sas_token=app_config.ADLS_SAS_TOKEN,
+                )
+    return _blob_store
+
+
+def _is_snowflake_missing_file_error(err) -> bool:
+    """True only for Snowflake's own real "file does not exist" GET failure
+    (error code 253006: "While getting file(s) there was an error: the file
+    does not exist."), NOT a stage-level misconfiguration/permission error
+    like "Stage '...' does not exist or not authorized" (002003); that
+    error also contains the bare phrase "does not exist" but means a real
+    operational failure (dropped/renamed/de-authorized stage), not real data
+    absence, and must not be treated as "retry Blob, maybe negative-cache."
+    A bare substring check alone misclassifies that case, so this requires
+    the specific error code alongside it."""
+    s = str(err)
+    return '253006' in s and 'does not exist' in s.lower()
+
+
+def _is_blob_missing_error(err) -> bool:
+    """True for a genuine missing-blob failure (BlobNotFound). Checked via
+    both the stable Azure error code and the free-text phrase, for the same
+    defense-in-depth reason as _is_snowflake_missing_file_error above:
+    neither substring appears for a bad SAS token, a wrong container, or a
+    bad account host, only for a real 404."""
+    s = str(err).lower()
+    return 'blobnotfound' in s or 'does not exist' in s
+
+
+def read_stage_file_with_blob_fallback(stage_path: str):
+    """Read `stage_path` from Azure Blob first, falling back to the app's
+    configured (internal) Snowflake stage when Blob doesn't have it
+    (see the module comment above this function for the reasoning).
+
+    Meaningless outside IMPACT_DATA_STORE='SNOWFLAKE' (the stage-duality gap
+    this solves is Snowflake-stage-specific, and in BLOB mode
+    get_data_store() already IS the Blob store): under LOCAL/BLOB this is a
+    plain passthrough to get_data_store().read_file(), no fallback, no
+    negative cache.
     """
-    Load impact data via SQL (MAT tables) or file download (stage), controlled by
-    the IMPACT_DATA_SOURCE env var.
+    if app_config.IMPACT_DATA_STORE != 'SNOWFLAKE':
+        return get_data_store().read_file(stage_path)
 
-    IMPORTANT: IMPACT_DATA_SOURCE=SQL connects directly to Snowflake MAT tables and
-    bypasses the file store (giga_store) entirely. It works regardless of IMPACT_DATA_STORE
-    (LOCAL/BLOB/SNOWFLAKE), as long as Snowflake credentials are configured, which the app
-    always requires for TC_TRACKS and PIPELINE_COUNTRIES anyway.
-
-    Args:
-        data_type: One of 'school', 'hc', 'shelter', 'wash', 'tile', 'admin_impact', 'admin_cci', 'tile_cci', 'track'.
-        giga_store: Configured data store instance (used for STAGE path only).
-        filepath: Path to the file on the data store (used for STAGE path only).
-        **sql_params: Keyword args passed to the SQL function when IMPACT_DATA_SOURCE='SQL'.
-                      Expected keys: country, storm, forecast_date, wind_threshold,
-                      zoom_level (tile only), admin_level (admin only).
-
-    Returns:
-        pandas.DataFrame (or GeoDataFrame for data_type='track')
-    """
-    import time
-    _t0 = time.perf_counter()
-
-    def _norm(col):
-        """Normalize column names: keep E_ prefix uppercase, lowercase everything else."""
-        if col.upper().startswith('E_'):
-            return 'E_' + col[2:].lower()
-        return col.lower()
-
-    if app_config.IMPACT_DATA_SOURCE == 'SQL':
-        from components.data.snowflake_utils import (
-            get_school_impacts,
-            get_hc_impacts,
-            get_shelter_impacts,
-            get_wash_impacts,
-            get_tile_impacts,
-            get_admin_impacts,
-            get_admin_cci,
-            get_tile_cci,
-            get_track_impacts,
+    now = time.time()
+    with _missing_paths_lock:
+        missed_at = _missing_paths.get(stage_path)
+    if missed_at is not None and (now - missed_at) < _MISSING_PATH_TTL_S:
+        raise IOError(
+            f"{stage_path}: missing from both Azure Blob and the "
+            f"{app_config.SNOWFLAKE_STAGE_NAME} Snowflake stage within the last "
+            f"{_MISSING_PATH_TTL_S}s (cached, not re-checked)"
         )
 
-        country = sql_params['country']
-        storm = sql_params['storm']
-        forecast_date = sql_params['forecast_date']
+    try:
+        return _get_blob_store().read_file(stage_path)
+    except (IOError, OSError) as blob_err:
+        if not _is_blob_missing_error(blob_err):
+            raise
+        logger.warning(
+            "%s: not found in Azure Blob, retrying against the %s Snowflake stage",
+            stage_path, app_config.SNOWFLAKE_STAGE_NAME,
+        )
+        try:
+            return get_data_store().read_file(stage_path)
+        except (IOError, OSError) as stage_err:
+            if not _is_snowflake_missing_file_error(stage_err):
+                raise
+            with _missing_paths_lock:
+                _missing_paths[stage_path] = now
+            raise IOError(
+                f"{stage_path}: missing from both Azure Blob and the "
+                f"{app_config.SNOWFLAKE_STAGE_NAME} Snowflake stage"
+            ) from stage_err
 
-        if data_type == 'school':
-            result = get_school_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
-        elif data_type == 'hc':
-            result = get_hc_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
-        elif data_type == 'shelter':
-            result = get_shelter_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
-        elif data_type == 'wash':
-            result = get_wash_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
-        elif data_type == 'tile':
-            result = get_tile_impacts(country, storm, forecast_date, sql_params['wind_threshold'],
-                                      sql_params.get('zoom_level', 14))
-        elif data_type == 'admin_impact':
-            result = get_admin_impacts(country, storm, forecast_date, sql_params['wind_threshold'],
-                                       sql_params.get('admin_level', 1))
-        elif data_type == 'admin_cci':
-            result = get_admin_cci(country, storm, forecast_date, sql_params.get('admin_level', 1))
-        elif data_type == 'tile_cci':
-            result = get_tile_cci(country, storm, forecast_date, sql_params.get('zoom_level', 14))
-        elif data_type == 'track':
-            result = get_track_impacts(country, storm, forecast_date, sql_params['wind_threshold'])
-        else:
-            raise ValueError(f"Unknown data_type '{data_type}' for SQL path")
-        if not result.empty:
-            # Normalize: keep E_ prefix uppercase, lowercase everything else
-            # Matches the convention in STAGE Parquet/CSV files (e.g. E_population, zone_id)
-            result.columns = [_norm(c) for c in result.columns]
-        source_label = f"SQL/{data_type}"
+
+_absent_paths_lock = threading.Lock()
+_absent_paths: dict[str, float] = {}
+
+
+def read_blob_file_if_exists(path: str):
+    """Bytes of `path` from Azure Blob (the Blob store under SNOWFLAKE,
+    otherwise the configured store), or None when that exact object does not exist. Unlike
+    read_stage_file_with_blob_fallback there is no internal-stage retry: this is
+    for an optional companion file whose absence is a normal state (an
+    absence is remembered for _MISSING_PATH_TTL_S so repeated
+    requests do not re-probe Blob each time). Any other failure (network,
+    credentials) raises."""
+    now = time.time()
+    with _absent_paths_lock:
+        absent_at = _absent_paths.get(path)
+    if absent_at is not None and (now - absent_at) < _MISSING_PATH_TTL_S:
+        return None
+    if app_config.IMPACT_DATA_STORE == 'SNOWFLAKE':
+        store = _get_blob_store()
     else:
-        # STAGE path: original behaviour
-        from gigaspatial.core.io.readers import read_dataset
-        result = read_dataset(filepath, giga_store)
-        source_label = f"STAGE/{filepath}"
-        # Normalize column names to match SQL path convention (E_population, tile_id, probability…)
-        # so the tooltip can find E_population etc. regardless of how the pipeline wrote them.
-        if not result.empty:
-            result.columns = [_norm(c) for c in result.columns]
-
-    _elapsed = time.perf_counter() - _t0
-    logger.debug("[perf] %s → %d rows in %.2fs", source_label, len(result), _elapsed)
-    return result
+        store = get_data_store()
+    try:
+        return store.read_file(path)
+    except (IOError, OSError) as err:
+        if not (_is_blob_missing_error(err) or isinstance(err, FileNotFoundError)
+                or 'no such file' in str(err).lower()):
+            raise
+        with _absent_paths_lock:
+            _absent_paths[path] = now
+        return None

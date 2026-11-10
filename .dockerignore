@@ -3,7 +3,7 @@ geodb/
 project_results/
 datastore/
 
-# Exclude development/testing directories not needed in production
+# Exclude development and scratch directories not needed in production
 LLM-testing/
 testing/
 snowflake/
@@ -36,13 +36,14 @@ env/
 .gitattributes
 .claude/
 
-# Exclude documentation — not needed at runtime
+# Exclude documentation, not needed at runtime
 *.md
 *.ipynb
 LICENSE
 
 # Exclude one-off / development scripts
 extract_jamaica_data.py
+experiments/
 
 # Exclude logs
 *.log
@@ -68,3 +69,4 @@ dist/
 build/
 *.egg
 
+.pytest_cache/

@@ -25,8 +25,7 @@ window._leaflet_maps = window._leaflet_maps || {};
 // 1b. Tile-URL-aware source update helper
 // ---------------------------------------------------------------------------
 // MapLibre's own Source.setTiles() never diffs the new value against the
-// old one (verified against the vendored maplibre-gl bundle: it
-// unconditionally calls load(), which clears that source's tile cache and
+// old one (it unconditionally calls load(), which clears that source's tile cache and
 // re-requests every currently-tracked tile from the network), so calling
 // it with a byte-identical URL still forces a full visible flush+refetch of
 // every hazard's raster+admin sources. Several of this file's own URL
@@ -77,15 +76,15 @@ function initMaplibre() {
     window._aots_mapbox_token = mapboxToken;
     var initialTiles = mapboxToken
         ? ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + mapboxToken]
-        : ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-           'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-           'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
+        : ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+           'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+           'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'];
     var basemapSource = {
         'basemap-source': {
             type: 'raster',
             tiles: initialTiles,
             tileSize: 256,
-            attribution: mapboxToken ? '© Mapbox © OpenStreetMap contributors' : '© CARTO © OpenStreetMap contributors',
+            attribution: mapboxToken ? '© Mapbox © OpenStreetMap contributors' : '© OpenStreetMap contributors',
         }
     };
     var basemapLayer = { id: 'basemap-tiles', type: 'raster', source: 'basemap-source', minzoom: 0, maxzoom: 22 };
@@ -210,13 +209,13 @@ var _AOTS_TT_DIVIDER = '#eef2f5';
 // Client-side mirror of services/tile_server.py's own _UNION_EXCLUDED_
 // HAZARDS: a hazard listed here genuinely counts toward the "Hazard
 // Probability" figures this file renders (Combined %, map coloring in
-// Probability/Classification mode -- both still fold it in, unchanged),
+// Probability/Classification mode, both of which still fold it in),
 // but never toward any population-weighted number (the red "(~N)" figures
 // _buildTileTooltip's own fmtE() renders, or any Impact Summary/Breakdown
 // total, computed server-side, never client-side at all). Used here only to
 // decide when to print the "(reference only, not counted toward the red
 // at-risk numbers below)" note next
-// to that hazard's own row in the per-hazard breakdown -- purely a display
+// to that hazard's own row in the per-hazard breakdown; purely a display
 // decision, not a second exclusion mechanism; the real exclusion is the
 // server-side one this list only documents/mirrors for that one purpose.
 var _AOTS_UNION_EXCLUDED_HAZARDS = ['gust'];
@@ -250,7 +249,7 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
     var G = function(name) { return _getP(p, name); };
     // Admin layer ids are hazard-suffixed (aots-admin-layer-wind / -gust /
     // -river / -rain) since hazards became independently toggleable layers.
-    // Match by prefix rather than an exact id that no longer exists.
+    // Match by prefix rather than an exact, unsuffixed id.
     var isAdmin = !!(feature.layer && feature.layer.id && feature.layer.id.indexOf('aots-admin-layer') === 0);
 
     // Label reflects whichever hazard(s) this feature actually represents,
@@ -351,7 +350,7 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
         // Header deliberately says "Hazard Probability", not "Expected
         // Impact": every number in this block (Combined and the per-hazard
         // rows below it) is a pure hazard-likelihood percentage, never
-        // population-weighted -- the real "expected impact" figures (the
+        // population-weighted; the real "expected impact" figures (the
         // red "(~N)" numbers) live further down, inline in Tile/Region
         // Base Data, computed differently (see fmtE below) and, for Gust
         // specifically, from a DIFFERENT, narrower probability than the
@@ -363,16 +362,14 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
             // sub-row (same visual convention the age-band rows below
             // already use for "detail under a bold parent").
             //
-            // The methodology disclosure used to be a small (ⓘ) info glyph
-            // carrying the explanation as a native `title` attribute,
-            // removed: a native `title`
-            // tooltip nested INSIDE this hover tooltip (itself a
-            // mousemove-driven overlay) was in practice unreachable:
-            // moving the mouse toward that tiny icon moves/closes the
-            // outer tooltip before the native one can appear. The two REAL
-            // per-member-union cases below (isCombinedAdmin and the tile
-            // path) are now explained, with a concrete worked example, by
-            // a reliably-hoverable dmc.Tooltip on the EXPOSURE tab's own
+            // The methodology disclosure is not an info glyph with a native
+            // `title` attribute: a native `title` tooltip nested INSIDE this
+            // hover tooltip (itself a mousemove-driven overlay) is
+            // unreachable, since moving the mouse toward a tiny icon
+            // moves/closes the outer tooltip before the native one can
+            // appear. The two REAL per-member-union cases below
+            // (isCombinedAdmin and the tile path) are explained, with a
+            // concrete worked example, by a reliably-hoverable dmc.Tooltip on the EXPOSURE tab's own
             // "Hazard Probability" radio option (pages/map_shell_concept.py,
             // the dmc.Radio with value="probability"), a STATIC control
             // with no such problem.
@@ -393,7 +390,7 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
             }
             // Counted hazards (contribute to Combined above AND to the
             // red "(~N)" numbers below) render first, in their normal
-            // order; excluded hazards (Gust -- contribute to Combined but
+            // order; excluded hazards (Gust, which contributes to Combined but
             // never to those numbers) render AFTER all of them, as a
             // stable partition (each group keeps its own original relative
             // order). A small top margin (not a full <hr>, this is still
@@ -409,7 +406,7 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
                 // See _AOTS_UNION_EXCLUDED_HAZARDS's own comment: a hazard
                 // listed there genuinely counts toward Combined above (a
                 // pure probability reading), but never toward any of the
-                // red "(~N)" numbers further down -- flagged inline here so
+                // red "(~N)" numbers further down; flagged inline here so
                 // the two never look silently inconsistent with each other.
                 var note = isExcluded
                     ? ' <span style="font-weight:400;">' + _mapT('(reference only, not counted toward the red at-risk numbers below)') + '</span>' : '';
@@ -418,7 +415,7 @@ function _buildTileTooltip(feature, perHazardProbs, riverRainBothProb) {
                 html += '<div style="font-size:10px;color:' + _AOTS_TT_SUB + ';padding-left:10px;font-style:italic;margin-top:' + topMargin + ';">' + lbl + ': ' + _fmtPct(hp.prob) + note + '</div>';
             });
             // Real per-member JOINT (River AND Rain, same ensemble member)
-            // figure -- the SAME river_bits & rain_bits methodology the
+            // figure, the SAME river_bits & rain_bits methodology the
             // map's own Classification crosshatch and the Impact
             // Breakdown's "Both" row already use, see
             // riverRainBothProb's own docstring in tile_server.py for the
@@ -772,7 +769,7 @@ function _setupHoverTooltips(lMap) {
             // reads per-hazard probabilities straight off the vector
             // tile's own encoded properties, it never calls
             // tile_value_combined (the tile-hover path below does, and is
-            // where riverRainBothProb comes from) -- a real, scoped-out
+            // where riverRainBothProb comes from); a scoped-out
             // follow-up if the admin tooltip ever needs the same figure.
             el.innerHTML = _buildTileTooltip(
                 { properties: cprops, layer: { id: _AOTS_COMBINED_IDS.adminLayer } }, cPerHazard);
@@ -1052,24 +1049,18 @@ function swapMaplibreBasemap(name) {
     var tiles;
     if (name === 'Mapbox Light' && token) {
         tiles = ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + token];
+    } else if (name === 'Mapbox Dark' && token) {
+        tiles = ['https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}?access_token=' + token];
     } else if (name === 'OpenStreetMap') {
         tiles = ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
                  'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
                  'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'];
-    } else if (name === 'CartoDB Light') {
-        tiles = ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                 'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                 'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
-    } else if (name === 'CartoDB Dark') {
-        tiles = ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                 'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                 'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'];
     } else if (name === 'Satellite') {
         tiles = ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'];
     } else {
         tiles = token
             ? ['https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=' + token]
-            : ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'];
+            : ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'];
     }
     map.getSource('basemap-source').setTiles(tiles);
     console.log('[AoTS] swapMaplibreBasemap →', name);
@@ -1113,12 +1104,10 @@ function _onMaplibreReady() {
 // _FIXED_SCALE_COLS (see that dict's own comment for the full real-world
 // grounding), kept in sync so the Admin/Regions vector-fill path and the
 // raster/Tiles path never disagree on what color the SAME real number
-// gets. Only 'probability' remains fixed here: the population-family
-// props were tried as a fixed scale, then reverted back to a real,
-// data-driven per-country/per-cycle range, and their E_* impact/exposure
-// siblings were also reverted (see tile_palettes.json's own
-// E_population/etc. entries, moved off this mechanism entirely onto
-// 'linear' scale).
+// gets. Only 'probability' is fixed here: the population-family props use
+// a data-driven per-country/per-cycle range, and their E_* impact/exposure
+// siblings use a 'linear' scale (see tile_palettes.json's own
+// E_population/etc. entries).
 var _AOTS_FIXED_SCALE_COLS = {
     'probability': [1 / 51, 1.0],
 };
@@ -1164,7 +1153,7 @@ function buildColorExpression(prop, stats) {
         if (maxV <= 0) return 'transparent';
         // 'probability' and the population-family props get a FULLY
         // FIXED scale, both endpoints hardcoded absolute constants, not
-        // derived from this country/cycle's own real min/max at all --
+        // derived from this country/cycle's own real min/max at all,
         // same real constants and reasoning as _get_minmax's own
         // _FIXED_SCALE_COLS branch (see that dict's own comment for the
         // full real-world grounding).
@@ -1173,15 +1162,12 @@ function buildColorExpression(prop, stats) {
         // E_POPULATION, etc.) anchors the floor at the TRUE minimum
         // (minV, or 1 as a safe fallback when the stats payload has no
         // real min), mirroring services/tile_server.py's own
-        // _get_minmax log branch exactly. A floor-raise (real min * a
-        // small fraction) was tried here to stop a near-zero
-        // outlier tile from stretching the whole ramp, but verified
-        // against 5 real datasets (see that Python comment
-        // for the full numbers) showed it was actively HURTING every
-        // one of these count-like columns, collapsing the vast majority
-        // of real cells into one identical flattest color -- the wide
-        // dynamic range it was suppressing is exactly the real signal a
-        // log scale exists to show here, not noise.
+        // _get_minmax log branch exactly. The floor is never raised above
+        // the true minimum: raising it (real min * a small fraction) would
+        // collapse the vast majority of real cells of these count-like
+        // columns into one identical flattest color. The wide dynamic range
+        // a near-zero tile creates is exactly the real signal a log scale
+        // exists to show here, not noise.
         var fixedScale = _AOTS_FIXED_SCALE_COLS[prop];
         var effectiveMin = fixedScale ? fixedScale[0] : (minV > 0 ? minV : 1);
         if (fixedScale) maxV = fixedScale[1];
@@ -1840,7 +1826,7 @@ function applyTileConfig(config) {
     if (config.hazards_hidden) {
         // Must NOT be a blanket _hideAllHazardLayers here: the eye icon
         // means "hide the HAZARD weighting/overlays", not "blank the whole
-        // map" -- the plain Population/Children/etc base layer piggybacks
+        // map"; the plain Population/Children/etc base layer piggybacks
         // on wind's own MapLibre layer (see config.wind_base_fallback's own
         // docstring in pages/map_shell_concept.py) and should stay visible.
         // Gust/river/rain (and any multi-storm extra wind/gust groups) have

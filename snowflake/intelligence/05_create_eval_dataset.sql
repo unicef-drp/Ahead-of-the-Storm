@@ -18,8 +18,8 @@
 --      SC-##  named_facilities (schools)   HC-##  named_facilities (health centers)
 --      CS-##  centroid_shift
 --
---   Single-metric cases (SM-##) cover: expected_population, expected_children (0–19 total),
---   expected_school_age (5–14), expected_infants (0–4), expected_adolescents (15–19),
+--   Single-metric cases (SM-##) cover: expected_population, expected_children (0 to 19 total),
+--   expected_school_age (5 to 14), expected_infants (0 to 4), expected_adolescents (15 to 19),
 --   expected_schools, expected_health_centers, expected_shelters, expected_wash,
 --   worst_case_population, worst_case_children, worst_to_expected_ratio, ensemble_count.
 --

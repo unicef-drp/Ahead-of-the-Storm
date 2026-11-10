@@ -1,10 +1,10 @@
 # Snowflake Intelligence: Hurricane Situation Analysis
 
-SQL scripts to set up the Snowflake Cortex AI agent (`HURRICANE_INTELLIGENCE`) that generates actionable intelligence reports from the materialized tables.
+Setup scripts for the Snowflake Cortex AI agent (`HURRICANE_INTELLIGENCE`) that generates actionable intelligence reports from the materialized tables. Steps 2 and 3 live in the ORCHESTRATION repository.
 
 ## Overview
 
-The agent queries the `*_MAT` tables (set up in `../mat_tables/`) using 18 stored procedures as tools, and generates five-section situation reports for emergency response specialists:
+The agent queries the `*_MAT` tables (set up by the ORCHESTRATION repository, `04_data/` and `09_orchestration/`) using 19 stored procedures as tools, and generates five-section situation reports for emergency response specialists:
 
 1. **Executive Summary**: threat level and key concerns
 2. **Expected Impact**: probabilistic impact values with admin breakdowns
@@ -16,7 +16,7 @@ The agent queries the `*_MAT` tables (set up in `../mat_tables/`) using 18 store
 
 ## Prerequisites
 
-- MAT tables set up and populated: run `../mat_tables/` scripts first
+- MAT tables set up and populated: run the ORCHESTRATION repository's `04_data/` and `09_orchestration/` scripts first
 - Snowflake account with ACCOUNTADMIN role (or `CREATE SNOWFLAKE INTELLIGENCE ON ACCOUNT` privilege)
 - Warehouse `SF_AI_WH` must exist (used for agent queries; kept separate from `AOTS_WH` for cost monitoring)
 
@@ -24,7 +24,7 @@ The agent queries the `*_MAT` tables (set up in `../mat_tables/`) using 18 store
 
 ## Setup Instructions
 
-Run scripts in this order:
+Run the steps in this order:
 
 ### Step 1: Set Up Snowflake Intelligence (`01_setup_snowflake_intelligence.sql`)
 
@@ -35,13 +35,13 @@ ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT
 ADD AGENT HURRICANE_INTELLIGENCE;
 ```
 
-### Step 2: Create Agent (`02_create_agent.sql`)
+### Step 2: Create Agent (ORCHESTRATION `07_agent/02_create_agent.sql`)
 
-Creates `HURRICANE_INTELLIGENCE`, the Cortex AI agent.
+Creates `HURRICANE_INTELLIGENCE`, the Cortex AI agent. The script lives in the ORCHESTRATION repository at `07_agent/02_create_agent.sql`.
 
-### Step 3: Create Stored Procedures (`03_create_stored_procedures.sql`)
+### Step 3: Create Stored Procedures (ORCHESTRATION `07_agent/03_create_stored_procedures.sql`)
 
-Creates **18 stored procedures** that serve as agent tools. All query `*_MAT` tables directly, return JSON (`VARIANT`), use `EXECUTE AS OWNER`, and grant USAGE to `SYSADMIN` and `AOTS_ROLE`.
+Creates **19 stored procedures** that serve as agent tools. The script lives in the ORCHESTRATION repository at `07_agent/03_create_stored_procedures.sql`. Most query `*_MAT` tables directly (see the table list below for exceptions), return JSON (`VARIANT`), use `EXECUTE AS OWNER`, and grant USAGE to `SYSADMIN` and `AOTS_ROLE`.
 
 | # | Procedure | Description |
 |---|---|---|
@@ -63,8 +63,9 @@ Creates **18 stored procedures** that serve as agent tools. All query `*_MAT` ta
 | 16 | `GET_LATEST_DATA_OVERALL` | Latest data across all countries/storms |
 | 17 | `GET_COUNTRY_ISO3_CODE` | Resolves country name to ISO3 code |
 | 18 | `GET_CENTROID_SHIFT` | Shift in children-at-risk-weighted centroid since prior forecast |
+| 19 | `GET_STORM_ARRIVAL_TIMING` | Earliest, consensus (median) and latest storm-force wind arrival across ensemble members |
 
-**Supported `GET_SINGLE_METRIC` metrics:** `expected_population`, `expected_children` (0–19), `expected_school_age` (5–14), `expected_infants` (0–4), `expected_adolescents` (15–19), `expected_schools`, `expected_health_centers`, `expected_shelters`, `expected_wash`, `worst_case_population`, `worst_case_children`, `worst_to_expected_ratio`, `ensemble_count`.
+**Supported `GET_SINGLE_METRIC` metrics:** `expected_population`, `expected_children` (0 to 19), `expected_school_age` (5 to 14), `expected_infants` (0 to 4), `expected_adolescents` (15 to 19), `expected_schools`, `expected_health_centers`, `expected_shelters`, `expected_wash`, `worst_case_population`, `worst_case_children`, `worst_to_expected_ratio`, `ensemble_count`.
 
 #### GET_CENTROID_SHIFT
 
@@ -147,7 +148,7 @@ Agent quality is measured with Snowflake Native Cortex Agent Evaluations. Datase
 | Evalset name | View | Cases | Purpose |
 |---|---|---|---|
 | `HURRICANE_INTELLIGENCE_EVALSET` | `EVAL_ALL` | 75+ | Full baseline: run after any agent change |
-| `HURRICANE_INTELLIGENCE_MIXED_EVALSET` | `EVAL_MIXED` | 11 | Quick cross-category regression check (1 per category) |
+| `HURRICANE_INTELLIGENCE_MIXED_EVALSET` | `EVAL_MIXED` | 11 | Quick cross-category smoke set (1 per category) |
 | `HURRICANE_INTELLIGENCE_SINGLE_METRICS_EVALSET` | `EVAL_SINGLE_METRICS` | 14 | Single-metric precision (all supported metrics) |
 | `HURRICANE_INTELLIGENCE_FULL_REPORTS_EVALSET` | `EVAL_FULL_REPORTS` | 5 | Five-section report quality |
 | `HURRICANE_INTELLIGENCE_NAMED_FACILITIES_EVALSET` | `EVAL_NAMED_FACILITIES` | 5 | Schools and health center name lookups |
@@ -156,17 +157,18 @@ Agent quality is measured with Snowflake Native Cortex Agent Evaluations. Datase
 
 ---
 
-## Data Layer: 6 Views in TC_ECMWF
+## Data Layer: `*_MAT` Tables in TC_ECMWF
 
-All `*_RAW` views point to materialized `*_MAT` tables.
+The procedures read the materialized `*_MAT` tables directly.
 
-| View | Content | Procedures |
+| Table | Content | Procedures |
 |---|---|---|
-| `ADMIN_IMPACT_VIEWS_RAW` | Expected impact counts per admin area | GET_ADMIN_LEVEL_BREAKDOWN, GET_ADMIN_LEVEL_TREND_COMPARISON, GET_CENTROID_SHIFT |
-| `MERCATOR_TILE_IMPACT_VIEWS_RAW` | Tile-level expected impact | GET_EXPECTED_IMPACT_VALUES, GET_SINGLE_METRIC, GET_WORST_CASE_SCENARIO, GET_SCENARIO_DISTRIBUTION, GET_ALL_WIND_THRESHOLDS_ANALYSIS, GET_PREVIOUS_FORECAST_DATE, GET_FORECAST_DATE_HISTORY |
-| `TRACK_VIEWS_RAW` | Per-ensemble-member severity scores | GET_WORST_CASE_SCENARIO, GET_SCENARIO_DISTRIBUTION |
-| `BASE_ADMIN_VIEWS_RAW` | Admin ID → name lookup | Joined by admin-level procedures |
-| `SCHOOL_IMPACT_VIEWS_RAW` | Individual named schools with probability | GET_HIGH_RISK_SCHOOLS |
-| `HEALTH_CENTER_IMPACT_VIEWS_RAW` | Individual named health facilities with probability | GET_HIGH_RISK_HEALTH_CENTERS |
+| `ADMIN_ALL_IMPACT_MAT` | Expected impact counts per admin area | GET_ADMIN_LEVEL_BREAKDOWN, GET_ADMIN_LEVEL_TREND_COMPARISON, GET_ALL_WIND_THRESHOLDS_ANALYSIS, GET_THRESHOLD_PROBABILITIES, GET_HIGH_RISK_HEALTH_CENTERS, VALIDATE_ADMIN_TOTALS, GET_CENTROID_SHIFT |
+| `MERCATOR_TILE_IMPACT_MAT` | Tile-level expected impact | GET_EXPECTED_IMPACT_VALUES, GET_SINGLE_METRIC, GET_ALL_WIND_THRESHOLDS_ANALYSIS, GET_PREVIOUS_FORECAST_DATE, GET_FORECAST_DATE_HISTORY, DISCOVER_AVAILABLE_STORMS, GET_LATEST_FORECAST_DATE, GET_LATEST_DATA_OVERALL, GET_HIGH_RISK_SCHOOLS, GET_HIGH_RISK_HEALTH_CENTERS, VALIDATE_ADMIN_TOTALS |
+| `TRACK_MAT` | Per-ensemble-member severity scores | GET_WORST_CASE_SCENARIO, GET_SCENARIO_DISTRIBUTION, GET_SINGLE_METRIC, GET_LATEST_DATA_OVERALL |
+| `BASE_ADMIN_MAT` | Admin ID to name lookup | Joined by admin-level procedures |
+| `BASE_ADMIN_GEOM_MAT` | Admin centroid coordinates | GET_CENTROID_SHIFT |
+| `SCHOOL_IMPACT_MAT` | Individual named schools with probability | GET_HIGH_RISK_SCHOOLS |
+| `HC_IMPACT_MAT` | Individual named health facilities with probability | GET_HIGH_RISK_HEALTH_CENTERS |
 
-`GET_CENTROID_SHIFT` additionally queries `BASE_ADMIN_GEOM_MAT` for centroid coordinates and `ADMIN_ALL_IMPACT_MAT` for per-admin impact values.
+`GET_STORM_ARRIVAL_TIMING` reads `TC_TRACKS`, the per-member wind envelopes (`TC_ENVELOPES_INDIVIDUAL`) and the `PIPELINE_COUNTRIES` boundaries instead of a `*_MAT` table. `VALIDATE_ADMIN_TOTALS` also reads `TC_ENVELOPES_INDIVIDUAL` and `PIPELINE_COUNTRIES`, and `GET_THRESHOLD_PROBABILITIES` and `GET_COUNTRY_ISO3_CODE` also read `PIPELINE_COUNTRIES`.

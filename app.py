@@ -10,7 +10,7 @@ import os
 import logging
 import dash
 import dash_mantine_components as dmc
-from dash import Dash, _dash_renderer, dcc, callback, Input, Output, State
+from dash import Dash, _dash_renderer, dcc
 from dotenv import load_dotenv
 import json as _json
 from flask import send_from_directory, Response
@@ -48,7 +48,7 @@ Compress(server)
 # fonts.css/custom.css/map_shell_concept.css/dashExtensions_default.js/etc.)
 # emit Cache-Control: no-cache, so every page load, warm or cold, repeat or
 # first visit, pays a full conditional-GET round trip through nginx+gunicorn
-# for each of these ~7 files (a real measured contributor to warm-instance
+# for each of these ~7 files (a real contributor to warm-instance
 # page-load time).
 # 300s: short enough that a real deploy's asset changes show up within 5
 # min (worst case: a hard refresh during that window while iterating
@@ -81,15 +81,12 @@ def serve_tile_palettes_js():
 def serve_map_static(filename):
     from flask import make_response
     resp = make_response(send_from_directory(_MAP_COMPONENTS_DIR, filename))
-    # public, max-age=300 (not the old "no-cache"): the old setting still
-    # hit the server on EVERY page load to revalidate, even a repeat visit
-    # seconds later, a real measured contributor to page-load time (every
-    # one of ~7 static files paying a round trip on every load). 300s
-    # bounds staleness to 5 min after a real deploy (or a
-    # local hard-refresh away, while iterating); must-revalidate means a
-    # client that DOES wait past 300s still gets a real revalidation
-    # (ETag/Last-Modified, set by send_from_directory by default) rather
-    # than silently serving stale past the window.
+    # public, max-age=300: a repeat visit within 5 minutes reuses the cached
+    # static files without a round trip, which bounds staleness after a deploy
+    # to 5 min (or a local hard-refresh away, while iterating). must-revalidate
+    # means a client that waits past 300s still gets a real revalidation
+    # (ETag/Last-Modified, set by send_from_directory by default) rather than
+    # silently serving stale past the window.
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return resp
 
@@ -113,7 +110,7 @@ def serve_alert_email(track_id, forecast_time, country_code):
 @server.route("/warning-email/<track_id>/<forecast_date>")
 def serve_warning_email(track_id, forecast_date):
     """Serves the warning email HTML (AOTS.TC_ECMWF.WATCH_SENT_LOG.EMAIL_BODY)
-    the same way serve_alert_email above serves an Alert's -- one fewer URL
+    the same way serve_alert_email above serves an Alert's, one fewer URL
     segment since a Warning has no country_code (see get_warning_email_body's
     own docstring: one shared email per (track_id, forecast_date) covering
     every affected country, not one per country)."""
@@ -128,7 +125,6 @@ app.layout = dmc.MantineProvider(
     [
         dash.page_container,
         dcc.Store("country-store", data=""),
-        dcc.Store("country-is-region-store", data=False),
         dcc.Store("storm-store", data=""),
         dcc.Store("date-store", data=""),
         dcc.Store("using-base-layers-store", data=False),
@@ -137,17 +133,6 @@ app.layout = dmc.MantineProvider(
     forceColorScheme="light",
     theme={"fontFamily": "'Open Sans', sans-serif"},
 )
-
-
-@callback(
-    Output("app-shell", "navbar"),
-    Input("burger-button", "opened"),
-    State("app-shell", "navbar"),
-    prevent_initial_call=True,
-)
-def navbar_is_open(opened, navbar):
-    navbar["collapsed"] = {"mobile": not opened}
-    return navbar
 
 
 if __name__ == "__main__":

@@ -1,7 +1,4 @@
 import logging
-import dash_mantine_components as dmc
-from dash_iconify import DashIconify
-import dash_leaflet as dl
 from pydantic import BaseModel
 import os
 
@@ -14,13 +11,6 @@ if mapbox_token:
     logger.info("Mapbox token found (length: %d characters)", len(mapbox_token))
 else:
     logger.warning("Mapbox token not found, will use OpenStreetMap fallback")
-
-def get_tile_layer_url():
-    """Get the appropriate tile layer URL based on whether Mapbox token is available."""
-    if mapbox_token:
-        return f"https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}"
-    logger.debug("Using OpenStreetMap tiles (Mapbox token not available)")
-    return "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 class MapConfig(BaseModel):
 
